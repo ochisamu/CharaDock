@@ -79,6 +79,20 @@ LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR
 OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
 PERFORMANCE OF THIS SOFTWARE.
 
+### Noto Sans JP
+
+- Project: Noto CJK / Noto Sans JP
+- Copyright: 2014-2021 Adobe; Google and the Noto Project Authors
+- Source: https://github.com/notofonts/noto-cjk
+- Source commit: `f8d157532fbfaeda587e826d4cd5b21a49186f7c`
+- Bundled file: `assets/fonts/NotoSansJP-VF.ttf`
+- SHA-256: `f4b373b226668ee33a6e54b02823dcd2d1209f17159f777421ae8c2275160369`
+- License: SIL Open Font License 1.1
+
+The variable Japanese subset is bundled so every CharaDock window can render
+Japanese text consistently without downloading a web font at runtime. The
+complete license is retained at `assets/fonts/LICENSE-NotoSansJP.txt`.
+
 ### pngjs
 
 - Project: pngjs

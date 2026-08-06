@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 const assert = require("node:assert/strict");
+const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
 const test = require("node:test");
@@ -13,6 +14,7 @@ test("desktop distribution contains only approved character, voice, and interfac
   assert.deepEqual(assetEntries.sort(), [
     "assets/amber-avatar/**/*",
     "assets/bronze-avatar/**/*",
+    "assets/fonts/**/*",
     "assets/reference-voices/**/*",
     "assets/sage-avatar/**/*",
     "assets/towa-avatar/**/*",
@@ -34,6 +36,19 @@ test("interface symbols use individually licensed SVG assets", () => {
   for (const cssFile of ["control.css", "mascot-overlay.css"]) {
     const css = fs.readFileSync(path.join(projectRoot, "desktop", cssFile), "utf8");
     assert.doesNotMatch(css, /charadock-symbols\.png/);
+  }
+});
+
+test("Noto Sans JP is pinned, licensed, packaged, and shared by every UI surface", () => {
+  const fontPath = path.join(projectRoot, "assets", "fonts", "NotoSansJP-VF.ttf");
+  assert.equal(fs.statSync(fontPath).size, 9_590_732);
+  assert.equal(crypto.createHash("sha256").update(fs.readFileSync(fontPath)).digest("hex"), "f4b373b226668ee33a6e54b02823dcd2d1209f17159f777421ae8c2275160369");
+  assert.match(fs.readFileSync(path.join(projectRoot, "assets", "fonts", "LICENSE-NotoSansJP.txt"), "utf8"), /SIL OPEN FONT LICENSE Version 1\.1/);
+  assert.match(fs.readFileSync(path.join(projectRoot, "THIRD_PARTY_NOTICES.md"), "utf8"), /### Noto Sans JP/);
+  for (const cssFile of ["styles.css", "desktop/control.css", "desktop/mascot-overlay.css", "desktop/artifact-preview.css"]) {
+    const css = fs.readFileSync(path.join(projectRoot, cssFile), "utf8");
+    assert.match(css, /font-family: "CharaDock Noto Sans JP"/);
+    assert.match(css, /NotoSansJP-VF\.ttf/);
   }
 });
 
@@ -270,6 +285,30 @@ test("the latest answer stays visible while active work and Realtime expose elap
   assert.match(mascot, /elapsedActivityLabel/);
   assert.match(mascot, /thread\/realtime\/transcript\/done[\s\S]*setWorkActivity/);
   assert.match(styles, /is-processing #desktopMascotWorkActivity::before/);
+});
+
+test("mascot Japanese text uses a stable Windows font stack and notices clear the composer", () => {
+  const mascot = fs.readFileSync(path.join(projectRoot, "desktop", "preload-mascot.cjs"), "utf8");
+  const styles = fs.readFileSync(path.join(projectRoot, "desktop", "mascot-overlay.css"), "utf8");
+  assert.match(mascot, /normalizeDisplayText[\s\S]*normalize\("NFC"\)/);
+  assert.match(mascot, /--mascot-composer-height/);
+  assert.match(mascot, /hint\.setAttribute\("role", errorTone \? "alert" : "status"\)/);
+  assert.match(styles, /--pet-font-ui: "CharaDock Noto Sans JP", "Noto Sans JP", "Yu Gothic UI"/);
+  assert.match(styles, /is-open #desktopMascotHint[\s\S]*calc\(var\(--mascot-composer-height\) \+ 8px\)/);
+  assert.match(styles, /data-status-tone="error"/);
+});
+
+test("user-facing interaction modes are consistently named Chat and Work", () => {
+  const html = fs.readFileSync(path.join(projectRoot, "desktop", "control.html"), "utf8");
+  const control = fs.readFileSync(path.join(projectRoot, "desktop", "control.js"), "utf8");
+  const mascot = fs.readFileSync(path.join(projectRoot, "desktop", "preload-mascot.cjs"), "utf8");
+  assert.match(html, /data-page="chat"[^>]*>[\s\S]*?Chat<\/button>/);
+  assert.match(html, /id="interactionModeBadge">Chat<\/span>/);
+  assert.match(html, /id="conversationHistoryTab"[^>]*>Chat履歴<\/button>/);
+  assert.match(html, /id="workHistoryTab"[^>]*>Work履歴<\/button>/);
+  assert.match(control, /interactionModeBadge"\)\.textContent = state\.interactionMode === "work" \? "Work" : "Chat"/);
+  assert.match(mascot, /desktopMascotModeButton[\s\S]*?>Chat<\/button>/);
+  assert.match(mascot, /modeButton\.textContent = workMode \? "Work" : "Chat"/);
 });
 
 test("WSL can launch Windows Electron from a persistent isolated development mirror", () => {

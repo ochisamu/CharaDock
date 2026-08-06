@@ -437,7 +437,7 @@ class ProjectStaticTests(unittest.TestCase):
         self.assertTrue((ROOT / "app-icon.png").is_file())
         self.assertNotIn("PuruPet", "\n".join((readme, readme_ja, self.read_text("desktop/control.html"))))
         self.assertIn("Codex Avatar Studio", readme)
-        self.assertIn("Conversation / Work", readme)
+        self.assertIn("Chat / Work", readme)
         self.assertIn(".agents/skills/build-purupuru-avatar/", readme)
         self.assertIn("all rights required to upload, modify, and use", readme)
         self.assertIn("会話 / 作業", readme_ja)

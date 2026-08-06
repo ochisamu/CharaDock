@@ -1725,7 +1725,7 @@ function ensureWorkClient() {
 }
 
 async function chooseWorkDirectory() {
-  if (preferences.data.backend !== "codex") throw new Error("作業モードはCodex app-server接続時のみ利用できます。");
+  if (preferences.data.backend !== "codex") throw new Error("WorkはCodex app-server接続時のみ利用できます。");
   const current = validWorkDirectory();
   const result = await dialog.showOpenDialog({
     title: mainText("CharaDockの作業先を選択", "Choose CharaDock work folder"),
@@ -1744,7 +1744,7 @@ async function chooseWorkDirectory() {
 }
 
 async function activateWorkProject(projectId) {
-  if (preferences.data.backend !== "codex") throw new Error(mainText("作業モードはCodex app-server接続時のみ利用できます。", "Work mode requires Codex app-server."));
+  if (preferences.data.backend !== "codex") throw new Error(mainText("WorkはCodex app-server接続時のみ利用できます。", "Work requires Codex app-server."));
   const character = activeCharacter();
   const requested = String(projectId || HOME_PROJECT_ID);
   if (requested !== HOME_PROJECT_ID) {
@@ -1788,7 +1788,7 @@ async function openWorkDirectory() {
 async function setInteractionMode(mode) {
   const nextMode = mode === "work" ? "work" : "chat";
   if (nextMode === "work") {
-    if (preferences.data.backend !== "codex") throw new Error("作業モードはCodex app-server接続時のみ利用できます。");
+    if (preferences.data.backend !== "codex") throw new Error("WorkはCodex app-server接続時のみ利用できます。");
     if (!validWorkDirectory()) return chooseWorkDirectory();
   }
   if (nextMode !== preferences.data.interactionMode) await stopActiveRealtime().catch(() => {});
@@ -2681,7 +2681,7 @@ async function runSmokeTest() {
   await mascotWindow.webContents.executeJavaScript("document.querySelector('#desktopMascotBubbleMore').click()");
   mascotWindow.webContents.send("mascot:mode", { backend: "codex", interactionMode: "work", workDirectoryName: "avatar_codex", hasWorkDirectory: true });
   await new Promise((resolve) => setTimeout(resolve, 180));
-  const workModeVisible = await mascotWindow.webContents.executeJavaScript("document.body.classList.contains('is-work-mode') && document.querySelector('#desktopMascotModeButton').textContent === '作業'");
+  const workModeVisible = await mascotWindow.webContents.executeJavaScript("document.body.classList.contains('is-work-mode') && document.querySelector('#desktopMascotModeButton').textContent === 'Work'");
   if (!workModeVisible) throw new Error("compact work mode preview check failed");
   const workLayout = await mascotWindow.webContents.executeJavaScript(`(() => {
     const inputElement = document.querySelector('#desktopMascotInput');
@@ -2955,9 +2955,10 @@ async function runSmokeTest() {
   })()`);
   if (!characterVoicePageOpened) throw new Error("character voice settings were not placed in the voice panel");
   const styleBertSettingsFit = await controlWindow.webContents.executeJavaScript(`(() => {
-    document.querySelector('#ttsProviderSelect').value = 'style-bert-vits2';
+    const providerSelect = document.querySelector('#ttsProviderSelect');
+    providerSelect.value = 'style-bert-vits2';
+    providerSelect.dispatchEvent(new Event('change', { bubbles: true }));
     const settings = document.querySelector('#styleBertVits2Settings');
-    settings.hidden = false;
     const container = settings.closest('.tts-settings');
     const scroller = document.querySelector('.main-panel');
     const overflow = container.getBoundingClientRect().bottom - scroller.getBoundingClientRect().bottom + 24;
@@ -2965,11 +2966,22 @@ async function runSmokeTest() {
     return container.getBoundingClientRect().width > 240;
   })()`);
   await new Promise((resolve) => setTimeout(resolve, 120));
-  const styleBertSettingsVisible = await controlWindow.webContents.executeJavaScript(`(() => {
-    const rect = document.querySelector('.tts-settings').getBoundingClientRect();
-    return rect.height < window.innerHeight - 40 && rect.bottom <= window.innerHeight + 2;
+  const styleBertSettingsLayout = await controlWindow.webContents.executeJavaScript(`(() => {
+    const container = document.querySelector('#styleBertVits2Settings').closest('.tts-settings');
+    const scroller = document.querySelector('.main-panel');
+    const rect = container.getBoundingClientRect();
+    const viewport = scroller.getBoundingClientRect();
+    return {
+      visible: rect.height < viewport.height - 24 && rect.bottom <= viewport.bottom + 2,
+      height: Math.round(rect.height),
+      bottom: Math.round(rect.bottom),
+      viewportHeight: Math.round(viewport.height),
+      viewportBottom: Math.round(viewport.bottom),
+    };
   })()`);
-  if (!styleBertSettingsFit || !styleBertSettingsVisible) throw new Error("Style-Bert-VITS2 settings did not fit in the character voice panel");
+  if (!styleBertSettingsFit || !styleBertSettingsLayout.visible) {
+    throw new Error(`Style-Bert-VITS2 settings did not fit in the character voice panel: ${JSON.stringify(styleBertSettingsLayout)}`);
+  }
   fs.writeFileSync(path.join(outputDir, "control-character-style-bert-vits2.png"), (await controlWindow.capturePage()).toPNG());
   const piperPlusSettingsFit = await controlWindow.webContents.executeJavaScript(`(() => {
     document.querySelector('#ttsProviderSelect').value = 'piper-plus';
@@ -3912,7 +3924,7 @@ async function startCodexRealtimeVoice(payload, target = "control") {
       voice: characterTtsSettings().realtimeVoice,
       prompt: workMode
         ? `${personaInstructions()}\n\n${characterMemoryContext()}\n\n${mainText(
-          "作業モードです。ユーザーの音声指示をCodexへハンドオフし、選択済みの作業フォルダー内で実際に作業してください。進行と完了結果は日本語で簡潔に音声報告してください。",
+          "Workです。ユーザーの音声指示をCodexへハンドオフし、選択済みの作業フォルダー内で実際に作業してください。進行と完了結果は日本語で簡潔に音声報告してください。",
           "This is work mode. Hand the user's spoken request to Codex and carry out the task in the selected work folder. Report progress and completion concisely in spoken English.",
         )}`
         : `${personaInstructions()}\n\n${characterMemoryContext()}\n\n${mainText("日本語の自然な短い音声会話として応答してください。", "Respond as a natural, concise spoken conversation in English.")}`,
@@ -6006,7 +6018,7 @@ async function handleComputerToolCall(computerSession, params = {}) {
 async function approveComputerUse(requestId) {
   const request = currentComputerRequest();
   if (!request || request.id !== String(requestId || "")) throw new Error("コンピューター操作の許可が期限切れです。もう一度操作して、と話しかけてください。");
-  if (preferences.data.interactionMode === "work") throw new Error("コンピューター操作は会話モードで利用してください。");
+  if (preferences.data.interactionMode === "work") throw new Error("コンピューター操作はChatで利用してください。");
   pendingComputerUse = null;
   const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
   revokeBrowserAuthorization({ closeWindow: true });
@@ -6182,7 +6194,7 @@ async function sendChatMessage(message, { localImagePath = "", localAttachments 
     : "";
   const attachmentInstructions = localAttachmentInstructions(localAttachments, interfaceLanguage());
   const codexText = [requestText, memoryContext, context, imageInstructions, attachmentInstructions].filter(Boolean).join("\n\n");
-  if (workMode && preferences.data.backend !== "codex") throw new Error("作業モードはCodex app-server接続時のみ利用できます。");
+  if (workMode && preferences.data.backend !== "codex") throw new Error("WorkはCodex app-server接続時のみ利用できます。");
   if (workMode && activeWorkRunId) throw new Error("実行中の作業があります。完了を待つか、履歴パネルから中断してください。");
   const workRun = workMode ? beginWorkRun(requestText) : null;
   localServer.pushInput({ ...currentCursorInput(), ...messageExpression(requestText) });

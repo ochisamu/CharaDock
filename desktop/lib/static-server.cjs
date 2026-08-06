@@ -12,6 +12,7 @@ const MIME = {
   ".mjs": "text/javascript; charset=utf-8",
   ".png": "image/png",
   ".svg": "image/svg+xml; charset=utf-8",
+  ".ttf": "font/ttf",
   ".wasm": "application/wasm",
   ".woff2": "font/woff2",
 };

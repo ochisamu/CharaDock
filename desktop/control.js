@@ -76,7 +76,7 @@
     "followSpeed", "breathStrength", "rollStrength", "pyokoStrength", "hairSpring", "hairWarp",
   ];
   const settingsSearchItems = Object.freeze([
-    { page: "chat", target: "#chatLog", ja: "会話履歴", en: "Conversation history", detailJa: "過去の会話と作業を見る", detailEn: "Review past chats and work", keywords: "chat conversation history work 作業" , popular: true },
+    { page: "chat", target: "#chatLog", ja: "Chat履歴", en: "Chat history", detailJa: "過去のChatとWorkを見る", detailEn: "Review past chats and work", keywords: "chat conversation history work 作業" , popular: true },
     { page: "chat", target: "#chatWorkProjectSelect", ja: "作業先プロジェクト", en: "Work project", detailJa: "キャラクターホームや担当プロジェクトを切り替える", detailEn: "Switch between Character Home and attached projects", keywords: "directory folder project home output 成果物 担当 ホーム" },
     { page: "character", target: "#characterLibraryTitle", ja: "キャラクター一覧", en: "Character library", detailJa: "使うキャラクターを切り替える", detailEn: "Switch the active character", keywords: "avatar select library キャラ", popular: true },
     { page: "character", target: "#characterProfileCard", ja: "名前・性格・メモリ", en: "Name, personality, and memory", detailJa: "選択中のキャラクターを編集", detailEn: "Edit the selected character", keywords: "profile persona memory bubble 名前 性格 記憶 吹き出し" },
@@ -568,7 +568,7 @@
 
   function settingsPageLabel(page) {
     const labels = {
-      chat: ["会話", "Chat"],
+      chat: ["Chat", "Chat"],
       character: ["キャラクター", "Character"],
       voice: ["音声", "Voice"],
       connection: ["AI接続", "AI Connection"],
@@ -1128,7 +1128,7 @@
       const title = document.createElement("h3");
       title.textContent = localized("まだ作業履歴はありません", "No work history yet");
       const text = document.createElement("p");
-      text.textContent = localized("作業モードで実行した依頼と結果がここに残ります。", "Work-mode requests and results will appear here.");
+      text.textContent = localized("Workで実行した依頼と結果がここに残ります。", "Work requests and results will appear here.");
       empty.append(title, text);
       log.appendChild(empty);
       return;
@@ -1812,11 +1812,11 @@
       renderConversationHistory(state.conversationHistory);
     }
     workHistoryState = state.workHistory && Array.isArray(state.workHistory.runs) ? state.workHistory : workHistoryState;
-    $("#interactionModeBadge").textContent = state.interactionMode === "work" ? localized("作業モード", "Work mode") : localized("会話モード", "Chat mode");
+    $("#interactionModeBadge").textContent = state.interactionMode === "work" ? "Work" : "Chat";
     renderCharacterWorkspace();
     $("#openChatWorkDirectoryButton").disabled = !state.hasWorkDirectory;
     $("#chatComposerHint").textContent = state.interactionMode === "work"
-      ? localized("作業モード · 選択フォルダー内へ書き込みできます", "Work mode · Can write inside the selected folder")
+      ? localized("Work · 選択フォルダー内へ書き込みできます", "Work · Can write inside the selected folder")
       : localized("設定画面では文字入力のみ", "Text input only in Settings");
     if (chatHistoryView === "work") renderWorkHistory(workHistoryState);
     renderCharacters();

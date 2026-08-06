@@ -59,7 +59,7 @@ window.addEventListener("DOMContentLoaded", () => {
       <button type="button" data-countdown-action="cancel">取消</button>
     </div>
     <form id="desktopMascotComposer">
-      <button id="desktopMascotModeButton" type="button" aria-label="会話モードと作業モードを切り替える">会話</button>
+      <button id="desktopMascotModeButton" type="button" aria-label="ChatとWorkを切り替える">Chat</button>
       <button id="desktopMascotWorkTarget" type="button" aria-label="作業先フォルダーを変更する"></button>
       <button id="desktopMascotWorkOpenButton" type="button" aria-label="作業先フォルダーを開く" title="作業先フォルダーを開く"><span class="ui-symbol ui-symbol-folder-open" aria-hidden="true"></span></button>
       <button id="desktopMascotWorkHistoryButton" type="button" aria-label="履歴を開く" aria-expanded="false" title="履歴を開く"><span class="ui-symbol ui-symbol-history" aria-hidden="true"></span></button>
@@ -79,7 +79,7 @@ window.addEventListener("DOMContentLoaded", () => {
   workPanel.setAttribute("aria-hidden", "true");
   workPanel.innerHTML = `
     <header>
-      <div><strong id="desktopMascotHistoryTitle">履歴</strong><span id="desktopMascotWorkPanelSummary">会話と作業の記録</span></div>
+      <div><strong id="desktopMascotHistoryTitle">履歴</strong><span id="desktopMascotWorkPanelSummary">ChatとWorkの記録</span></div>
       <button id="desktopMascotWorkPanelClose" type="button" aria-label="作業履歴を閉じる" title="履歴を閉じる"><span class="ui-symbol ui-symbol-close" aria-hidden="true"></span></button>
     </header>
     <div id="desktopMascotWorkHistoryList"></div>`;
@@ -201,6 +201,8 @@ window.addEventListener("DOMContentLoaded", () => {
   let streamCurrentSpeechText = "";
   let thinkingFillerActive = false;
 
+  const normalizeDisplayText = (value) => String(value ?? "").normalize("NFC");
+
   const applyInterfaceLanguage = (language) => {
     document.documentElement.dataset.uiLanguage = language === "en" ? "en" : "ja";
     window.CharaDockI18n?.setLanguage(language);
@@ -248,7 +250,7 @@ window.addEventListener("DOMContentLoaded", () => {
     }
   };
   const renderWorkHistory = (payload = workHistoryState) => {
-    historyTitle.textContent = "作業履歴";
+    historyTitle.textContent = "Work履歴";
     workHistoryState = payload && Array.isArray(payload.runs) ? payload : { activeWorkRunId: null, runs: [] };
     workHistoryList.replaceChildren();
     workPanelSummary.textContent = workHistoryState.activeWorkRunId ? "作業を実行しています" : `${workHistoryState.runs.length}件を保持`;
@@ -334,7 +336,7 @@ window.addEventListener("DOMContentLoaded", () => {
 
   const renderConversationHistory = (payload = chatHistoryState) => {
     chatHistoryState = Array.isArray(payload) ? payload : [];
-    historyTitle.textContent = "会話履歴";
+    historyTitle.textContent = "Chat履歴";
     workPanelSummary.textContent = `${Math.floor(chatHistoryState.length / 2)}往復を保持`;
     workHistoryList.replaceChildren();
     if (!chatHistoryState.length) {
@@ -370,6 +372,10 @@ window.addEventListener("DOMContentLoaded", () => {
     const height = Math.max(document.body.classList.contains("is-work-mode") ? 42 : 34, Math.min(maxHeight, input.scrollHeight));
     input.style.height = `${height}px`;
     input.style.overflowY = input.scrollHeight > maxHeight ? "auto" : "hidden";
+    requestAnimationFrame(() => {
+      const composerHeight = Math.ceil(form.getBoundingClientRect().height);
+      if (composerHeight > 0) dock.style.setProperty("--mascot-composer-height", `${composerHeight}px`);
+    });
   };
 
   const updateVoiceContext = () => {
@@ -379,7 +385,7 @@ window.addEventListener("DOMContentLoaded", () => {
     const live = realtimeSessionState === "live";
     const connecting = realtimeSessionState === "connecting";
     const voiceMode = live ? "LIVE" : connecting ? (english ? "CONNECTING" : "LIVE接続中") : appState?.ttsEnabled ? "TTS" : "TEXT";
-    const mode = workMode ? (english ? "Work" : "作業") : (english ? "Chat" : "会話");
+    const mode = workMode ? "Work" : "Chat";
     voiceBadge.textContent = `${mode} · ${voiceMode}`;
     voiceBadge.classList.toggle("is-live", live);
     voiceBadge.classList.toggle("is-connecting", connecting);
@@ -405,16 +411,16 @@ window.addEventListener("DOMContentLoaded", () => {
   const applyInteractionMode = (state = {}) => {
     const workMode = state.interactionMode === "work";
     document.body.classList.toggle("is-work-mode", workMode);
-    modeButton.textContent = workMode ? "作業" : "会話";
+    modeButton.textContent = workMode ? "Work" : "Chat";
     modeButton.setAttribute("aria-pressed", String(workMode));
-    modeButton.title = workMode ? "会話モードへ戻す" : "作業モードへ切り替える";
+    modeButton.title = workMode ? "Chatへ戻す" : "Workへ切り替える";
     workTarget.textContent = `作業先 · ${state.workDirectoryName || "未選択"}`;
     workTarget.title = workTarget.textContent;
     workOpenButton.disabled = !state.hasWorkDirectory || sending;
     input.placeholder = workMode ? "このフォルダーでやること…" : "短く話しかける…";
-    workHistoryButton.setAttribute("aria-label", workMode ? "作業履歴を開く" : "会話履歴を開く");
-    workHistoryButton.title = workMode ? "作業履歴を開く" : "会話履歴を開く";
-    workPanel.querySelector("#desktopMascotWorkPanelClose").setAttribute("aria-label", workMode ? "作業履歴を閉じる" : "会話履歴を閉じる");
+    workHistoryButton.setAttribute("aria-label", workMode ? "Work履歴を開く" : "Chat履歴を開く");
+    workHistoryButton.title = workMode ? "Work履歴を開く" : "Chat履歴を開く";
+    workPanel.querySelector("#desktopMascotWorkPanelClose").setAttribute("aria-label", workMode ? "Work履歴を閉じる" : "Chat履歴を閉じる");
     if (workPanel.classList.contains("is-open")) {
       if (workMode) renderWorkHistory(workHistoryState);
       else renderConversationHistory(chatHistoryState);
@@ -455,7 +461,11 @@ window.addEventListener("DOMContentLoaded", () => {
 
   const setStatus = (message, duration = 2600) => {
     clearTimeout(statusTimer);
-    hint.textContent = String(message || "");
+    hint.textContent = normalizeDisplayText(message);
+    const errorTone = /(?:error|failed|failure|unavailable|not found|cannot|could not|エラー|失敗|できません|見つかりません|ありません|開始できない|利用できない)/i.test(hint.textContent);
+    dock.dataset.statusTone = errorTone ? "error" : "info";
+    hint.setAttribute("role", errorTone ? "alert" : "status");
+    hint.setAttribute("aria-live", errorTone ? "assertive" : "polite");
     dock.classList.toggle("is-status", Boolean(hint.textContent));
     statusTimer = setTimeout(() => dock.classList.remove("is-status"), duration);
   };
@@ -546,6 +556,7 @@ window.addEventListener("DOMContentLoaded", () => {
       temporaryInteractionHold = false;
       ipcRenderer.invoke("mascotInline:interactionHold", false).catch(() => {});
     }
+    if (open) resizeInput();
     if (open && focus) input.focus({ preventScroll: true });
   };
   const scheduleBubbleHide = (duration = bubbleHideDuration) => {
@@ -570,7 +581,7 @@ window.addEventListener("DOMContentLoaded", () => {
     stopTtsPlayback();
     bubblePersistent = false;
     const permissionType = String(result?.permissionRequest?.type || "");
-    const question = String(result?.text || "今回だけ許可してもいい？");
+    const question = normalizeDisplayText(result?.text || "今回だけ許可してもいい？");
     streamFullText = question;
     streamCurrentSpeechText = "";
     bubbleText.textContent = question;
@@ -628,10 +639,10 @@ window.addEventListener("DOMContentLoaded", () => {
     bubbleMore.setAttribute("aria-expanded", String(expanded));
     bubbleMore.textContent = expanded ? "閉じる" : "全文";
     if (expanded) {
-      if (streamFullText) bubbleText.textContent = streamFullText;
+      if (streamFullText) bubbleText.textContent = normalizeDisplayText(streamFullText);
       clearTimeout(hideTimer);
     } else {
-      bubbleText.textContent = streamCurrentSpeechText || streamFullText || bubbleText.textContent;
+      bubbleText.textContent = normalizeDisplayText(streamCurrentSpeechText || streamFullText || bubbleText.textContent);
       scheduleBubbleHide(Math.max(9000, bubbleHideDuration));
     }
     syncBubbleOverflow();
@@ -834,7 +845,7 @@ window.addEventListener("DOMContentLoaded", () => {
       if (activated) return;
       activated = true;
       streamCurrentSpeechText = text;
-      if (!bubble.classList.contains("is-expanded")) bubbleText.textContent = text;
+      if (!bubble.classList.contains("is-expanded")) bubbleText.textContent = normalizeDisplayText(text);
       syncBubbleOverflow();
       if (segment?.expression) ipcRenderer.invoke("mascotInline:expression", segment.expression).catch(() => {});
     };
@@ -876,7 +887,7 @@ window.addEventListener("DOMContentLoaded", () => {
     if (vadActive) vadResumeAt = performance.now() + 650;
     if (streamTtsFinished && !streamTtsQueue.length) {
       streamCurrentSpeechText = "";
-      if (!bubble.classList.contains("is-expanded") && streamFullText) bubbleText.textContent = streamFullText;
+      if (!bubble.classList.contains("is-expanded") && streamFullText) bubbleText.textContent = normalizeDisplayText(streamFullText);
       ipcRenderer.invoke("mascotInline:expression", { emotion: null, forceMouth: null, forceEyesClosed: null, durationMs: 100 }).catch(() => {});
       syncBubbleOverflow();
     }
@@ -944,7 +955,7 @@ window.addEventListener("DOMContentLoaded", () => {
     // Do not flash the already-complete answer before playback catches up.
     if (!thinkingFillerActive && !streamCurrentSpeechText && firstQueuedText) {
       streamCurrentSpeechText = firstQueuedText;
-      if (!bubble.classList.contains("is-expanded")) bubbleText.textContent = firstQueuedText;
+      if (!bubble.classList.contains("is-expanded")) bubbleText.textContent = normalizeDisplayText(firstQueuedText);
       syncBubbleOverflow();
     }
     streamTtsQueueSignal?.();
@@ -970,7 +981,7 @@ window.addEventListener("DOMContentLoaded", () => {
     clearTimeout(hideTimer);
     streamFullText = "";
     streamCurrentSpeechText = "";
-    bubbleText.textContent = String(payload?.text || "");
+    bubbleText.textContent = normalizeDisplayText(payload?.text);
     bubble.classList.remove("is-expanded", "has-overflow", "has-full-reply");
     bubbleMore.hidden = true;
     bubbleMore.textContent = "全文";
@@ -1162,7 +1173,7 @@ window.addEventListener("DOMContentLoaded", () => {
       const next = appState?.interactionMode === "work" ? "chat" : "work";
       appState = await ipcRenderer.invoke("mascotInline:setMode", next);
       applyInteractionMode(appState);
-      setStatus(appState.interactionMode === "work" ? `作業先: ${appState.workDirectoryName}` : "会話モード");
+      setStatus(appState.interactionMode === "work" ? `作業先: ${appState.workDirectoryName}` : "Chat");
       input.focus();
     } catch (error) {
       setStatus(error.message, 5000);
@@ -1923,11 +1934,11 @@ window.addEventListener("DOMContentLoaded", () => {
       return;
     }
     if (payload?.phase === "delta") {
-      streamFullText = String(payload.displayText || payload.text || "");
+      streamFullText = normalizeDisplayText(payload.displayText || payload.text);
       // Generated/system TTS owns the compact bubble while it is active. The
       // complete streaming answer remains available from the `全文` action.
       if (bubble.classList.contains("is-expanded") || !streamTtsConfig.enabled) {
-        bubbleText.textContent = streamFullText;
+        bubbleText.textContent = normalizeDisplayText(streamFullText);
       }
       bubble.classList.add("is-visible");
       syncBubbleOverflow();
@@ -1946,14 +1957,14 @@ window.addEventListener("DOMContentLoaded", () => {
       return;
     }
     if (payload?.phase === "done") {
-      if (payload?.text) streamFullText = String(payload.displayText || payload.text);
+      if (payload?.text) streamFullText = normalizeDisplayText(payload.displayText || payload.text);
       streamTtsFinished = true;
       bubblePersistent = true;
       queueStreamSpeech(payload?.speechSegments);
       renderArtifactActions(artifactActions, payload?.artifacts, payload?.workRunId);
       if (!streamTtsConfig.enabled || (!streamTtsDraining && !streamTtsQueue.length)) {
         streamCurrentSpeechText = "";
-        if (!bubble.classList.contains("is-expanded") && streamFullText) bubbleText.textContent = streamFullText;
+        if (!bubble.classList.contains("is-expanded") && streamFullText) bubbleText.textContent = normalizeDisplayText(streamFullText);
         if (streamTtsConfig.enabled) finishTtsPlayback();
       }
       syncBubbleOverflow();
@@ -1966,7 +1977,7 @@ window.addEventListener("DOMContentLoaded", () => {
     } else if (payload?.phase === "error") {
       stopTtsPlayback();
       streamCurrentSpeechText = "";
-      if (!bubble.classList.contains("is-expanded") && streamFullText) bubbleText.textContent = streamFullText;
+      if (!bubble.classList.contains("is-expanded") && streamFullText) bubbleText.textContent = normalizeDisplayText(streamFullText);
       sending = false;
       bubblePersistent = true;
       if (streamWorkMode) setWorkActivity(appState?.language === "en" ? "Work could not be completed" : "作業を完了できませんでした", { finish: true });
@@ -2068,7 +2079,7 @@ window.addEventListener("DOMContentLoaded", () => {
       const hasQueuedSpeech = streamTtsQueue.length > 0;
       drainStreamTtsQueue();
       if (!hasQueuedSpeech && streamTtsFinished && !bubble.classList.contains("is-expanded") && streamFullText) {
-        bubbleText.textContent = streamFullText;
+        bubbleText.textContent = normalizeDisplayText(streamFullText);
         syncBubbleOverflow();
       }
     });

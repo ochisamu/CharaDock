@@ -25,7 +25,7 @@
 
       <nav class="nav-tabs" aria-label="設定カテゴリ">
         <p class="nav-section-label">コンパニオン</p>
-        <button class="nav-tab is-active" type="button" data-page="chat"><span class="ui-symbol ui-symbol-chat" aria-hidden="true"></span>会話</button>
+        <button class="nav-tab is-active" type="button" data-page="chat"><span class="ui-symbol ui-symbol-chat" aria-hidden="true"></span>Chat</button>
         <button class="nav-tab" type="button" data-page="character"><span class="ui-symbol ui-symbol-character" aria-hidden="true"></span>キャラクター</button>
         <button class="nav-tab" type="button" data-page="voice"><span class="ui-symbol ui-symbol-voice" aria-hidden="true"></span>音声</button>
         <p class="nav-section-label">システム</p>
@@ -50,18 +50,18 @@
       </aside>
       <section class="page is-active" data-page-panel="chat">
         <header class="page-header">
-          <div><p class="eyebrow">会話</p><h1>キャラクターと話す</h1></div>
+          <div><p class="eyebrow">Chat</p><h1>キャラクターと話す</h1></div>
           <button id="resetChatButton" class="button button-quiet" type="button">新しい会話</button>
         </header>
 
         <div class="chat-layout">
-          <section class="chat-history-toolbar" aria-label="会話と作業の履歴">
+          <section class="chat-history-toolbar" aria-label="ChatとWorkの履歴">
             <div class="history-segment" role="tablist" aria-label="表示する履歴">
-              <button id="conversationHistoryTab" type="button" role="tab" aria-selected="true">会話履歴</button>
-              <button id="workHistoryTab" type="button" role="tab" aria-selected="false">作業履歴</button>
+              <button id="conversationHistoryTab" type="button" role="tab" aria-selected="true">Chat履歴</button>
+              <button id="workHistoryTab" type="button" role="tab" aria-selected="false">Work履歴</button>
             </div>
             <div class="work-folder-quick">
-              <span id="interactionModeBadge">会話モード</span>
+              <span id="interactionModeBadge">Chat</span>
               <label class="work-project-picker"><small>作業先</small><select id="chatWorkProjectSelect" aria-label="作業先プロジェクト"></select></label>
               <button id="openChatWorkDirectoryButton" class="button button-quiet" type="button">開く</button>
               <button id="chooseChatWorkDirectoryButton" class="button button-quiet" type="button">追加</button>
@@ -266,14 +266,14 @@
           <section class="card settings-card" id="codexSettings">
             <header><div><h2>Codex設定</h2><p>会話と作業でモデルと推論の深さを分けられます。空欄ならCodex側の既定値です。</p></div></header>
             <div class="codex-mode-settings">
-              <h3>会話</h3>
+              <h3>Chat</h3>
               <label>モデル<select id="codexChatModelInput"><option value="">Codex既定</option></select></label>
               <label>推論の深さ<select id="codexChatReasoningEffortSelect">
                 <option value="">Codex既定</option><option value="none">なし</option><option value="minimal">最小</option><option value="low">低</option><option value="medium">中</option><option value="high">高</option><option value="xhigh">非常に高い</option><option value="max">最大</option><option value="ultra">Ultra</option>
               </select></label>
             </div>
             <div class="codex-mode-settings">
-              <h3>作業</h3>
+              <h3>Work</h3>
               <label>モデル<select id="codexWorkModelInput"><option value="">Codex既定</option></select></label>
               <label>推論の深さ<select id="codexWorkReasoningEffortSelect">
                 <option value="">Codex既定</option><option value="none">なし</option><option value="minimal">最小</option><option value="low">低</option><option value="medium">中</option><option value="high">高</option><option value="xhigh">非常に高い</option><option value="max">最大</option><option value="ultra">Ultra</option>
