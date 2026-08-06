@@ -44,6 +44,19 @@ function appServerArgs(webSearchMode = "", sandbox = "") {
   return args;
 }
 
+const OFFICIAL_COMPUTER_USE_SKILL = "computer-use:computer-use";
+const OFFICIAL_COMPUTER_USE_SKILL_PATH = /\/plugins\/cache\/openai-bundled\/computer-use\/[^/]+\/skills\/computer-use\/SKILL\.md$/;
+
+function normalizeSkillName(name) {
+  return String(name || "").trim().toLowerCase();
+}
+
+function isOfficialComputerUseSkill(skill) {
+  if (!skill || typeof skill !== "object" || skill.enabled === false) return false;
+  if (normalizeSkillName(skill.name) !== OFFICIAL_COMPUTER_USE_SKILL) return false;
+  return OFFICIAL_COMPUTER_USE_SKILL_PATH.test(String(skill.path || "").replace(/\\/g, "/"));
+}
+
 class CodexAppServerClient {
   constructor({
     cwd,
@@ -61,6 +74,7 @@ class CodexAppServerClient {
     webSearchMode = "",
     dynamicTools = [],
     onDynamicToolCall = null,
+    rejectInteractiveRequests = false,
   } = {}) {
     this.cwd = cwd || process.cwd();
     this.spawnCwd = spawnCwd || this.cwd;
@@ -77,6 +91,7 @@ class CodexAppServerClient {
     this.webSearchMode = WEB_SEARCH_MODES.has(webSearchMode) ? webSearchMode : "";
     this.dynamicTools = Array.isArray(dynamicTools) ? dynamicTools : [];
     this.onDynamicToolCall = typeof onDynamicToolCall === "function" ? onDynamicToolCall : null;
+    this.rejectInteractiveRequests = rejectInteractiveRequests === true;
     this.persona = "";
     this.proc = null;
     this.readline = null;
@@ -91,6 +106,7 @@ class CodexAppServerClient {
     this.interruptRequested = false;
     this.startPromise = null;
     this.queue = Promise.resolve();
+    this.turnStartSkillItems = [];
   }
 
   setModel(model) {
@@ -121,6 +137,28 @@ class CodexAppServerClient {
     this.dynamicTools = Array.isArray(dynamicTools) ? dynamicTools : [];
     this.onDynamicToolCall = typeof onDynamicToolCall === "function" ? onDynamicToolCall : null;
     this.threadId = null;
+  }
+
+  setTurnStartSkillItems(skillItems) {
+    this.turnStartSkillItems = Array.isArray(skillItems) ? skillItems : [];
+    this.threadId = null;
+  }
+
+  async listSkills({ forceReload = false } = {}) {
+    await this.ensureStarted();
+    const result = await this.request("skills/list", { cwds: [this.cwd], forceReload }, 10_000);
+    const entry = (Array.isArray(result?.data) ? result.data : [])
+      .find((candidate) => String(candidate?.cwd || "") === String(this.cwd));
+    if (!entry) throw new Error(`skills/list returned no entry for cwd ${this.cwd}`);
+    if (Array.isArray(entry.errors) && entry.errors.length) {
+      throw new Error(`skills/list failed for cwd ${this.cwd}: ${entry.errors.map(String).join(", ")}`);
+    }
+    return (Array.isArray(entry.skills) ? entry.skills : []).filter(Boolean).map((skill) => ({
+      name: String(skill.name || ""),
+      path: String(skill.path || ""),
+      enabled: skill.enabled !== false,
+      scope: skill.scope || "",
+    }));
   }
 
   async ensureStarted() {
@@ -198,6 +236,21 @@ class CodexAppServerClient {
     try {
       message = JSON.parse(line);
     } catch {
+      return;
+    }
+    if (this.rejectInteractiveRequests && (message.method === "tool/requestUserInput" || message.method === "mcpServer/elicitation/request" || /requestApproval$/.test(message.method || ""))) {
+      const error = new Error("This turn requires user input that CharaDock cannot provide. The request was not approved.");
+      const turnId = message.params?.turnId || this.activeTurnId;
+      const collector = turnId && this.turnCollectors.get(turnId);
+      if (collector) {
+        clearTimeout(collector.timer);
+        this.turnCollectors.delete(turnId);
+        if (this.activeTurnId === turnId) this.activeTurnId = null;
+        collector.reject(error);
+      }
+      if (message.id !== undefined && this.proc?.stdin?.writable) {
+        this.send({ id: message.id, error: { code: -32601, message: error.message } });
+      }
       return;
     }
     if (message.id !== undefined && message.method === "item/tool/call") {
@@ -441,6 +494,11 @@ class CodexAppServerClient {
       await this.ensureStarted();
       const threadId = await this.ensureThread();
       const input = [{ type: "text", text: String(message || "").trim() }];
+      for (const skill of this.turnStartSkillItems) {
+        if (skill && typeof skill === "object" && String(skill.name || "").trim()) {
+          input.push({ type: "skill", name: String(skill.name), path: String(skill.path || "") });
+        }
+      }
       const images = [...new Set([localImagePath, ...(Array.isArray(localImagePaths) ? localImagePaths : [])].filter(Boolean).map(String))];
       for (const imagePath of images.slice(0, 8)) input.push({ type: "localImage", path: String(this.pathMapper(imagePath)), detail: "original" });
       if (localAudioPath) input.push({ type: "localAudio", path: String(this.pathMapper(localAudioPath)) });
@@ -510,6 +568,8 @@ class CodexAppServerClient {
 module.exports = {
   CODEX_MASCOT_INSTRUCTIONS,
   CodexAppServerClient,
+  isOfficialComputerUseSkill,
+  normalizeSkillName,
   appServerArgs,
   permissionProfileForSandbox,
   workspaceSandboxPolicy,

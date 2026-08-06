@@ -132,7 +132,7 @@ npm ci
 npm run desktop
 ```
 
-macOS support is an unsigned, experimental arm64 preview and is not covered by the Windows release tests. Download the macOS DMG or ZIP from the GitHub Release; its CharaDock app already contains the native Beatrice host. Windows computer control and Windows system speech are unavailable. Other local speech and WebGPU features may depend on the Mac model and OS version. Source builds can check for newer releases but do not update themselves.
+macOS support is an unsigned, experimental arm64 preview and is not covered by the Windows release tests. Download the macOS DMG or ZIP from the GitHub Release; its CharaDock app already contains the native Beatrice host. On macOS, computer control delegates to the official bundled Codex Computer Use skill when available; Windows system speech is unavailable. Other local speech and WebGPU features may depend on the Mac model and OS version. Source builds can check for newer releases but do not update themselves.
 
 The first-run guide configures the AI connection, character, and speech provider. CharaDock also detects the Windows Store Codex installation. If `codex` is not on `PATH`, set `CODEX_CLI_PATH` to the executable.
 
@@ -154,7 +154,7 @@ The first-run guide configures the AI connection, character, and speech provider
 - Work mode grants workspace-write access only to one folder explicitly selected by the user
 - Conversation and work use separate tasks and permissions; each can use its own model and reasoning effort
 - An active turn can be interrupted from history
-- Screen capture, the dedicated browser, and Windows control request permission in the conversation
+- Screen capture, the dedicated browser, and computer control request permission in the conversation
 - An explicit continuation such as “continue” may reuse permission for the same operation for up to five minutes
 - Permission expires for another site or purpose, an ending phrase, five minutes of inactivity, or when the dedicated browser closes
 - Deletion, sending, purchasing, installation, authentication or payment changes, and secret entry are never automated

@@ -999,7 +999,7 @@ window.addEventListener("DOMContentLoaded", () => {
     modeButton.disabled = true;
     workTarget.disabled = true;
     setStatus(action === "approve"
-      ? isScreen ? "画面を1枚だけ取得しています…" : isComputer ? "Windows操作を準備しています…" : "専用ブラウザを準備しています…"
+      ? isScreen ? "画面を1枚だけ取得しています…" : isComputer ? "コンピューター操作を準備しています…" : "専用ブラウザを準備しています…"
       : "許可を取り消しています…", 30_000);
     try {
       const channel = action === "approve"
@@ -1018,12 +1018,12 @@ window.addEventListener("DOMContentLoaded", () => {
         speechLanguage: appState?.speechLanguage || "ja-JP",
       });
       setStatus(action === "approve"
-        ? isScreen ? "画面を確認しました" : isComputer ? "Windows操作が完了しました" : "ブラウザ確認が完了しました"
-        : isScreen ? "画面は共有されませんでした" : isComputer ? "Windowsは操作されませんでした" : "ブラウザは開かれませんでした");
+        ? isScreen ? "画面を確認しました" : isComputer ? "コンピューター操作が完了しました" : "ブラウザ確認が完了しました"
+        : isScreen ? "画面は共有されませんでした" : isComputer ? "コンピューターは操作されませんでした" : "ブラウザは開かれませんでした");
     } catch (error) {
       clearPermission();
       showSpeech({ text: `エラー: ${error.message}`, durationMs: 12_000 });
-      setStatus(isScreen ? "画面を共有できませんでした" : isComputer ? "Windowsを操作できませんでした" : "ブラウザを利用できませんでした");
+      setStatus(isScreen ? "画面を共有できませんでした" : isComputer ? "コンピューターを操作できませんでした" : "ブラウザを利用できませんでした");
     } finally {
       sendButton.disabled = false;
       modeButton.disabled = false;
@@ -1076,7 +1076,7 @@ window.addEventListener("DOMContentLoaded", () => {
       }
       if (!["screen", "browser", "computer"].includes(result.permissionRequest?.type)) {
         setStatus(result.permissionDeclined
-          ? result.permissionType === "browser" ? "ブラウザは開かれませんでした" : result.permissionType === "computer" ? "Windowsは操作されませんでした" : "画面は共有されませんでした"
+          ? result.permissionType === "browser" ? "ブラウザは開かれませんでした" : result.permissionType === "computer" ? "コンピューターは操作されませんでした" : "画面は共有されませんでした"
           : result.mode === "work" ? `${result.workDirectoryName || "選択フォルダー"}で作業完了` : result.provider === "codex" ? "Codexから返答" : "OpenAIから返答");
       }
     } catch (error) {

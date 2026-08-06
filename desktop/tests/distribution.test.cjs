@@ -110,6 +110,19 @@ test("Beatrice integration packages only CharaDock's host helper", () => {
   }
 });
 
+test("macOS computer control delegates to the bundled Codex Computer Use skill", () => {
+  const main = fs.readFileSync(path.join(projectRoot, "desktop", "main.cjs"), "utf8");
+  const macStart = main.indexOf('} else if (process.platform === "darwin") {');
+  const macEnd = main.indexOf("} else if (browserSession) {", macStart);
+  assert.ok(macStart >= 0 && macEnd > macStart);
+  const macComputerUse = main.slice(macStart, macEnd);
+  assert.match(macComputerUse, /skills\.find\(isOfficialComputerUseSkill\)/);
+  assert.match(macComputerUse, /setTurnStartSkillItems\(\[computerUseSkill\]\)/);
+  assert.match(macComputerUse, /approvalPolicy: "on-request"/);
+  assert.match(macComputerUse, /rejectInteractiveRequests: true/);
+  assert.doesNotMatch(macComputerUse, /dynamicTools: COMPUTER_DYNAMIC_TOOLS/);
+});
+
 test("voice input UI requires one explicit supported provider", () => {
   const html = fs.readFileSync(path.join(projectRoot, "desktop", "control.html"), "utf8");
   const main = fs.readFileSync(path.join(projectRoot, "desktop", "main.cjs"), "utf8");
