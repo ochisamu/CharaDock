@@ -124,6 +124,14 @@ npm ci
 npm run desktop
 ```
 
+When developing under WSL, launch the real Windows Electron runtime without creating distributable executables:
+
+```bash
+npm run desktop:win:dev
+```
+
+Windows dependencies are installed only on the first launch or when the package manifests change. Later launches incrementally sync into `%LOCALAPPDATA%\CharaDockDev\source`, while settings and downloaded models persist in an isolated `CharaDockDev` profile. Use `npm run desktop:win:dev:profile` only when a test explicitly needs the installed app's settings and models, after closing every installed or portable CharaDock instance. Development code may migrate the shared profile, so the isolated command is the safer default.
+
 ### macOS — experimental source preview
 
 CharaDock does not currently provide a signed macOS application, DMG, or ZIP. To try it on macOS, clone the repository and run the Electron development build with Node.js 24:
@@ -135,7 +143,7 @@ npm ci
 npm run desktop
 ```
 
-macOS support is an unsigned, experimental arm64 preview and is not covered by the Windows release tests. Download the macOS DMG or ZIP from the GitHub Release; its CharaDock app already contains the native Beatrice host. Windows computer control and Windows system speech are unavailable. Other local speech and WebGPU features may depend on the Mac model and OS version. Source builds can check for newer releases but do not update themselves.
+macOS support is an unsigned, experimental arm64 preview and is not covered by the Windows release tests. Download the macOS DMG or ZIP from the GitHub Release; its CharaDock app already contains the native Beatrice host. On macOS, computer control delegates to the official bundled Codex Computer Use skill when available; Windows system speech is unavailable. Other local speech and WebGPU features may depend on the Mac model and OS version. Source builds can check for newer releases but do not update themselves.
 
 The first-run guide configures the AI connection, character, and speech provider. CharaDock also detects the Windows Store Codex installation. If `codex` is not on `PATH`, set `CODEX_CLI_PATH` to the executable.
 
@@ -161,7 +169,7 @@ The first-run guide configures the AI connection, character, and speech provider
 - A preview server is bound to `127.0.0.1`, stopped when its project changes or the app exits, and its bounded logs are not saved. Network requests made by the previewed application still follow that project's own implementation
 - Conversation and work use separate tasks and permissions; each can use its own model and reasoning effort
 - An active turn can be interrupted from history
-- Screen capture, the dedicated browser, and Windows control request permission in the conversation
+- Screen capture, the dedicated browser, and computer control request permission in the conversation
 - An explicit continuation such as “continue” may reuse permission for the same operation for up to five minutes
 - Permission expires for another site or purpose, an ending phrase, five minutes of inactivity, or when the dedicated browser closes
 - Deletion, sending, purchasing, installation, authentication or payment changes, and secret entry are never automated

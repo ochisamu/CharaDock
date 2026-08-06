@@ -7,6 +7,12 @@ description: Build and verify this repository's Electron Windows NSIS installer 
 
 Build through Windows Node, not WSL electron-builder. The WSL path fails at NSIS signing with `wine ENOENT`; invoking Windows Node directly on a UNC project also pollutes `npm list` output. The bundled batch file uses `pushd` to map the UNC repository to a temporary Windows drive before running electron-builder.
 
+## Fast Windows development launch
+
+Do not package an installer for routine UI, audio, WebGPU, or transparent-window checks. From WSL, run `npm run desktop:win:dev`. It incrementally mirrors source files into `%LOCALAPPDATA%\CharaDockDev\source`, installs Windows dependencies only on the first launch or after `package.json`/`package-lock.json` changes, and starts the Windows Electron runtime directly. Linux `node_modules` is never modified.
+
+The default command uses the persistent isolated profile at `%LOCALAPPDATA%\CharaDockDev\profile`. Use `npm run desktop:win:dev:profile` only when a test explicitly requires the installed CharaDock settings and downloaded models. Close installed and portable CharaDock instances first; the shared profile participates in Electron's single-instance lock and development code may migrate its settings.
+
 ## Workflow
 
 1. Run `npm test` in WSL and stop on failures.

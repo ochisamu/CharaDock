@@ -6,6 +6,8 @@ const {
   CODEX_MASCOT_INSTRUCTIONS,
   CodexAppServerClient,
   appServerArgs,
+  isOfficialComputerUseSkill,
+  normalizeSkillName,
   permissionProfileForSandbox,
   workspaceSandboxPolicy,
 } = require("../backend/codex-client.cjs");
@@ -227,6 +229,85 @@ test("Codex client sends per-turn model and reasoning effort overrides", async (
     { type: "localAudio", path: "/mapped/voice.webm" },
   ]);
   await pending;
+});
+
+test("Codex client discovers skills for its working directory", async () => {
+  const client = new CodexAppServerClient({ cwd: "/Users/test/Documents" });
+  client.ensureStarted = async () => {};
+  client.request = async (method, params) => {
+    assert.equal(method, "skills/list");
+    assert.deepEqual(params, { cwds: ["/Users/test/Documents"], forceReload: false });
+    return { data: [{ cwd: "/Users/test/Documents", errors: [], skills: [{
+      name: "computer-use:computer-use",
+      path: "/Users/test/.codex/plugins/cache/openai-bundled/computer-use/1.0/skills/computer-use/SKILL.md",
+      enabled: true,
+      scope: "user",
+    }] }] };
+  };
+  const skills = await client.listSkills();
+  assert.equal(skills[0].scope, "user");
+});
+
+test("official Computer Use skill validation rejects aliases and spoofed paths", () => {
+  const official = {
+    name: "computer-use:computer-use",
+    path: "/Users/test/.codex/plugins/cache/openai-bundled/computer-use/1.0/skills/computer-use/SKILL.md",
+    enabled: true,
+  };
+  assert.equal(isOfficialComputerUseSkill(official), true);
+  assert.equal(isOfficialComputerUseSkill({ ...official, enabled: false }), false);
+  assert.equal(isOfficialComputerUseSkill({ ...official, name: "codex-computer-use" }), false);
+  assert.equal(isOfficialComputerUseSkill({ ...official, name: "computer-use:computer-use!" }), false);
+  assert.equal(isOfficialComputerUseSkill({ ...official, path: "/tmp/spoof/SKILL.md" }), false);
+  assert.equal(normalizeSkillName(" Computer-Use:Computer-Use "), "computer-use:computer-use");
+});
+
+test("Codex client injects an explicit skill item into turn/start", async () => {
+  const client = new CodexAppServerClient();
+  client.ensureStarted = async () => {};
+  client.ensureThread = async () => "thread-skill";
+  client.setTurnStartSkillItems([{ name: "computer-use:computer-use", path: "/official/SKILL.md" }]);
+  let turnParams;
+  client.request = async (method, params) => {
+    if (method === "turn/start") {
+      turnParams = params;
+      setImmediate(() => client.handleLine(JSON.stringify({
+        method: "item/agentMessage/delta",
+        params: { turnId: "turn-skill", delta: "done" },
+      })));
+      setImmediate(() => client.handleLine(JSON.stringify({
+        method: "turn/completed",
+        params: { turn: { id: "turn-skill", status: "completed" } },
+      })));
+      return { turn: { id: "turn-skill" } };
+    }
+    return {};
+  };
+  await client.sendMessage("$computer-use:computer-use 設定を開いて");
+  assert.deepEqual(turnParams.input, [
+    { type: "text", text: "$computer-use:computer-use 設定を開いて" },
+    { type: "skill", name: "computer-use:computer-use", path: "/official/SKILL.md" },
+  ]);
+});
+
+test("Computer Use clients fail closed on unhandled approval requests", async () => {
+  const client = new CodexAppServerClient({ rejectInteractiveRequests: true });
+  client.proc = { stdin: { writable: true } };
+  let response;
+  client.send = (payload) => { response = payload; };
+  client.activeTurnId = "turn-approval";
+  const pending = new Promise((resolve, reject) => {
+    client.turnCollectors.set("turn-approval", { resolve, reject, timer: setTimeout(() => {}, 60_000) });
+  });
+  client.handleLine(JSON.stringify({
+    id: 42,
+    method: "tool/requestUserInput",
+    params: { turnId: "turn-approval" },
+  }));
+  await assert.rejects(pending, /not approved/);
+  assert.equal(client.activeTurnId, null);
+  assert.equal(response.id, 42);
+  assert.equal(response.error.code, -32601);
 });
 
 test("changing reasoning effort resets the current Codex thread", () => {

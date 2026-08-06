@@ -22,7 +22,7 @@ const {
   Tray,
 } = require("electron");
 
-const { CodexAppServerClient } = require("./backend/codex-client.cjs");
+const { CodexAppServerClient, isOfficialComputerUseSkill } = require("./backend/codex-client.cjs");
 const { PNG } = require("pngjs");
 const { OpenAIClient } = require("./backend/openai-client.cjs");
 const {
@@ -114,6 +114,13 @@ protocol.registerSchemesAsPrivileged([{
   privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true },
 }]);
 
+const developmentUserDataArgument = process.argv.indexOf("--charadock-user-data");
+if (developmentUserDataArgument >= 0 && process.argv[developmentUserDataArgument + 1]) {
+  const developmentUserDataPath = path.resolve(process.argv[developmentUserDataArgument + 1]);
+  fs.mkdirSync(developmentUserDataPath, { recursive: true });
+  app.setPath("userData", developmentUserDataPath);
+}
+
 const AVATAR_IMAGE_FILES = Object.freeze({
   backHair: "back-hair.png",
   frontHair: "front-hair.png",
@@ -201,6 +208,7 @@ let codexClient;
 let workCodexClient;
 let browserCodexClient;
 let computerCodexClient;
+let macComputerSkillClient;
 let codexCommand = "codex";
 let wslCodexCommand = "";
 let openAIClient;
@@ -1630,7 +1638,7 @@ async function interruptActiveWork() {
   run.status = "stopping";
   updateWorkRun(run, { activity: "中断を要求しています…" });
   try {
-    const client = computerCodexClient || browserCodexClient || workCodexClient;
+    const client = macComputerSkillClient || computerCodexClient || browserCodexClient || workCodexClient;
     let interrupted = await client?.interruptActiveTurn();
     if (!interrupted && client?.hasActiveRealtime?.()) interrupted = await client.stopRealtime();
     if (!interrupted) throw new Error("中断できる実行中の操作が見つかりませんでした。");
@@ -1647,7 +1655,8 @@ async function interruptActiveInteraction() {
     await interruptActiveWork();
     return { interrupted: true, mode: "work" };
   }
-  const client = computerCodexClient
+  const client = macComputerSkillClient
+    || computerCodexClient
     || browserCodexClient
     || (preferences.data.backend === "openai" ? openAIClient : codexClient);
   const interrupted = await client?.interruptActiveTurn?.();
@@ -5874,16 +5883,18 @@ function currentComputerRequest() {
 
 function computerPermissionText() {
   const character = activeCharacter();
+  const platformName = process.platform === "darwin" ? "Mac" : process.platform === "win32" ? "Windows" : "computer";
   if (interfaceLanguage() === "en") {
-    if (character.id === "bronze-avatar") return "May I control Windows while viewing the current screen for this request and clear follow-ups within five minutes? You can stop me at any time.";
-    if (character.id === "towa-avatar") return "Can I control Windows while viewing the current screen for this request and clear follow-ups within five minutes? You can stop me at any time!";
-    if (character.id === "sage-avatar") return "May I control Windows while inspecting the current screen for this request and clear follow-ups within five minutes? You can stop me at any time.";
-    return "Can I control Windows while viewing the current screen for this request and clear follow-ups within five minutes? You can stop me at any time.";
+    if (character.id === "bronze-avatar") return `May I control ${platformName} while viewing the current screen for this request and clear follow-ups within five minutes? You can stop me at any time.`;
+    if (character.id === "towa-avatar") return `Can I control ${platformName} while viewing the current screen for this request and clear follow-ups within five minutes? You can stop me at any time!`;
+    if (character.id === "sage-avatar") return `May I control ${platformName} while inspecting the current screen for this request and clear follow-ups within five minutes? You can stop me at any time.`;
+    return `Can I control ${platformName} while viewing the current screen for this request and clear follow-ups within five minutes? You can stop me at any time.`;
   }
-  if (character.id === "bronze-avatar") return "今のWindows画面を見ながら、この依頼と5分以内の明確な続きで操作してもいいかしら？ 途中でいつでも止められるわ。";
-  if (character.id === "towa-avatar") return "今のWindows画面を見ながら、この依頼と5分以内の明確な続きで操作してもいい？ いつでも途中で止められるよ！";
-  if (character.id === "sage-avatar") return "今のWindows画面を確認しながら、この依頼と5分以内の明確な続きで操作してもいいかな？ 途中でいつでも止められるよ。";
-  return "今のWindows画面を見ながら、この依頼と5分以内の明確な続きで操作してもいい？ いつでも途中で止められるよ。";
+  const japanesePlatformName = platformName === "computer" ? "コンピューター" : platformName;
+  if (character.id === "bronze-avatar") return `今の${japanesePlatformName}画面を見ながら、この依頼と5分以内の明確な続きで操作してもいいかしら？ 途中でいつでも止められるわ。`;
+  if (character.id === "towa-avatar") return `今の${japanesePlatformName}画面を見ながら、この依頼と5分以内の明確な続きで操作してもいい？ いつでも途中で止められるよ！`;
+  if (character.id === "sage-avatar") return `今の${japanesePlatformName}画面を確認しながら、この依頼と5分以内の明確な続きで操作してもいいかな？ 途中でいつでも止められるよ。`;
+  return `今の${japanesePlatformName}画面を見ながら、この依頼と5分以内の明確な続きで操作してもいい？ いつでも途中で止められるよ。`;
 }
 
 function requestComputerUse(message) {
@@ -6235,28 +6246,68 @@ async function sendChatMessage(message, { localImagePath = "", localAttachments 
         updateWorkRun(workRun, { activity: label });
         sendStream({ phase: "activity", text: label, mode: workMode ? "work" : "chat" });
       };
-      computerCodexClient?.stop();
-      computerCodexClient = new CodexAppServerClient({
-        cwd: app.getPath("documents"),
-        command: codexCommand,
-        ...conversationCodexSettings(),
-        developerInstructions: [
-          mainText(
-            "You are the user's friendly desktop character companion. Carry out only the explicitly approved foreground Windows task and report the result concisely in Japanese.",
-            "You are the user's friendly desktop character companion. Carry out only the explicitly approved foreground Windows task and report the result concisely in English.",
+      if (process.platform === "win32") {
+        computerCodexClient?.stop();
+        computerCodexClient = new CodexAppServerClient({
+          cwd: app.getPath("documents"),
+          command: codexCommand,
+          ...conversationCodexSettings(),
+          developerInstructions: [
+            mainText(
+              "You are the user's friendly desktop character companion. Carry out only the explicitly approved foreground Windows task and report the result concisely in Japanese.",
+              "You are the user's friendly desktop character companion. Carry out only the explicitly approved foreground Windows task and report the result concisely in English.",
+            ),
+            COMPUTER_MODE_INSTRUCTIONS,
+          ].join("\n\n"),
+          sandbox: "read-only",
+          approvalPolicy: "never",
+          serviceName: "charadock_computer",
+          personality: "friendly",
+          webSearchMode: "disabled",
+          dynamicTools: COMPUTER_DYNAMIC_TOOLS,
+          onDynamicToolCall: (params) => handleComputerToolCall(computerSession, params),
+        });
+        computerCodexClient.setPersona(personaInstructions());
+        result = await computerCodexClient.sendMessage(codexText, { onDelta });
+      } else if (process.platform === "darwin") {
+        const skillClient = new CodexAppServerClient({
+          cwd: app.getPath("documents"),
+          command: codexCommand,
+          ...conversationCodexSettings(),
+          developerInstructions: mainText(
+            "You are the user's friendly desktop character companion. Carry out only the explicitly approved foreground task on the active desktop and report the result concisely in Japanese.",
+            "You are the user's friendly desktop character companion. Carry out only the explicitly approved foreground task on the active desktop and report the result concisely in English.",
           ),
-          COMPUTER_MODE_INSTRUCTIONS,
-        ].join("\n\n"),
-        sandbox: "read-only",
-        approvalPolicy: "never",
-        serviceName: "charadock_computer",
-        personality: "friendly",
-        webSearchMode: "disabled",
-        dynamicTools: COMPUTER_DYNAMIC_TOOLS,
-        onDynamicToolCall: (params) => handleComputerToolCall(computerSession, params),
-      });
-      computerCodexClient.setPersona(personaInstructions());
-      result = await computerCodexClient.sendMessage(codexText, { onDelta });
+          sandbox: "read-only",
+          approvalPolicy: "on-request",
+          serviceName: "charadock_computer",
+          personality: "friendly",
+          webSearchMode: "disabled",
+          rejectInteractiveRequests: true,
+        });
+        macComputerSkillClient = skillClient;
+        try {
+          const skills = await skillClient.listSkills({ forceReload: true });
+          const computerUseSkill = skills.find(isOfficialComputerUseSkill);
+          if (!computerUseSkill) {
+            throw new Error(mainText(
+              "Codex Computer Use スキルが見つかりません。Codex CLIを更新して、computer-use スキルを有効にしてください。",
+              "The Codex Computer Use skill is not available. Update Codex CLI and enable the computer-use skill, then try again.",
+            ));
+          }
+          skillClient.setTurnStartSkillItems([computerUseSkill]);
+          skillClient.setPersona(personaInstructions());
+          result = await skillClient.sendMessage(`$computer-use:computer-use ${codexText}`, { onDelta });
+        } finally {
+          skillClient.stop();
+          macComputerSkillClient = null;
+        }
+      } else {
+        throw new Error(mainText(
+          "コンピューター操作はこのプラットフォームではサポートされていません。",
+          "Computer Use is not supported on this platform.",
+        ));
+      }
     } else if (browserSession) {
       browserSession.onActivity = (label) => {
         updateWorkRun(workRun, { activity: label });
@@ -6389,6 +6440,8 @@ async function sendChatMessage(message, { localImagePath = "", localAttachments 
       computerSession.active = false;
       computerCodexClient?.stop();
       computerCodexClient = null;
+      macComputerSkillClient?.stop();
+      macComputerSkillClient = null;
     }
     if (browserSession) {
       browserSession.active = false;
@@ -6683,6 +6736,7 @@ app.on("before-quit", () => {
   browserCodexClient?.stop();
   computerCodexClient?.stop();
   webPreviewRuntime?.stop().catch(() => {});
+  macComputerSkillClient?.stop();
   stopBeatriceHost();
   if (browserWindow && !browserWindow.isDestroyed()) browserWindow.destroy();
   if (artifactPreviewWindow && !artifactPreviewWindow.isDestroyed()) artifactPreviewWindow.destroy();

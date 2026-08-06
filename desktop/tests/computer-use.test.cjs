@@ -8,6 +8,8 @@ const { normalizedComputerInput, windowsInputScript } = require("../lib/windows-
 test("computer control is requested and approved in Japanese conversation", () => {
   assert.equal(computerConversationAction("コンピューターを操作してメモ帳を開いて"), "request");
   assert.equal(computerConversationAction("Windowsの設定画面を開いて"), "request");
+  assert.equal(computerConversationAction("Macの設定画面を開いて"), "request");
+  assert.equal(computerConversationAction("macOSのウィンドウを操作して"), "request");
   assert.equal(computerConversationAction("コンピューターの意味を教えて"), "");
   assert.equal(computerConversationAction("いいよ、操作して", true), "approve");
   assert.equal(computerConversationAction("やめて", true), "deny");
@@ -17,6 +19,7 @@ test("computer permission continuation is explicit and stoppable", () => {
   assert.equal(computerContinuationAction("続けてそのボタンを押して"), "continue");
   assert.equal(computerContinuationAction("次に入力欄へ文字を入力して"), "continue");
   assert.equal(computerContinuationAction("コンピューターの操作はここまで"), "stop");
+  assert.equal(computerContinuationAction("Macの操作はここまで"), "stop");
   assert.equal(computerContinuationAction("それから明日の予定は？"), "");
 });
 

@@ -9,6 +9,8 @@
   "scripts": {
     "desktop": "electron .",
     "desktop:debug": "electron . --debug",
+    "desktop:win:dev": "bash scripts/windows-dev.sh",
+    "desktop:win:dev:profile": "bash scripts/windows-dev.sh --shared-profile",
     "previews:build": "node scripts/build_character_previews.cjs",
     "site:build": "node scripts/build_character_previews.cjs && node scripts/build_site.mjs",
     "assets:clean-alpha": "node scripts/clean_avatar_alpha.cjs assets/amber-avatar assets/bronze-avatar assets/towa-avatar assets/sage-avatar",

@@ -145,6 +145,19 @@ test("Beatrice integration packages only CharaDock's host helper", () => {
   }
 });
 
+test("macOS computer control delegates to the bundled Codex Computer Use skill", () => {
+  const main = fs.readFileSync(path.join(projectRoot, "desktop", "main.cjs"), "utf8");
+  const macStart = main.indexOf('} else if (process.platform === "darwin") {');
+  const macEnd = main.indexOf("} else if (browserSession) {", macStart);
+  assert.ok(macStart >= 0 && macEnd > macStart);
+  const macComputerUse = main.slice(macStart, macEnd);
+  assert.match(macComputerUse, /skills\.find\(isOfficialComputerUseSkill\)/);
+  assert.match(macComputerUse, /setTurnStartSkillItems\(\[computerUseSkill\]\)/);
+  assert.match(macComputerUse, /approvalPolicy: "on-request"/);
+  assert.match(macComputerUse, /rejectInteractiveRequests: true/);
+  assert.doesNotMatch(macComputerUse, /dynamicTools: COMPUTER_DYNAMIC_TOOLS/);
+});
+
 test("voice input UI requires one explicit supported provider", () => {
   const html = fs.readFileSync(path.join(projectRoot, "desktop", "control.html"), "utf8");
   const main = fs.readFileSync(path.join(projectRoot, "desktop", "main.cjs"), "utf8");
@@ -257,6 +270,24 @@ test("the latest answer stays visible while active work and Realtime expose elap
   assert.match(mascot, /elapsedActivityLabel/);
   assert.match(mascot, /thread\/realtime\/transcript\/done[\s\S]*setWorkActivity/);
   assert.match(styles, /is-processing #desktopMascotWorkActivity::before/);
+});
+
+test("WSL can launch Windows Electron from a persistent isolated development mirror", () => {
+  const shell = fs.readFileSync(path.join(projectRoot, "scripts", "windows-dev.sh"), "utf8");
+  const batch = fs.readFileSync(path.join(projectRoot, "scripts", "windows-dev.cmd"), "utf8");
+  const main = fs.readFileSync(path.join(projectRoot, "desktop", "main.cjs"), "utf8");
+  assert.equal(packageJson.scripts["desktop:win:dev"], "bash scripts/windows-dev.sh");
+  assert.equal(packageJson.scripts["desktop:win:dev:profile"], "bash scripts/windows-dev.sh --shared-profile");
+  assert.match(shell, /LOCALAPPDATA/);
+  assert.match(shell, /CharaDockDev\\\\source/);
+  assert.match(shell, /rsync -a --delete/);
+  assert.match(shell, /--exclude '\/node_modules\/'/);
+  assert.match(shell, /dependency_hash/);
+  assert.match(batch, /CharaDockDev\\profile/);
+  assert.match(batch, /--shared-profile/);
+  assert.match(batch, /node_modules\\electron\\cli\.js/);
+  assert.match(main, /--charadock-user-data/);
+  assert.match(main, /app\.setPath\("userData", developmentUserDataPath\)/);
 });
 
 test("Codex memory tools proactively create and update character memories", () => {
