@@ -3,11 +3,11 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="Talk, remember, and work together. CharaDock connects transparent characters with Codex in a Windows desktop companion.">
+  <meta name="description" content="Talk, remember, build, and preview together. CharaDock connects transparent characters with Codex in a Windows desktop companion.">
   <meta name="theme-color" content="#f4f2ed" media="(prefers-color-scheme: light)">
   <meta name="theme-color" content="#151514" media="(prefers-color-scheme: dark)">
   <meta property="og:title" content="CharaDock — Give your character a place—and a pulse.">
-  <meta property="og:description" content="Talk, remember, and work together with a transparent character powered by Codex.">
+  <meta property="og:description" content="Talk, remember, build, and preview together with a transparent character powered by Codex.">
   <meta property="og:type" content="website">
   <link rel="alternate" hreflang="ja" href="./ja.html">
   <link rel="alternate" hreflang="en" href="./">
@@ -26,6 +26,7 @@
     </a>
     <nav aria-label="Main navigation">
       <a href="#features">Features</a>
+      <a href="#workspace">Workspace</a>
       <a href="#characters">Characters</a>
       <a href="#safety">Safety</a>
     </nav>
@@ -43,10 +44,10 @@
       <div class="hero-copy">
         <p class="eyebrow"><span></span> Windows desktop companion</p>
         <h1>A companion you can<br><em>talk to</em>, right on<br>your desktop.</h1>
-        <p class="hero-lead">It listens, remembers what matters to you, and works with Codex inside a folder you choose. A PuruPuru character becomes an always-nearby companion on your Windows desktop.</p>
+        <p class="hero-lead">It listens, remembers what matters to you, and builds with Codex inside a character home or a project you choose. Results open right inside the conversation, with your PuruPuru companion always nearby.</p>
         <div class="hero-actions" id="download">
           <a class="button button-primary" href="__RELEASE_URL__">Get for Windows <span aria-hidden="true">↓</span></a>
-          <a class="button button-secondary" href="#experience">See the experience</a>
+          <a class="button button-secondary" href="#workspace">See the experience</a>
         </div>
         <p class="release-note">v__VERSION__ · Windows 10/11 x64 · Pre-release</p>
       </div>
@@ -57,7 +58,7 @@
     </section>
 
     <section class="signal-row" aria-label="Highlights">
-      <p>TRANSPARENT AVATAR</p><i></i><p>VOICE & REALTIME</p><i></i><p>CODEX WORK MODE</p><i></i><p>YOUR CHARACTER</p>
+      <p>TRANSPARENT AVATAR</p><i></i><p>VOICE & REALTIME</p><i></i><p>CODEX WORK MODE</p><i></i><p>LIVE PREVIEW</p>
     </section>
 
     <section class="section" id="features">
@@ -93,7 +94,7 @@
           <span class="feature-number">03</span>
           <p class="feature-kicker">Codex work mode</p>
           <h3>Move from conversation into real work.</h3>
-          <p>Codex works only inside the folder you select. Progress, operations, and results stay in history, and a turn can be interrupted at any time.</p>
+            <p>Codex works only inside the active Character Home or attached project. Progress, operations, and results stay in history, and a turn can be interrupted at any time.</p>
           <ul class="task-list" aria-hidden="true">
             <li class="done"><span>✓</span> Review README</li>
             <li class="active"><span></span> Update structure</li>
@@ -128,6 +129,50 @@
           <p>Screen sharing and browser control ask first. Only a clear continuation of the same operation can reuse permission for up to five minutes.</p>
           <div class="permission-pill" aria-hidden="true"><span>Allow this action</span><span>Stop</span></div>
         </article>
+      </div>
+    </section>
+
+    <section class="workspace-showcase" id="workspace">
+      <div class="workspace-copy">
+        <p class="eyebrow">Character Home + artifact preview</p>
+        <h2>From a request<br>to something you can see.</h2>
+        <p>Each character gets a durable home for notes, artifacts, and project continuity. Attach an existing folder without moving it, switch the active workspace, and open what Codex created without leaving the conversation.</p>
+        <ul class="workspace-points">
+          <li><span>01</span><div><strong>Continuity by character</strong><small>A stable home stays alongside any existing projects you attach.</small></div></li>
+          <li><span>02</span><div><strong>Preview the actual output</strong><small>Rendered Markdown, highlighted code, images, PDF, audio, and video.</small></div></li>
+          <li><span>03</span><div><strong>Run web apps deliberately</strong><small>Start an existing Next.js, Vite, or compatible script only when you choose.</small></div></li>
+        </ul>
+      </div>
+      <div class="workspace-demo" aria-label="Character Home and artifact preview example">
+        <div class="demo-toolbar">
+          <span class="demo-lights" aria-hidden="true"><i></i><i></i><i></i></span>
+          <strong>Kohaku · Work</strong>
+          <span class="demo-status"><i></i> Ready</span>
+        </div>
+        <div class="demo-body">
+          <aside class="demo-projects">
+            <p>WORKSPACE</p>
+            <div class="demo-project is-active"><span>⌂</span><div><strong>Character Home</strong><small>Kohaku's durable space</small></div></div>
+            <div class="demo-project"><span>◇</span><div><strong>Landing page</strong><small>Attached project</small></div></div>
+            <p>RECENT OUTPUTS</p>
+            <div class="demo-artifact"><span>MD</span><strong>README.md</strong></div>
+            <div class="demo-artifact"><span>JS</span><strong>app.js</strong></div>
+            <div class="demo-artifact"><span>PDF</span><strong>report.pdf</strong></div>
+          </aside>
+          <div class="demo-preview">
+            <div class="demo-preview-head"><div><small>PREVIEW</small><strong>README.md</strong></div><span>Open externally ↗</span></div>
+            <div class="demo-document">
+              <span class="demo-document-label">MARKDOWN</span>
+              <h3>Project ready.</h3>
+              <p>A calm, responsive landing page with clear hierarchy and a focused call to action.</p>
+              <div class="demo-rule"></div>
+              <p class="demo-check"><i>✓</i> Responsive layout</p>
+              <p class="demo-check"><i>✓</i> Accessible interactions</p>
+              <p class="demo-check"><i>✓</i> Previewed in CharaDock</p>
+              <div class="demo-live"><span><i></i> Web preview available</span><strong>Start preview</strong></div>
+            </div>
+          </div>
+        </div>
       </div>
     </section>
 
@@ -182,7 +227,7 @@
         </div>
         <ul>
           <li><span>01</span><div><strong>Codex manages ChatGPT authentication</strong><p>CharaDock never receives the authentication token.</p></div></li>
-          <li><span>02</span><div><strong>Screen and browser access is purpose-specific</strong><p>A clear continuation lasts up to five minutes. Another site or purpose asks again.</p></div></li>
+          <li><span>02</span><div><strong>Screen, browser, and computer access asks first</strong><p>A clear continuation lasts up to five minutes. Another site or purpose asks again.</p></div></li>
           <li><span>03</span><div><strong>Work is scoped to a selected folder</strong><p>Conversation is read-only; Work can modify only the location you choose.</p></div></li>
         </ul>
       </div>

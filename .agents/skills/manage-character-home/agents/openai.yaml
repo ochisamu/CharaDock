@@ -1,0 +1,4 @@
+interface:
+  display_name: "Character Home"
+  short_description: "Maintain durable character workspace context safely"
+  default_prompt: "Use $manage-character-home to preserve project context, notes, and decisions safely."

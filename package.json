@@ -20,8 +20,11 @@
     "dist:mac:arm64": "electron-builder --mac dmg zip --arm64 --publish never"
   },
   "devDependencies": {
+    "@highlightjs/cdn-assets": "11.11.1",
+    "dompurify": "3.4.13",
     "electron": "43.1.1",
-    "electron-builder": "26.15.3"
+    "electron-builder": "26.15.3",
+    "markdown-it": "14.3.0"
   },
   "build": {
     "appId": "jp.ochisamu.charadock.desktop",

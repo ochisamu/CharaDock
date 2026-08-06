@@ -165,6 +165,9 @@ window.addEventListener("DOMContentLoaded", () => {
   let voiceInputTransitioning = false;
   let lastStreamPulseAt = 0;
   let workActivityTimer;
+  let workActivityElapsedTimer;
+  let workActivityStartedAt = 0;
+  let workActivityMessage = "";
   let streamWorkMode = false;
   let streamHasActivity = false;
   let hideTimer;
@@ -237,7 +240,7 @@ window.addEventListener("DOMContentLoaded", () => {
       button.title = artifact.path;
       button.addEventListener("click", async () => {
         button.disabled = true;
-        try { await ipcRenderer.invoke("mascotInline:openWorkArtifact", { runId, path: artifact.path }); }
+        try { await ipcRenderer.invoke("mascotInline:previewWorkArtifact", { runId, path: artifact.path }); }
         catch (error) { setStatus(error.message, 5000); }
         finally { button.disabled = false; }
       });
@@ -505,11 +508,33 @@ window.addEventListener("DOMContentLoaded", () => {
     workTarget.disabled = sending;
     workOpenButton.disabled = sending || !appState?.hasWorkDirectory;
   };
-  const setWorkActivity = (message, { finish = false } = {}) => {
+  const elapsedActivityLabel = () => {
+    const seconds = Math.max(0, Math.floor((performance.now() - workActivityStartedAt) / 1000));
+    return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+  };
+  const paintWorkActivity = () => {
+    workActivity.textContent = workActivityMessage && workActivityStartedAt
+      ? `${workActivityMessage} · ${elapsedActivityLabel()}`
+      : workActivityMessage;
+  };
+  const setWorkActivity = (message, { finish = false, trackElapsed = false } = {}) => {
     clearTimeout(workActivityTimer);
-    workActivity.textContent = String(message || "");
-    bubble.classList.toggle("is-working", Boolean(workActivity.textContent));
-    if (finish) workActivityTimer = setTimeout(() => bubble.classList.remove("is-working"), 2200);
+    clearInterval(workActivityElapsedTimer);
+    workActivityElapsedTimer = null;
+    workActivityMessage = String(message || "");
+    if (trackElapsed && !workActivityStartedAt) workActivityStartedAt = performance.now();
+    if (!workActivityMessage || finish) workActivityStartedAt = 0;
+    paintWorkActivity();
+    bubble.classList.toggle("is-working", Boolean(workActivityMessage));
+    bubble.classList.toggle("is-processing", Boolean(workActivityMessage) && !finish);
+    if (workActivityMessage && workActivityStartedAt) {
+      workActivityElapsedTimer = setInterval(paintWorkActivity, 1000);
+    }
+    if (finish) workActivityTimer = setTimeout(() => {
+      bubble.classList.remove("is-working", "is-processing");
+      workActivityMessage = "";
+      workActivity.textContent = "";
+    }, 2200);
   };
   const setOpen = (open, { focus = false, temporaryInteraction = false } = {}) => {
     clearTimeout(autoCloseTimer);
@@ -1874,8 +1899,8 @@ window.addEventListener("DOMContentLoaded", () => {
       clearPermission();
       renderArtifactActions(artifactActions, [], "");
       stopTtsPlayback();
-      bubblePersistent = false;
-      streamFullText = "考え中…";
+      bubblePersistent = true;
+      streamFullText = "";
       streamCurrentSpeechText = "";
       streamTtsConfig = {
         enabled: Boolean(payload?.ttsEnabled),
@@ -1886,11 +1911,15 @@ window.addEventListener("DOMContentLoaded", () => {
       streamWorkMode = payload?.mode === "work";
       streamHasActivity = false;
       clearTimeout(hideTimer);
-      bubbleText.textContent = streamFullText;
+      if (!bubble.classList.contains("is-visible") || !bubbleText.textContent.trim()) {
+        bubbleText.textContent = appState?.language === "en" ? "Thinking…" : "考え中…";
+      }
       bubble.classList.remove("is-expanded", "has-overflow", "has-full-reply");
       bubbleMore.hidden = true;
       bubble.classList.add("is-visible");
-      if (streamWorkMode) setWorkActivity("作業を開始しています");
+      setWorkActivity(streamWorkMode
+        ? (appState?.language === "en" ? "Starting work" : "作業を開始しています")
+        : (appState?.language === "en" ? "Thinking" : "考えています"), { trackElapsed: true });
       return;
     }
     if (payload?.phase === "delta") {
@@ -1913,25 +1942,25 @@ window.addEventListener("DOMContentLoaded", () => {
     }
     if (payload?.phase === "activity") {
       streamHasActivity = true;
-      setWorkActivity(String(payload.text || "作業中…"));
+      setWorkActivity(String(payload.text || "作業中…"), { trackElapsed: true });
       return;
     }
     if (payload?.phase === "done") {
       if (payload?.text) streamFullText = String(payload.displayText || payload.text);
       streamTtsFinished = true;
-      bubblePersistent = !streamWorkMode;
+      bubblePersistent = true;
       queueStreamSpeech(payload?.speechSegments);
       renderArtifactActions(artifactActions, payload?.artifacts, payload?.workRunId);
       if (!streamTtsConfig.enabled || (!streamTtsDraining && !streamTtsQueue.length)) {
         streamCurrentSpeechText = "";
-        if (!bubble.classList.contains("is-expanded")) bubbleText.textContent = streamFullText;
+        if (!bubble.classList.contains("is-expanded") && streamFullText) bubbleText.textContent = streamFullText;
         if (streamTtsConfig.enabled) finishTtsPlayback();
       }
       syncBubbleOverflow();
       scheduleBubbleHide(Math.max(9000, bubbleHideDuration));
       sending = false;
-      if (streamWorkMode) setWorkActivity("作業完了", { finish: true });
-      else if (streamHasActivity) setWorkActivity("");
+      if (streamWorkMode) setWorkActivity(appState?.language === "en" ? "Work complete" : "作業完了", { finish: true });
+      else setWorkActivity("");
       streamWorkMode = false;
       streamHasActivity = false;
     } else if (payload?.phase === "error") {
@@ -1939,8 +1968,9 @@ window.addEventListener("DOMContentLoaded", () => {
       streamCurrentSpeechText = "";
       if (!bubble.classList.contains("is-expanded") && streamFullText) bubbleText.textContent = streamFullText;
       sending = false;
-      if (streamWorkMode) setWorkActivity("作業を完了できませんでした", { finish: true });
-      else if (streamHasActivity) setWorkActivity("");
+      bubblePersistent = true;
+      if (streamWorkMode) setWorkActivity(appState?.language === "en" ? "Work could not be completed" : "作業を完了できませんでした", { finish: true });
+      else setWorkActivity("");
       streamWorkMode = false;
       streamHasActivity = false;
     }
@@ -1970,15 +2000,22 @@ window.addEventListener("DOMContentLoaded", () => {
       input.value = "";
       resizeInput();
       setStatus("Codexが考えています…", 30_000);
+      bubblePersistent = true;
+      bubble.classList.add("is-visible");
+      setWorkActivity(appState?.language === "en" ? "Thinking" : "考えています", { trackElapsed: true });
       return;
     }
     if (method === "thread/realtime/error") {
       realtimeUnavailable ||= Boolean(params.unavailable);
       closeRealtime();
+      setWorkActivity("");
       setStatus(params.message || "Codex Realtime接続エラー", 5000);
       return;
     }
-    if (method === "thread/realtime/closed") closeRealtime();
+    if (method === "thread/realtime/closed") {
+      closeRealtime();
+      setWorkActivity("");
+    }
   });
   ipcRenderer.on("beatrice:settingsChanged", (_event, payload = {}) => {
     closeRealtime();

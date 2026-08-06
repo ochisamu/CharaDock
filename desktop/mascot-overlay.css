@@ -162,6 +162,18 @@ body.is-position-locked, body.is-position-locked #stage { -webkit-app-region: no
   white-space: nowrap;
 }
 #desktopMascotBubble.is-working #desktopMascotWorkActivity { display: block; }
+#desktopMascotBubble.is-processing #desktopMascotWorkActivity::before {
+  content: "";
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  margin-right: 6px;
+  vertical-align: 1px;
+  background: currentColor;
+  border-radius: 50%;
+  animation: mascot-activity-pulse 1s ease-in-out infinite;
+}
+@keyframes mascot-activity-pulse { 50% { opacity: .32; transform: scale(.7); } }
 #desktopMascotBubble.is-visible { opacity: 1; transform: translateY(0) scale(1); }
 body.is-work-panel-open #desktopMascotBubble.is-visible { opacity: 0; transform: translateY(-6px) scale(.98); }
 #desktopMascotBubble.is-permission { pointer-events: auto; }
@@ -608,6 +620,7 @@ body.is-work-mode #desktopMascotInput { min-height: 42px; max-height: 78px; padd
 @keyframes mascot-speaking-pulse { 50% { opacity: .35; transform: scale(.7); } }
 @media (prefers-reduced-motion: reduce) {
   #desktopMascotBubble.is-speaking::after { animation: none; }
+  #desktopMascotBubble.is-processing #desktopMascotWorkActivity::before { animation: none; }
   #desktopMascotMicButton.is-vad-speaking { animation: none; }
 }
 #desktopMascotPetZone {

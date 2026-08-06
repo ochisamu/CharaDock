@@ -21,6 +21,22 @@ test("work artifacts combine file-change events and response links", () => {
   fs.rmSync(root, { recursive: true, force: true });
 });
 
+test("generated image files become previewable work artifacts", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "charadock-image-artifact-"));
+  fs.mkdirSync(path.join(root, "generated"));
+  fs.writeFileSync(path.join(root, "generated", "character-scene.png"), Buffer.from([137, 80, 78, 71]));
+  try {
+    const eventCandidates = fileChangeCandidates({ type: "fileChange", changes: [{ filePath: "generated/character-scene.png" }] });
+    const artifacts = discoverWorkArtifacts(root, {
+      eventCandidates,
+      resultText: "生成画像は [character scene](generated/character-scene.png) です。",
+    });
+    assert.deepEqual(artifacts, [{ path: "generated/character-scene.png", name: "character-scene.png", kind: "file" }]);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("artifact paths cannot escape the selected work folder", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "charadock-artifacts-"));
   const outside = path.join(path.dirname(root), "outside-secret.txt");

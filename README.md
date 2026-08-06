@@ -58,6 +58,9 @@ CharaDock is an unofficial derivative of [rotejin/PuruPuruPNGTuber](https://gith
 - Up to 20 recent conversation turns per character
 - Character-specific long-term memory that automatically extracts useful names, preferences, relationships, and ongoing goals
 - Up to 24 local memory entries, with review and individual or complete deletion
+- A durable Character Home for each avatar, plus switchable references to existing projects without moving their files
+- In-app output cards for text, images, audio, video, PDF, folders, and sandboxed static web previews
+- Live previews for Next.js, Vite, Nuxt, Astro, SvelteKit, and other package-script web apps, with server status and logs kept inside CharaDock
 
 Temporary requests, guesses, content copied from external websites, secrets, contact details, addresses, and sensitive attributes are not stored as long-term memory. Memories are never shared between characters.
 
@@ -151,7 +154,11 @@ The first-run guide configures the AI connection, character, and speech provider
 ## Safe work and screen control
 
 - Conversation mode is read-only
-- Work mode grants workspace-write access only to one folder explicitly selected by the user
+- Work mode grants workspace-write access only to the active Home/project and the selected character's managed Home context
+- Attached projects remain in their original location and can be switched or removed without deleting source files
+- Static web outputs run in a sandboxed in-app preview with network access disabled
+- Dynamic web previews run one visible local development server at a time. CharaDock shows the exact `dev`, `preview`, or `start` package command and asks before launching it; it never installs dependencies automatically
+- A preview server is bound to `127.0.0.1`, stopped when its project changes or the app exits, and its bounded logs are not saved. Network requests made by the previewed application still follow that project's own implementation
 - Conversation and work use separate tasks and permissions; each can use its own model and reasoning effort
 - An active turn can be interrupted from history
 - Screen capture, the dedicated browser, and Windows control request permission in the conversation

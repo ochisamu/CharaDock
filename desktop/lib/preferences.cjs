@@ -6,6 +6,7 @@ const { normalizeCharacterMemories } = require("./character-memory.cjs");
 const { BUNDLED_IRODORI_VOICES } = require("./irodori-voices.cjs");
 const { normalizeIrodoriEmotionStrength } = require("./irodori-caption.cjs");
 const { describeBeatriceModel } = require("./beatrice-v2.cjs");
+const { normalizeCharacterWorkspaces } = require("./character-home.cjs");
 
 const DEFAULT_IRODORI_VOICES = Object.freeze(BUNDLED_IRODORI_VOICES.map(({ sourceFileName: _sourceFileName, ...voice }) => Object.freeze({ ...voice })));
 const DEFAULT_CHARACTER_TTS_PROFILES = Object.freeze({
@@ -97,6 +98,8 @@ const DEFAULTS = Object.freeze({
   customCharacters: [],
   conversationHistories: {},
   characterMemories: {},
+  characterWorkspaces: {},
+  webPreviewRuntimes: {},
   workHistory: [],
   mascotBounds: null,
   controlBounds: null,
@@ -171,7 +174,7 @@ function migrateBundledTowaPreferenceData(data) {
       changed = true;
     }
   }
-  for (const profileKey of ["characterProfiles", "characterTtsProfiles", "conversationHistories", "characterMemories"]) {
+  for (const profileKey of ["characterProfiles", "characterTtsProfiles", "conversationHistories", "characterMemories", "characterWorkspaces"]) {
     const profiles = data[profileKey];
     if (!profiles || typeof profiles !== "object" || Array.isArray(profiles) || !profiles[LEGACY_TOWA_CHARACTER_ID]) continue;
     if (!profiles[BUILT_IN_TOWA_CHARACTER_ID]) profiles[BUILT_IN_TOWA_CHARACTER_ID] = profiles[LEGACY_TOWA_CHARACTER_ID];
@@ -401,6 +404,11 @@ class Preferences {
       }
       this.data.conversationHistories = normalizeConversationHistories(this.data.conversationHistories);
       this.data.characterMemories = normalizeCharacterMemories(this.data.characterMemories);
+      this.data.characterWorkspaces = normalizeCharacterWorkspaces(this.data.characterWorkspaces);
+      this.data.webPreviewRuntimes = this.data.webPreviewRuntimes && typeof this.data.webPreviewRuntimes === "object" && !Array.isArray(this.data.webPreviewRuntimes)
+        ? Object.fromEntries(Object.entries(this.data.webPreviewRuntimes).slice(0, 100).flatMap(([projectId, runtime]) =>
+          /^web-[a-f0-9]{18}$/.test(String(projectId)) && ["auto", "windows", "wsl"].includes(runtime) ? [[projectId, runtime]] : []))
+        : {};
       this.data.workHistory = normalizeWorkHistory(this.data.workHistory);
       if (typeof parsed.encryptedApiKey === "string") this.data.encryptedApiKey = parsed.encryptedApiKey;
       const migratedTowa = migrateBundledTowaPreferenceData(this.data);
@@ -421,7 +429,7 @@ class Preferences {
   publicState() {
     const state = {};
     for (const key of PUBLIC_KEYS) {
-      if (!["customCharacters", "workDirectory", "piperPlusExecutablePath", "piperPlusModelPath", "supertonicModelDirectory", "irodoriModelDirectory", "irodoriV4ModelDirectory", "irodoriReferenceAudioPath", "irodoriVoices", "kokoroModelDirectory", "sbv2Models", "beatriceVstPath", "beatriceModelPath", "beatriceModels", "characterTtsProfiles", "conversationHistories", "characterMemories", "workHistory"].includes(key)) state[key] = this.data[key];
+      if (!["customCharacters", "workDirectory", "piperPlusExecutablePath", "piperPlusModelPath", "supertonicModelDirectory", "irodoriModelDirectory", "irodoriV4ModelDirectory", "irodoriReferenceAudioPath", "irodoriVoices", "kokoroModelDirectory", "sbv2Models", "beatriceVstPath", "beatriceModelPath", "beatriceModels", "characterTtsProfiles", "conversationHistories", "characterMemories", "characterWorkspaces", "webPreviewRuntimes", "workHistory"].includes(key)) state[key] = this.data[key];
     }
     state.hasWorkDirectory = Boolean(this.data.workDirectory);
     state.workDirectoryName = this.data.workDirectory ? path.basename(this.data.workDirectory) : "";

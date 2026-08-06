@@ -89,6 +89,43 @@ PERFORMANCE OF THIS SOFTWARE.
 The MIT permission notices for Electron and pngjs are retained with the
 corresponding installed packages and packaged runtime license files.
 
+### highlight.js
+
+- Project: highlight.js
+- Copyright: Ivan Sagalaev and contributors
+- Source: https://github.com/highlightjs/highlight.js
+- Vendored browser runtime: 11.11.1
+- License: BSD 3-Clause License
+
+The local browser build and GitHub Dark Dimmed theme are used only to highlight
+text and source-code artifact previews. CharaDock does not load highlighting
+scripts from a CDN. The complete BSD 3-Clause license is retained at
+`vendor/highlightjs/11.11.1/LICENSE`.
+
+### markdown-it
+
+- Project: markdown-it
+- Copyright: Vitaly Puzrin, Alex Kocharin, and contributors
+- Source: https://github.com/markdown-it/markdown-it
+- Vendored browser runtime: 14.3.0
+- License: MIT License
+
+The local browser build renders Markdown artifacts without enabling embedded
+HTML. The complete MIT license is retained at
+`vendor/markdown-it/14.3.0/LICENSE`.
+
+### DOMPurify
+
+- Project: DOMPurify
+- Copyright: Mario Heiderich and contributors
+- Source: https://github.com/cure53/DOMPurify
+- Vendored browser runtime: 3.4.13
+- License used by CharaDock: Apache License 2.0
+
+The local browser build sanitizes rendered Markdown before it enters the
+document. CharaDock uses the Apache-2.0 option offered by the project. The
+complete license is retained at `vendor/dompurify/3.4.13/LICENSE`.
+
 ### CMU Pronouncing Dictionary
 
 - Project: CMU Pronouncing Dictionary (CMUdict)

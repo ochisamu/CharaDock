@@ -17,12 +17,15 @@ Build through Windows Node, not WSL electron-builder. The WSL path fails at NSIS
    (cd /mnt/c && cmd.exe /d /c "$skill_script_win")
    ```
 
+   The batch file also fetches the matching `sherpa-onnx-win-x64` tarball with `npm pack` when WSL's shared `node_modules` contains only the Linux native addon, then extracts only that package. Do not use `npm install` from Windows against the mapped WSL repository: it can prune Linux dependencies and unrelated workspace files.
+
 3. Require both fresh artifacts:
    - `dist/CharaDock Setup 0.1.0.exe`
    - `dist/CharaDock 0.1.0.exe`
 
    Reject either file if it is missing or smaller than 100 MB. A failed WSL NSIS run can leave a small, invalid installer stub.
 4. Verify the packaged files needed by the change are present in `dist/win-unpacked/resources/app.asar`. For TTS changes, explicitly verify the relevant worker/client files.
+   Also require `dist/win-unpacked/resources/app.asar.unpacked/node_modules/sherpa-onnx-win-x64/sherpa-onnx.node`; a Windows package containing only `sherpa-onnx-linux-*` will fail during startup.
 5. Smoke-test from an explicit temporary directory under Windows `%TEMP%` and pass a separate `--user-data-dir`. Do not execute `dist/win-unpacked/*.exe` directly from the WSL filesystem; Windows interop may return `Permission denied`. Copy `dist/win-unpacked` into the temporary Windows directory first.
 6. Compute SHA-256 hashes. If the user supplied an output folder, overwrite only the two intended executables there and re-hash the delivered copies.
 7. Remove only the exact temporary smoke directory after validation. Preserve unrelated build output and user files.

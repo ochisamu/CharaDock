@@ -13,6 +13,7 @@ const {
   ipcMain,
   Menu,
   nativeImage,
+  protocol,
   safeStorage,
   screen,
   session,
@@ -31,6 +32,14 @@ const {
 } = require("./lib/codex-command.cjs");
 const { messageExpression, responseExpression, speechExpression } = require("./lib/expression.cjs");
 const { Preferences } = require("./lib/preferences.cjs");
+const {
+  CharacterHomeManager,
+  HOME_PROJECT_ID,
+  activateCharacterProject,
+  addCharacterProject,
+  removeCharacterProject,
+  workspaceForCharacter,
+} = require("./lib/character-home.cjs");
 const { cleanAvatarAlpha, despillAvatarEdges } = require("./lib/png-alpha.cjs");
 const { isRealtimeUnavailableError, userFacingRealtimeError } = require("./lib/realtime-error.cjs");
 const {
@@ -94,11 +103,16 @@ const { Sbv2WorkerClient } = require("./lib/sbv2-worker-client.cjs");
 const { DiagnosticLog, createSupportBundle, diagnosticsAsText, sanitizeDiagnosticValue } = require("./lib/support-diagnostics.cjs");
 const { RELEASES_PAGE_URL, checkForAppUpdate } = require("./lib/app-update.cjs");
 const { validateAvatarOutput } = require("../.agents/skills/build-purupuru-avatar/scripts/validate-output.cjs");
+const { WebPreviewRuntime, commandForWebProject, findWebProject } = require("./lib/web-preview-runtime.cjs");
 
 // Local TTS often completes several seconds after the click that requested it,
 // and conversation speech has no click at all. Keep Chromium from discarding
 // that intended playback when its transient user activation expires.
 app.commandLine.appendSwitch("autoplay-policy", "no-user-gesture-required");
+protocol.registerSchemesAsPrivileged([{
+  scheme: "charadock-artifact",
+  privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true },
+}]);
 
 const AVATAR_IMAGE_FILES = Object.freeze({
   backHair: "back-hair.png",
@@ -179,6 +193,8 @@ const CHARACTERS = Object.freeze([
 
 let projectRoot = path.resolve(__dirname, "..");
 let preferences;
+let characterHomeManager;
+let webPreviewRuntime;
 let diagnosticLog;
 let localServer;
 let codexClient;
@@ -213,6 +229,8 @@ let nextKokoroRequestId = 1;
 const pendingKokoroRequests = new Map();
 let controlWindow;
 let mascotWindow;
+let artifactPreviewWindow;
+let activeArtifactPreviewTarget = null;
 let tray;
 let appUpdateStatus = null;
 let appUpdateCheckPromise = null;
@@ -264,6 +282,7 @@ const WORK_MODE_INSTRUCTION_BASE = [
   "Carry out requested software-development and office-work tasks instead of merely explaining them.",
   "Lead with the concrete outcome. For multi-step work, keep progress updates brief and make the final report distinguish completed work, verification, and any remaining limitation.",
   "When you create or modify useful artifacts, mention their workspace-relative paths in the final report so the interface can expose safe open buttons.",
+  "Save generated images inside the active workspace and mention their workspace-relative paths so the interface can show them as image previews.",
   "When the request is ambiguous, make a reversible reasonable assumption if possible; ask one concise clarification only when different answers would materially change or risk the result.",
   "Use web search when the task depends on current or external information, and distinguish sourced findings from inference.",
   "Stay within the current workspace, preserve unrelated user changes, and run proportionate verification.",
@@ -452,7 +471,7 @@ function workModeInstructions() {
   return `${WORK_MODE_INSTRUCTION_BASE}\n${mainText(
     "Report progress and the final result concisely in Japanese.",
     "Report progress and the final result concisely in English.",
-  )}`;
+  )}${characterHomeWorkInstructions()}`;
 }
 
 function isBuiltInCharacter(characterOrId) {
@@ -1028,6 +1047,8 @@ function publicAppState() {
     conversationHistory: conversationHistory.map((entry) => ({ ...entry })),
     workHistory: { activeWorkRunId, runs: publicWorkHistory() },
     memories: characterMemories(),
+    characterWorkspace: publicCharacterWorkspace(),
+    webPreview: webPreviewRuntime?.publicState() || { status: "idle", logs: [] },
     hasWorkDirectory: Boolean(workDirectory),
     workDirectoryName: workDirectory ? path.basename(workDirectory) : "",
     characters: allCharacters().map((baseCharacter) => {
@@ -1179,6 +1200,81 @@ async function supportDiagnostics() {
   return sanitizeDiagnosticValue(report, diagnosticRedactionOptions());
 }
 
+function activeCharacterWorkspace(characterId = activeCharacter().id) {
+  return workspaceForCharacter(preferences?.data?.characterWorkspaces, characterId);
+}
+
+function activeWorkspaceProject(characterId = activeCharacter().id) {
+  const workspace = activeCharacterWorkspace(characterId);
+  return workspace.activeProjectId === HOME_PROJECT_ID
+    ? { id: HOME_PROJECT_ID, name: mainText("キャラクターホーム", "Character Home"), home: true }
+    : workspace.projects.find((project) => project.id === workspace.activeProjectId) || { id: HOME_PROJECT_ID, name: mainText("キャラクターホーム", "Character Home"), home: true };
+}
+
+function ensureCharacterHome(character = activeCharacter()) {
+  if (!characterHomeManager) return "";
+  return characterHomeManager.ensure(character);
+}
+
+function activeCharacterHomeDirectory(character = activeCharacter()) {
+  return ensureCharacterHome(character);
+}
+
+function selectedWorkspaceDirectory(character = activeCharacter()) {
+  const project = activeWorkspaceProject(character.id);
+  if (project.id === HOME_PROJECT_ID) return activeCharacterHomeDirectory(character);
+  try { return fs.statSync(project.path).isDirectory() ? path.resolve(project.path) : activeCharacterHomeDirectory(character); }
+  catch { return activeCharacterHomeDirectory(character); }
+}
+
+function repairCharacterWorkspaceSelection(character = activeCharacter()) {
+  const workspace = activeCharacterWorkspace(character.id);
+  if (workspace.activeProjectId === HOME_PROJECT_ID) return false;
+  const active = workspace.projects.find((project) => project.id === workspace.activeProjectId);
+  try { if (active && fs.statSync(active.path).isDirectory()) return false; } catch {}
+  preferences.patch({ characterWorkspaces: activateCharacterProject(preferences.data.characterWorkspaces, character.id, HOME_PROJECT_ID) });
+  return true;
+}
+
+function publicCharacterWorkspace() {
+  const character = activeCharacter();
+  const workspace = activeCharacterWorkspace(character.id);
+  const homeDirectory = activeCharacterHomeDirectory(character);
+  const active = activeWorkspaceProject(character.id);
+  return {
+    activeProjectId: active.id,
+    activeProjectName: active.id === HOME_PROJECT_ID ? mainText(`${character.name}ホーム`, `${character.name} Home`) : active.name,
+    homeDirectoryName: path.basename(homeDirectory),
+    projects: [
+      { id: HOME_PROJECT_ID, name: mainText(`${character.name}ホーム`, `${character.name} Home`), home: true, available: true },
+      ...workspace.projects.map((project) => {
+        let available = false;
+        try { available = fs.statSync(project.path).isDirectory(); } catch {}
+        return { id: project.id, name: project.name, home: false, available };
+      }),
+    ],
+  };
+}
+
+function characterHomeWorkInstructions() {
+  if (!preferences || !characterHomeManager) return "";
+  const character = activeCharacter();
+  const home = activeCharacterHomeDirectory(character);
+  const project = activeWorkspaceProject(character.id);
+  const record = characterHomeManager.ensureProjectRecord(character, project);
+  const runtime = codexWorkspaceRuntime(validWorkDirectory() || home);
+  const mapPath = runtime.pathMapper || ((value) => value);
+  const skillPath = path.join(home, ".agents", "skills", "manage-character-home", "SKILL.md");
+  return [
+    "",
+    "Character Home is an additional explicitly approved workspace root for durable continuity.",
+    `Read and follow the complete Character Home skill when continuity or durable project context is relevant: ${mapPath(skillPath)}`,
+    `Character Home: ${mapPath(home)}`,
+    `Active project continuity record: ${mapPath(record)}`,
+    "The active project remains the source of truth. Do not inspect other attached projects. Keep secrets and transient logs out of Character Home.",
+  ].join("\n");
+}
+
 function validWorkDirectory() {
   const directory = String(preferences?.data?.workDirectory || "");
   try {
@@ -1207,8 +1303,9 @@ function workCodexSettings() {
   };
 }
 
-function codexWorkspaceRuntime(directory) {
+function codexWorkspaceRuntime(directory, additionalDirectories = []) {
   const nativeDirectory = path.resolve(directory);
+  const nativeAdditional = [...new Set((Array.isArray(additionalDirectories) ? additionalDirectories : []).filter(Boolean).map((value) => path.resolve(value)))];
   if (process.platform === "win32" && wslCodexCommand) {
     const cwd = windowsPathToWsl(nativeDirectory);
     return {
@@ -1217,9 +1314,10 @@ function codexWorkspaceRuntime(directory) {
       command: "wsl.exe",
       commandArgs: ["--cd", cwd, "env", "-u", "CODEX_HOME", wslCodexCommand],
       pathMapper: windowsPathToWsl,
+      workspaceRoots: nativeAdditional.map(windowsPathToWsl),
     };
   }
-  return { cwd: nativeDirectory, spawnCwd: nativeDirectory, command: codexCommand };
+  return { cwd: nativeDirectory, spawnCwd: nativeDirectory, command: codexCommand, workspaceRoots: nativeAdditional };
 }
 
 function publicWorkHistory() {
@@ -1254,7 +1352,7 @@ function workDirectoryKey(directory = validWorkDirectory()) {
   return createHash("sha256").update(process.platform === "win32" ? resolved.toLowerCase() : resolved).digest("hex").slice(0, 24);
 }
 
-async function openWorkArtifact(runId, relativePath) {
+function resolveWorkArtifact(runId, relativePath) {
   const run = workHistory.find((entry) => entry.id === String(runId || ""));
   const artifact = run?.artifacts?.find((entry) => entry.path === String(relativePath || ""));
   const directory = validWorkDirectory();
@@ -1269,16 +1367,201 @@ async function openWorkArtifact(runId, relativePath) {
   if (!comparableTarget.startsWith(comparableRoot) || !fs.existsSync(target) || !isArtifactInsideWorkspace(directory, target)) {
     throw new Error(mainText("成果物が移動または削除されています。", "The artifact has been moved or deleted."));
   }
+  return { artifact, directory, run, target };
+}
+
+async function openWorkArtifact(runId, relativePath) {
+  const { target } = resolveWorkArtifact(runId, relativePath);
   const error = await shell.openPath(target);
   if (error) throw new Error(mainText(`成果物を開けませんでした: ${error}`, `Could not open the artifact: ${error}`));
   return true;
 }
 
+const ARTIFACT_TEXT_EXTENSIONS = new Set([".txt", ".md", ".markdown", ".json", ".jsonc", ".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx", ".css", ".scss", ".html", ".htm", ".xml", ".yaml", ".yml", ".toml", ".ini", ".csv", ".svg", ".py", ".rb", ".rs", ".go", ".java", ".kt", ".swift", ".c", ".h", ".cpp", ".hpp", ".sh", ".ps1", ".bat"]);
+const ARTIFACT_IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg", ".avif", ".bmp"]);
+const ARTIFACT_AUDIO_EXTENSIONS = new Set([".wav", ".mp3", ".m4a", ".aac", ".ogg", ".flac"]);
+const ARTIFACT_VIDEO_EXTENSIONS = new Set([".mp4", ".webm", ".mov", ".m4v", ".ogv"]);
+
+function artifactProtocolUrl(runId, relativePath) {
+  const encodedPath = String(relativePath || "").replace(/\\/g, "/").split("/").map(encodeURIComponent).join("/");
+  return `charadock-artifact://${String(runId || "").toLowerCase()}/${encodedPath}`;
+}
+
+function artifactHtmlEntry(target) {
+  let stat;
+  try { stat = fs.statSync(target); } catch { return ""; }
+  if (stat.isFile() && [".html", ".htm"].includes(path.extname(target).toLowerCase())) return target;
+  if (!stat.isDirectory()) return "";
+  for (const relative of ["index.html", path.join("dist", "index.html"), path.join("build", "index.html"), path.join("public", "index.html")]) {
+    const candidate = path.join(target, relative);
+    try { if (fs.statSync(candidate).isFile()) return candidate; } catch {}
+  }
+  return "";
+}
+
+function directoryPreviewItems(target) {
+  try {
+    return fs.readdirSync(target, { withFileTypes: true }).slice(0, 80).map((entry) => ({
+      name: entry.name,
+      kind: entry.isDirectory() ? "directory" : "file",
+    }));
+  } catch { return []; }
+}
+
+function webProjectPublicId(directory, relativeDirectory) {
+  return `web-${createHash("sha256").update(`${workDirectoryKey(directory)}:${relativeDirectory}`).digest("hex").slice(0, 18)}`;
+}
+
+function publicWebProject(project, directory) {
+  const id = webProjectPublicId(directory, project.relativeDirectory);
+  return {
+    id,
+    name: project.name,
+    framework: project.framework,
+    packageManager: project.packageManager,
+    scripts: project.scripts.map((script) => script.name),
+    preferredScript: project.preferredScript,
+    dependenciesReady: project.dependenciesReady,
+    runtime: ["windows", "wsl"].includes(preferences.data.webPreviewRuntimes?.[id]) ? preferences.data.webPreviewRuntimes[id] : "auto",
+    runtimeOptions: process.platform === "win32" ? ["auto", "windows", ...(wslCodexCommand ? ["wsl"] : [])] : ["auto"],
+  };
+}
+
+function previewWorkArtifact(runId, relativePath) {
+  const { artifact, directory, target } = resolveWorkArtifact(runId, relativePath);
+  const stat = fs.statSync(target);
+  const extension = stat.isFile() ? path.extname(target).toLowerCase() : "";
+  const base = { name: artifact.name || path.basename(target), path: artifact.path, size: stat.isFile() ? stat.size : 0 };
+  const staticOutputDirectory = stat.isDirectory() && ["dist", "build", "out"].includes(path.basename(target).toLowerCase());
+  const dynamicProject = !staticOutputDirectory && findWebProject(directory, target);
+  if (dynamicProject) {
+    const project = publicWebProject(dynamicProject, directory);
+    const activePreview = webPreviewRuntime?.publicState() || { status: "idle" };
+    return { ...base, type: "web-project", project, server: activePreview.projectId === project.id ? activePreview : { status: "idle", logs: [] } };
+  }
+  const htmlEntry = artifactHtmlEntry(target);
+  if (htmlEntry) {
+    const relativeEntry = path.relative(directory, htmlEntry).replace(/\\/g, "/");
+    return { ...base, type: "web", url: artifactProtocolUrl(runId, relativeEntry) };
+  }
+  if (stat.isDirectory()) return { ...base, type: "directory", items: directoryPreviewItems(target) };
+  if (ARTIFACT_IMAGE_EXTENSIONS.has(extension)) return { ...base, type: "image", url: artifactProtocolUrl(runId, artifact.path) };
+  if (extension === ".pdf") return { ...base, type: "pdf", url: artifactProtocolUrl(runId, artifact.path) };
+  if (ARTIFACT_VIDEO_EXTENSIONS.has(extension)) return { ...base, type: "video", url: artifactProtocolUrl(runId, artifact.path) };
+  if (ARTIFACT_AUDIO_EXTENSIONS.has(extension)) return { ...base, type: "audio", url: artifactProtocolUrl(runId, artifact.path) };
+  if (ARTIFACT_TEXT_EXTENSIONS.has(extension) || stat.size <= 256 * 1024) {
+    const buffer = fs.readFileSync(target).subarray(0, 256 * 1024);
+    if (!buffer.includes(0)) return {
+      ...base,
+      type: "text",
+      language: extension.slice(1),
+      text: buffer.toString("utf8"),
+      url: artifactProtocolUrl(runId, artifact.path),
+    };
+  }
+  return { ...base, type: "unsupported" };
+}
+
+function artifactMimeType(filePath) {
+  const extension = path.extname(filePath).toLowerCase();
+  return ({
+    ".html": "text/html; charset=utf-8", ".htm": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8",
+    ".js": "text/javascript; charset=utf-8", ".mjs": "text/javascript; charset=utf-8", ".json": "application/json; charset=utf-8",
+    ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp", ".gif": "image/gif", ".svg": "image/svg+xml", ".avif": "image/avif", ".bmp": "image/bmp",
+    ".pdf": "application/pdf", ".wav": "audio/wav", ".mp3": "audio/mpeg", ".m4a": "audio/mp4", ".aac": "audio/aac", ".ogg": "audio/ogg", ".flac": "audio/flac",
+    ".mp4": "video/mp4", ".webm": "video/webm", ".mov": "video/quicktime", ".m4v": "video/mp4", ".ogv": "video/ogg",
+    ".woff": "font/woff", ".woff2": "font/woff2", ".ttf": "font/ttf", ".ico": "image/x-icon",
+  })[extension] || "application/octet-stream";
+}
+
+function registerArtifactPreviewProtocol() {
+  protocol.handle("charadock-artifact", async (request) => {
+    try {
+      const url = new URL(request.url);
+      const runId = url.hostname;
+      const run = workHistory.find((entry) => entry.id.toLowerCase() === runId);
+      const directory = validWorkDirectory();
+      if (!run || !directory || !run.workspaceKey || run.workspaceKey !== workDirectoryKey(directory)) throw new Error("Unavailable");
+      const relative = decodeURIComponent(url.pathname).replace(/^\/+/, "").replace(/\\/g, "/");
+      if (!relative || relative === ".." || relative.startsWith("../") || path.posix.isAbsolute(relative)) throw new Error("Invalid path");
+      let target = path.resolve(directory, ...relative.split("/"));
+      if (!isArtifactInsideWorkspace(directory, target)) throw new Error("Outside workspace");
+      if (fs.statSync(target).isDirectory()) target = path.join(target, "index.html");
+      const stat = fs.statSync(target);
+      if (!stat.isFile() || stat.size > 64 * 1024 * 1024) throw new Error("File unavailable");
+      return new Response(fs.readFileSync(target), {
+        status: 200,
+        headers: {
+          "Content-Type": artifactMimeType(target),
+          "Cache-Control": "no-store",
+          "Content-Security-Policy": "default-src 'self' data: blob:; connect-src 'none'; form-action 'none'; object-src 'none'; base-uri 'self'",
+          "X-Content-Type-Options": "nosniff",
+        },
+      });
+    } catch {
+      return new Response("Artifact preview unavailable", { status: 404, headers: { "Content-Type": "text/plain; charset=utf-8" } });
+    }
+  });
+}
+
+async function startDynamicWebPreview(payload = {}) {
+  const { directory, target } = resolveWorkArtifact(payload.runId, payload.path);
+  const project = findWebProject(directory, target);
+  if (!project) throw new Error(mainText("起動できるWebプロジェクトが見つかりません。", "No runnable web project was found."));
+  const publicProject = publicWebProject(project, directory);
+  if (payload.projectId && payload.projectId !== publicProject.id) throw new Error(mainText("プロジェクトの状態が変わりました。プレビューを開き直してください。", "The project changed. Reopen its preview."));
+  const script = String(payload.script || publicProject.preferredScript);
+  if (!publicProject.scripts.includes(script)) throw new Error(mainText("指定した起動スクリプトは利用できません。", "The selected start script is unavailable."));
+  const requestedRuntime = ["auto", "windows", "wsl"].includes(payload.runtime) ? payload.runtime : publicProject.runtime;
+  if (requestedRuntime === "wsl" && (process.platform !== "win32" || !wslCodexCommand)) {
+    throw new Error(mainText("WSLランタイムを利用できません。Windows側のNode.jsを選択してください。", "WSL runtime is unavailable. Choose Windows Node.js."));
+  }
+  const runtimes = { ...(preferences.data.webPreviewRuntimes || {}), [publicProject.id]: requestedRuntime };
+  preferences.patch({ webPreviewRuntimes: runtimes });
+  const effectiveRuntime = requestedRuntime === "wsl" ? "wsl" : process.platform === "win32" ? "windows" : "native";
+  const commandOverride = effectiveRuntime === "wsl"
+    ? (port) => {
+      const command = commandForWebProject(project, script, port, "linux");
+      return {
+        executable: "wsl.exe",
+        args: ["--cd", windowsPathToWsl(project.directory), command.executable, ...command.args],
+        label: `WSL · ${command.label}`,
+        cwd: project.directory,
+      };
+    }
+    : null;
+  try {
+    return await webPreviewRuntime.start({ project, projectId: publicProject.id, script, commandOverride, runtime: effectiveRuntime });
+  } catch (error) {
+    const missing = /ENOENT|not found|cannot find/i.test(String(error.message || ""));
+    if (missing) throw new Error(mainText(
+      `${project.packageManager}を起動できません。Node.jsとパッケージマネージャーを確認するか、WSLランタイムを選択してください。`,
+      `Could not start ${project.packageManager}. Check Node.js and the package manager, or select WSL runtime.`,
+    ));
+    throw error;
+  }
+}
+
+async function stopDynamicWebPreview() {
+  return webPreviewRuntime?.stop() || { status: "idle", logs: [] };
+}
+
+async function openDynamicWebPreview() {
+  const preview = webPreviewRuntime?.publicState();
+  if (preview?.status !== "running" || !/^http:\/\/127\.0\.0\.1:\d+\/$/.test(preview.url)) {
+    throw new Error(mainText("起動中のライブプレビューがありません。", "No live preview is running."));
+  }
+  await shell.openExternal(preview.url);
+  return true;
+}
+
 function recentWorkContext() {
   const directoryName = path.basename(validWorkDirectory());
+  const workspaceKey = workDirectoryKey();
   const characterId = activeCharacter().id;
   const runs = workHistory
-    .filter((run) => run.status === "completed" && (!run.characterId || run.characterId === characterId) && (!directoryName || run.workDirectoryName === directoryName))
+    .filter((run) => run.status === "completed" && (!run.characterId || run.characterId === characterId)
+      && (workspaceKey ? run.workspaceKey === workspaceKey : (!directoryName || run.workDirectoryName === directoryName)))
     .slice(0, 4)
     .reverse();
   if (!runs.length) return "";
@@ -1403,7 +1686,7 @@ function resetWorkClient() {
 function ensureWorkClient() {
   const directory = validWorkDirectory();
   if (!directory) throw new Error("先に作業先フォルダーを選択してください。");
-  const runtime = codexWorkspaceRuntime(directory);
+  const runtime = codexWorkspaceRuntime(directory, [activeCharacterHomeDirectory()]);
   if (workCodexClient?.cwd !== runtime.cwd || workCodexClient?.command !== runtime.command) {
     resetWorkClient();
     workCodexClient = new CodexAppServerClient({
@@ -1442,7 +1725,45 @@ async function chooseWorkDirectory() {
     buttonLabel: mainText("このフォルダーで作業", "Use this folder"),
   });
   if (result.canceled || !result.filePaths[0]) return publicAppState();
-  preferences.patch({ workDirectory: path.resolve(result.filePaths[0]), interactionMode: "work" });
+  await stopDynamicWebPreview();
+  const directory = path.resolve(result.filePaths[0]);
+  const added = addCharacterProject(preferences.data.characterWorkspaces, activeCharacter().id, directory);
+  preferences.patch({ characterWorkspaces: added.workspaces, workDirectory: directory, interactionMode: "work" });
+  characterHomeManager?.ensureProjectRecord(activeCharacter(), added.record);
+  resetWorkClient();
+  return broadcastAppState();
+}
+
+async function activateWorkProject(projectId) {
+  if (preferences.data.backend !== "codex") throw new Error(mainText("作業モードはCodex app-server接続時のみ利用できます。", "Work mode requires Codex app-server."));
+  const character = activeCharacter();
+  const requested = String(projectId || HOME_PROJECT_ID);
+  if (requested !== HOME_PROJECT_ID) {
+    const project = activeCharacterWorkspace(character.id).projects.find((entry) => entry.id === requested);
+    try {
+      if (!project || !fs.statSync(project.path).isDirectory()) throw new Error();
+    } catch {
+      throw new Error(mainText("担当プロジェクトのフォルダーが見つかりません。解除するか、もう一度追加してください。", "The attached project folder is missing. Remove it or add it again."));
+    }
+  }
+  await stopDynamicWebPreview();
+  const workspaces = activateCharacterProject(preferences.data.characterWorkspaces, character.id, projectId);
+  preferences.patch({ characterWorkspaces: workspaces });
+  const directory = selectedWorkspaceDirectory(character);
+  const active = activeWorkspaceProject(character.id);
+  preferences.patch({ workDirectory: directory, interactionMode: "work" });
+  characterHomeManager?.ensureProjectRecord(character, active);
+  resetWorkClient();
+  await stopActiveRealtime().catch(() => {});
+  return broadcastAppState();
+}
+
+async function detachWorkProject(projectId) {
+  await stopDynamicWebPreview();
+  const workspaces = removeCharacterProject(preferences.data.characterWorkspaces, activeCharacter().id, projectId);
+  preferences.patch({ characterWorkspaces: workspaces });
+  const directory = selectedWorkspaceDirectory();
+  preferences.patch({ workDirectory: directory });
   resetWorkClient();
   return broadcastAppState();
 }
@@ -1468,12 +1789,14 @@ async function setInteractionMode(mode) {
 
 function isTrustedSender(event, role = "control") {
   const frameUrl = event.senderFrame?.url || "";
-  const expected = role === "mascot" ? "/?mode=obs" : "/desktop/control.html";
+  const expected = role === "mascot" ? "/?mode=obs"
+    : role === "preview" ? "/desktop/artifact-preview.html"
+      : "/desktop/control.html";
   return frameUrl.startsWith(localServer.origin()) && frameUrl.includes(expected);
 }
 
 function assertTrustedAppSender(event) {
-  if (!isTrustedSender(event, "control") && !isTrustedSender(event, "mascot")) {
+  if (!isTrustedSender(event, "control") && !isTrustedSender(event, "mascot") && !isTrustedSender(event, "preview")) {
     throw new Error("Untrusted IPC sender");
   }
 }
@@ -1608,6 +1931,23 @@ function normalizedControlBounds(saved) {
   return { x: Math.round(x), y: Math.round(y), width: Math.round(width), height: Math.round(height) };
 }
 
+function artifactPreviewBoundsNearMascot() {
+  const mascotBounds = mascotWindow && !mascotWindow.isDestroyed() ? mascotWindow.getBounds() : defaultMascotBounds();
+  const area = screen.getDisplayMatching(mascotBounds).workArea;
+  const gap = 16;
+  const width = Math.min(760, Math.max(520, area.width - mascotBounds.width - gap * 3));
+  const height = Math.min(720, Math.max(440, area.height - 32));
+  const leftX = mascotBounds.x - width - gap;
+  const rightX = mascotBounds.x + mascotBounds.width + gap;
+  const x = leftX >= area.x + gap
+    ? leftX
+    : rightX + width <= area.x + area.width - gap
+      ? rightX
+      : Math.max(area.x + gap, Math.min(leftX, area.x + area.width - width - gap));
+  const y = Math.max(area.y + gap, Math.min(mascotBounds.y, area.y + area.height - height - gap));
+  return { x: Math.round(x), y: Math.round(y), width: Math.round(width), height: Math.round(height) };
+}
+
 function secureWindow(window, allowedPrefix) {
   window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   window.webContents.on("will-navigate", (event, url) => {
@@ -1620,8 +1960,11 @@ function syncMascotAlwaysOnTop() {
   // The mascot window covers a large transparent rectangle. Keeping it above
   // the control window can block every setting when Windows briefly composites
   // transparency as black during animation. Settings always take precedence.
-  const controlVisible = Boolean(controlWindow && !controlWindow.isDestroyed() && controlWindow.isVisible());
-  const desired = Boolean(preferences.data.alwaysOnTop) && !controlVisible;
+  const companionWindowVisible = Boolean(
+    (controlWindow && !controlWindow.isDestroyed() && controlWindow.isVisible())
+    || (artifactPreviewWindow && !artifactPreviewWindow.isDestroyed() && artifactPreviewWindow.isVisible()),
+  );
+  const desired = Boolean(preferences.data.alwaysOnTop) && !companionWindowVisible;
   // Reapplying unchanged native styles to a transparent Windows window can
   // stall Chromium's shared compositor and leave the control renderer black.
   if (mascotWindow.isAlwaysOnTop() !== desired) mascotWindow.setAlwaysOnTop(desired, "floating");
@@ -1815,6 +2158,58 @@ function createControlWindow() {
       controlWindow.hide();
     }
   });
+}
+
+function createArtifactPreviewWindow() {
+  if (artifactPreviewWindow && !artifactPreviewWindow.isDestroyed()) return artifactPreviewWindow;
+  artifactPreviewWindow = new BrowserWindow({
+    ...artifactPreviewBoundsNearMascot(),
+    minWidth: 520,
+    minHeight: 440,
+    title: mainText("CharaDock プレビュー", "CharaDock Preview"),
+    frame: false,
+    backgroundColor: "#111114",
+    show: false,
+    alwaysOnTop: Boolean(preferences.data.alwaysOnTop),
+    webPreferences: {
+      preload: path.join(__dirname, "preload-artifact-preview.cjs"),
+      nodeIntegration: false,
+      contextIsolation: true,
+      sandbox: true,
+      backgroundThrottling: false,
+    },
+  });
+  artifactPreviewWindow.setMenuBarVisibility(false);
+  secureWindow(artifactPreviewWindow, `${localServer.origin()}/desktop/artifact-preview.html`);
+  artifactPreviewWindow.loadURL(`${localServer.origin()}/desktop/artifact-preview.html`);
+  artifactPreviewWindow.on("show", syncMascotAlwaysOnTop);
+  artifactPreviewWindow.on("hide", syncMascotAlwaysOnTop);
+  artifactPreviewWindow.on("close", (event) => {
+    if (!quitting) {
+      event.preventDefault();
+      artifactPreviewWindow.hide();
+    }
+  });
+  artifactPreviewWindow.on("closed", () => {
+    artifactPreviewWindow = null;
+    activeArtifactPreviewTarget = null;
+    syncMascotAlwaysOnTop();
+  });
+  return artifactPreviewWindow;
+}
+
+async function showArtifactPreviewWindow(runId, relativePath) {
+  const target = { runId: String(runId || ""), path: String(relativePath || "") };
+  const preview = previewWorkArtifact(target.runId, target.path);
+  activeArtifactPreviewTarget = target;
+  const window = createArtifactPreviewWindow();
+  if (!window.isVisible()) window.setBounds(artifactPreviewBoundsNearMascot());
+  const payload = { target, preview, language: interfaceLanguage() };
+  if (window.webContents.isLoadingMainFrame()) window.webContents.once("did-finish-load", () => window.webContents.send("artifactPreview:show", payload));
+  else window.webContents.send("artifactPreview:show", payload);
+  window.show();
+  window.focus();
+  return true;
 }
 
 function scheduleBoundsSave(key, window) {
@@ -2663,6 +3058,221 @@ async function runSmokeTest() {
     if (index === 0) fs.writeFileSync(path.join(outputDir, "mascot.png"), image.toPNG());
   }
   await setCharacter(previousCharacter);
+  if (process.argv.includes("--verify-project-preview")) {
+    const previousProjectPreviewState = {
+      backend: preferences.data.backend,
+      interactionMode: preferences.data.interactionMode,
+      workDirectory: preferences.data.workDirectory,
+      characterWorkspaces: JSON.parse(JSON.stringify(preferences.data.characterWorkspaces || {})),
+      workHistory: workHistory.map((run) => ({ ...run, activities: [...(run.activities || [])], artifacts: (run.artifacts || []).map((artifact) => ({ ...artifact })) })),
+      activeWorkRunId,
+    };
+    const previewWorkspace = fs.mkdtempSync(path.join(app.getPath("temp"), "charadock-project-preview-"));
+    const previewProject = path.join(previewWorkspace, "next-dashboard");
+    try {
+      fs.mkdirSync(path.join(previewProject, "node_modules"), { recursive: true });
+      fs.mkdirSync(path.join(previewProject, "dist"), { recursive: true });
+      fs.writeFileSync(path.join(previewProject, "package.json"), `${JSON.stringify({
+        name: "charadock-next-dashboard",
+        scripts: { dev: "node server.cjs" },
+        dependencies: { next: "0.0.0-smoke-fixture" },
+      }, null, 2)}\n`);
+      fs.writeFileSync(path.join(previewProject, "server.cjs"), [
+        'const http = require("node:http");',
+        'const portAt = process.argv.indexOf("--port");',
+        'const port = Number(process.argv[portAt + 1]);',
+        'const page = `<!doctype html><html lang="ja"><meta charset="utf-8"><style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:linear-gradient(145deg,#111827,#183153);color:#f8fafc;font:16px system-ui}.card{width:min(620px,82vw);padding:40px;border:1px solid #ffffff30;border-radius:28px;background:#ffffff12;box-shadow:0 24px 80px #0007}small{color:#6ee7d8;letter-spacing:.16em;text-transform:uppercase}h1{font-size:42px;margin:10px 0}p{color:#cbd5e1;line-height:1.7}.status{display:inline-flex;gap:8px;align-items:center;padding:9px 14px;border-radius:99px;background:#2dd4bf20}.dot{width:9px;height:9px;border-radius:50%;background:#5eead4;box-shadow:0 0 16px #5eead4}</style><body><main class="card"><small>CharaDock · Next.js</small><h1>Live workspace</h1><p>キャラクターと作った動的アプリを、作業履歴からそのまま確認できます。</p><span class="status"><i class="dot"></i>Fast Refresh ready</span></main></body></html>`;',
+        'http.createServer((_request, response) => { response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }); response.end(page); }).listen(port, "127.0.0.1", () => console.log("CharaDock preview fixture ready"));',
+      ].join("\n"));
+      fs.writeFileSync(path.join(previewProject, "dist", "index.html"), '<!doctype html><html lang="ja"><meta charset="utf-8"><link rel="stylesheet" href="styles.css"><body><main><small>STATIC OUTPUT</small><h1>成果物プレビュー</h1><p>生成したページをアプリ内で安全に確認できます。</p><div>ネットワーク通信なし · Sandbox</div></main></body></html>');
+      fs.writeFileSync(path.join(previewProject, "dist", "styles.css"), 'body{margin:0;min-height:100vh;display:grid;place-items:center;background:linear-gradient(145deg,#18181b,#312e81);color:#fafafa;font:16px system-ui}main{width:min(620px,82vw);padding:40px;border:1px solid #ffffff30;border-radius:28px;background:#ffffff12;box-shadow:0 24px 80px #0008}small{color:#c4b5fd;letter-spacing:.16em}h1{font-size:40px;margin:10px 0}p{color:#d4d4d8}div{display:inline-block;padding:9px 14px;border-radius:99px;background:#ffffff12;color:#ddd6fe}');
+      fs.writeFileSync(path.join(previewWorkspace, "REPORT.md"), [
+        "# CharaDock Preview Report",
+        "",
+        "Character Homeから生成した成果物を、その場で確認できます。",
+        "",
+        "- [x] Markdown",
+        "- [x] Code",
+        "- [x] Image",
+        "- [x] PDF",
+        "",
+        "```js",
+        "const preview = await character.openArtifact();",
+        "```",
+      ].join("\n"));
+      fs.writeFileSync(path.join(previewWorkspace, "dashboard.js"), [
+        "export async function createCharacterDashboard(character) {",
+        "  const project = await character.currentProject();",
+        "  return {",
+        "    title: `${character.name} workspace`,",
+        "    project: project.name,",
+        "    preview: true,",
+        "  };",
+        "}",
+      ].join("\n"));
+      fs.writeFileSync(path.join(previewWorkspace, "preview-card.svg"), '<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="720" viewBox="0 0 1200 720"><defs><linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#111827"/><stop offset="1" stop-color="#312e81"/></linearGradient><filter id="glow"><feGaussianBlur stdDeviation="32"/></filter></defs><rect width="1200" height="720" rx="48" fill="url(#bg)"/><circle cx="960" cy="140" r="150" fill="#2dd4bf" opacity=".22" filter="url(#glow)"/><circle cx="180" cy="640" r="190" fill="#a78bfa" opacity=".22" filter="url(#glow)"/><text x="90" y="120" fill="#5eead4" font-family="system-ui" font-size="25" letter-spacing="8">CHARADOCK OUTPUT</text><text x="90" y="255" fill="white" font-family="system-ui" font-size="76" font-weight="700">Visual artifact</text><text x="90" y="335" fill="#cbd5e1" font-family="system-ui" font-size="34">画像も作業履歴から、その場でプレビュー。</text><rect x="90" y="430" width="425" height="88" rx="44" fill="#ffffff" opacity=".1"/><circle cx="140" cy="474" r="12" fill="#5eead4"/><text x="175" y="486" fill="white" font-family="system-ui" font-size="30">Preview ready</text></svg>');
+      const pdfObjects = [
+        "<< /Type /Catalog /Pages 2 0 R >>",
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>",
+        "<< /Length 170 >>\nstream\nBT\n/F1 28 Tf\n72 690 Td\n(CharaDock PDF Preview) Tj\n/F1 15 Tf\n0 -42 Td\n(Generated output is visible inside the app.) Tj\n0 -28 Td\n(Character Home / Artifact Cards / Safe Preview) Tj\nET\nendstream",
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+      ];
+      let pdfSource = "%PDF-1.4\n";
+      const pdfOffsets = [0];
+      pdfObjects.forEach((object, index) => { pdfOffsets.push(Buffer.byteLength(pdfSource)); pdfSource += `${index + 1} 0 obj\n${object}\nendobj\n`; });
+      const pdfXref = Buffer.byteLength(pdfSource);
+      pdfSource += `xref\n0 ${pdfObjects.length + 1}\n0000000000 65535 f \n${pdfOffsets.slice(1).map((offset) => `${String(offset).padStart(10, "0")} 00000 n `).join("\n")}\ntrailer\n<< /Size ${pdfObjects.length + 1} /Root 1 0 R >>\nstartxref\n${pdfXref}\n%%EOF\n`;
+      fs.writeFileSync(path.join(previewWorkspace, "preview.pdf"), Buffer.from(pdfSource));
+
+      const attached = addCharacterProject(preferences.data.characterWorkspaces, activeCharacter().id, previewWorkspace);
+      preferences.patch({
+        backend: "codex",
+        interactionMode: "work",
+        workDirectory: previewWorkspace,
+        characterWorkspaces: attached.workspaces,
+      });
+      const homeDirectory = ensureCharacterHome();
+      const projectRecord = characterHomeManager.ensureProjectRecord(activeCharacter(), attached.record);
+      for (const relative of ["HOME.md", path.relative(homeDirectory, projectRecord), path.join(".agents", "skills", "manage-character-home", "SKILL.md")]) {
+        if (!fs.statSync(path.join(homeDirectory, relative)).isFile()) throw new Error(`Character Home file is missing: ${relative}`);
+      }
+      resetWorkClient();
+      broadcastAppState();
+      await new Promise((resolve) => setTimeout(resolve, 220));
+      const characterWorkspaceVisible = await controlWindow.webContents.executeJavaScript(`(async () => {
+        document.querySelector('[data-page="character"]').click();
+        const section = document.querySelector('#characterWorkspaceTitle').closest('.character-workspace');
+        section.scrollIntoView({ block: 'center' });
+        await new Promise((resolve) => setTimeout(resolve, 220));
+        const text = section.textContent;
+        return text.includes('キャラクターホーム') && text.includes(${JSON.stringify(path.basename(previewWorkspace))}) &&
+          section.querySelectorAll('.character-project-row').length >= 2;
+      })()`);
+      if (!characterWorkspaceVisible) throw new Error("Character Home and attached project were not visible in settings");
+      fs.writeFileSync(path.join(outputDir, "evidence-character-home.png"), (await capturePaintedWindow(controlWindow, "Character Home evidence")).toPNG());
+
+      const artifactRun = beginWorkRun("Next.jsのダッシュボードと静的成果物を作成する");
+      updateWorkRun(artifactRun, {
+        status: "completed",
+        result: "動的アプリと静的ページを作成しました。成果物から確認できます。",
+        artifacts: [
+          { path: "next-dashboard", name: "Next.js dashboard", kind: "directory" },
+          { path: "next-dashboard/dist", name: "Static build", kind: "directory" },
+          { path: "REPORT.md", name: "REPORT.md", kind: "file" },
+          { path: "dashboard.js", name: "dashboard.js", kind: "file" },
+          { path: "preview-card.svg", name: "preview-card.svg", kind: "file" },
+          { path: "preview.pdf", name: "preview.pdf", kind: "file" },
+        ],
+        finished: true,
+      });
+      await showArtifactPreviewWindow(artifactRun.id, "REPORT.md");
+      for (let attempt = 0; attempt < 60; attempt += 1) {
+        const ready = await artifactPreviewWindow.webContents.executeJavaScript("Boolean(document.querySelector('.markdown-preview h1'))").catch(() => false);
+        if (ready) break;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      const avatarPreviewVisible = await artifactPreviewWindow.webContents.executeJavaScript(`(() => ({
+        title: document.querySelector('#previewTitle')?.textContent,
+        heading: document.querySelector('.markdown-preview h1')?.textContent,
+      }))()`);
+      if (!artifactPreviewWindow.isVisible() || avatarPreviewVisible.title !== "REPORT.md" || !avatarPreviewVisible.heading?.includes("CharaDock")) {
+        throw new Error("avatar companion artifact preview was not visible");
+      }
+      const previewBounds = artifactPreviewWindow.getBounds();
+      const mascotBounds = mascotWindow.getBounds();
+      const overlapWidth = Math.max(0, Math.min(previewBounds.x + previewBounds.width, mascotBounds.x + mascotBounds.width) - Math.max(previewBounds.x, mascotBounds.x));
+      const overlapHeight = Math.max(0, Math.min(previewBounds.y + previewBounds.height, mascotBounds.y + mascotBounds.height) - Math.max(previewBounds.y, mascotBounds.y));
+      if (overlapWidth * overlapHeight > 0) throw new Error("avatar companion preview covered the mascot window");
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      fs.writeFileSync(path.join(outputDir, "evidence-avatar-companion-preview.png"), (await capturePaintedWindow(artifactPreviewWindow, "avatar companion preview evidence")).toPNG());
+      artifactPreviewWindow.hide();
+      const staticPreviewVisible = await controlWindow.webContents.executeJavaScript(`(async () => {
+        document.querySelector('[data-page="chat"]').click();
+        document.querySelector('#workHistoryTab').click();
+        await new Promise((resolve) => setTimeout(resolve, 180));
+        const button = [...document.querySelectorAll('.work-artifact-button')].find((item) => item.textContent.includes('Static build'));
+        button?.click();
+        for (let attempt = 0; attempt < 60 && document.querySelector('#artifactPreview').hidden; attempt += 1) await new Promise((resolve) => setTimeout(resolve, 50));
+        await new Promise((resolve) => setTimeout(resolve, 450));
+        return !document.querySelector('#artifactPreview').hidden && document.querySelector('#artifactPreview iframe')?.src.startsWith('charadock-artifact:');
+      })()`);
+      if (!staticPreviewVisible) throw new Error("sandboxed static artifact preview was not visible");
+      fs.writeFileSync(path.join(outputDir, "evidence-static-artifact-preview.png"), (await capturePaintedWindow(controlWindow, "static artifact preview evidence")).toPNG());
+
+      for (const evidence of [
+        { name: "REPORT.md", selector: ".artifact-markdown-preview article", file: "evidence-markdown-preview.png", markdown: true },
+        { name: "dashboard.js", selector: "#artifactPreview pre", file: "evidence-code-preview.png", highlighted: true },
+        { name: "preview-card.svg", selector: "#artifactPreview img", file: "evidence-image-preview.png" },
+        { name: "preview.pdf", selector: "#artifactPreview iframe", file: "evidence-pdf-preview.png" },
+      ]) {
+        const artifactVisible = await controlWindow.webContents.executeJavaScript(`(async () => {
+          document.querySelector('#closeArtifactPreviewButton').click();
+          const button = [...document.querySelectorAll('.work-artifact-button')].find((item) => item.textContent.includes(${JSON.stringify(evidence.name)}));
+          button?.click();
+          for (let attempt = 0; attempt < 60 && !document.querySelector(${JSON.stringify(evidence.selector)}); attempt += 1) await new Promise((resolve) => setTimeout(resolve, 50));
+          await new Promise((resolve) => setTimeout(resolve, ${evidence.name.endsWith(".pdf") ? 900 : 220}));
+          const previewVisible = !document.querySelector('#artifactPreview').hidden && Boolean(document.querySelector(${JSON.stringify(evidence.selector)}));
+          const highlighted = ${JSON.stringify(Boolean(evidence.highlighted))}
+            ? Boolean(document.querySelector('#artifactPreview code.hljs span[class^="hljs-"]'))
+            : true;
+          const markdownRendered = ${JSON.stringify(Boolean(evidence.markdown))}
+            ? Boolean(document.querySelector('.artifact-markdown-preview h1') && document.querySelector('.artifact-markdown-preview ul') && document.querySelector('.artifact-markdown-preview code.hljs'))
+            : true;
+          return previewVisible && highlighted && markdownRendered;
+        })()`);
+        if (!artifactVisible) throw new Error(`${evidence.name} artifact preview was not visible`);
+        fs.writeFileSync(path.join(outputDir, evidence.file), (await capturePaintedWindow(controlWindow, `${evidence.name} preview evidence`)).toPNG());
+      }
+
+      const dynamicPreviewReady = await controlWindow.webContents.executeJavaScript(`(async () => {
+        document.querySelector('#closeArtifactPreviewButton').click();
+        const button = [...document.querySelectorAll('.work-artifact-button')].find((item) => item.textContent.includes('Next.js dashboard'));
+        button?.click();
+        for (let attempt = 0; attempt < 60 && !document.querySelector('.web-preview-launch'); attempt += 1) await new Promise((resolve) => setTimeout(resolve, 50));
+        return document.querySelector('.web-preview-launch')?.textContent.includes('Next.js') &&
+          document.querySelector('.web-preview-launch code')?.textContent.includes('npm run dev');
+      })()`);
+      if (!dynamicPreviewReady) throw new Error("dynamic web preview launch card was not visible");
+      fs.writeFileSync(path.join(outputDir, "evidence-dynamic-preview-ready.png"), (await capturePaintedWindow(controlWindow, "dynamic preview launch evidence")).toPNG());
+
+      const dynamicDescriptor = previewWorkArtifact(artifactRun.id, "next-dashboard");
+      const runningPreview = await startDynamicWebPreview({
+        runId: artifactRun.id,
+        path: "next-dashboard",
+        projectId: dynamicDescriptor.project.id,
+        script: "dev",
+        runtime: "windows",
+      });
+      if (runningPreview.status !== "running" || !runningPreview.logs.some((line) => line.includes("fixture ready"))) {
+        throw new Error("Windows package-script preview server did not become ready");
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+      const livePreviewVisible = await controlWindow.webContents.executeJavaScript(`(() => {
+        const frame = document.querySelector('.web-live-preview iframe');
+        return Boolean(frame?.src.startsWith('http://127.0.0.1:') && document.querySelector('.web-preview-running')?.textContent.includes('ライブ更新中'));
+      })()`);
+      if (!livePreviewVisible) throw new Error("running dynamic preview was not embedded in the control window");
+      fs.writeFileSync(path.join(outputDir, "evidence-dynamic-preview-running.png"), (await capturePaintedWindow(controlWindow, "running dynamic preview evidence")).toPNG());
+      await stopDynamicWebPreview();
+      if (webPreviewRuntime.publicState().status !== "idle") throw new Error("preview server did not stop cleanly");
+      console.log("project-preview-smoke: Character Home, static artifact, and Windows live server ok");
+    } finally {
+      await stopDynamicWebPreview().catch(() => {});
+      preferences.patch({
+        backend: previousProjectPreviewState.backend,
+        interactionMode: previousProjectPreviewState.interactionMode,
+        workDirectory: previousProjectPreviewState.workDirectory,
+        characterWorkspaces: previousProjectPreviewState.characterWorkspaces,
+        workHistory: previousProjectPreviewState.workHistory,
+      });
+      workHistory = previousProjectPreviewState.workHistory;
+      activeWorkRunId = previousProjectPreviewState.activeWorkRunId;
+      resetWorkClient();
+      broadcastAppState();
+      fs.rmSync(previewWorkspace, { recursive: true, force: true });
+    }
+  }
   if (process.argv.includes("--verify-realtime")) {
     const recordRealtimeSampleArgument = process.argv.find((argument) => argument.startsWith("--record-realtime-sample="));
     const recordRealtimeSamplePath = recordRealtimeSampleArgument
@@ -3419,14 +4029,19 @@ async function startCodexRealtimeVoice(payload, target = "control") {
 }
 
 async function setCharacter(characterId) {
+  await stopDynamicWebPreview();
   const character = characterById(characterId);
   const characterTtsProfiles = { ...(preferences.data.characterTtsProfiles || {}) };
   if (!characterTtsProfiles[character.id]) characterTtsProfiles[character.id] = characterTtsSettings(character.id);
   preferences.patch({ characterId: character.id, characterTtsProfiles });
+  const configured = effectiveCharacter(character);
+  ensureCharacterHome(configured);
+  repairCharacterWorkspaceSelection(configured);
+  preferences.patch({ workDirectory: selectedWorkspaceDirectory(configured) });
+  resetWorkClient();
   conversationHistory = conversationHistoryForCharacter(character.id);
   codexClient?.reset();
   localServer.setSnapshot(buildAvatarSnapshot(character.id));
-  const configured = effectiveCharacter(character);
   codexClient?.setPersona(personaInstructions(configured));
   openAIClient?.reset();
   mascotWindow?.webContents.send("mascot:character", configured);
@@ -3468,7 +4083,10 @@ async function removeGeneratedCharacter(characterId) {
   delete conversationHistories[characterId];
   const memoryProfiles = { ...(preferences.data.characterMemories || {}) };
   delete memoryProfiles[characterId];
-  preferences.patch({ ...plan.patch, conversationHistories, characterMemories: memoryProfiles });
+  const characterWorkspaces = { ...(preferences.data.characterWorkspaces || {}) };
+  delete characterWorkspaces[characterId];
+  characterHomeManager?.remove(characterId);
+  preferences.patch({ ...plan.patch, conversationHistories, characterMemories: memoryProfiles, characterWorkspaces });
   characterThumbnailCache.delete(`${plan.directory}:complete`);
   characterMotionCache.delete(plan.directory);
   lastPetPhraseIndex.delete(characterId);
@@ -3791,6 +4409,10 @@ function registerIpc() {
     assertTrustedSender(event, "mascot");
     return openWorkArtifact(payload?.runId, payload?.path);
   });
+  ipcMain.handle("mascotInline:previewWorkArtifact", async (event, payload) => {
+    assertTrustedSender(event, "mascot");
+    return showArtifactPreviewWindow(payload?.runId, payload?.path);
+  });
   ipcMain.handle("mascotInline:getConversationHistory", (event) => {
     assertTrustedSender(event, "mascot");
     return conversationHistory.map((entry) => ({ ...entry }));
@@ -3936,6 +4558,15 @@ function registerIpc() {
   ipcMain.handle("app:getState", (event) => {
     assertTrustedSender(event);
     return publicAppState();
+  });
+  ipcMain.handle("app:openExternalUrl", async (event, value) => {
+    assertTrustedSender(event);
+    const url = new URL(String(value || ""));
+    if (!["https:", "http:"].includes(url.protocol) || url.username || url.password) {
+      throw new Error(mainText("安全なHTTPリンクではありません。", "This is not a safe HTTP link."));
+    }
+    await shell.openExternal(url.toString(), { activate: true });
+    return true;
   });
   ipcMain.handle("codex:models", async (event) => {
     assertTrustedSender(event);
@@ -4622,6 +5253,14 @@ function registerIpc() {
     assertTrustedSender(event);
     return chooseWorkDirectory();
   });
+  ipcMain.handle("work:activateProject", async (event, projectId) => {
+    assertTrustedSender(event);
+    return activateWorkProject(projectId);
+  });
+  ipcMain.handle("work:detachProject", async (event, projectId) => {
+    assertTrustedSender(event);
+    return detachWorkProject(projectId);
+  });
   ipcMain.handle("work:openDirectory", async (event) => {
     assertTrustedSender(event);
     return openWorkDirectory();
@@ -4629,6 +5268,58 @@ function registerIpc() {
   ipcMain.handle("work:openArtifact", async (event, payload) => {
     assertTrustedSender(event);
     return openWorkArtifact(payload?.runId, payload?.path);
+  });
+  ipcMain.handle("work:previewArtifact", async (event, payload) => {
+    assertTrustedSender(event);
+    return previewWorkArtifact(payload?.runId, payload?.path);
+  });
+  ipcMain.handle("artifactPreview:getCurrent", (event) => {
+    assertTrustedSender(event, "preview");
+    if (!activeArtifactPreviewTarget) return null;
+    return {
+      target: { ...activeArtifactPreviewTarget },
+      preview: previewWorkArtifact(activeArtifactPreviewTarget.runId, activeArtifactPreviewTarget.path),
+      language: interfaceLanguage(),
+    };
+  });
+  ipcMain.handle("artifactPreview:close", (event) => {
+    assertTrustedSender(event, "preview");
+    artifactPreviewWindow?.hide();
+    return true;
+  });
+  ipcMain.handle("artifactPreview:openArtifact", async (event) => {
+    assertTrustedSender(event, "preview");
+    if (!activeArtifactPreviewTarget) throw new Error(mainText("プレビュー対象がありません。", "There is no active preview."));
+    return openWorkArtifact(activeArtifactPreviewTarget.runId, activeArtifactPreviewTarget.path);
+  });
+  ipcMain.handle("artifactPreview:webPreviewStart", async (event, payload) => {
+    assertTrustedSender(event, "preview");
+    if (!activeArtifactPreviewTarget) throw new Error(mainText("プレビュー対象がありません。", "There is no active preview."));
+    return startDynamicWebPreview({ ...payload, ...activeArtifactPreviewTarget });
+  });
+  ipcMain.handle("artifactPreview:webPreviewStop", async (event) => {
+    assertTrustedSender(event, "preview");
+    return stopDynamicWebPreview();
+  });
+  ipcMain.handle("artifactPreview:webPreviewOpen", async (event) => {
+    assertTrustedSender(event, "preview");
+    return openDynamicWebPreview();
+  });
+  ipcMain.handle("work:webPreviewStart", async (event, payload) => {
+    assertTrustedSender(event);
+    return startDynamicWebPreview(payload);
+  });
+  ipcMain.handle("work:webPreviewStop", async (event) => {
+    assertTrustedSender(event);
+    return stopDynamicWebPreview();
+  });
+  ipcMain.handle("work:webPreviewState", (event) => {
+    assertTrustedSender(event);
+    return webPreviewRuntime?.publicState() || { status: "idle", logs: [] };
+  });
+  ipcMain.handle("work:webPreviewOpen", async (event) => {
+    assertTrustedSender(event);
+    return openDynamicWebPreview();
   });
   ipcMain.handle("audio:transcribe", async (event, payload) => {
     assertTrustedSender(event);
@@ -5579,7 +6270,7 @@ async function sendChatMessage(message, { localImagePath = "", localAttachments 
       if (initialBrowserUrl) await openBrowserPage(browserSession, initialBrowserUrl);
       browserCodexClient?.stop();
       const browserRuntime = workMode
-        ? codexWorkspaceRuntime(validWorkDirectory())
+        ? codexWorkspaceRuntime(validWorkDirectory(), [activeCharacterHomeDirectory()])
         : { cwd: app.getPath("documents"), command: codexCommand };
       if (workMode) workRuntimeDirectory = browserRuntime.cwd;
       browserCodexClient = new CodexAppServerClient({
@@ -5833,8 +6524,30 @@ async function boot() {
   const projectRootIsArchive = projectRoot.toLowerCase().includes(".asar");
   const codexWorkingDirectory = app.isPackaged || projectRootIsArchive ? app.getPath("documents") : projectRoot;
   preferences = new Preferences(path.join(app.getPath("userData"), "preferences.json"), safeStorage);
+  characterHomeManager = new CharacterHomeManager(
+    path.join(app.getPath("userData"), "character-homes"),
+    path.join(projectRoot, ".agents", "skills", "manage-character-home"),
+  );
+  webPreviewRuntime = new WebPreviewRuntime({
+    onState: (previewState) => {
+      controlWindow?.webContents.send("work:webPreviewState", previewState);
+      if (artifactPreviewWindow && !artifactPreviewWindow.isDestroyed()) {
+        artifactPreviewWindow.webContents.send("artifactPreview:webPreviewState", previewState);
+      }
+    },
+  });
+  const initialCharacter = activeCharacter();
+  const initialHome = characterHomeManager.ensure(initialCharacter);
+  let initialWorkspaces = preferences.data.characterWorkspaces;
+  if (!Object.prototype.hasOwnProperty.call(initialWorkspaces, initialCharacter.id) && validWorkDirectory() && path.resolve(validWorkDirectory()) !== path.resolve(initialHome)) {
+    initialWorkspaces = addCharacterProject(initialWorkspaces, initialCharacter.id, validWorkDirectory()).workspaces;
+  }
+  preferences.patch({ characterWorkspaces: initialWorkspaces });
+  repairCharacterWorkspaceSelection(initialCharacter);
+  preferences.patch({ workDirectory: selectedWorkspaceDirectory(initialCharacter) });
   conversationHistory = conversationHistoryForCharacter(preferences.data.characterId);
   workHistory = Array.isArray(preferences.data.workHistory) ? preferences.data.workHistory.map((run) => ({ ...run, activities: [...(run.activities || [])] })) : [];
+  registerArtifactPreviewProtocol();
   persistWorkHistory();
   irodoriVoiceLibrary = new IrodoriVoiceLibrary(path.join(app.getPath("userData"), "irodori-voices"));
   if (!preferences.data.irodoriVoices.length && preferences.data.irodoriReferenceAudioPath) {
@@ -5969,8 +6682,10 @@ app.on("before-quit", () => {
   workCodexClient?.stop();
   browserCodexClient?.stop();
   computerCodexClient?.stop();
+  webPreviewRuntime?.stop().catch(() => {});
   stopBeatriceHost();
   if (browserWindow && !browserWindow.isDestroyed()) browserWindow.destroy();
+  if (artifactPreviewWindow && !artifactPreviewWindow.isDestroyed()) artifactPreviewWindow.destroy();
   destroyIrodoriWindow();
   destroyKokoroWindow();
   sbv2Worker?.stop();

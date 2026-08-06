@@ -37,6 +37,41 @@ test("interface symbols use individually licensed SVG assets", () => {
   }
 });
 
+test("artifact syntax highlighting uses a licensed local highlight.js build", () => {
+  const vendor = path.join(projectRoot, "vendor", "highlightjs", "11.11.1");
+  assert.ok(fs.statSync(path.join(vendor, "highlight.min.js")).size > 100_000);
+  assert.ok(fs.statSync(path.join(vendor, "styles", "github-dark-dimmed.min.css")).size > 1_000);
+  assert.match(fs.readFileSync(path.join(vendor, "LICENSE"), "utf8"), /BSD 3-Clause License/);
+  assert.equal(packageJson.devDependencies["@highlightjs/cdn-assets"], "11.11.1");
+  const html = fs.readFileSync(path.join(projectRoot, "desktop", "control.html"), "utf8");
+  const control = fs.readFileSync(path.join(projectRoot, "desktop", "control.js"), "utf8");
+  assert.match(html, /vendor\/highlightjs\/11\.11\.1\/highlight\.min\.js/);
+  assert.match(html, /github-dark-dimmed\.min\.css/);
+  assert.match(control, /window\.hljs\.highlight\(source/);
+  assert.match(fs.readFileSync(path.join(projectRoot, "THIRD_PARTY_NOTICES.md"), "utf8"), /### highlight\.js/);
+});
+
+test("Markdown artifacts use pinned local rendering and sanitizing libraries", () => {
+  const markdownVendor = path.join(projectRoot, "vendor", "markdown-it", "14.3.0");
+  const purifierVendor = path.join(projectRoot, "vendor", "dompurify", "3.4.13");
+  assert.ok(fs.statSync(path.join(markdownVendor, "markdown-it.min.js")).size > 100_000);
+  assert.ok(fs.statSync(path.join(purifierVendor, "purify.min.js")).size > 20_000);
+  assert.match(fs.readFileSync(path.join(markdownVendor, "LICENSE"), "utf8"), /Permission is hereby granted/);
+  assert.match(fs.readFileSync(path.join(purifierVendor, "LICENSE"), "utf8"), /Apache License/);
+  assert.equal(packageJson.devDependencies["markdown-it"], "14.3.0");
+  assert.equal(packageJson.devDependencies.dompurify, "3.4.13");
+  const html = fs.readFileSync(path.join(projectRoot, "desktop", "control.html"), "utf8");
+  const control = fs.readFileSync(path.join(projectRoot, "desktop", "control.js"), "utf8");
+  assert.match(html, /vendor\/markdown-it\/14\.3\.0\/markdown-it\.min\.js/);
+  assert.match(html, /vendor\/dompurify\/3\.4\.13\/purify\.min\.js/);
+  assert.match(control, /html: false/);
+  assert.match(control, /DOMPurify\.sanitize/);
+  assert.match(control, /FORBID_TAGS/);
+  const notices = fs.readFileSync(path.join(projectRoot, "THIRD_PARTY_NOTICES.md"), "utf8");
+  assert.match(notices, /### markdown-it/);
+  assert.match(notices, /### DOMPurify/);
+});
+
 test("desktop distribution includes its license and modification records", () => {
   const files = packageJson.build.files;
   for (const required of ["LICENSE", "NOTICE", "MODIFICATIONS.md", "DISTRIBUTION_ASSET_LICENSE.md", "THIRD_PARTY_NOTICES.md"]) {
@@ -188,10 +223,40 @@ test("conversation and work surfaces expose history, folder access, interruption
   assert.match(control, /bindFileDropZone\(\$\("#chatForm"\)/);
   assert.match(control, /appendWorkArtifactActions/);
   assert.match(mascot, /pendingFollowUpMessage = message/);
-  assert.match(mascot, /mascotInline:openWorkArtifact/);
+  assert.match(mascot, /mascotInline:previewWorkArtifact/);
   assert.match(mascot, /responseSpeaking[\s\S]*stopTtsPlayback\(\)/);
   assert.match(main, /mascotInline:openWorkDirectory/);
   assert.match(main, /work:openDirectory/);
+});
+
+test("avatar output buttons open a sandboxed companion preview without covering the mascot", () => {
+  const main = fs.readFileSync(path.join(projectRoot, "desktop", "main.cjs"), "utf8");
+  const mascot = fs.readFileSync(path.join(projectRoot, "desktop", "preload-mascot.cjs"), "utf8");
+  const previewPreload = fs.readFileSync(path.join(projectRoot, "desktop", "preload-artifact-preview.cjs"), "utf8");
+  const previewHtml = fs.readFileSync(path.join(projectRoot, "desktop", "artifact-preview.html"), "utf8");
+  const previewRenderer = fs.readFileSync(path.join(projectRoot, "desktop", "artifact-preview.js"), "utf8");
+  assert.match(mascot, /ipcRenderer\.invoke\("mascotInline:previewWorkArtifact"/);
+  assert.match(main, /function artifactPreviewBoundsNearMascot\(\)/);
+  assert.match(main, /preload-artifact-preview\.cjs/);
+  assert.match(main, /nodeIntegration: false,[\s\S]*contextIsolation: true,[\s\S]*sandbox: true/);
+  assert.match(main, /assertTrustedSender\(event, "preview"\)/);
+  assert.match(previewPreload, /artifactPreview:getCurrent/);
+  assert.match(previewPreload, /artifactPreview:openArtifact/);
+  assert.match(previewHtml, /Content-Security-Policy/);
+  assert.match(previewHtml, /vendor\/markdown-it\/14\.3\.0\/markdown-it\.min\.js/);
+  assert.match(previewHtml, /vendor\/dompurify\/3\.4\.13\/purify\.min\.js/);
+  assert.match(previewRenderer, /html: false/);
+  assert.match(previewRenderer, /DOMPurify\.sanitize/);
+  assert.match(previewRenderer, /FORBID_TAGS/);
+});
+
+test("the latest answer stays visible while active work and Realtime expose elapsed progress", () => {
+  const mascot = fs.readFileSync(path.join(projectRoot, "desktop", "preload-mascot.cjs"), "utf8");
+  const styles = fs.readFileSync(path.join(projectRoot, "desktop", "mascot-overlay.css"), "utf8");
+  assert.match(mascot, /bubblePersistent = true;[\s\S]*phase === "done"/);
+  assert.match(mascot, /elapsedActivityLabel/);
+  assert.match(mascot, /thread\/realtime\/transcript\/done[\s\S]*setWorkActivity/);
+  assert.match(styles, /is-processing #desktopMascotWorkActivity::before/);
 });
 
 test("Codex memory tools proactively create and update character memories", () => {
