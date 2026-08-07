@@ -94,6 +94,11 @@ test("desktop distribution includes its license and modification records", () =>
   }
 });
 
+test("tagged Windows packaging never triggers electron-builder implicit publishing", () => {
+  const workflow = fs.readFileSync(path.join(projectRoot, ".github", "workflows", "release.yml"), "utf8");
+  assert.match(workflow, /npm run dist:win:installer -- --publish never/);
+});
+
 test("Windows package metadata identifies ochisamu as the publisher", () => {
   assert.equal(packageJson.author, "ochisamu");
   assert.match(packageJson.build.copyright, /ochisamu/);
