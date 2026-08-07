@@ -1,4 +1,11 @@
 /* SPDX-License-Identifier: Apache-2.0 */
+@font-face {
+  font-family: "CharaDock Noto Sans JP";
+  src: url("../assets/fonts/NotoSansJP-VF.ttf") format("truetype");
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: block;
+}
 :root {
   color-scheme: dark;
   --pet-accent: #efb56d;
@@ -30,6 +37,8 @@
   --pet-danger-text: #f1bfbd;
   --pet-danger-fill: rgba(188,86,83,.11);
   --pet-danger-fill-hover: rgba(188,86,83,.2);
+  /* Avoid mixed CJK glyph fallback in Chromium on Windows. */
+  --pet-font-ui: "CharaDock Noto Sans JP", "Noto Sans JP", "Yu Gothic UI", "Meiryo UI", "Meiryo", "Hiragino Sans", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 :root[data-character="bronze-avatar"] { --pet-accent: #dc9568; --pet-accent-strong: #b8663d; --pet-accent-ink: #25130c; }
 :root[data-character="towa-avatar"] { --pet-accent: #33b5b3; --pet-accent-strong: #168d91; --pet-accent-ink: #071b1c; }
@@ -89,7 +98,8 @@ body.is-position-locked, body.is-position-locked #stage { -webkit-app-region: no
   border-radius: 17px;
   box-shadow: var(--pet-shadow);
   backdrop-filter: blur(26px) saturate(1.2);
-  font: 650 12.5px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif;
+  font: 600 12.5px/1.65 var(--pet-font-ui);
+  font-synthesis: none;
   white-space: pre-wrap;
   opacity: 0;
   transform: translateY(-8px) scale(0.98);
@@ -105,7 +115,7 @@ body.is-position-locked, body.is-position-locked #stage { -webkit-app-region: no
   justify-content: space-between;
   gap: 12px;
   margin-bottom: 5px;
-  font: 750 9px/1.2 system-ui, -apple-system, "Segoe UI", sans-serif;
+  font: 700 9px/1.2 var(--pet-font-ui);
 }
 #desktopMascotBubbleCharacterName { min-width: 0; overflow: hidden; color: color-mix(in srgb, var(--pet-accent) 74%, white); text-overflow: ellipsis; white-space: nowrap; }
 #desktopMascotBubbleVoiceMode { flex: 0 0 auto; padding: 3px 6px; color: var(--pet-text-muted); background: var(--pet-control-subtle); border-radius: 999px; font-size: 8px; letter-spacing: .04em; }
@@ -156,12 +166,24 @@ body.is-position-locked, body.is-position-locked #stage { -webkit-app-region: no
   border-radius: 999px;
   color: color-mix(in srgb, var(--pet-accent) 70%, white);
   background: var(--pet-accent-soft);
-  font: 700 9px/1.2 system-ui, sans-serif;
+  font: 700 9px/1.2 var(--pet-font-ui);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 #desktopMascotBubble.is-working #desktopMascotWorkActivity { display: block; }
+#desktopMascotBubble.is-processing #desktopMascotWorkActivity::before {
+  content: "";
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  margin-right: 6px;
+  vertical-align: 1px;
+  background: currentColor;
+  border-radius: 50%;
+  animation: mascot-activity-pulse 1s ease-in-out infinite;
+}
+@keyframes mascot-activity-pulse { 50% { opacity: .32; transform: scale(.7); } }
 #desktopMascotBubble.is-visible { opacity: 1; transform: translateY(0) scale(1); }
 body.is-work-panel-open #desktopMascotBubble.is-visible { opacity: 0; transform: translateY(-6px) scale(.98); }
 #desktopMascotBubble.is-permission { pointer-events: auto; }
@@ -196,7 +218,7 @@ body.is-work-panel-open #desktopMascotBubble.is-visible { opacity: 0; transform:
   border-radius: 8px;
   color: var(--pet-text-secondary);
   background: var(--pet-accent-soft);
-  font: 700 9px/1 system-ui, sans-serif;
+  font: 700 9px/1 var(--pet-font-ui);
   text-overflow: ellipsis;
   white-space: nowrap;
   cursor: pointer;
@@ -213,7 +235,7 @@ body.is-work-panel-open #desktopMascotBubble.is-visible { opacity: 0; transform:
   border-radius: 9px;
   color: var(--pet-accent-ink);
   background: var(--pet-accent);
-  font: 750 10px/1 system-ui, sans-serif;
+  font: 750 10px/1 var(--pet-font-ui);
   cursor: pointer;
   transition: background 130ms ease, transform 80ms ease-out;
 }
@@ -250,7 +272,7 @@ body.is-work-panel-open #desktopMascotBubble.is-visible { opacity: 0; transform:
   border-radius: 999px;
   color: color-mix(in srgb, var(--pet-accent) 66%, white);
   background: var(--pet-accent-soft);
-  font: 750 9px/1 system-ui, sans-serif;
+  font: 750 9px/1 var(--pet-font-ui);
   cursor: pointer;
   pointer-events: auto;
   transition: color .16s, background .16s, transform 80ms ease-out;
@@ -269,6 +291,9 @@ body.is-work-panel-open #desktopMascotBubble.is-visible { opacity: 0; transform:
   align-items: flex-end;
   justify-content: flex-end;
   gap: 8px;
+  --mascot-composer-height: 52px;
+  font-family: var(--pet-font-ui);
+  font-synthesis: none;
   pointer-events: none;
   transition: opacity 180ms ease;
 }
@@ -286,7 +311,7 @@ body.is-work-panel-open #desktopMascotBubble.is-visible { opacity: 0; transform:
   border: 1px solid var(--pet-border);
   border-radius: 999px;
   box-shadow: 0 8px 24px rgba(0,0,0,.18);
-  font: 750 8.5px/1 system-ui, sans-serif;
+  font: 700 8.5px/1 var(--pet-font-ui);
   letter-spacing: .035em;
   pointer-events: none;
   transition: color 160ms ease, background 160ms ease, opacity 160ms ease, transform 180ms cubic-bezier(.2,.8,.2,1);
@@ -307,7 +332,7 @@ body.is-work-panel-open #desktopMascotBubble.is-visible { opacity: 0; transform:
   background: var(--pet-control);
   box-shadow: var(--pet-shadow);
   backdrop-filter: blur(16px) saturate(1.12);
-  font: 800 15px/1 system-ui, sans-serif;
+  font: 700 15px/1 var(--pet-font-ui);
 }
 #desktopMascotChatButton, #desktopMascotSettingsButton { width: 44px; height: 44px; border-radius: 50%; transition: opacity .18s, transform .18s, background .18s, width .18s, margin .18s; }
 #desktopMascotChatButton .ui-symbol { width: 23px; height: 23px; }
@@ -421,7 +446,7 @@ body.is-work-mode #desktopMascotWorkHistoryButton { display: flex; }
   -webkit-app-region: no-drag;
   position: absolute;
   right: 50px;
-  bottom: 53px;
+  bottom: calc(var(--mascot-composer-height) + 8px);
   display: flex;
   align-items: center;
   gap: 5px;
@@ -432,12 +457,12 @@ body.is-work-mode #desktopMascotWorkHistoryButton { display: flex; }
   border-radius: 11px;
   box-shadow: var(--pet-shadow);
   backdrop-filter: blur(18px) saturate(1.12);
-  font: 700 9px/1 system-ui, sans-serif;
+  font: 700 9px/1 var(--pet-font-ui);
   pointer-events: auto;
   animation: mascot-countdown-in 180ms cubic-bezier(.2,.8,.2,1) both;
 }
 #desktopMascotAutoSendCountdown[hidden] { display: none !important; }
-#desktopMascotAutoSendCountdown button { padding: 5px 7px; color: var(--pet-text-secondary); background: var(--pet-control-subtle); border: 0; border-radius: 7px; font: 750 9px/1 system-ui, sans-serif; cursor: pointer; }
+#desktopMascotAutoSendCountdown button { padding: 5px 7px; color: var(--pet-text-secondary); background: var(--pet-control-subtle); border: 0; border-radius: 7px; font: 700 9px/1 var(--pet-font-ui); cursor: pointer; }
 #desktopMascotAutoSendCountdown button:first-of-type { color: var(--pet-accent-ink); background: var(--pet-accent); }
 #desktopMascotAutoSendCountdown button:active { transform: scale(.95); }
 @keyframes mascot-countdown-in { from { opacity: 0; transform: translateY(4px) scale(.97); } }
@@ -454,7 +479,8 @@ body.is-work-mode #desktopMascotWorkHistoryButton { display: flex; }
   border: 0;
   color: var(--pet-text);
   background: transparent;
-  font: 600 12px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+  font: 600 12px/1.5 var(--pet-font-ui);
+  font-synthesis: none;
 }
 body.is-work-mode #desktopMascotInput { min-height: 42px; max-height: 78px; padding: 9px 5px; font-size: 12.5px; }
 #desktopMascotInput::placeholder { color: var(--pet-placeholder); }
@@ -503,6 +529,8 @@ body.is-work-mode #desktopMascotInput { min-height: 42px; max-height: 78px; padd
   transform-origin: right bottom;
   transition: opacity .18s ease, transform .24s cubic-bezier(.2,.8,.2,1), visibility .18s;
   pointer-events: none;
+  font-family: var(--pet-font-ui);
+  font-synthesis: none;
 }
 #desktopMascotWorkPanel.is-open { opacity: 1; visibility: visible; transform: none; pointer-events: auto; }
 #desktopMascotWorkPanel > header {
@@ -514,8 +542,8 @@ body.is-work-mode #desktopMascotInput { min-height: 42px; max-height: 78px; padd
   box-shadow: 0 12px 18px -18px var(--pet-scroll-edge);
 }
 #desktopMascotWorkPanel > header div { display: flex; min-width: 0; flex-direction: column; gap: 2px; }
-#desktopMascotWorkPanel > header strong { font: 750 12px/1.2 system-ui, sans-serif; }
-#desktopMascotWorkPanelSummary { color: var(--pet-text-muted); font: 650 9.5px/1.3 system-ui, sans-serif; }
+#desktopMascotWorkPanel > header strong { font: 750 12px/1.2 var(--pet-font-ui); }
+#desktopMascotWorkPanelSummary { color: var(--pet-text-muted); font: 650 9.5px/1.3 var(--pet-font-ui); }
 #desktopMascotWorkPanelClose {
   display: grid;
   place-items: center;
@@ -538,30 +566,30 @@ body.is-work-mode #desktopMascotInput { min-height: 42px; max-height: 78px; padd
 }
 #desktopMascotWorkHistoryList::-webkit-scrollbar { width: 5px; }
 #desktopMascotWorkHistoryList::-webkit-scrollbar-thumb { border-radius: 999px; background: var(--pet-accent-line); }
-.desktop-mascot-work-empty { margin: 20px 8px; color: var(--pet-text-muted); text-align: center; font: 650 11px/1.5 system-ui, sans-serif; }
+.desktop-mascot-work-empty { margin: 20px 8px; color: var(--pet-text-muted); text-align: center; font: 650 11px/1.5 var(--pet-font-ui); }
 .desktop-mascot-work-run {
   position: relative;
   padding: 9px 10px;
   border: 1px solid var(--pet-border);
   border-radius: 11px;
   background: var(--pet-control-subtle);
-  font-family: system-ui, sans-serif;
+  font-family: var(--pet-font-ui);
 }
 .desktop-mascot-work-run + .desktop-mascot-work-run { margin-top: 7px; }
 .desktop-mascot-work-run.is-running, .desktop-mascot-work-run.is-stopping { border-color: var(--pet-accent-line); background: var(--pet-accent-soft); }
 .desktop-mascot-work-run-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.desktop-mascot-work-status { color: var(--pet-accent); font: 800 9.5px/1 system-ui, sans-serif; letter-spacing: .04em; }
+.desktop-mascot-work-status { color: var(--pet-accent); font: 800 9.5px/1 var(--pet-font-ui); letter-spacing: .04em; }
 .desktop-mascot-work-run.is-completed .desktop-mascot-work-status { color: var(--pet-success); }
 .desktop-mascot-work-run.is-failed .desktop-mascot-work-status { color: var(--pet-error); }
-.desktop-mascot-work-meta { min-width: 0; overflow: hidden; color: var(--pet-text-muted); font: 600 9px/1 system-ui, sans-serif; text-overflow: ellipsis; white-space: nowrap; }
+.desktop-mascot-work-meta { min-width: 0; overflow: hidden; color: var(--pet-text-muted); font: 600 9px/1 var(--pet-font-ui); text-overflow: ellipsis; white-space: nowrap; }
 .desktop-mascot-work-request, .desktop-mascot-work-result { margin: 7px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
-.desktop-mascot-work-request { color: var(--pet-text); font: 650 11px/1.5 system-ui, sans-serif; }
-.desktop-mascot-work-result { max-height: 112px; overflow-y: auto; padding-top: 8px; border-top: 1px solid var(--pet-border); color: var(--pet-text-secondary); font: 550 10px/1.55 system-ui, sans-serif; }
-.desktop-mascot-work-latest { margin: 7px 0 0; color: var(--pet-text-secondary); font: 650 10px/1.5 system-ui, sans-serif; }
-.desktop-mascot-work-history-details { margin-top: 5px; color: var(--pet-text-muted); font: 650 9px/1.45 system-ui, sans-serif; }
+.desktop-mascot-work-request { color: var(--pet-text); font: 650 11px/1.5 var(--pet-font-ui); }
+.desktop-mascot-work-result { max-height: 112px; overflow-y: auto; padding-top: 8px; border-top: 1px solid var(--pet-border); color: var(--pet-text-secondary); font: 550 10px/1.55 var(--pet-font-ui); }
+.desktop-mascot-work-latest { margin: 7px 0 0; color: var(--pet-text-secondary); font: 650 10px/1.5 var(--pet-font-ui); }
+.desktop-mascot-work-history-details { margin-top: 5px; color: var(--pet-text-muted); font: 650 9px/1.45 var(--pet-font-ui); }
 .desktop-mascot-work-history-details summary { width: fit-content; cursor: pointer; user-select: none; }
 .desktop-mascot-work-history-details[open] summary { color: var(--pet-text-secondary); }
-.desktop-mascot-work-activities { margin: 7px 0 0; padding: 0; list-style: none; color: var(--pet-text-secondary); font: 600 9.5px/1.5 system-ui, sans-serif; }
+.desktop-mascot-work-activities { margin: 7px 0 0; padding: 0; list-style: none; color: var(--pet-text-secondary); font: 600 9.5px/1.5 var(--pet-font-ui); }
 .desktop-mascot-work-activities li::before { content: "·"; margin-right: 5px; color: var(--pet-accent); }
 .desktop-mascot-work-stop {
   display: block;
@@ -571,7 +599,7 @@ body.is-work-mode #desktopMascotInput { min-height: 42px; max-height: 78px; padd
   border-radius: 8px;
   color: var(--pet-danger-text);
   background: var(--pet-danger-fill);
-  font: 750 9px/1 system-ui, sans-serif;
+  font: 750 9px/1 var(--pet-font-ui);
   cursor: pointer;
   transition: background 130ms ease, transform 80ms ease-out;
 }
@@ -582,11 +610,21 @@ body.is-work-mode #desktopMascotInput { min-height: 42px; max-height: 78px; padd
   position: absolute;
   right: 0;
   bottom: 50px;
-  padding: 5px 8px;
-  border-radius: 8px;
+  z-index: 2;
+  box-sizing: border-box;
+  max-width: min(78vw, 320px);
+  max-height: min(24vh, 120px);
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  padding: 7px 9px;
+  border: 1px solid var(--pet-border);
+  border-radius: 10px;
   color: var(--pet-text);
   background: var(--pet-surface-solid);
-  font: 650 9px/1.3 system-ui,sans-serif;
+  box-shadow: 0 10px 28px rgba(0,0,0,.24);
+  font: 600 10px/1.45 var(--pet-font-ui);
+  text-align: left;
+  white-space: normal;
   opacity: 0;
   transform: translateY(4px);
   transition: opacity 150ms ease, transform 180ms cubic-bezier(.2,.8,.2,1);
@@ -594,6 +632,20 @@ body.is-work-mode #desktopMascotInput { min-height: 42px; max-height: 78px; padd
 }
 #desktopMascotDock.is-status #desktopMascotHint { opacity: 1; transform: none; }
 #desktopMascotDock.is-status #desktopMascotVoiceBadge { opacity: 0; transform: translateY(4px); }
+#desktopMascotDock.is-open #desktopMascotHint {
+  right: 50px;
+  bottom: calc(var(--mascot-composer-height) + 8px);
+  width: min(calc(100% - 50px), 472px);
+  max-width: none;
+}
+#desktopMascotDock.is-open.has-send-countdown #desktopMascotHint {
+  bottom: calc(var(--mascot-composer-height) + 48px);
+}
+#desktopMascotDock[data-status-tone="error"] #desktopMascotHint {
+  color: var(--pet-danger-text);
+  background: color-mix(in srgb, var(--pet-surface-solid) 88%, #5b1f21);
+  border-color: color-mix(in srgb, var(--pet-error) 42%, transparent);
+}
 #desktopMascotBubble.is-speaking::after {
   content: "";
   display: inline-block;
@@ -608,6 +660,7 @@ body.is-work-mode #desktopMascotInput { min-height: 42px; max-height: 78px; padd
 @keyframes mascot-speaking-pulse { 50% { opacity: .35; transform: scale(.7); } }
 @media (prefers-reduced-motion: reduce) {
   #desktopMascotBubble.is-speaking::after { animation: none; }
+  #desktopMascotBubble.is-processing #desktopMascotWorkActivity::before { animation: none; }
   #desktopMascotMicButton.is-vad-speaking { animation: none; }
 }
 #desktopMascotPetZone {
@@ -629,7 +682,7 @@ body.is-position-locked #desktopMascotPetZone { cursor: pointer; }
   z-index: 1003;
   color: var(--pet-accent);
   text-shadow: 0 2px 10px color-mix(in srgb, var(--pet-accent-strong) 68%, transparent);
-  font: 800 18px/1 system-ui, sans-serif;
+  font: 800 18px/1 var(--pet-font-ui);
   pointer-events: none;
   transform: translate(-50%, -50%);
   animation: mascot-touch-spark .72s cubic-bezier(.2,.8,.2,1) forwards;

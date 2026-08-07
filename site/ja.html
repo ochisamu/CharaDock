@@ -3,11 +3,11 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="話して、覚えて、一緒に作業する。透過キャラクターとCodexをつないだWindowsデスクトップコンパニオン、CharaDock。">
+  <meta name="description" content="話して、覚えて、作って、その場で見る。透過キャラクターとCodexをつないだWindowsデスクトップコンパニオン、CharaDock。">
   <meta name="theme-color" content="#f4f2ed" media="(prefers-color-scheme: light)">
   <meta name="theme-color" content="#151514" media="(prefers-color-scheme: dark)">
   <meta property="og:title" content="CharaDock — キャラクターに、居場所と鼓動を。">
-  <meta property="og:description" content="話して、覚えて、一緒に作業する。透過キャラクターとCodexをひとつのデスクトップコンパニオンに。">
+  <meta property="og:description" content="話して、覚えて、作って、その場で見る。透過キャラクターとCodexをひとつのデスクトップコンパニオンに。">
   <meta property="og:type" content="website">
   <link rel="alternate" hreflang="ja" href="./ja.html">
   <link rel="alternate" hreflang="en" href="./">
@@ -26,6 +26,7 @@
     </a>
     <nav aria-label="メインナビゲーション">
       <a href="#features">できること</a>
+      <a href="#workspace">作業体験</a>
       <a href="#characters">キャラクター</a>
       <a href="#safety">安心設計</a>
     </nav>
@@ -43,10 +44,10 @@
       <div class="hero-copy">
         <p class="eyebrow"><span></span> Windows desktop companion</p>
         <h1>デスクトップに、<br><em>会話できる</em><br>相棒を。</h1>
-        <p class="hero-lead">声を聞き、あなたを覚え、選んだフォルダーでCodexと一緒に作業する。PuruPuruのキャラクターが、Windowsデスクトップにいつでも話せる相棒として現れます。</p>
+        <p class="hero-lead">声を聞き、あなたを覚え、キャラクターホームや選んだプロジェクトでCodexと一緒に作業する。できたものは会話の流れのまま開けます。</p>
         <div class="hero-actions" id="download">
           <a class="button button-primary" href="__RELEASE_URL__">Windows版を入手 <span aria-hidden="true">↓</span></a>
-          <a class="button button-secondary" href="#experience">体験を見る</a>
+          <a class="button button-secondary" href="#workspace">体験を見る</a>
         </div>
         <p class="release-note">v__VERSION__ · Windows 10/11 x64 · プレリリース</p>
       </div>
@@ -57,7 +58,7 @@
     </section>
 
     <section class="signal-row" aria-label="主な特徴">
-      <p>TRANSPARENT AVATAR</p><i></i><p>VOICE & REALTIME</p><i></i><p>CODEX WORK MODE</p><i></i><p>YOUR CHARACTER</p>
+      <p>TRANSPARENT AVATAR</p><i></i><p>VOICE & REALTIME</p><i></i><p>CODEX WORK MODE</p><i></i><p>LIVE PREVIEW</p>
     </section>
 
     <section class="section" id="features">
@@ -91,9 +92,9 @@
 
         <article class="feature-card card-work">
           <span class="feature-number">03</span>
-          <p class="feature-kicker">Codex work mode</p>
+          <p class="feature-kicker">Codex Work</p>
           <h3>会話から、そのまま作業へ。</h3>
-          <p>選んだフォルダーだけでCodexが作業。進行、操作、結果は履歴に残り、いつでも中断できます。</p>
+            <p>キャラクターホーム、または選んだ担当プロジェクトだけでCodexが作業。進行、操作、結果は履歴に残り、いつでも中断できます。</p>
           <ul class="task-list" aria-hidden="true">
             <li class="done"><span>✓</span> READMEを確認</li>
             <li class="active"><span></span> 構成を更新中</li>
@@ -131,13 +132,57 @@
       </div>
     </section>
 
+    <section class="workspace-showcase" id="workspace">
+      <div class="workspace-copy">
+        <p class="eyebrow">Character Home + artifact preview</p>
+        <h2>頼んだことが、<br>その場で見える。</h2>
+        <p>キャラクターごとに、ノート・成果物・作業の続きを残せる専用ホームを用意。既存フォルダーは移動せず担当プロジェクトとして追加でき、Codexが作ったものは会話を離れず確認できます。</p>
+        <ul class="workspace-points">
+          <li><span>01</span><div><strong>キャラごとに続きが残る</strong><small>専用ホームと、追加した既存プロジェクトをいつでも切り替え。</small></div></li>
+          <li><span>02</span><div><strong>成果物を、その場で確認</strong><small>Markdown、シンタックスハイライト付きコード、画像、PDF、音声、動画に対応。</small></div></li>
+          <li><span>03</span><div><strong>Webアプリは明示的に起動</strong><small>Next.jsやViteなど、既存の開発スクリプトを選んだときだけ開始。</small></div></li>
+        </ul>
+      </div>
+      <div class="workspace-demo" aria-label="キャラクターホームと成果物プレビューの例">
+        <div class="demo-toolbar">
+          <span class="demo-lights" aria-hidden="true"><i></i><i></i><i></i></span>
+          <strong>コハク · 作業</strong>
+          <span class="demo-status"><i></i> 準備完了</span>
+        </div>
+        <div class="demo-body">
+          <aside class="demo-projects">
+            <p>作業先</p>
+            <div class="demo-project is-active"><span>⌂</span><div><strong>キャラクターホーム</strong><small>コハク専用の作業場所</small></div></div>
+            <div class="demo-project"><span>◇</span><div><strong>ランディングページ</strong><small>担当プロジェクト</small></div></div>
+            <p>最近の成果物</p>
+            <div class="demo-artifact"><span>MD</span><strong>README.md</strong></div>
+            <div class="demo-artifact"><span>JS</span><strong>app.js</strong></div>
+            <div class="demo-artifact"><span>PDF</span><strong>report.pdf</strong></div>
+          </aside>
+          <div class="demo-preview">
+            <div class="demo-preview-head"><div><small>プレビュー</small><strong>README.md</strong></div><span>外部で開く ↗</span></div>
+            <div class="demo-document">
+              <span class="demo-document-label">MARKDOWN</span>
+              <h3>プロジェクトが完成しました。</h3>
+              <p>落ち着いた動き、見通しのよい情報設計、目的が伝わる導線を備えたランディングページです。</p>
+              <div class="demo-rule"></div>
+              <p class="demo-check"><i>✓</i> レスポンシブ対応</p>
+              <p class="demo-check"><i>✓</i> アクセシブルな操作</p>
+              <p class="demo-check"><i>✓</i> CharaDock内で確認済み</p>
+              <div class="demo-live"><span><i></i> Webプレビュー対応</span><strong>プレビューを起動</strong></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
     <section class="experience" id="experience">
       <div class="experience-copy">
         <p class="eyebrow">Designed for the desktop</p>
         <h2>主役はあなたの作業。<br>相棒は、そのすぐ隣。</h2>
         <p>モニター端への吸着、位置ロック、マルチモニター、表示サイズと動き幅の調整。ライト／ダーク表示にもキャラクターの色にも自然に馴染みます。</p>
         <dl>
-          <div><dt>0</dt><dd>会話モードでの<br>書き込み権限</dd></div>
+          <div><dt>0</dt><dd>Chatでの<br>書き込み権限</dd></div>
           <div><dt>1</dt><dd>選択フォルダーだけ<br>作業可能</dd></div>
           <div><dt>12</dt><dd>保持される<br>直近の作業履歴</dd></div>
         </dl>
@@ -182,8 +227,8 @@
         </div>
         <ul>
           <li><span>01</span><div><strong>ChatGPT認証はCodexが管理</strong><p>CharaDockは認証トークンを受け取りません。</p></div></li>
-          <li><span>02</span><div><strong>画面とブラウザーは目的ごとに許可</strong><p>明確な続きだけ最大5分。別サイトや別目的では再確認します。</p></div></li>
-          <li><span>03</span><div><strong>作業範囲をフォルダーで限定</strong><p>会話モードは読み取り専用、作業は明示した場所だけ。</p></div></li>
+          <li><span>02</span><div><strong>画面・ブラウザー・コンピューター操作は先に確認</strong><p>明確な続きだけ最大5分。別サイトや別目的では再確認します。</p></div></li>
+          <li><span>03</span><div><strong>作業範囲をフォルダーで限定</strong><p>Chatは読み取り専用、Workは明示した場所だけ。</p></div></li>
         </ul>
       </div>
     </section>

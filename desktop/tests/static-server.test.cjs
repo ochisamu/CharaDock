@@ -13,6 +13,7 @@ function fixtureRoot() {
   fs.mkdirSync(path.join(root, "source"), { recursive: true });
   fs.writeFileSync(path.join(root, "index.html"), "<h1>ok</h1>");
   fs.writeFileSync(path.join(root, "assets", "avatar.png"), "png");
+  fs.writeFileSync(path.join(root, "assets", "ui-font.ttf"), "font");
   fs.writeFileSync(path.join(root, "source", "secret.txt"), "secret");
   return root;
 }
@@ -25,6 +26,9 @@ test("static server serves allowlisted app files and blocks source files", async
     assert.equal(index.status, 200);
     assert.equal(await index.text(), "<h1>ok</h1>");
     assert.equal((await fetch(`${server.origin()}/assets/avatar.png`)).status, 200);
+    const font = await fetch(`${server.origin()}/assets/ui-font.ttf`);
+    assert.equal(font.status, 200);
+    assert.equal(font.headers.get("content-type"), "font/ttf");
     assert.equal((await fetch(`${server.origin()}/source/secret.txt`)).status, 404);
     assert.equal((await fetch(`${server.origin()}/../source/secret.txt`)).status, 404);
   } finally {

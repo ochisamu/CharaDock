@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 const assert = require("node:assert/strict");
+const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
 const test = require("node:test");
@@ -13,6 +14,7 @@ test("desktop distribution contains only approved character, voice, and interfac
   assert.deepEqual(assetEntries.sort(), [
     "assets/amber-avatar/**/*",
     "assets/bronze-avatar/**/*",
+    "assets/fonts/**/*",
     "assets/reference-voices/**/*",
     "assets/sage-avatar/**/*",
     "assets/towa-avatar/**/*",
@@ -35,6 +37,54 @@ test("interface symbols use individually licensed SVG assets", () => {
     const css = fs.readFileSync(path.join(projectRoot, "desktop", cssFile), "utf8");
     assert.doesNotMatch(css, /charadock-symbols\.png/);
   }
+});
+
+test("Noto Sans JP is pinned, licensed, packaged, and shared by every UI surface", () => {
+  const fontPath = path.join(projectRoot, "assets", "fonts", "NotoSansJP-VF.ttf");
+  assert.equal(fs.statSync(fontPath).size, 9_590_732);
+  assert.equal(crypto.createHash("sha256").update(fs.readFileSync(fontPath)).digest("hex"), "f4b373b226668ee33a6e54b02823dcd2d1209f17159f777421ae8c2275160369");
+  assert.match(fs.readFileSync(path.join(projectRoot, "assets", "fonts", "LICENSE-NotoSansJP.txt"), "utf8"), /SIL OPEN FONT LICENSE Version 1\.1/);
+  assert.match(fs.readFileSync(path.join(projectRoot, "THIRD_PARTY_NOTICES.md"), "utf8"), /### Noto Sans JP/);
+  for (const cssFile of ["styles.css", "desktop/control.css", "desktop/mascot-overlay.css", "desktop/artifact-preview.css"]) {
+    const css = fs.readFileSync(path.join(projectRoot, cssFile), "utf8");
+    assert.match(css, /font-family: "CharaDock Noto Sans JP"/);
+    assert.match(css, /NotoSansJP-VF\.ttf/);
+  }
+});
+
+test("artifact syntax highlighting uses a licensed local highlight.js build", () => {
+  const vendor = path.join(projectRoot, "vendor", "highlightjs", "11.11.1");
+  assert.ok(fs.statSync(path.join(vendor, "highlight.min.js")).size > 100_000);
+  assert.ok(fs.statSync(path.join(vendor, "styles", "github-dark-dimmed.min.css")).size > 1_000);
+  assert.match(fs.readFileSync(path.join(vendor, "LICENSE"), "utf8"), /BSD 3-Clause License/);
+  assert.equal(packageJson.devDependencies["@highlightjs/cdn-assets"], "11.11.1");
+  const html = fs.readFileSync(path.join(projectRoot, "desktop", "control.html"), "utf8");
+  const control = fs.readFileSync(path.join(projectRoot, "desktop", "control.js"), "utf8");
+  assert.match(html, /vendor\/highlightjs\/11\.11\.1\/highlight\.min\.js/);
+  assert.match(html, /github-dark-dimmed\.min\.css/);
+  assert.match(control, /window\.hljs\.highlight\(source/);
+  assert.match(fs.readFileSync(path.join(projectRoot, "THIRD_PARTY_NOTICES.md"), "utf8"), /### highlight\.js/);
+});
+
+test("Markdown artifacts use pinned local rendering and sanitizing libraries", () => {
+  const markdownVendor = path.join(projectRoot, "vendor", "markdown-it", "14.3.0");
+  const purifierVendor = path.join(projectRoot, "vendor", "dompurify", "3.4.13");
+  assert.ok(fs.statSync(path.join(markdownVendor, "markdown-it.min.js")).size > 100_000);
+  assert.ok(fs.statSync(path.join(purifierVendor, "purify.min.js")).size > 20_000);
+  assert.match(fs.readFileSync(path.join(markdownVendor, "LICENSE"), "utf8"), /Permission is hereby granted/);
+  assert.match(fs.readFileSync(path.join(purifierVendor, "LICENSE"), "utf8"), /Apache License/);
+  assert.equal(packageJson.devDependencies["markdown-it"], "14.3.0");
+  assert.equal(packageJson.devDependencies.dompurify, "3.4.13");
+  const html = fs.readFileSync(path.join(projectRoot, "desktop", "control.html"), "utf8");
+  const control = fs.readFileSync(path.join(projectRoot, "desktop", "control.js"), "utf8");
+  assert.match(html, /vendor\/markdown-it\/14\.3\.0\/markdown-it\.min\.js/);
+  assert.match(html, /vendor\/dompurify\/3\.4\.13\/purify\.min\.js/);
+  assert.match(control, /html: false/);
+  assert.match(control, /DOMPurify\.sanitize/);
+  assert.match(control, /FORBID_TAGS/);
+  const notices = fs.readFileSync(path.join(projectRoot, "THIRD_PARTY_NOTICES.md"), "utf8");
+  assert.match(notices, /### markdown-it/);
+  assert.match(notices, /### DOMPurify/);
 });
 
 test("desktop distribution includes its license and modification records", () => {
@@ -201,10 +251,99 @@ test("conversation and work surfaces expose history, folder access, interruption
   assert.match(control, /bindFileDropZone\(\$\("#chatForm"\)/);
   assert.match(control, /appendWorkArtifactActions/);
   assert.match(mascot, /pendingFollowUpMessage = message/);
-  assert.match(mascot, /mascotInline:openWorkArtifact/);
+  assert.match(mascot, /mascotInline:previewWorkArtifact/);
   assert.match(mascot, /responseSpeaking[\s\S]*stopTtsPlayback\(\)/);
   assert.match(main, /mascotInline:openWorkDirectory/);
   assert.match(main, /work:openDirectory/);
+  assert.match(main, /async function setCharacter\(characterId\) \{[\s\S]*if \(activeWorkRunId\)[\s\S]*Characters cannot be switched while Work is running/);
+  assert.match(control, /syncCharacterSwitchAvailability[\s\S]*button\.disabled = workRunning/);
+});
+
+test("avatar output buttons open a sandboxed companion preview without covering the mascot", () => {
+  const main = fs.readFileSync(path.join(projectRoot, "desktop", "main.cjs"), "utf8");
+  const mascot = fs.readFileSync(path.join(projectRoot, "desktop", "preload-mascot.cjs"), "utf8");
+  const previewPreload = fs.readFileSync(path.join(projectRoot, "desktop", "preload-artifact-preview.cjs"), "utf8");
+  const previewHtml = fs.readFileSync(path.join(projectRoot, "desktop", "artifact-preview.html"), "utf8");
+  const previewRenderer = fs.readFileSync(path.join(projectRoot, "desktop", "artifact-preview.js"), "utf8");
+  assert.match(mascot, /ipcRenderer\.invoke\("mascotInline:previewWorkArtifact"/);
+  assert.match(main, /function artifactPreviewBoundsNearMascot\(\)/);
+  assert.match(main, /preload-artifact-preview\.cjs/);
+  assert.match(main, /nodeIntegration: false,[\s\S]*contextIsolation: true,[\s\S]*sandbox: true/);
+  assert.match(main, /assertTrustedSender\(event, "preview"\)/);
+  assert.match(previewPreload, /artifactPreview:getCurrent/);
+  assert.match(previewPreload, /artifactPreview:openArtifact/);
+  assert.match(previewHtml, /Content-Security-Policy/);
+  assert.match(previewHtml, /vendor\/markdown-it\/14\.3\.0\/markdown-it\.min\.js/);
+  assert.match(previewHtml, /vendor\/dompurify\/3\.4\.13\/purify\.min\.js/);
+  assert.match(previewRenderer, /html: false/);
+  assert.match(previewRenderer, /DOMPurify\.sanitize/);
+  assert.match(previewRenderer, /FORBID_TAGS/);
+});
+
+test("sandboxed HTML artifact previews support CSS, scripts, and HTTPS resources without unsafe capabilities", () => {
+  const main = fs.readFileSync(path.join(projectRoot, "desktop", "main.cjs"), "utf8");
+  const csp = main.match(/"Content-Security-Policy":\s*"([^"]+)"/)?.[1] || "";
+  assert.match(csp, /style-src 'self' charadock-artifact: 'unsafe-inline' data: https:/);
+  assert.match(csp, /script-src 'self' charadock-artifact: 'unsafe-inline' https:/);
+  assert.match(csp, /connect-src https: wss:/);
+  assert.match(csp, /img-src 'self' charadock-artifact: data: blob: https:/);
+  assert.match(csp, /worker-src 'self' charadock-artifact: blob: https:/);
+  assert.doesNotMatch(csp, /'unsafe-eval'/);
+  assert.doesNotMatch(csp, /(?:^|\s)http:/);
+  assert.match(csp, /frame-src 'none'/);
+  assert.match(csp, /object-src 'none'/);
+  assert.match(csp, /form-action 'none'/);
+});
+
+test("the latest answer stays visible while active work and Realtime expose elapsed progress", () => {
+  const mascot = fs.readFileSync(path.join(projectRoot, "desktop", "preload-mascot.cjs"), "utf8");
+  const styles = fs.readFileSync(path.join(projectRoot, "desktop", "mascot-overlay.css"), "utf8");
+  assert.match(mascot, /bubblePersistent = true;[\s\S]*phase === "done"/);
+  assert.match(mascot, /elapsedActivityLabel/);
+  assert.match(mascot, /thread\/realtime\/transcript\/done[\s\S]*setWorkActivity/);
+  assert.match(styles, /is-processing #desktopMascotWorkActivity::before/);
+});
+
+test("mascot Japanese text uses a stable Windows font stack and notices clear the composer", () => {
+  const mascot = fs.readFileSync(path.join(projectRoot, "desktop", "preload-mascot.cjs"), "utf8");
+  const styles = fs.readFileSync(path.join(projectRoot, "desktop", "mascot-overlay.css"), "utf8");
+  assert.match(mascot, /normalizeDisplayText[\s\S]*normalize\("NFC"\)/);
+  assert.match(mascot, /--mascot-composer-height/);
+  assert.match(mascot, /hint\.setAttribute\("role", errorTone \? "alert" : "status"\)/);
+  assert.match(styles, /--pet-font-ui: "CharaDock Noto Sans JP", "Noto Sans JP", "Yu Gothic UI"/);
+  assert.match(styles, /is-open #desktopMascotHint[\s\S]*calc\(var\(--mascot-composer-height\) \+ 8px\)/);
+  assert.match(styles, /data-status-tone="error"/);
+});
+
+test("user-facing interaction modes are consistently named Chat and Work", () => {
+  const html = fs.readFileSync(path.join(projectRoot, "desktop", "control.html"), "utf8");
+  const control = fs.readFileSync(path.join(projectRoot, "desktop", "control.js"), "utf8");
+  const mascot = fs.readFileSync(path.join(projectRoot, "desktop", "preload-mascot.cjs"), "utf8");
+  assert.match(html, /data-page="chat"[^>]*>[\s\S]*?Chat<\/button>/);
+  assert.match(html, /id="interactionModeBadge">Chat<\/span>/);
+  assert.match(html, /id="conversationHistoryTab"[^>]*>Chat履歴<\/button>/);
+  assert.match(html, /id="workHistoryTab"[^>]*>Work履歴<\/button>/);
+  assert.match(control, /interactionModeBadge"\)\.textContent = state\.interactionMode === "work" \? "Work" : "Chat"/);
+  assert.match(mascot, /desktopMascotModeButton[\s\S]*?>Chat<\/button>/);
+  assert.match(mascot, /modeButton\.textContent = workMode \? "Work" : "Chat"/);
+});
+
+test("WSL can launch Windows Electron from a persistent isolated development mirror", () => {
+  const shell = fs.readFileSync(path.join(projectRoot, "scripts", "windows-dev.sh"), "utf8");
+  const batch = fs.readFileSync(path.join(projectRoot, "scripts", "windows-dev.cmd"), "utf8");
+  const main = fs.readFileSync(path.join(projectRoot, "desktop", "main.cjs"), "utf8");
+  assert.equal(packageJson.scripts["desktop:win:dev"], "bash scripts/windows-dev.sh");
+  assert.equal(packageJson.scripts["desktop:win:dev:profile"], "bash scripts/windows-dev.sh --shared-profile");
+  assert.match(shell, /LOCALAPPDATA/);
+  assert.match(shell, /CharaDockDev\\\\source/);
+  assert.match(shell, /rsync -a --delete/);
+  assert.match(shell, /--exclude '\/node_modules\/'/);
+  assert.match(shell, /dependency_hash/);
+  assert.match(batch, /CharaDockDev\\profile/);
+  assert.match(batch, /--shared-profile/);
+  assert.match(batch, /node_modules\\electron\\cli\.js/);
+  assert.match(main, /--charadock-user-data/);
+  assert.match(main, /app\.setPath\("userData", developmentUserDataPath\)/);
 });
 
 test("Codex memory tools proactively create and update character memories", () => {

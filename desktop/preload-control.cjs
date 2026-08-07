@@ -3,6 +3,7 @@ const { contextBridge, ipcRenderer, webUtils } = require("electron");
 
 contextBridge.exposeInMainWorld("mascotDesktop", {
   getState: () => ipcRenderer.invoke("app:getState"),
+  openExternalUrl: (url) => ipcRenderer.invoke("app:openExternalUrl", url),
   getPathForFile: (file) => webUtils.getPathForFile(file),
   saveSettings: (settings) => ipcRenderer.invoke("settings:save", settings),
   setApiKey: (key) => ipcRenderer.invoke("settings:setApiKey", key),
@@ -22,8 +23,15 @@ contextBridge.exposeInMainWorld("mascotDesktop", {
   resetChat: () => ipcRenderer.invoke("chat:reset"),
   getWorkHistory: () => ipcRenderer.invoke("work:getHistory"),
   chooseWorkDirectory: () => ipcRenderer.invoke("work:chooseDirectory"),
+  activateWorkProject: (projectId) => ipcRenderer.invoke("work:activateProject", projectId),
+  detachWorkProject: (projectId) => ipcRenderer.invoke("work:detachProject", projectId),
   openWorkDirectory: () => ipcRenderer.invoke("work:openDirectory"),
   openWorkArtifact: (payload) => ipcRenderer.invoke("work:openArtifact", payload),
+  previewWorkArtifact: (payload) => ipcRenderer.invoke("work:previewArtifact", payload),
+  startWebPreview: (payload) => ipcRenderer.invoke("work:webPreviewStart", payload),
+  stopWebPreview: () => ipcRenderer.invoke("work:webPreviewStop"),
+  getWebPreview: () => ipcRenderer.invoke("work:webPreviewState"),
+  openWebPreview: () => ipcRenderer.invoke("work:webPreviewOpen"),
   testBackend: (backend) => ipcRenderer.invoke("backend:test", backend),
   getCodexAccount: () => ipcRenderer.invoke("codex:account"),
   getCodexModels: () => ipcRenderer.invoke("codex:models"),
@@ -83,6 +91,11 @@ contextBridge.exposeInMainWorld("mascotDesktop", {
     const listener = (_event, payload) => callback(payload);
     ipcRenderer.on("work:history", listener);
     return () => ipcRenderer.removeListener("work:history", listener);
+  },
+  onWebPreview: (callback) => {
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on("work:webPreviewState", listener);
+    return () => ipcRenderer.removeListener("work:webPreviewState", listener);
   },
   onCharacterGeneration: (callback) => {
     const listener = (_event, payload) => callback(payload);

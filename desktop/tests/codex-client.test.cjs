@@ -37,11 +37,19 @@ test("Codex workspace-write client scopes writes to the selected folder", async 
     excludeTmpdirEnvVar: false,
     excludeSlashTmp: false,
   });
+  const home = process.platform === "win32" ? "C:\\Users\\test\\AppData\\CharacterHome" : "/tmp/character-home";
+  assert.deepEqual(workspaceSandboxPolicy("workspace-write", cwd, [home]), {
+    type: "workspaceWrite",
+    writableRoots: [cwd, home],
+    networkAccess: false,
+    excludeTmpdirEnvVar: false,
+    excludeSlashTmp: false,
+  });
   assert.equal(workspaceSandboxPolicy("read-only", cwd), null);
   assert.equal(permissionProfileForSandbox("workspace-write"), ":workspace");
   assert.equal(permissionProfileForSandbox("read-only"), ":read-only");
 
-  const client = new CodexAppServerClient({ cwd, sandbox: "workspace-write" });
+  const client = new CodexAppServerClient({ cwd, sandbox: "workspace-write", workspaceRoots: [home] });
   client.ensureStarted = async () => {};
   let threadParams;
   client.request = async (method, params) => {
@@ -50,7 +58,7 @@ test("Codex workspace-write client scopes writes to the selected folder", async 
     return { thread: { id: "thread-workspace" } };
   };
   await client.ensureThread();
-  assert.deepEqual(threadParams.runtimeWorkspaceRoots, [cwd]);
+  assert.deepEqual(threadParams.runtimeWorkspaceRoots, [cwd, home]);
   assert.equal(threadParams.permissions, ":workspace");
   assert.equal(Object.prototype.hasOwnProperty.call(threadParams, "sandbox"), false);
 });

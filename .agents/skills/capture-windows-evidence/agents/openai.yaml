@@ -1,0 +1,4 @@
+interface:
+  display_name: "Capture Windows Evidence"
+  short_description: "Capture smooth Windows screenshots and recordings"
+  default_prompt: "Use $capture-windows-evidence to capture polished screenshots or video of the packaged CharaDock Windows app."

@@ -68,12 +68,17 @@
     "会話モード": "Chat mode",
     "作業モード": "Work mode",
     "作業フォルダー": "Work folder",
+    "作業先": "Workspace",
+    "作業先プロジェクト": "Work project",
     "開く": "Open",
     "変更": "Change",
+    "追加": "Add",
     "作業モード · 選択フォルダー内へ書き込みできます": "Work mode · Can write inside the selected folder",
     "作業モードで実行した依頼と結果がここに残ります。": "Work-mode requests and results will appear here.",
     "進捗を表示": "Show progress",
     "成果物": "Outputs",
+    "外部で開く": "Open externally",
+    "プレビューを閉じる": "Close preview",
     "差し込む": "Follow up",
     "差し込みを受け付けました。現在の応答を止めています…": "Follow-up queued. Stopping the current response…",
     "送信": "Send",
@@ -82,6 +87,9 @@
     "見た目と振る舞い": "Appearance and behavior",
     "クリックすると透明ウィンドウのキャラクターがすぐ切り替わります。": "Click a character to switch the transparent desktop window immediately.",
     "キャラクター設定内を移動": "Navigate character settings",
+    "キャラクターホームと担当プロジェクト": "Character Home and attached projects",
+    "このキャラ専用のホームを持ち、既存フォルダーは移動せず担当プロジェクトとして切り替えられます。": "Give this character a private home and switch existing folders as attached projects without moving them.",
+    "プロジェクトを追加": "Add project",
     "一覧と設定": "Library & settings",
     "動き": "Motion",
     "キャラを追加": "Add character",
@@ -439,6 +447,7 @@
     "やめる": "Cancel",
     "全文": "Full text",
     "会話モードと作業モードを切り替える": "Switch between chat and work mode",
+    "ChatとWorkを切り替える": "Switch between Chat and Work",
     "作業先フォルダーを変更する": "Change work folder",
     "作業先フォルダーを開く": "Open work folder",
     "履歴": "History",
@@ -449,6 +458,7 @@
     "フォローアップを差し込む": "Insert a follow-up",
     "会話入力を開く": "Open chat input",
     "会話と作業の記録": "Chat and work history",
+    "ChatとWorkの記録": "Chat and Work history",
     "作業履歴を閉じる": "Close work history",
     "キャラクターに触れる": "Interact with character",
     "ドラッグで移動・クリックで触れる": "Drag to move; click to interact",
@@ -456,6 +466,8 @@
     "読み上げを停止しました": "Stopped speaking",
     "作業履歴": "Work history",
     "会話履歴": "Chat history",
+    "Work履歴": "Work history",
+    "Chat履歴": "Chat history",
     "まだ作業履歴はありません": "No work history yet",
     "このキャラクターとの会話はまだありません": "No conversations with this character yet",
     "作業中": "Working",
@@ -468,11 +480,18 @@
     "中断しています…": "Stopping…",
     "会話モードへ戻す": "Switch to chat mode",
     "作業モードへ切り替える": "Switch to work mode",
+    "Chatへ戻す": "Switch to Chat",
+    "Workへ切り替える": "Switch to Work",
     "未選択": "Not selected",
     "このフォルダーでやること…": "What should I do in this folder?",
     "作業履歴を開く": "Open work history",
     "会話履歴を開く": "Open chat history",
     "会話履歴を閉じる": "Close chat history"
+    ,"Work履歴を開く": "Open Work history"
+    ,"Chat履歴を開く": "Open Chat history"
+    ,"Work履歴を閉じる": "Close Work history"
+    ,"Chat履歴を閉じる": "Close Chat history"
+    ,"ChatとWorkの履歴": "Chat and Work history"
     ,"中性的": "Neutral"
     ,"女性寄り": "Feminine"
     ,"男性寄り": "Masculine"

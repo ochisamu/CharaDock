@@ -20,11 +20,15 @@ const CODEX_MASCOT_INSTRUCTIONS = [
 
 const WEB_SEARCH_MODES = new Set(["cached", "indexed", "live", "disabled"]);
 
-function workspaceSandboxPolicy(sandbox, cwd) {
+function normalizedWorkspaceRoots(cwd, workspaceRoots = []) {
+  return [...new Set([cwd, ...(Array.isArray(workspaceRoots) ? workspaceRoots : [])].map((value) => String(value || "").trim()).filter(Boolean))];
+}
+
+function workspaceSandboxPolicy(sandbox, cwd, workspaceRoots = []) {
   if (sandbox !== "workspace-write" || !cwd) return null;
   return {
     type: "workspaceWrite",
-    writableRoots: [cwd],
+    writableRoots: normalizedWorkspaceRoots(cwd, workspaceRoots),
     networkAccess: false,
     excludeTmpdirEnvVar: false,
     excludeSlashTmp: false,
@@ -74,6 +78,7 @@ class CodexAppServerClient {
     webSearchMode = "",
     dynamicTools = [],
     onDynamicToolCall = null,
+    workspaceRoots = [],
     rejectInteractiveRequests = false,
   } = {}) {
     this.cwd = cwd || process.cwd();
@@ -91,6 +96,7 @@ class CodexAppServerClient {
     this.webSearchMode = WEB_SEARCH_MODES.has(webSearchMode) ? webSearchMode : "";
     this.dynamicTools = Array.isArray(dynamicTools) ? dynamicTools : [];
     this.onDynamicToolCall = typeof onDynamicToolCall === "function" ? onDynamicToolCall : null;
+    this.workspaceRoots = normalizedWorkspaceRoots(this.cwd, workspaceRoots);
     this.rejectInteractiveRequests = rejectInteractiveRequests === true;
     this.persona = "";
     this.proc = null;
@@ -359,7 +365,7 @@ class CodexAppServerClient {
     const permissionProfile = permissionProfileForSandbox(this.sandbox);
     if (permissionProfile) params.permissions = permissionProfile;
     else params.sandbox = this.sandbox;
-    if (this.sandbox === "workspace-write") params.runtimeWorkspaceRoots = [this.cwd];
+    if (this.sandbox === "workspace-write") params.runtimeWorkspaceRoots = this.workspaceRoots;
     if (this.model) params.model = this.model;
     if (this.dynamicTools.length) params.dynamicTools = this.dynamicTools;
     let result;
@@ -508,7 +514,7 @@ class CodexAppServerClient {
       };
       if (this.model) params.model = this.model;
       if (this.reasoningEffort) params.effort = this.reasoningEffort;
-      const sandboxPolicy = this.usesPermissionProfile ? null : workspaceSandboxPolicy(this.sandbox, this.cwd);
+      const sandboxPolicy = this.usesPermissionProfile ? null : workspaceSandboxPolicy(this.sandbox, this.cwd, this.workspaceRoots);
       if (sandboxPolicy) params.sandboxPolicy = sandboxPolicy;
       if (outputSchema) params.outputSchema = outputSchema;
       const result = await this.request("turn/start", params, 60_000);

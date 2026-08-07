@@ -3,8 +3,9 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; media-src 'self' blob: data:; object-src 'none'; base-uri 'none'" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: charadock-artifact:; connect-src 'self'; media-src 'self' blob: data: charadock-artifact:; frame-src charadock-artifact: http://127.0.0.1:*; object-src 'none'; base-uri 'none'" />
   <title>CharaDock</title>
+  <link rel="stylesheet" href="../vendor/highlightjs/11.11.1/styles/github-dark-dimmed.min.css" />
   <link rel="stylesheet" href="./control.css" />
 </head>
 <body>
@@ -24,7 +25,7 @@
 
       <nav class="nav-tabs" aria-label="設定カテゴリ">
         <p class="nav-section-label">コンパニオン</p>
-        <button class="nav-tab is-active" type="button" data-page="chat"><span class="ui-symbol ui-symbol-chat" aria-hidden="true"></span>会話</button>
+        <button class="nav-tab is-active" type="button" data-page="chat"><span class="ui-symbol ui-symbol-chat" aria-hidden="true"></span>Chat</button>
         <button class="nav-tab" type="button" data-page="character"><span class="ui-symbol ui-symbol-character" aria-hidden="true"></span>キャラクター</button>
         <button class="nav-tab" type="button" data-page="voice"><span class="ui-symbol ui-symbol-voice" aria-hidden="true"></span>音声</button>
         <p class="nav-section-label">システム</p>
@@ -49,22 +50,21 @@
       </aside>
       <section class="page is-active" data-page-panel="chat">
         <header class="page-header">
-          <div><p class="eyebrow">会話</p><h1>キャラクターと話す</h1></div>
+          <div><p class="eyebrow">Chat</p><h1>キャラクターと話す</h1></div>
           <button id="resetChatButton" class="button button-quiet" type="button">新しい会話</button>
         </header>
 
         <div class="chat-layout">
-          <section class="chat-history-toolbar" aria-label="会話と作業の履歴">
+          <section class="chat-history-toolbar" aria-label="ChatとWorkの履歴">
             <div class="history-segment" role="tablist" aria-label="表示する履歴">
-              <button id="conversationHistoryTab" type="button" role="tab" aria-selected="true">会話履歴</button>
-              <button id="workHistoryTab" type="button" role="tab" aria-selected="false">作業履歴</button>
+              <button id="conversationHistoryTab" type="button" role="tab" aria-selected="true">Chat履歴</button>
+              <button id="workHistoryTab" type="button" role="tab" aria-selected="false">Work履歴</button>
             </div>
             <div class="work-folder-quick">
-              <span id="interactionModeBadge">会話モード</span>
-              <small>作業フォルダー</small>
-              <strong id="chatWorkDirectoryName">未選択</strong>
+              <span id="interactionModeBadge">Chat</span>
+              <label class="work-project-picker"><small>作業先</small><select id="chatWorkProjectSelect" aria-label="作業先プロジェクト"></select></label>
               <button id="openChatWorkDirectoryButton" class="button button-quiet" type="button">開く</button>
-              <button id="chooseChatWorkDirectoryButton" class="button button-quiet" type="button">変更</button>
+              <button id="chooseChatWorkDirectoryButton" class="button button-quiet" type="button">追加</button>
             </div>
           </section>
           <div id="chatLog" class="chat-log" aria-live="polite">
@@ -153,6 +153,10 @@
           <section class="character-memory" aria-labelledby="characterMemoryTitle">
             <header><div><h3 id="characterMemoryTitle">このキャラのメモリ</h3><p>会話から自動で覚えた呼び名・好み・継続目標です。ほかのキャラとは共有しません。</p></div><button id="clearCharacterMemoriesButton" class="button button-quiet" type="button" hidden>すべて忘れる</button></header>
             <div id="characterMemoryList" class="character-memory-list"></div>
+          </section>
+          <section class="character-workspace" aria-labelledby="characterWorkspaceTitle">
+            <header><div><h3 id="characterWorkspaceTitle">キャラクターホームと担当プロジェクト</h3><p>このキャラ専用のホームを持ち、既存フォルダーは移動せず担当プロジェクトとして切り替えられます。</p></div><button id="addCharacterProjectButton" class="button button-quiet" type="button">プロジェクトを追加</button></header>
+            <div id="characterProjectList" class="character-project-list"></div>
           </section>
           <div class="profile-position-grid">
             <label>吹き出し 左 (%)<input id="bubbleLeftInput" type="number" min="2" max="70" step="1" /></label>
@@ -262,14 +266,14 @@
           <section class="card settings-card" id="codexSettings">
             <header><div><h2>Codex設定</h2><p>会話と作業でモデルと推論の深さを分けられます。空欄ならCodex側の既定値です。</p></div></header>
             <div class="codex-mode-settings">
-              <h3>会話</h3>
+              <h3>Chat</h3>
               <label>モデル<select id="codexChatModelInput"><option value="">Codex既定</option></select></label>
               <label>推論の深さ<select id="codexChatReasoningEffortSelect">
                 <option value="">Codex既定</option><option value="none">なし</option><option value="minimal">最小</option><option value="low">低</option><option value="medium">中</option><option value="high">高</option><option value="xhigh">非常に高い</option><option value="max">最大</option><option value="ultra">Ultra</option>
               </select></label>
             </div>
             <div class="codex-mode-settings">
-              <h3>作業</h3>
+              <h3>Work</h3>
               <label>モデル<select id="codexWorkModelInput"><option value="">Codex既定</option></select></label>
               <label>推論の深さ<select id="codexWorkReasoningEffortSelect">
                 <option value="">Codex既定</option><option value="none">なし</option><option value="minimal">最小</option><option value="low">低</option><option value="medium">中</option><option value="high">高</option><option value="xhigh">非常に高い</option><option value="max">最大</option><option value="ultra">Ultra</option>
@@ -671,6 +675,13 @@
       </section>
     </main>
   </div>
+  <aside id="artifactPreview" class="artifact-preview" aria-labelledby="artifactPreviewTitle" hidden>
+    <header>
+      <div><p class="eyebrow">Preview</p><h2 id="artifactPreviewTitle">成果物</h2><small id="artifactPreviewPath"></small></div>
+      <div class="artifact-preview-header-actions"><button id="openPreviewArtifactButton" class="button button-quiet" type="button">外部で開く</button><button id="closeArtifactPreviewButton" class="artifact-preview-close" type="button" aria-label="プレビューを閉じる"><span class="ui-symbol ui-symbol-close" aria-hidden="true"></span></button></div>
+    </header>
+    <div id="artifactPreviewBody" class="artifact-preview-body"></div>
+  </aside>
   <section id="onboarding" class="onboarding" role="dialog" aria-modal="true" aria-labelledby="onboardingTitle" hidden>
     <div class="onboarding-window">
       <header class="onboarding-header">
@@ -755,6 +766,9 @@
   <script src="./i18n.js"></script>
   <script src="./audio-envelope.js"></script>
   <script src="./realtime-beatrice.js"></script>
+  <script src="../vendor/highlightjs/11.11.1/highlight.min.js"></script>
+  <script src="../vendor/markdown-it/14.3.0/markdown-it.min.js"></script>
+  <script src="../vendor/dompurify/3.4.13/purify.min.js"></script>
   <script src="./control.js"></script>
 </body>
 </html>

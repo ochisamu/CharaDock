@@ -39,7 +39,7 @@ CharaDock is an unofficial derivative of [rotejin/PuruPuruPNGTuber](https://gith
 
 | Talk | Work | Create your own character |
 | --- | --- | --- |
-| Responses stream beside the character's face. Configure voice input, speech, expressions, and lip sync per character. | Switch between `Conversation / Work` from a compact control. Codex works only inside one selected folder and keeps its progress and results in history. | `Codex Avatar Studio` turns one illustration into eye, mouth, expression, and hair layers, initial rig settings, and a personality. |
+| Responses stream beside the character's face. Configure voice input, speech, expressions, and lip sync per character. | Switch between `Chat / Work` from a compact control. Codex works only inside one selected folder and keeps its progress and results in history. | `Codex Avatar Studio` turns one illustration into eye, mouth, expression, and hair layers, initial rig settings, and a personality. |
 
 ### Motion that belongs on the desktop
 
@@ -58,6 +58,9 @@ CharaDock is an unofficial derivative of [rotejin/PuruPuruPNGTuber](https://gith
 - Up to 20 recent conversation turns per character
 - Character-specific long-term memory that automatically extracts useful names, preferences, relationships, and ongoing goals
 - Up to 24 local memory entries, with review and individual or complete deletion
+- A durable Character Home for each avatar, plus switchable references to existing projects without moving their files
+- In-app output cards for text, images, audio, video, PDF, folders, and sandboxed static web previews
+- Live previews for Next.js, Vite, Nuxt, Astro, SvelteKit, and other package-script web apps, with server status and logs kept inside CharaDock
 
 Temporary requests, guesses, content copied from external websites, secrets, contact details, addresses, and sensitive attributes are not stored as long-term memory. Memories are never shared between characters.
 
@@ -121,6 +124,14 @@ npm ci
 npm run desktop
 ```
 
+When developing under WSL, launch the real Windows Electron runtime without creating distributable executables:
+
+```bash
+npm run desktop:win:dev
+```
+
+Windows dependencies are installed only on the first launch or when the package manifests change. Later launches incrementally sync into `%LOCALAPPDATA%\CharaDockDev\source`, while settings and downloaded models persist in an isolated `CharaDockDev` profile. Use `npm run desktop:win:dev:profile` only when a test explicitly needs the installed app's settings and models, after closing every installed or portable CharaDock instance. Development code may migrate the shared profile, so the isolated command is the safer default.
+
 ### macOS — experimental source preview
 
 CharaDock does not currently provide a signed macOS application, DMG, or ZIP. To try it on macOS, clone the repository and run the Electron development build with Node.js 24:
@@ -138,7 +149,7 @@ The first-run guide configures the AI connection, character, and speech provider
 
 1. Move the pointer over the `✦` beside the character to open the input.
 2. Start a conversation, or select `Conversation` to switch into `Work` mode.
-3. The first time you use Work mode, choose the folder Codex may modify.
+3. The first time you use Work, choose the folder Codex may modify.
 4. Open `History` to revisit conversations, instructions, operations, and results.
 
 | Action | Shortcut |
@@ -150,8 +161,12 @@ The first-run guide configures the AI connection, character, and speech provider
 
 ## Safe work and screen control
 
-- Conversation mode is read-only
-- Work mode grants workspace-write access only to one folder explicitly selected by the user
+- Chat is read-only
+- Work grants workspace-write access only to the active Home/project and the selected character's managed Home context
+- Attached projects remain in their original location and can be switched or removed without deleting source files
+- Static web outputs run in a sandboxed in-app preview with network access disabled
+- Dynamic web previews run one visible local development server at a time. CharaDock shows the exact `dev`, `preview`, or `start` package command and asks before launching it; it never installs dependencies automatically
+- A preview server is bound to `127.0.0.1`, stopped when its project changes or the app exits, and its bounded logs are not saved. Network requests made by the previewed application still follow that project's own implementation
 - Conversation and work use separate tasks and permissions; each can use its own model and reasoning effort
 - An active turn can be interrupted from history
 - Screen capture, the dedicated browser, and computer control request permission in the conversation
@@ -168,7 +183,7 @@ Browser actions run in a visible, dedicated window and support navigation, links
 
 CharaDock starts the local `codex app-server --stdio` process. Codex manages the ChatGPT authentication token; CharaDock never receives it. Models returned by app-server appear in a dropdown, and conversation and work can use separate models and reasoning-effort settings.
 
-GPT-Live / Codex Voice is experimental and its availability depends on the account and upstream implementation. Realtime starts as a new empty task only when recording is enabled. In Work mode it connects to a workspace-write task scoped to the selected folder, and voice-requested work is also saved to history.
+GPT-Live / Codex Voice is experimental and its availability depends on the account and upstream implementation. Realtime starts as a new empty task only when recording is enabled. In Work it connects to a workspace-write task scoped to the selected folder, and voice-requested work is also saved to history.
 
 CharaDock's Beatrice 2 voice-conversion integration uses its own small native VST3 host: `charadock-beatrice-host.exe` on Windows and an extensionless arm64 helper bundled inside the experimental macOS app. CharaDock does not redistribute Beatrice, its inference library, or voice models. Select an extracted official Beatrice folder in Voice settings, then add model folders to the referenced-model library. CharaDock never copies or deletes those external model files. Review each model's terms separately; the JVS sample model shipped with Beatrice 2.0.0-rc.2 prohibits unauthorized commercial use. See the [native host build guide](./native/beatrice-host/README.md) for source-build instructions.
 

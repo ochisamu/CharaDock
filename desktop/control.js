@@ -47,6 +47,8 @@
   let chatAttachments = [];
   let chatHistoryView = "conversation";
   let workHistoryState = { activeWorkRunId: null, runs: [] };
+  let activeArtifactPreview = null;
+  let activeArtifactPreviewData = null;
   let generatorFile = null;
   let generatorBusy = false;
   let codexAccount = null;
@@ -74,8 +76,8 @@
     "followSpeed", "breathStrength", "rollStrength", "pyokoStrength", "hairSpring", "hairWarp",
   ];
   const settingsSearchItems = Object.freeze([
-    { page: "chat", target: "#chatLog", ja: "会話履歴", en: "Conversation history", detailJa: "過去の会話と作業を見る", detailEn: "Review past chats and work", keywords: "chat conversation history work 作業" , popular: true },
-    { page: "chat", target: "#chatWorkDirectoryName", ja: "作業フォルダー", en: "Work folder", detailJa: "作業先を選択して開く", detailEn: "Choose and open the work location", keywords: "directory folder output 成果物" },
+    { page: "chat", target: "#chatLog", ja: "Chat履歴", en: "Chat history", detailJa: "過去のChatとWorkを見る", detailEn: "Review past chats and work", keywords: "chat conversation history work 作業" , popular: true },
+    { page: "chat", target: "#chatWorkProjectSelect", ja: "作業先プロジェクト", en: "Work project", detailJa: "キャラクターホームや担当プロジェクトを切り替える", detailEn: "Switch between Character Home and attached projects", keywords: "directory folder project home output 成果物 担当 ホーム" },
     { page: "character", target: "#characterLibraryTitle", ja: "キャラクター一覧", en: "Character library", detailJa: "使うキャラクターを切り替える", detailEn: "Switch the active character", keywords: "avatar select library キャラ", popular: true },
     { page: "character", target: "#characterProfileCard", ja: "名前・性格・メモリ", en: "Name, personality, and memory", detailJa: "選択中のキャラクターを編集", detailEn: "Edit the selected character", keywords: "profile persona memory bubble 名前 性格 記憶 吹き出し" },
     { page: "character", target: "#motionEditorTitle", ja: "キャラクターの動き", en: "Character motion", detailJa: "サイズ、追従、呼吸、髪揺れ", detailEn: "Size, tracking, breathing, and hair motion", keywords: "motion animation lip sync hair blink マウス リップシンク", popular: true },
@@ -566,7 +568,7 @@
 
   function settingsPageLabel(page) {
     const labels = {
-      chat: ["会話", "Chat"],
+      chat: ["Chat", "Chat"],
       character: ["キャラクター", "Character"],
       voice: ["音声", "Voice"],
       connection: ["AI接続", "AI Connection"],
@@ -743,15 +745,349 @@
     return date.toLocaleString(state?.language === "en" ? "en-US" : "ja-JP", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
   }
 
+  function closeArtifactPreview() {
+    const panel = $("#artifactPreview");
+    panel.hidden = true;
+    $("#artifactPreviewBody").replaceChildren();
+    activeArtifactPreview = null;
+    activeArtifactPreviewData = null;
+  }
+
+  function webFrameworkLabel(value) {
+    return ({ nextjs: "Next.js", vite: "Vite", nuxt: "Nuxt", astro: "Astro", sveltekit: "SvelteKit", "node-web": "Web app" })[value] || "Web app";
+  }
+
+  function webPreviewLogs(server = {}) {
+    const details = document.createElement("details");
+    details.className = "web-preview-logs";
+    const summary = document.createElement("summary");
+    summary.textContent = localized("起動ログ", "Server logs");
+    const pre = document.createElement("pre");
+    pre.textContent = (server.logs || []).join("\n") || localized("ログはまだありません。", "No logs yet.");
+    details.append(summary, pre);
+    return details;
+  }
+
+  function renderDynamicWebPreview(preview, body) {
+    const project = preview.project || {};
+    const server = preview.server || { status: "idle", logs: [] };
+    const running = server.status === "running";
+    const busy = ["starting", "stopping"].includes(server.status);
+    if (running) {
+      const live = document.createElement("div");
+      live.className = "web-live-preview";
+      const frame = document.createElement("iframe");
+      frame.title = `${project.name || preview.name} · Live preview`;
+      frame.setAttribute("sandbox", "allow-scripts allow-same-origin");
+      frame.src = server.url;
+      const footer = document.createElement("footer");
+      const status = document.createElement("span");
+      status.className = "web-preview-running";
+      status.textContent = `${webFrameworkLabel(project.framework)} · ${localized("ライブ更新中", "Live updating")}`;
+      const stop = document.createElement("button");
+      stop.type = "button";
+      stop.className = "button button-quiet";
+      stop.textContent = localized("停止", "Stop");
+      stop.addEventListener("click", async () => { stop.disabled = true; await api.stopWebPreview().catch((error) => setStatus($("#chatStatus"), error.message, true)); });
+      footer.append(status, stop);
+      live.append(frame, footer, webPreviewLogs(server));
+      body.appendChild(live);
+      return;
+    }
+
+    const card = document.createElement("section");
+    card.className = "web-preview-launch";
+    const mark = document.createElement("span");
+    mark.className = "web-preview-framework";
+    mark.textContent = webFrameworkLabel(project.framework).slice(0, 2);
+    const intro = document.createElement("div");
+    const eyebrow = document.createElement("p");
+    eyebrow.className = "eyebrow";
+    eyebrow.textContent = webFrameworkLabel(project.framework);
+    const title = document.createElement("h3");
+    title.textContent = project.name || preview.name || localized("動的Webアプリ", "Dynamic web app");
+    const description = document.createElement("p");
+    description.textContent = localized(
+      "開発サーバーをローカルで起動し、変更をFast Refreshでこの画面へ反映します。",
+      "Start the local development server and show Fast Refresh changes here.",
+    );
+    intro.append(eyebrow, title, description);
+    const controls = document.createElement("div");
+    controls.className = "web-preview-launch-controls";
+    const scriptLabel = document.createElement("label");
+    scriptLabel.append(document.createTextNode(localized("起動スクリプト", "Start script")));
+    const scriptSelect = document.createElement("select");
+    for (const script of project.scripts || []) {
+      const option = document.createElement("option");
+      option.value = script;
+      option.textContent = `${project.packageManager || "npm"} run ${script}`;
+      scriptSelect.appendChild(option);
+    }
+    scriptSelect.value = project.preferredScript || project.scripts?.[0] || "dev";
+    scriptLabel.appendChild(scriptSelect);
+    const runtimeLabel = document.createElement("label");
+    runtimeLabel.append(document.createTextNode(localized("実行環境", "Runtime")));
+    const runtimeSelect = document.createElement("select");
+    const runtimeLabels = { auto: localized("自動", "Auto"), windows: "Windows Node.js", wsl: "WSL Node.js" };
+    for (const runtime of project.runtimeOptions || ["auto"]) {
+      const option = document.createElement("option");
+      option.value = runtime;
+      option.textContent = runtimeLabels[runtime] || runtime;
+      runtimeSelect.appendChild(option);
+    }
+    runtimeSelect.value = project.runtime || "auto";
+    runtimeLabel.appendChild(runtimeSelect);
+    controls.append(scriptLabel, runtimeLabel);
+    const command = document.createElement("code");
+    const refreshCommand = () => {
+      const hostFlag = project.framework === "nextjs" ? "--hostname" : "--host";
+      command.textContent = `${runtimeSelect.value === "wsl" ? "WSL · " : ""}${project.packageManager || "npm"} run ${scriptSelect.value} -- ${hostFlag} 127.0.0.1 --port <auto>`;
+    };
+    scriptSelect.addEventListener("change", refreshCommand);
+    runtimeSelect.addEventListener("change", refreshCommand);
+    refreshCommand();
+    const note = document.createElement("p");
+    note.className = `web-preview-readiness${project.dependenciesReady ? " is-ready" : " is-warning"}`;
+    note.textContent = project.dependenciesReady
+      ? localized("依存パッケージを確認しました。外部通信はプロジェクトの実装に従います。", "Dependencies are present. External requests follow the project's implementation.")
+      : localized("依存パッケージが見つかりません。インストールは自動実行せず、起動に失敗した場合はログへ表示します。", "Dependencies were not found. CharaDock will not install them automatically; startup errors appear in the log.");
+    const start = document.createElement("button");
+    start.type = "button";
+    start.className = "button button-primary";
+    start.textContent = busy ? localized("起動しています…", "Starting…") : localized("ライブプレビューを起動", "Start live preview");
+    start.disabled = busy;
+    start.addEventListener("click", async () => {
+      const confirmed = window.confirm(localized(
+        `選択中のプロジェクトで次のコマンドを実行します。\n\n${command.textContent}\n\n依存関係のインストールは行いません。起動しますか？`,
+        `Run this command in the selected project?\n\n${command.textContent}\n\nDependencies will not be installed automatically.`,
+      ));
+      if (!confirmed || !activeArtifactPreview) return;
+      start.disabled = true;
+      try {
+        const next = await api.startWebPreview({ ...activeArtifactPreview, projectId: project.id, script: scriptSelect.value, runtime: runtimeSelect.value });
+        if (activeArtifactPreviewData?.project?.id === project.id) {
+          activeArtifactPreviewData.server = next;
+          renderArtifactPreview(activeArtifactPreviewData);
+        }
+      } catch (error) {
+        setStatus($("#chatStatus"), error.message, true);
+        const current = await api.getWebPreview().catch(() => ({ status: "error", error: error.message, logs: [] }));
+        if (activeArtifactPreviewData?.project?.id === project.id) {
+          activeArtifactPreviewData.server = current;
+          renderArtifactPreview(activeArtifactPreviewData);
+        }
+      }
+    });
+    card.append(mark, intro, controls, command, note, start);
+    if (server.error) {
+      const error = document.createElement("p");
+      error.className = "web-preview-error";
+      error.textContent = server.error;
+      card.appendChild(error);
+    }
+    if (busy || server.error || server.logs?.length) card.appendChild(webPreviewLogs(server));
+    body.appendChild(card);
+  }
+
+  const artifactLanguageAliases = Object.freeze({
+    js: "javascript", mjs: "javascript", cjs: "javascript", jsx: "javascript",
+    ts: "typescript", tsx: "typescript", html: "xml", htm: "xml", svg: "xml",
+    yml: "yaml", md: "markdown", markdown: "markdown", sh: "bash", ps1: "powershell",
+    bat: "dos", py: "python", rb: "ruby", rs: "rust", kt: "kotlin",
+    h: "c", cpp: "cpp", hpp: "cpp", scss: "scss", jsonc: "json",
+  });
+
+  function renderHighlightedArtifact(preview) {
+    const source = String(preview.text || "");
+    const requested = artifactLanguageAliases[preview.language] || String(preview.language || "plaintext").toLowerCase();
+    const language = window.hljs?.getLanguage?.(requested) ? requested : "plaintext";
+    const wrapper = document.createElement("section");
+    wrapper.className = "artifact-code-preview";
+    const toolbar = document.createElement("header");
+    const label = document.createElement("span");
+    label.textContent = language === "plaintext" ? localized("テキスト", "Plain text") : language;
+    const copy = document.createElement("button");
+    copy.type = "button";
+    copy.textContent = localized("コピー", "Copy");
+    copy.addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(source);
+        copy.textContent = localized("コピーしました", "Copied");
+        setTimeout(() => { copy.textContent = localized("コピー", "Copy"); }, 1400);
+      } catch (error) { setStatus($("#chatStatus"), error.message, true); }
+    });
+    toolbar.append(label, copy);
+    const pre = document.createElement("pre");
+    const code = document.createElement("code");
+    code.className = `hljs language-${language}`;
+    try {
+      code.innerHTML = language === "plaintext" || !window.hljs
+        ? window.hljs?.highlight(source, { language: "plaintext", ignoreIllegals: true }).value || ""
+        : window.hljs.highlight(source, { language, ignoreIllegals: true }).value;
+      if (!window.hljs) code.textContent = source;
+    } catch { code.textContent = source; }
+    pre.appendChild(code);
+    wrapper.append(toolbar, pre);
+    return wrapper;
+  }
+
+  function sameRunArtifactUrl(value, preview) {
+    if (!value || !preview.url) return null;
+    try {
+      const base = new URL(preview.url);
+      const resolved = new URL(value, base);
+      return resolved.protocol === "charadock-artifact:" && resolved.hostname === base.hostname ? resolved : null;
+    } catch { return null; }
+  }
+
+  function renderMarkdownArtifact(preview) {
+    if (typeof window.markdownit !== "function" || !window.DOMPurify) return renderHighlightedArtifact(preview);
+    const markdown = window.markdownit({
+      html: false,
+      linkify: true,
+      typographer: true,
+      highlight(source, requested) {
+        const language = artifactLanguageAliases[requested] || String(requested || "plaintext").toLowerCase();
+        if (window.hljs?.getLanguage?.(language)) {
+          try { return `<pre><code class="hljs language-${language}">${window.hljs.highlight(source, { language, ignoreIllegals: true }).value}</code></pre>`; }
+          catch {}
+        }
+        return `<pre><code class="hljs language-plaintext">${markdown.utils.escapeHtml(source)}</code></pre>`;
+      },
+    });
+    const rendered = markdown.render(String(preview.text || ""));
+    const fragment = window.DOMPurify.sanitize(rendered, {
+      RETURN_DOM_FRAGMENT: true,
+      ALLOWED_TAGS: ["a", "article", "blockquote", "br", "code", "del", "em", "h1", "h2", "h3", "h4", "h5", "h6", "hr", "img", "li", "ol", "p", "pre", "s", "span", "strong", "table", "tbody", "td", "th", "thead", "tr", "ul"],
+      ALLOWED_ATTR: ["alt", "class", "colspan", "href", "rowspan", "src", "start", "title"],
+      ALLOW_DATA_ATTR: false,
+      FORBID_TAGS: ["form", "iframe", "input", "object", "script", "style", "template"],
+      FORBID_ATTR: ["style"],
+    });
+    for (const image of fragment.querySelectorAll("img[src]")) {
+      const resolved = sameRunArtifactUrl(image.getAttribute("src"), preview);
+      if (resolved) {
+        image.src = resolved.toString();
+        image.loading = "lazy";
+      } else {
+        const placeholder = document.createElement("span");
+        placeholder.className = "artifact-markdown-image-placeholder";
+        placeholder.textContent = localized(`外部画像: ${image.alt || "画像"}`, `External image: ${image.alt || "image"}`);
+        image.replaceWith(placeholder);
+      }
+    }
+    for (const link of fragment.querySelectorAll("a[href]")) {
+      const href = link.getAttribute("href");
+      const internal = sameRunArtifactUrl(href, preview);
+      let external = null;
+      try {
+        const parsed = new URL(href);
+        if (["https:", "http:"].includes(parsed.protocol) && !parsed.username && !parsed.password) external = parsed;
+      } catch {}
+      link.addEventListener("click", async (event) => {
+        event.preventDefault();
+        try {
+          if (internal && activeArtifactPreview) {
+            const relativePath = decodeURIComponent(internal.pathname).replace(/^\/+/, "");
+            await showArtifactPreview(activeArtifactPreview.runId, { path: relativePath, name: relativePath.split("/").pop() });
+          } else if (external) await api.openExternalUrl(external.toString());
+        } catch (error) { setStatus($("#chatStatus"), error.message, true); }
+      });
+      if (!internal && !external) {
+        link.removeAttribute("href");
+        link.classList.add("is-disabled");
+      }
+    }
+    const wrapper = document.createElement("section");
+    wrapper.className = "artifact-markdown-preview";
+    const article = document.createElement("article");
+    article.appendChild(fragment);
+    wrapper.appendChild(article);
+    return wrapper;
+  }
+
+  function renderArtifactPreview(preview) {
+    activeArtifactPreviewData = preview;
+    const panel = $("#artifactPreview");
+    const body = $("#artifactPreviewBody");
+    body.replaceChildren();
+    $("#artifactPreviewTitle").textContent = preview.name || localized("成果物", "Output");
+    $("#artifactPreviewPath").textContent = preview.path || "";
+    $("#openPreviewArtifactButton").textContent = preview.type === "web-project" && preview.server?.status === "running"
+      ? localized("ブラウザーで開く", "Open in browser") : localized("外部で開く", "Open externally");
+    if (preview.type === "web-project") {
+      renderDynamicWebPreview(preview, body);
+    } else if (["web", "pdf"].includes(preview.type)) {
+      const frame = document.createElement("iframe");
+      frame.title = preview.name || localized("成果物プレビュー", "Output preview");
+      if (preview.type === "web") frame.setAttribute("sandbox", "allow-scripts");
+      frame.src = preview.url;
+      body.appendChild(frame);
+    } else if (preview.type === "image") {
+      const image = document.createElement("img");
+      image.src = preview.url;
+      image.alt = preview.name || localized("成果物", "Output");
+      body.appendChild(image);
+    } else if (["audio", "video"].includes(preview.type)) {
+      const media = document.createElement(preview.type);
+      media.src = preview.url;
+      media.controls = true;
+      media.preload = "metadata";
+      body.appendChild(media);
+    } else if (preview.type === "text") {
+      body.appendChild(["md", "markdown"].includes(String(preview.language || "").toLowerCase())
+        ? renderMarkdownArtifact(preview)
+        : renderHighlightedArtifact(preview));
+    } else if (preview.type === "directory") {
+      const list = document.createElement("div");
+      list.className = "artifact-directory-list";
+      for (const item of preview.items || []) {
+        const row = document.createElement("span");
+        const icon = document.createElement("i");
+        icon.className = `ui-symbol ${item.kind === "directory" ? "ui-symbol-folder" : "ui-symbol-document"}`;
+        row.append(icon, document.createTextNode(item.name));
+        list.appendChild(row);
+      }
+      if (!list.childElementCount) list.textContent = localized("フォルダーは空です。", "This folder is empty.");
+      body.appendChild(list);
+    } else {
+      const empty = document.createElement("div");
+      empty.className = "artifact-preview-empty";
+      empty.textContent = localized("この形式はアプリ内表示に対応していません。「外部で開く」を使ってください。", "This format cannot be shown in the app. Use Open externally.");
+      body.appendChild(empty);
+    }
+    panel.hidden = false;
+    panel.focus?.();
+  }
+
+  async function showArtifactPreview(runId, artifact) {
+    activeArtifactPreview = { runId, path: artifact.path };
+    $("#artifactPreviewTitle").textContent = localized("読み込み中…", "Loading…");
+    $("#artifactPreviewPath").textContent = artifact.path || "";
+    $("#artifactPreviewBody").replaceChildren();
+    $("#artifactPreview").hidden = false;
+    try {
+      const preview = await api.previewWorkArtifact(activeArtifactPreview);
+      if (!activeArtifactPreview || activeArtifactPreview.runId !== runId || activeArtifactPreview.path !== artifact.path) return;
+      renderArtifactPreview(preview);
+    } catch (error) {
+      closeArtifactPreview();
+      setStatus($("#chatStatus"), error.message, true);
+    }
+  }
+
   function appendWorkArtifactActions(container, artifacts, runId) {
     const entries = Array.isArray(artifacts) ? artifacts : [];
     if (!entries.length || !runId) return;
     const actions = document.createElement("div");
     actions.className = "work-artifact-actions";
     const label = document.createElement("span");
+    label.className = "work-artifact-label";
     label.textContent = localized("成果物", "Outputs");
     actions.appendChild(label);
     for (const artifact of entries) {
+      const group = document.createElement("span");
+      group.className = "work-artifact-group";
       const button = document.createElement("button");
       button.type = "button";
       button.className = "work-artifact-button";
@@ -760,13 +1096,24 @@
       icon.setAttribute("aria-hidden", "true");
       button.append(icon, document.createTextNode(artifact.name || artifact.path));
       button.title = artifact.path;
-      button.addEventListener("click", async () => {
-        button.disabled = true;
+      button.addEventListener("click", () => showArtifactPreview(runId, artifact));
+      const open = document.createElement("button");
+      open.type = "button";
+      open.className = "work-artifact-open";
+      open.title = localized("外部で開く", "Open externally");
+      open.setAttribute("aria-label", `${artifact.name || artifact.path} · ${localized("外部で開く", "Open externally")}`);
+      const openIcon = document.createElement("span");
+      openIcon.className = "ui-symbol ui-symbol-external";
+      openIcon.setAttribute("aria-hidden", "true");
+      open.appendChild(openIcon);
+      open.addEventListener("click", async () => {
+        open.disabled = true;
         try { await api.openWorkArtifact({ runId, path: artifact.path }); }
         catch (error) { setStatus($("#chatStatus"), error.message, true); }
-        finally { button.disabled = false; }
+        finally { open.disabled = false; }
       });
-      actions.appendChild(button);
+      group.append(button, open);
+      actions.appendChild(group);
     }
     container.appendChild(actions);
   }
@@ -781,7 +1128,7 @@
       const title = document.createElement("h3");
       title.textContent = localized("まだ作業履歴はありません", "No work history yet");
       const text = document.createElement("p");
-      text.textContent = localized("作業モードで実行した依頼と結果がここに残ります。", "Work-mode requests and results will appear here.");
+      text.textContent = localized("Workで実行した依頼と結果がここに残ります。", "Work requests and results will appear here.");
       empty.append(title, text);
       log.appendChild(empty);
       return;
@@ -856,6 +1203,16 @@
     });
   }
 
+  function syncCharacterSwitchAvailability() {
+    const workRunning = Boolean(workHistoryState.activeWorkRunId);
+    for (const button of $$("#characterGrid .character-card")) {
+      button.disabled = workRunning;
+      button.title = workRunning
+        ? localized("Workの完了後、または中断後に切り替えられます", "Available after Work finishes or is stopped")
+        : "";
+    }
+  }
+
   function renderCharacters() {
     const grid = $("#characterGrid");
     grid.replaceChildren();
@@ -899,6 +1256,7 @@
       });
       grid.appendChild(button);
     }
+    syncCharacterSwitchAvailability();
   }
 
   function renderOnboardingCharacters() {
@@ -1377,6 +1735,78 @@
     if (payload.message) $("#generatorStatus").textContent = payload.message;
   }
 
+  function renderCharacterWorkspace() {
+    const workspace = state.characterWorkspace || { activeProjectId: "home", projects: [] };
+    const projects = Array.isArray(workspace.projects) ? workspace.projects : [];
+    const select = $("#chatWorkProjectSelect");
+    select.replaceChildren();
+    for (const project of projects) {
+      const option = document.createElement("option");
+      option.value = project.id;
+      option.textContent = `${project.home ? "⌂ " : ""}${project.name}${project.available === false ? localized("（見つかりません）", " (missing)") : ""}`;
+      option.disabled = project.available === false;
+      select.appendChild(option);
+    }
+    select.value = workspace.activeProjectId || "home";
+    select.disabled = state.backend !== "codex" || projects.length === 0;
+    $("#addCharacterProjectButton").disabled = state.backend !== "codex";
+
+    const list = $("#characterProjectList");
+    list.replaceChildren();
+    for (const project of projects) {
+      const row = document.createElement("article");
+      row.className = `character-project-row${project.id === workspace.activeProjectId ? " is-active" : ""}${project.available === false ? " is-missing" : ""}`;
+      const info = document.createElement("div");
+      const icon = document.createElement("span");
+      icon.className = `ui-symbol ${project.home ? "ui-symbol-character" : "ui-symbol-folder"}`;
+      icon.setAttribute("aria-hidden", "true");
+      const text = document.createElement("span");
+      const name = document.createElement("strong");
+      name.textContent = project.name;
+      const detail = document.createElement("small");
+      detail.textContent = project.home
+        ? localized("キャラ専用 · 記憶、メモ、生成物", "Character-owned · context, notes, outputs")
+        : project.available === false
+          ? localized("元のフォルダーが見つかりません", "Original folder is missing")
+          : project.id === workspace.activeProjectId
+            ? localized("現在の作業先", "Current workspace")
+            : localized("既存フォルダーへの参照", "Attached existing folder");
+      text.append(name, detail);
+      info.append(icon, text);
+      const actions = document.createElement("div");
+      if (project.available !== false) {
+        const use = document.createElement("button");
+        use.type = "button";
+        use.className = "button button-quiet";
+        use.textContent = project.id === workspace.activeProjectId ? localized("開く", "Open") : localized("切り替え", "Switch");
+        use.addEventListener("click", async () => {
+          use.disabled = true;
+          try {
+            if (project.id !== workspace.activeProjectId) state = await api.activateWorkProject(project.id);
+            else await api.openWorkDirectory();
+            syncUi();
+          } catch (error) { setStatus($("#characterProfileStatus"), error.message, true); }
+          finally { use.disabled = false; }
+        });
+        actions.appendChild(use);
+      }
+      if (!project.home) {
+        const detach = document.createElement("button");
+        detach.type = "button";
+        detach.className = "button button-quiet character-project-detach";
+        detach.textContent = localized("解除", "Remove");
+        detach.addEventListener("click", async () => {
+          if (!window.confirm(localized(`「${project.name}」をこのキャラの担当から外しますか？\n元のフォルダーやファイルは削除されません。`, `Remove “${project.name}” from this character?\nThe original folder and files will not be deleted.`))) return;
+          try { state = await api.detachWorkProject(project.id); syncUi(); }
+          catch (error) { setStatus($("#characterProfileStatus"), error.message, true); }
+        });
+        actions.appendChild(detach);
+      }
+      row.append(info, actions);
+      list.appendChild(row);
+    }
+  }
+
   function syncUi() {
     i18n?.setLanguage(state.language || "ja");
     document.documentElement.dataset.character = state.characterId || "amber-avatar";
@@ -1393,11 +1823,11 @@
       renderConversationHistory(state.conversationHistory);
     }
     workHistoryState = state.workHistory && Array.isArray(state.workHistory.runs) ? state.workHistory : workHistoryState;
-    $("#interactionModeBadge").textContent = state.interactionMode === "work" ? localized("作業モード", "Work mode") : localized("会話モード", "Chat mode");
-    $("#chatWorkDirectoryName").textContent = state.workDirectoryName || localized("未選択", "Not selected");
+    $("#interactionModeBadge").textContent = state.interactionMode === "work" ? "Work" : "Chat";
+    renderCharacterWorkspace();
     $("#openChatWorkDirectoryButton").disabled = !state.hasWorkDirectory;
     $("#chatComposerHint").textContent = state.interactionMode === "work"
-      ? localized("作業モード · 選択フォルダー内へ書き込みできます", "Work mode · Can write inside the selected folder")
+      ? localized("Work · 選択フォルダー内へ書き込みできます", "Work · Can write inside the selected folder")
       : localized("設定画面では文字入力のみ", "Text input only in Settings");
     if (chatHistoryView === "work") renderWorkHistory(workHistoryState);
     renderCharacters();
@@ -2247,7 +2677,21 @@
     api.onWorkHistory?.((payload) => {
       workHistoryState = payload && Array.isArray(payload.runs) ? payload : { activeWorkRunId: null, runs: [] };
       if (state) state.workHistory = workHistoryState;
+      syncCharacterSwitchAvailability();
       if (chatHistoryView === "work") renderWorkHistory(workHistoryState);
+    });
+    api.onWebPreview?.((previewState) => {
+      if (state) state.webPreview = previewState;
+      const projectId = activeArtifactPreviewData?.project?.id;
+      if (!projectId || previewState?.projectId !== projectId) return;
+      const previousStatus = activeArtifactPreviewData.server?.status;
+      activeArtifactPreviewData.server = previewState;
+      if (previousStatus === previewState.status) {
+        const log = $("#artifactPreviewBody .web-preview-logs pre");
+        if (log) log.textContent = (previewState.logs || []).join("\n") || localized("ログはまだありません。", "No logs yet.");
+        return;
+      }
+      renderArtifactPreview(activeArtifactPreviewData);
     });
     api.onCodexRealtime?.((message) => {
       handleCodexRealtimeEvent(message).catch((error) => {
@@ -2355,8 +2799,26 @@
     $("#openChatWorkDirectoryButton").addEventListener("click", async () => {
       try { await api.openWorkDirectory(); } catch (error) { setStatus($("#chatStatus"), error.message, true); }
     });
+    $("#chatWorkProjectSelect").addEventListener("change", async (event) => {
+      const previous = state.characterWorkspace?.activeProjectId || "home";
+      try { state = await api.activateWorkProject(event.currentTarget.value); closeArtifactPreview(); syncUi(); }
+      catch (error) { event.currentTarget.value = previous; setStatus($("#chatStatus"), error.message, true); }
+    });
     $("#chooseChatWorkDirectoryButton").addEventListener("click", async () => {
       try { state = await api.chooseWorkDirectory(); syncUi(); } catch (error) { setStatus($("#chatStatus"), error.message, true); }
+    });
+    $("#addCharacterProjectButton").addEventListener("click", async () => {
+      try { state = await api.chooseWorkDirectory(); syncUi(); setStatus($("#characterProfileStatus"), localized("担当プロジェクトを追加しました。", "Project attached.")); }
+      catch (error) { setStatus($("#characterProfileStatus"), error.message, true); }
+    });
+    $("#closeArtifactPreviewButton").addEventListener("click", closeArtifactPreview);
+    $("#openPreviewArtifactButton").addEventListener("click", async () => {
+      if (!activeArtifactPreview) return;
+      try {
+        if (activeArtifactPreviewData?.type === "web-project" && activeArtifactPreviewData.server?.status === "running") await api.openWebPreview();
+        else await api.openWorkArtifact(activeArtifactPreview);
+      }
+      catch (error) { setStatus($("#chatStatus"), error.message, true); }
     });
     $("#stopButton").addEventListener("click", async () => {
       const button = $("#stopButton");
