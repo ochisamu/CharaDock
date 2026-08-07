@@ -9,6 +9,8 @@ const KOKORO_COMMIT = "1939ad2a8e416c0acfeecc08a694d14ef25f2231";
 const IRODORI_500M_V3_COMMIT = "b75a9bbf2c10e12682d37e91e0efaf6d4e54bd29";
 const IRODORI_V4_RELEASE = "v4-small-e4aaac4-webgpu-fp16-r2";
 const IRODORI_V4_RELEASE_BASE = `https://github.com/ochisamu/irodori-tts-v4-webgpu-models/releases/download/${IRODORI_V4_RELEASE}`;
+const IRODORI_V4_INT4_RELEASE = "v4-small-quantized-4a5a4d6-webgpu-int4-r1";
+const IRODORI_V4_INT4_RELEASE_BASE = `https://github.com/ochisamu/irodori-tts-v4-webgpu-models/releases/download/${IRODORI_V4_INT4_RELEASE}`;
 
 const TTS_MODELS = Object.freeze({
   "piper-plus": Object.freeze({
@@ -118,6 +120,43 @@ const TTS_MODELS = Object.freeze({
       name: path.basename(relativePath),
       relativePath,
       url: `${IRODORI_V4_RELEASE_BASE}/${path.basename(relativePath)}`,
+      bytes,
+      sha256,
+    }))),
+  }),
+  "irodori-webgpu-int4": Object.freeze({
+    id: "irodori-webgpu-int4",
+    label: "Irodori TTS v4 Small · INT4 WebGPU",
+    description: "公式INT4版を起点にした約853MBの軽量W4A16 WebGPUモデルです。",
+    directoryName: "irodori-tts-v4-small-quantized-webgpu-int4-r1",
+    obsoleteDirectoryNames: Object.freeze([]),
+    downloadBytes: 853_295_612,
+    sourceUrl: "https://github.com/ochisamu/irodori-tts-v4-webgpu-models",
+    licenseUrl: "https://github.com/ochisamu/irodori-tts-v4-webgpu-models/blob/main/LICENSES/Irodori-TTS-v4-Small-LICENSE",
+    files: Object.freeze([
+      ["models/caption_projector.onnx", 28_968, "b58c6ce5231245d79ecfc4e6c23cc0fb916d90212d64864db4370fa7b7e828a8"],
+      ["models/caption_projector.onnx.data", 3_473_408, "8a4b49dbac8b802bcacaac074b098f886a43afd317a37e4e65648a069b189313"],
+      ["models/dacvae_decoder.onnx", 854_956, "28ab7aabdb11f07816c34cb93cd1a7c293427bcc831a832969fccf0ee8f7aab0"],
+      ["models/dacvae_decoder.onnx.data", 166_184_768, "eb3ecfc543eb957e06e9165796014d5c17951bd933d30d76fd00a6eda3b21930"],
+      ["models/dacvae_encoder.onnx", 924_571, "2461ab41da0acf2af30faf3ebfddb80034b8235bf78ca72ca3fea15d7a30be43"],
+      ["models/dacvae_encoder.onnx.data", 54_697_984, "a963ab4f4be69451b04243e0b8ef9b53e3be5d615e09595e5eb83be5b9094489"],
+      ["models/dit_v4.onnx", 2_802_048, "6a7b3aa7de9723149b81962359bef0c62677acefecea14811297207ba9d837e5"],
+      ["models/dit_v4.onnx.data", 253_895_424, "031c05c334cbc56ddb37ab3609f02ed7eae151404ceb4018d4a62b1c892bd3ec"],
+      ["models/duration.onnx", 273_517, "299558f4c86d47f57ada1f977a440e580435a7143ad0bbb88b47fb6f25c0c410"],
+      ["models/duration.onnx.data", 43_581_440, "97c9274ceab389c96612f689f957b39713375e2d6c45a32c6848904897392c0c"],
+      ["models/speaker_encoder.onnx", 1_357_019, "18c393534655758b81f01727fc5be2987fa0e8d19682c577eb886ad5ab0e0e7e"],
+      ["models/speaker_encoder.onnx.data", 31_836_480, "47de6f39d786108ee268bfb5135e3f418d1a3632fc56947f66531a2e6bcb73b0"],
+      ["models/text_backbone.onnx", 3_221_288, "f073230f7dfdc34a4927393dab7feb03db38ec9850a92e86b68cc9ff2710814a"],
+      ["models/text_backbone.onnx.data", 279_937_536, "84b30f31fe7ac5aa57e0873715330e6b324cdc2f53b291a63fbe14aef02effc0"],
+      ["models/text_projector.onnx", 28_941, "79ef20f27218ff3e700766d1612c4143091ad7ca98eeefafbb387b7f2a768737"],
+      ["models/text_projector.onnx.data", 3_473_408, "56755c911c4aecfbdba869e2ee4faa6651eef6628e76d9bd0aa3bbe211f50173"],
+      ["tokenizer/irodori_v4/tokenizer.json", 6_718_495, "6a0734cf21c802169defaffe719bc2ef12bb9d0be37e54b61ed27aa89394723d"],
+      ["tokenizer/irodori_v4/tokenizer_config.json", 668, "d229a271c64de1a7939d20d3665498e873fa91d5ee2edf135d73ec752cb9c9d3"],
+      ["models/model-config.json", 4_693, "d97f1f4c0c740132ef7586f01c5197674a4ea194cd2411de9d1fa2e5ac230466"],
+    ].map(([relativePath, bytes, sha256]) => Object.freeze({
+      name: path.basename(relativePath),
+      relativePath,
+      url: `${IRODORI_V4_INT4_RELEASE_BASE}/${path.basename(relativePath)}`,
       bytes,
       sha256,
     }))),

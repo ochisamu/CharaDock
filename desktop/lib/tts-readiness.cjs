@@ -3,7 +3,7 @@
 const DOWNLOAD_LABELS = Object.freeze({
   "piper-plus": Object.freeze({ ja: "サンプルをダウンロード", en: "Download sample" }),
   "supertonic-3": Object.freeze({ ja: "サンプルをダウンロード", en: "Download sample" }),
-  "irodori-webgpu": Object.freeze({ ja: "FP16モデルをダウンロード", en: "Download FP16 model" }),
+  "irodori-webgpu": Object.freeze({ ja: "モデルをダウンロード", en: "Download model" }),
   kokoro: Object.freeze({ ja: "日本語モデルをダウンロード", en: "Download Japanese model" }),
   "sbv2-jp-extra": Object.freeze({ ja: "AIVMXモデルを追加", en: "Add AIVMX model" }),
 });

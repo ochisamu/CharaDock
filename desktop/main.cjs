@@ -572,6 +572,9 @@ function characterTtsSettings(characterId = preferences.data.characterId) {
     irodoriVersion: ["500m-v3", "v4-small"].includes(stored.irodoriVersion)
       ? stored.irodoriVersion
       : ["500m-v3", "v4-small"].includes(preferences.data.irodoriVersion) ? preferences.data.irodoriVersion : "v4-small",
+    irodoriPrecision: ["fp16", "int4"].includes(stored.irodoriPrecision)
+      ? stored.irodoriPrecision
+      : ["fp16", "int4"].includes(preferences.data.irodoriPrecision) ? preferences.data.irodoriPrecision : "fp16",
     irodoriMode: ["reference", "design"].includes(stored.irodoriMode) ? stored.irodoriMode
       : ["reference", "design"].includes(preferences.data.irodoriMode) ? preferences.data.irodoriMode : "reference",
     irodoriCaption: String(stored.irodoriCaption || preferences.data.irodoriCaption || "自然で明瞭な日本語。落ち着いた親しみやすい口調で話す。").slice(0, 1000),
@@ -650,9 +653,11 @@ function activeIrodoriVoicePath(characterId = preferences.data.characterId) {
 }
 
 function activeIrodoriModelDirectory(characterId = preferences.data.characterId) {
-  return characterTtsSettings(characterId).irodoriVersion === "v4-small"
-    ? preferences.data.irodoriV4ModelDirectory
-    : preferences.data.irodoriModelDirectory;
+  const settings = characterTtsSettings(characterId);
+  if (settings.irodoriVersion !== "v4-small") return preferences.data.irodoriModelDirectory;
+  return settings.irodoriPrecision === "int4"
+    ? preferences.data.irodoriV4Int4ModelDirectory
+    : preferences.data.irodoriV4ModelDirectory;
 }
 
 function activeIrodoriStatus(webgpuAvailable = irodoriWebGpuAvailable, characterId = preferences.data.characterId) {
@@ -1033,6 +1038,7 @@ function publicAppState() {
     kokoroVoice: characterTts.kokoroVoice,
     irodoriVoiceId: irodoriVoice?.id || "",
     irodoriVersion: characterTts.irodoriVersion,
+    irodoriPrecision: characterTts.irodoriPrecision,
     irodoriMode: characterTts.irodoriMode,
     irodoriCaption: characterTts.irodoriCaption,
     irodoriAutoEmotion: characterTts.irodoriAutoEmotion,
@@ -1089,7 +1095,9 @@ function publicAppState() {
       ...activeIrodoriStatus(irodoriWebGpuAvailable),
       voices: irodoriVoiceLibrary?.publicVoices(preferences.data.irodoriVoices, irodoriVoice?.id || "") || [],
       voiceId: irodoriVoice?.id || "",
-      sampleModel: embeddedTtsModels?.status("irodori-webgpu") || null,
+      sampleModel: embeddedTtsModels?.status(characterTts.irodoriPrecision === "int4" ? "irodori-webgpu-int4" : "irodori-webgpu") || null,
+      fp16SampleModel: embeddedTtsModels?.status("irodori-webgpu") || null,
+      int4SampleModel: embeddedTtsModels?.status("irodori-webgpu-int4") || null,
       v3SampleModel: embeddedTtsModels?.status("irodori-500m-v3") || null,
     },
     kokoro: {
@@ -2478,10 +2486,10 @@ async function runSmokeTest() {
   const ttsDownloadUiReady = await controlWindow.webContents.executeJavaScript(`[
     'piperPlusModelDownloadButton', 'supertonicModelDownloadButton', 'kokoroModelDownloadButton', 'irodoriModelDownloadButton', 'irodoriV3ModelDownloadButton',
     'piperPlusModelDownloadProgress', 'supertonicModelDownloadProgress', 'kokoroModelDownloadProgress', 'irodoriModelDownloadProgress', 'irodoriV3ModelDownloadProgress',
-    'irodoriVersionSelect'
+    'irodoriVersionSelect', 'irodoriPrecisionSelect'
   ].every((id) => Boolean(document.getElementById(id)))`);
   if (!ttsDownloadUiReady) throw new Error("TTS model download controls check failed");
-  for (const provider of ["piper-plus", "supertonic-3", "kokoro", "irodori-webgpu", "irodori-500m-v3"]) {
+  for (const provider of ["piper-plus", "supertonic-3", "kokoro", "irodori-webgpu", "irodori-webgpu-int4", "irodori-500m-v3"]) {
     const model = embeddedTtsModels.status(provider);
     const expectedSupported = provider !== "piper-plus" || process.platform === "win32";
     if (!model.label || !model.downloadBytes || model.supported !== expectedSupported) throw new Error(`TTS model manifest check failed: ${provider}`);
@@ -4652,6 +4660,8 @@ function registerIpc() {
       ? requestedIrodoriVoiceId : activeIrodoriVoice(activeCharacterId)?.id || "";
     const irodoriVersion = ["500m-v3", "v4-small"].includes(patch?.irodoriVersion)
       ? patch.irodoriVersion : characterTtsSettings(activeCharacterId).irodoriVersion;
+    const irodoriPrecision = ["fp16", "int4"].includes(patch?.irodoriPrecision)
+      ? patch.irodoriPrecision : characterTtsSettings(activeCharacterId).irodoriPrecision;
     const irodoriMode = ["reference", "design"].includes(patch?.irodoriMode) ? patch.irodoriMode : "reference";
     const irodoriCaption = String(patch?.irodoriCaption || "自然で明瞭な日本語。落ち着いた親しみやすい口調で話す。").trim().slice(0, 1000);
     const irodoriAutoEmotion = patch?.irodoriAutoEmotion !== false;
@@ -4691,6 +4701,7 @@ function registerIpc() {
       supertonicVoice,
       irodoriVoiceId,
       irodoriVersion,
+      irodoriPrecision,
       irodoriMode,
       irodoriCaption,
       irodoriAutoEmotion,
@@ -4729,6 +4740,7 @@ function registerIpc() {
       supertonicSteps: Math.min(20, Math.max(2, Math.round(Number(patch?.supertonicSteps) || 8))),
       irodoriVoiceId,
       irodoriVersion,
+      irodoriPrecision,
       irodoriMode,
       irodoriCaption,
       irodoriAutoEmotion,
@@ -4859,6 +4871,10 @@ function registerIpc() {
       preferences.patch({ irodoriV4ModelDirectory: status.modelDirectory });
       destroyIrodoriWindow();
       scheduleIrodoriPrewarm();
+    } else if (normalizedProvider === "irodori-webgpu-int4") {
+      preferences.patch({ irodoriV4Int4ModelDirectory: status.modelDirectory });
+      destroyIrodoriWindow();
+      scheduleIrodoriPrewarm();
     } else if (normalizedProvider === "irodori-500m-v3") {
       preferences.patch({ irodoriModelDirectory: status.modelDirectory });
       destroyIrodoriWindow();
@@ -4872,11 +4888,18 @@ function registerIpc() {
       "piper-plus": "piperPlus",
       "supertonic-3": "supertonic",
       "irodori-webgpu": "irodori",
+      "irodori-webgpu-int4": "irodori",
       "irodori-500m-v3": "irodori",
       kokoro: "kokoro",
     }[normalizedProvider]];
-    controlWindow?.webContents.send("tts:modelProgress", normalizedProvider === "irodori-500m-v3"
-      ? progressState?.v3SampleModel : progressState?.sampleModel);
+    const progressModel = normalizedProvider === "irodori-500m-v3"
+      ? progressState?.v3SampleModel
+      : normalizedProvider === "irodori-webgpu-int4"
+        ? progressState?.int4SampleModel
+        : normalizedProvider === "irodori-webgpu"
+          ? progressState?.fp16SampleModel
+          : progressState?.sampleModel;
+    controlWindow?.webContents.send("tts:modelProgress", progressModel);
     broadcastAppState();
     return result;
   });
@@ -4894,6 +4917,9 @@ function registerIpc() {
       if (preferences.data.supertonicModelDirectory === managedPaths.modelDirectory) preferences.patch({ supertonicModelDirectory: "" });
     } else if (normalizedProvider === "irodori-webgpu") {
       if (preferences.data.irodoriV4ModelDirectory === managedPaths.modelDirectory) preferences.patch({ irodoriV4ModelDirectory: "" });
+      destroyIrodoriWindow();
+    } else if (normalizedProvider === "irodori-webgpu-int4") {
+      if (preferences.data.irodoriV4Int4ModelDirectory === managedPaths.modelDirectory) preferences.patch({ irodoriV4Int4ModelDirectory: "" });
       destroyIrodoriWindow();
     } else if (normalizedProvider === "irodori-500m-v3") {
       if (preferences.data.irodoriModelDirectory === managedPaths.modelDirectory) preferences.patch({ irodoriModelDirectory: "" });
@@ -4943,8 +4969,9 @@ function registerIpc() {
   });
   ipcMain.handle("tts:irodoriChooseModel", async (event) => {
     assertTrustedSender(event);
-    const version = characterTtsSettings().irodoriVersion;
-    const versionLabel = version === "500m-v3" ? "Irodori TTS 500M-v3" : "Irodori TTS v4 Small";
+    const settings = characterTtsSettings();
+    const version = settings.irodoriVersion;
+    const versionLabel = version === "500m-v3" ? "Irodori TTS 500M-v3" : `Irodori TTS v4 Small ${settings.irodoriPrecision.toUpperCase()}`;
     const result = await dialog.showOpenDialog(controlWindow, {
       title: mainText(`${versionLabel}のモデルフォルダーを選択`, `Choose the ${versionLabel} model folder`),
       properties: ["openDirectory"],
@@ -4953,7 +4980,9 @@ function registerIpc() {
     const modelDirectory = validateIrodoriModelDirectory(result.filePaths[0], version);
     preferences.patch(version === "500m-v3"
       ? { irodoriModelDirectory: modelDirectory }
-      : { irodoriV4ModelDirectory: modelDirectory });
+      : settings.irodoriPrecision === "int4"
+        ? { irodoriV4Int4ModelDirectory: modelDirectory }
+        : { irodoriV4ModelDirectory: modelDirectory });
     destroyIrodoriWindow();
     scheduleIrodoriPrewarm();
     return publicAppState();

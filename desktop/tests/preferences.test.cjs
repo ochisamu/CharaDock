@@ -69,12 +69,14 @@ test("new installs enable onboarding and desktop positioning defaults", () => {
   assert.equal(state.irodoriVoiceId, "builtin-kohaku");
   assert.equal(state.irodoriSeed, 0);
   assert.equal(state.irodoriVersion, "v4-small");
+  assert.equal(state.irodoriPrecision, "fp16");
   assert.equal(state.irodoriMode, "reference");
   assert.match(state.irodoriCaption, /日本語/);
   assert.equal(state.irodoriAutoEmotion, true);
   assert.equal(state.irodoriEmotionStrength, "natural");
   assert.equal(state.irodoriCfgExecution, "sequential");
   assert.equal(state.irodoriModelDirectory, undefined);
+  assert.equal(state.irodoriV4Int4ModelDirectory, undefined);
   assert.equal(state.irodoriReferenceAudioPath, undefined);
   assert.equal(state.kokoroVoice, "jf_alpha");
   assert.equal(state.kokoroSpeed, 1);
@@ -105,7 +107,27 @@ test("new installs enable onboarding and desktop positioning defaults", () => {
   assert.equal(preferences.data.characterTtsProfiles["towa-avatar"].irodoriVoiceId, "builtin-hiro");
   for (const profile of Object.values(preferences.data.characterTtsProfiles)) {
     assert.equal(profile.irodoriVersion, "500m-v3");
+    assert.equal(profile.irodoriPrecision, "fp16");
   }
+});
+
+test("Irodori INT4 selection is normalized globally and per character", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "charadock-preferences-irodori-int4-"));
+  const file = path.join(root, "preferences.json");
+  fs.writeFileSync(file, JSON.stringify({
+    irodoriPrecision: "int4",
+    irodoriV4Int4ModelDirectory: "C:/models/irodori-int4",
+    characterTtsProfiles: {
+      "custom-avatar": { provider: "irodori-webgpu", irodoriVersion: "v4-small", irodoriPrecision: "int4" },
+      "sage-avatar": { provider: "irodori-webgpu", irodoriVersion: "v4-small", irodoriPrecision: "invalid" },
+    },
+  }));
+  const preferences = new Preferences(file);
+  assert.equal(preferences.data.irodoriPrecision, "int4");
+  assert.equal(preferences.data.characterTtsProfiles["custom-avatar"].irodoriPrecision, "int4");
+  assert.equal(preferences.data.characterTtsProfiles["sage-avatar"].irodoriPrecision, "int4");
+  assert.equal(preferences.publicState().irodoriV4Int4ModelDirectory, undefined);
+  fs.rmSync(root, { recursive: true, force: true });
 });
 
 test("built-in Kohaku and Hiro profiles keep the legacy Irodori model unless explicitly changed", () => {

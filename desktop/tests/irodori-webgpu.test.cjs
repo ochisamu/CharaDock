@@ -22,6 +22,21 @@ function fixture() {
   return root;
 }
 
+function int4Fixture() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "charadock-irodori-int4-"));
+  const models = path.join(root, "onnx_int4_webgpu_official");
+  const tokenizer = path.join(root, "tokenizer", "irodori_v4");
+  fs.mkdirSync(models, { recursive: true });
+  fs.mkdirSync(tokenizer, { recursive: true });
+  for (const name of MODEL_NAMES) {
+    fs.writeFileSync(path.join(models, `${name}.onnx`), name);
+    fs.writeFileSync(path.join(models, `${name}.onnx.data`), name);
+  }
+  fs.writeFileSync(path.join(tokenizer, "tokenizer.json"), "{}");
+  fs.writeFileSync(path.join(tokenizer, "tokenizer_config.json"), "{}");
+  return root;
+}
+
 function v3Fixture() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "charadock-irodori-v3-"));
   const models = path.join(root, "onnx_fp16");
@@ -43,6 +58,15 @@ test("Irodori recognizes the v4 Small FP16 artifact layout", () => {
   assert.equal(resolved.models, path.join(root, "onnx_fp16"));
   assert.equal(validateIrodoriModelDirectory(root), root);
   assert.equal(irodoriModelStatus(root).modelReady, true);
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("Irodori recognizes the v4 Small WebGPU INT4 artifact layout", () => {
+  const root = int4Fixture();
+  const resolved = resolveIrodoriModelDirectory(root);
+  assert.equal(resolved.models, path.join(root, "onnx_int4_webgpu_official"));
+  assert.equal(validateIrodoriModelDirectory(root), root);
+  assert.equal(irodoriModelStatus(root, "", true, { mode: "design" }).ready, true);
   fs.rmSync(root, { recursive: true, force: true });
 });
 

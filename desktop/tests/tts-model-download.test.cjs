@@ -22,7 +22,7 @@ function streamResponse(bytes) {
 }
 
 test("TTS model manifests have fixed sizes and SHA-256 values", () => {
-  assert.deepEqual(Object.keys(TTS_MODELS), ["piper-plus", "supertonic-3", "kokoro", "irodori-webgpu", "irodori-500m-v3"]);
+  assert.deepEqual(Object.keys(TTS_MODELS), ["piper-plus", "supertonic-3", "kokoro", "irodori-webgpu", "irodori-webgpu-int4", "irodori-500m-v3"]);
   for (const model of Object.values(TTS_MODELS)) {
     const files = [model.runtime, model.archive, ...(model.files || [])].filter(Boolean);
     assert.equal(files.reduce((sum, file) => sum + file.bytes, 0), model.downloadBytes);
@@ -101,6 +101,7 @@ test("piper-plus automatic runtime is marked Windows-only", (t) => {
   assert.equal(models.status("supertonic-3").supported, true);
   assert.equal(models.status("kokoro").supported, true);
   assert.equal(models.status("irodori-webgpu").supported, true);
+  assert.equal(models.status("irodori-webgpu-int4").supported, true);
 });
 
 test("Irodori v4 uses a pinned GitHub release and installs the runtime layout", () => {
@@ -115,6 +116,15 @@ test("Irodori v4 uses a pinned GitHub release and installs the runtime layout", 
     assert.match(file.url, /ochisamu\/irodori-tts-v4-webgpu-models\/releases\/download\/v4-small-e4aaac4-webgpu-fp16-r2\//);
   }
   assert.ok(model.files.some((file) => file.relativePath === "models/dit_v4.onnx.data"));
+  assert.ok(model.files.some((file) => file.relativePath === "tokenizer/irodori_v4/tokenizer.json"));
+});
+
+test("Irodori v4 INT4 uses the official-quantized WebGPU release", () => {
+  const model = TTS_MODELS["irodori-webgpu-int4"];
+  assert.equal(model.downloadBytes, 853_295_612);
+  assert.equal(model.files.length, 19);
+  assert.ok(model.files.every((file) => file.url.includes("ochisamu/irodori-tts-v4-webgpu-models/releases/download/v4-small-quantized-4a5a4d6-webgpu-int4-r1/")));
+  assert.ok(model.files.some((file) => file.relativePath === "models/dit_v4.onnx.data" && file.bytes === 253_895_424));
   assert.ok(model.files.some((file) => file.relativePath === "tokenizer/irodori_v4/tokenizer.json"));
 });
 

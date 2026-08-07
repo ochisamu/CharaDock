@@ -10,10 +10,10 @@ const { normalizeCharacterWorkspaces } = require("./character-home.cjs");
 
 const DEFAULT_IRODORI_VOICES = Object.freeze(BUNDLED_IRODORI_VOICES.map(({ sourceFileName: _sourceFileName, ...voice }) => Object.freeze({ ...voice })));
 const DEFAULT_CHARACTER_TTS_PROFILES = Object.freeze({
-  "amber-avatar": Object.freeze({ provider: "irodori-webgpu", realtimeVoice: "maple", realtimeVoiceConversion: "none", beatriceModelId: "", beatriceVoiceId: 0, beatricePitchShift: 0, beatriceFormantShift: 0, beatriceInputGain: 0, beatriceOutputGain: 0, beatriceIntonation: 1, beatricePitchCorrection: 0, beatricePitchCorrectionType: 0, irodoriVoiceId: "builtin-kohaku", irodoriVersion: "500m-v3", supertonicVoice: "F5", kokoroVoice: "jf_alpha", sbv2ModelId: "", sbv2SpeakerId: 0, sbv2StyleId: 0, sbv2StyleWeight: 1 }),
-  "bronze-avatar": Object.freeze({ provider: "supertonic-3", realtimeVoice: "juniper", realtimeVoiceConversion: "none", beatriceModelId: "", beatriceVoiceId: 0, beatricePitchShift: 0, beatriceFormantShift: 0, beatriceInputGain: 0, beatriceOutputGain: 0, beatriceIntonation: 1, beatricePitchCorrection: 0, beatricePitchCorrectionType: 0, irodoriVoiceId: "builtin-kohaku", irodoriVersion: "500m-v3", supertonicVoice: "F2", kokoroVoice: "jf_alpha", sbv2ModelId: "", sbv2SpeakerId: 0, sbv2StyleId: 0, sbv2StyleWeight: 1 }),
-  "towa-avatar": Object.freeze({ provider: "irodori-webgpu", realtimeVoice: "spruce", realtimeVoiceConversion: "none", beatriceModelId: "", beatriceVoiceId: 0, beatricePitchShift: 0, beatriceFormantShift: 0, beatriceInputGain: 0, beatriceOutputGain: 0, beatriceIntonation: 1, beatricePitchCorrection: 0, beatricePitchCorrectionType: 0, irodoriVoiceId: "builtin-hiro", irodoriVersion: "500m-v3", supertonicVoice: "M4", kokoroVoice: "jf_alpha", sbv2ModelId: "", sbv2SpeakerId: 0, sbv2StyleId: 0, sbv2StyleWeight: 1 }),
-  "sage-avatar": Object.freeze({ provider: "supertonic-3", realtimeVoice: "ember", realtimeVoiceConversion: "none", beatriceModelId: "", beatriceVoiceId: 0, beatricePitchShift: 0, beatriceFormantShift: 0, beatriceInputGain: 0, beatriceOutputGain: 0, beatriceIntonation: 1, beatricePitchCorrection: 0, beatricePitchCorrectionType: 0, irodoriVoiceId: "builtin-hiro", irodoriVersion: "500m-v3", supertonicVoice: "M2", kokoroVoice: "jf_gongitsune", sbv2ModelId: "", sbv2SpeakerId: 0, sbv2StyleId: 0, sbv2StyleWeight: 1 }),
+  "amber-avatar": Object.freeze({ provider: "irodori-webgpu", realtimeVoice: "maple", realtimeVoiceConversion: "none", beatriceModelId: "", beatriceVoiceId: 0, beatricePitchShift: 0, beatriceFormantShift: 0, beatriceInputGain: 0, beatriceOutputGain: 0, beatriceIntonation: 1, beatricePitchCorrection: 0, beatricePitchCorrectionType: 0, irodoriVoiceId: "builtin-kohaku", irodoriVersion: "500m-v3", irodoriPrecision: "fp16", supertonicVoice: "F5", kokoroVoice: "jf_alpha", sbv2ModelId: "", sbv2SpeakerId: 0, sbv2StyleId: 0, sbv2StyleWeight: 1 }),
+  "bronze-avatar": Object.freeze({ provider: "supertonic-3", realtimeVoice: "juniper", realtimeVoiceConversion: "none", beatriceModelId: "", beatriceVoiceId: 0, beatricePitchShift: 0, beatriceFormantShift: 0, beatriceInputGain: 0, beatriceOutputGain: 0, beatriceIntonation: 1, beatricePitchCorrection: 0, beatricePitchCorrectionType: 0, irodoriVoiceId: "builtin-kohaku", irodoriVersion: "500m-v3", irodoriPrecision: "fp16", supertonicVoice: "F2", kokoroVoice: "jf_alpha", sbv2ModelId: "", sbv2SpeakerId: 0, sbv2StyleId: 0, sbv2StyleWeight: 1 }),
+  "towa-avatar": Object.freeze({ provider: "irodori-webgpu", realtimeVoice: "spruce", realtimeVoiceConversion: "none", beatriceModelId: "", beatriceVoiceId: 0, beatricePitchShift: 0, beatriceFormantShift: 0, beatriceInputGain: 0, beatriceOutputGain: 0, beatriceIntonation: 1, beatricePitchCorrection: 0, beatricePitchCorrectionType: 0, irodoriVoiceId: "builtin-hiro", irodoriVersion: "500m-v3", irodoriPrecision: "fp16", supertonicVoice: "M4", kokoroVoice: "jf_alpha", sbv2ModelId: "", sbv2SpeakerId: 0, sbv2StyleId: 0, sbv2StyleWeight: 1 }),
+  "sage-avatar": Object.freeze({ provider: "supertonic-3", realtimeVoice: "ember", realtimeVoiceConversion: "none", beatriceModelId: "", beatriceVoiceId: 0, beatricePitchShift: 0, beatriceFormantShift: 0, beatriceInputGain: 0, beatriceOutputGain: 0, beatriceIntonation: 1, beatricePitchCorrection: 0, beatricePitchCorrectionType: 0, irodoriVoiceId: "builtin-hiro", irodoriVersion: "500m-v3", irodoriPrecision: "fp16", supertonicVoice: "M2", kokoroVoice: "jf_gongitsune", sbv2ModelId: "", sbv2SpeakerId: 0, sbv2StyleId: 0, sbv2StyleWeight: 1 }),
 });
 
 const DEFAULTS = Object.freeze({
@@ -46,6 +46,7 @@ const DEFAULTS = Object.freeze({
   supertonicSteps: 8,
   irodoriModelDirectory: "",
   irodoriV4ModelDirectory: "",
+  irodoriV4Int4ModelDirectory: "",
   irodoriReferenceAudioPath: "",
   irodoriVoices: DEFAULT_IRODORI_VOICES,
   irodoriVoiceId: "builtin-kohaku",
@@ -54,6 +55,7 @@ const DEFAULTS = Object.freeze({
   irodoriSamplingMode: "sway",
   irodoriSeed: 0,
   irodoriVersion: "v4-small",
+  irodoriPrecision: "fp16",
   irodoriMode: "reference",
   irodoriCaption: "自然で明瞭な日本語。落ち着いた親しみやすい口調で話す。",
   irodoriAutoEmotion: true,
@@ -259,9 +261,11 @@ class Preferences {
       this.data.supertonicSteps = Math.min(20, Math.max(2, Math.round(Number(this.data.supertonicSteps) || 8)));
       if (typeof this.data.irodoriModelDirectory !== "string") this.data.irodoriModelDirectory = "";
       if (typeof this.data.irodoriV4ModelDirectory !== "string") this.data.irodoriV4ModelDirectory = "";
+      if (typeof this.data.irodoriV4Int4ModelDirectory !== "string") this.data.irodoriV4Int4ModelDirectory = "";
       if (typeof this.data.irodoriReferenceAudioPath !== "string") this.data.irodoriReferenceAudioPath = "";
       this.data.irodoriModelDirectory = this.data.irodoriModelDirectory.slice(0, 1000);
       this.data.irodoriV4ModelDirectory = this.data.irodoriV4ModelDirectory.slice(0, 1000);
+      this.data.irodoriV4Int4ModelDirectory = this.data.irodoriV4Int4ModelDirectory.slice(0, 1000);
       this.data.irodoriReferenceAudioPath = this.data.irodoriReferenceAudioPath.slice(0, 1000);
       if (!Array.isArray(this.data.irodoriVoices)) this.data.irodoriVoices = [];
       this.data.irodoriVoices = this.data.irodoriVoices.slice(0, 100).flatMap((voice) => {
@@ -289,6 +293,7 @@ class Preferences {
       } else if (!["500m-v3", "v4-small"].includes(this.data.irodoriVersion)) {
         this.data.irodoriVersion = "v4-small";
       }
+      if (!["fp16", "int4"].includes(this.data.irodoriPrecision)) this.data.irodoriPrecision = "fp16";
       if (!["reference", "design"].includes(this.data.irodoriMode)) this.data.irodoriMode = "reference";
       this.data.irodoriCaption = String(this.data.irodoriCaption || "自然で明瞭な日本語。落ち着いた親しみやすい口調で話す。").trim().slice(0, 1000);
       if (typeof this.data.irodoriAutoEmotion !== "boolean") this.data.irodoriAutoEmotion = true;
@@ -384,6 +389,8 @@ class Preferences {
             ? profile.irodoriVersion
             : ["500m-v3", "v4-small"].includes(defaultProfile.irodoriVersion)
               ? defaultProfile.irodoriVersion : this.data.irodoriVersion,
+          irodoriPrecision: ["fp16", "int4"].includes(profile.irodoriPrecision)
+            ? profile.irodoriPrecision : this.data.irodoriPrecision,
           irodoriMode: ["reference", "design"].includes(profile.irodoriMode) ? profile.irodoriMode : "reference",
           irodoriCaption: String(profile.irodoriCaption || "").trim().slice(0, 1000),
           irodoriAutoEmotion: typeof profile.irodoriAutoEmotion === "boolean" ? profile.irodoriAutoEmotion : true,
@@ -429,7 +436,7 @@ class Preferences {
   publicState() {
     const state = {};
     for (const key of PUBLIC_KEYS) {
-      if (!["customCharacters", "workDirectory", "piperPlusExecutablePath", "piperPlusModelPath", "supertonicModelDirectory", "irodoriModelDirectory", "irodoriV4ModelDirectory", "irodoriReferenceAudioPath", "irodoriVoices", "kokoroModelDirectory", "sbv2Models", "beatriceVstPath", "beatriceModelPath", "beatriceModels", "characterTtsProfiles", "conversationHistories", "characterMemories", "characterWorkspaces", "webPreviewRuntimes", "workHistory"].includes(key)) state[key] = this.data[key];
+      if (!["customCharacters", "workDirectory", "piperPlusExecutablePath", "piperPlusModelPath", "supertonicModelDirectory", "irodoriModelDirectory", "irodoriV4ModelDirectory", "irodoriV4Int4ModelDirectory", "irodoriReferenceAudioPath", "irodoriVoices", "kokoroModelDirectory", "sbv2Models", "beatriceVstPath", "beatriceModelPath", "beatriceModels", "characterTtsProfiles", "conversationHistories", "characterMemories", "characterWorkspaces", "webPreviewRuntimes", "workHistory"].includes(key)) state[key] = this.data[key];
     }
     state.hasWorkDirectory = Boolean(this.data.workDirectory);
     state.workDirectoryName = this.data.workDirectory ? path.basename(this.data.workDirectory) : "";

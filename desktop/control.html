@@ -509,6 +509,10 @@
                 </select></label>
                 <div id="irodoriV4Panel">
                   <p class="hint"><strong>Irodori TTS v4 Small · WebGPU</strong></p>
+                  <label>モデル精度<select id="irodoriPrecisionSelect">
+                    <option value="fp16">FP16（高品質・約1.7GB）</option>
+                    <option value="int4">INT4（軽量・約853MB）</option>
+                  </select></label>
                   <div class="local-model-download">
                     <p id="irodoriModelDownloadStatus" class="hint">V4モデルを確認しています…</p>
                     <progress id="irodoriModelDownloadProgress" max="100" value="0" hidden></progress>

@@ -47,8 +47,18 @@ function v4CandidateLayouts(root) {
     { models: root, tokenizer: path.join(root, "tokenizer", "irodori_v4") },
     { models: path.join(root, "models"), tokenizer: path.join(root, "tokenizer", "irodori_v4") },
     { models: path.join(root, "onnx_fp16"), tokenizer: path.join(root, "tokenizer", "irodori_v4") },
+    { models: path.join(root, "onnx_int4_webgpu"), tokenizer: path.join(root, "tokenizer", "irodori_v4") },
+    { models: path.join(root, "onnx_int4_webgpu_official"), tokenizer: path.join(root, "tokenizer", "irodori_v4") },
     {
       models: path.join(root, "artifacts", "v4-small", "onnx_fp16"),
+      tokenizer: path.join(root, "phases", "v4-small-unified", "tokenizer", "irodori_v4"),
+    },
+    {
+      models: path.join(root, "artifacts", "v4-small", "onnx_int4_webgpu"),
+      tokenizer: path.join(root, "phases", "v4-small-unified", "tokenizer", "irodori_v4"),
+    },
+    {
+      models: path.join(root, "artifacts", "v4-small", "onnx_int4_webgpu_official"),
       tokenizer: path.join(root, "phases", "v4-small-unified", "tokenizer", "irodori_v4"),
     },
   ];
@@ -115,7 +125,7 @@ function validateIrodoriModelDirectory(directory, version = "v4-small") {
   if (!status.modelReady) {
     const tokenizerName = resolved.version === "500m-v3" ? "tokenizer/llmjp_tok" : "tokenizer/irodori_v4";
     const detail = !status.tokenizerReady ? `${tokenizerName}/{tokenizer.json, tokenizer_config.json}` : status.missingFiles.slice(0, 3).join(", ");
-    throw new Error(`Irodori TTSのFP16モデル一式が揃っていません（不足: ${detail}）。`);
+    throw new Error(`Irodori TTSの変換済みモデル一式が揃っていません（不足: ${detail}）。`);
   }
   return resolved.root;
 }

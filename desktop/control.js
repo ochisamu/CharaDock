@@ -1658,9 +1658,11 @@
   function syncIrodoriUi(info = state?.irodori || {}) {
     const version = $("#irodoriVersionSelect").value === "500m-v3" ? "500m-v3" : "v4-small";
     const legacy = version === "500m-v3";
+    const precision = $("#irodoriPrecisionSelect").value === "int4" ? "int4" : "fp16";
+    const quantized = !legacy && precision === "int4";
     $("#irodoriV4Panel").hidden = legacy;
     $("#irodoriV3Panel").hidden = !legacy;
-    $("#irodoriManualModelLabel").textContent = legacy ? "500M-v3 FP16モデル" : "V4 Small FP16モデル";
+    $("#irodoriManualModelLabel").textContent = legacy ? "500M-v3 FP16モデル" : `V4 Small ${quantized ? "INT4" : "FP16"}モデル`;
     $("#irodoriManualModelHint").textContent = legacy
       ? "irodori-tts-webgpuのルート、onnx_fp16フォルダー、または同じ配置の変換済み500M-v3モデルを選択できます。"
       : "irodori-tts-webgpuのルート、v4-small-unifiedフォルダー、または同じ配置の変換済みV4モデルを選択できます。";
@@ -1680,14 +1682,18 @@
     $("#irodoriVoiceRemoveButton").disabled = !selectedVoice || selectedVoice.builtIn;
     const status = $("#irodoriStatus");
     if (info.webgpuAvailable === false) setStatus(status, "WebGPUを利用できません。GPUドライバーを確認してください。", true);
-    else if (!info.modelReady) setStatus(status, `${legacy ? "Irodori TTS 500M-v3" : "Irodori TTS v4 Small"}のFP16モデルを導入または選択してください。`);
+    else if (!info.modelReady) setStatus(status, `${legacy ? "Irodori TTS 500M-v3 FP16" : `Irodori TTS v4 Small ${quantized ? "INT4" : "FP16"}`}モデルを導入または選択してください。`);
     else if (info.referenceRequired && !info.referenceReady) setStatus(status, "本人の許可がある参照音声を追加してください。");
     else if (info.webgpuAvailable === true) setStatus(status, `${legacy ? "Irodori TTS 500M-v3" : "Irodori TTS v4 Small"}のWebGPU音声合成を利用できます。`);
     else setStatus(status, `${legacy ? "500M-v3" : "V4"}モデルと音声設定を確認しました。初回生成時にWebGPUを確認します。`);
     $("#irodoriReferenceSettings").hidden = !legacy && $("#irodoriModeSelect").value === "design";
     $("#irodoriEmotionStrengthSettings").classList.toggle("is-disabled", !$("#irodoriAutoEmotionToggle").checked);
     $("#irodoriEmotionStrengthSelect").disabled = !$("#irodoriAutoEmotionToggle").checked;
-    syncTtsSampleModelUi("irodori", info.sampleModel);
+    const selectedV4Model = quantized ? info.int4SampleModel : info.fp16SampleModel;
+    syncTtsSampleModelUi("irodori", selectedV4Model || info.sampleModel);
+    $("#irodoriModelDownloadHint").textContent = quantized
+      ? "約853MBのWebGPU向けW4A16モデルを初回だけ取得し、SHA-256を検証して端末へ保存します。"
+      : "約1.7GBのFP16モデルを初回だけ取得し、SHA-256を検証して端末へ保存します。";
     syncTtsSampleModelUi("irodoriV3", info.v3SampleModel);
   }
 
@@ -1877,6 +1883,7 @@
     syncKokoroUi();
     $("#irodoriSpeedInput").value = Number(state.irodoriSpeed) || 1;
     $("#irodoriVersionSelect").value = state.irodoriVersion === "500m-v3" ? "500m-v3" : "v4-small";
+    $("#irodoriPrecisionSelect").value = state.irodoriPrecision === "int4" ? "int4" : "fp16";
     $("#irodoriModeSelect").value = state.irodoriMode || "reference";
     $("#irodoriCaptionInput").value = state.irodoriCaption || "自然で明瞭な日本語。落ち着いた親しみやすい口調で話す。";
     $("#irodoriAutoEmotionToggle").checked = state.irodoriAutoEmotion !== false;
@@ -2031,6 +2038,7 @@
       kokoroDevice: $("#kokoroDeviceSelect").value,
       irodoriVoiceId: $("#irodoriVoiceSelect").value,
       irodoriVersion: $("#irodoriVersionSelect").value,
+      irodoriPrecision: $("#irodoriPrecisionSelect").value,
       irodoriMode: $("#irodoriModeSelect").value,
       irodoriCaption: $("#irodoriCaptionInput").value,
       irodoriAutoEmotion: $("#irodoriAutoEmotionToggle").checked,
@@ -3168,6 +3176,14 @@
         setStatus($("#irodoriStatus"), error.message, true);
       }
     });
+    $("#irodoriPrecisionSelect").addEventListener("change", async () => {
+      try {
+        await saveSettings();
+        syncIrodoriUi(state.irodori);
+      } catch (error) {
+        setStatus($("#irodoriStatus"), error.message, true);
+      }
+    });
     $("#irodoriCfgExecutionSelect").addEventListener("change", () => {
       saveSettings().catch((error) => setStatus($("#irodoriStatus"), error.message, true));
     });
@@ -3238,23 +3254,27 @@
       { prefix: "irodoriV3", provider: "irodori-500m-v3" },
     ]) {
       $(`#${prefix}ModelDownloadButton`).addEventListener("click", async () => {
+        const selectedProvider = prefix === "irodori" && $("#irodoriPrecisionSelect").value === "int4"
+          ? "irodori-webgpu-int4" : provider;
         try {
-          if (provider === "piper-plus" && !window.confirm(localized(
+          if (selectedProvider === "piper-plus" && !window.confirm(localized(
             "つくよみちゃんコーパスのクレジットと利用条件を確認し、同意してダウンロードしますか？",
             "Have you reviewed and accepted the Tsukuyomi-chan Corpus credits and terms, and do you want to download it?",
           ))) return;
-          if (["irodori-webgpu", "irodori-500m-v3"].includes(provider) && !window.confirm(localized(
+          if (["irodori-webgpu", "irodori-webgpu-int4", "irodori-500m-v3"].includes(selectedProvider) && !window.confirm(localized(
             "Irodori TTSの利用条件を守り、本人の明示的な同意がある音声だけを参照に使いますか？",
             "Will you follow the Irodori TTS terms and only use reference voices with the speaker's explicit consent?",
           ))) return;
-          const stateKey = { "piper-plus": "piperPlus", "supertonic-3": "supertonic", "irodori-webgpu": "irodori", "irodori-500m-v3": "irodori", kokoro: "kokoro" }[provider];
-          const sampleKey = provider === "irodori-500m-v3" ? "v3SampleModel" : "sampleModel";
+          const stateKey = { "piper-plus": "piperPlus", "supertonic-3": "supertonic", "irodori-webgpu": "irodori", "irodori-webgpu-int4": "irodori", "irodori-500m-v3": "irodori", kokoro: "kokoro" }[selectedProvider];
+          const sampleKey = selectedProvider === "irodori-500m-v3" ? "v3SampleModel"
+            : selectedProvider === "irodori-webgpu-int4" ? "int4SampleModel"
+              : selectedProvider === "irodori-webgpu" ? "fp16SampleModel" : "sampleModel";
           syncTtsSampleModelUi(prefix, {
             ...(state[stateKey]?.[sampleKey] || {}),
             downloading: true,
             progress: { phase: "downloading", receivedBytes: 0, totalBytes: state[stateKey]?.[sampleKey]?.downloadBytes || 1 },
           });
-          state = await api.downloadTtsModel(provider);
+          state = await api.downloadTtsModel(selectedProvider);
           syncUi();
         } catch (error) {
           syncUi();
@@ -3262,12 +3282,16 @@
         }
       });
       $(`#${prefix}ModelRemoveButton`).addEventListener("click", async () => {
-        const stateKey = { "piper-plus": "piperPlus", "supertonic-3": "supertonic", "irodori-webgpu": "irodori", "irodori-500m-v3": "irodori", kokoro: "kokoro" }[provider];
-        const sampleKey = provider === "irodori-500m-v3" ? "v3SampleModel" : "sampleModel";
+        const selectedProvider = prefix === "irodori" && $("#irodoriPrecisionSelect").value === "int4"
+          ? "irodori-webgpu-int4" : provider;
+        const stateKey = { "piper-plus": "piperPlus", "supertonic-3": "supertonic", "irodori-webgpu": "irodori", "irodori-webgpu-int4": "irodori", "irodori-500m-v3": "irodori", kokoro: "kokoro" }[selectedProvider];
+        const sampleKey = selectedProvider === "irodori-500m-v3" ? "v3SampleModel"
+          : selectedProvider === "irodori-webgpu-int4" ? "int4SampleModel"
+            : selectedProvider === "irodori-webgpu" ? "fp16SampleModel" : "sampleModel";
         const label = state[stateKey]?.[sampleKey]?.label || "ダウンロード済みモデル";
         if (!window.confirm(localized(`${label}を端末から削除しますか？`, `Delete ${label} from this device?`))) return;
         try {
-          state = await api.removeTtsModel(provider);
+          state = await api.removeTtsModel(selectedProvider);
           syncUi();
         } catch (error) {
           setStatus($(`#${prefix}ModelDownloadStatus`), error.message, true);
@@ -3544,11 +3568,18 @@
         "supertonic-3": ["supertonic", "supertonic"],
         kokoro: ["kokoro", "kokoro"],
         "irodori-webgpu": ["irodori", "irodori"],
+        "irodori-webgpu-int4": ["irodori", "irodori"],
         "irodori-500m-v3": ["irodori", "irodoriV3"],
       }[model?.provider];
       if (!mapping) return;
       state[mapping[0]] ||= {};
-      state[mapping[0]][model?.provider === "irodori-500m-v3" ? "v3SampleModel" : "sampleModel"] = model;
+      const sampleKey = model?.provider === "irodori-500m-v3" ? "v3SampleModel"
+        : model?.provider === "irodori-webgpu-int4" ? "int4SampleModel"
+          : model?.provider === "irodori-webgpu" ? "fp16SampleModel" : "sampleModel";
+      state[mapping[0]][sampleKey] = model;
+      if (model?.provider === (state.irodoriPrecision === "int4" ? "irodori-webgpu-int4" : "irodori-webgpu")) {
+        state[mapping[0]].sampleModel = model;
+      }
       syncTtsSampleModelUi(mapping[1], model);
     });
     api.onSbv2Progress((progress) => {
