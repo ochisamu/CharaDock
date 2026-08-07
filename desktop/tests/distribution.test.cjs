@@ -255,6 +255,8 @@ test("conversation and work surfaces expose history, folder access, interruption
   assert.match(mascot, /responseSpeaking[\s\S]*stopTtsPlayback\(\)/);
   assert.match(main, /mascotInline:openWorkDirectory/);
   assert.match(main, /work:openDirectory/);
+  assert.match(main, /async function setCharacter\(characterId\) \{[\s\S]*if \(activeWorkRunId\)[\s\S]*Characters cannot be switched while Work is running/);
+  assert.match(control, /syncCharacterSwitchAvailability[\s\S]*button\.disabled = workRunning/);
 });
 
 test("avatar output buttons open a sandboxed companion preview without covering the mascot", () => {
@@ -276,6 +278,21 @@ test("avatar output buttons open a sandboxed companion preview without covering 
   assert.match(previewRenderer, /html: false/);
   assert.match(previewRenderer, /DOMPurify\.sanitize/);
   assert.match(previewRenderer, /FORBID_TAGS/);
+});
+
+test("sandboxed HTML artifact previews support CSS, scripts, and HTTPS resources without unsafe capabilities", () => {
+  const main = fs.readFileSync(path.join(projectRoot, "desktop", "main.cjs"), "utf8");
+  const csp = main.match(/"Content-Security-Policy":\s*"([^"]+)"/)?.[1] || "";
+  assert.match(csp, /style-src 'self' charadock-artifact: 'unsafe-inline' data: https:/);
+  assert.match(csp, /script-src 'self' charadock-artifact: 'unsafe-inline' https:/);
+  assert.match(csp, /connect-src https: wss:/);
+  assert.match(csp, /img-src 'self' charadock-artifact: data: blob: https:/);
+  assert.match(csp, /worker-src 'self' charadock-artifact: blob: https:/);
+  assert.doesNotMatch(csp, /'unsafe-eval'/);
+  assert.doesNotMatch(csp, /(?:^|\s)http:/);
+  assert.match(csp, /frame-src 'none'/);
+  assert.match(csp, /object-src 'none'/);
+  assert.match(csp, /form-action 'none'/);
 });
 
 test("the latest answer stays visible while active work and Realtime expose elapsed progress", () => {

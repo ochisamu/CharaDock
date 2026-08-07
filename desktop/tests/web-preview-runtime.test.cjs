@@ -89,6 +89,46 @@ test("preview runtime reports readiness, streams bounded logs, and stops its chi
   assert.ok(states.some((state) => state.status === "running"));
 });
 
+test("a superseded preview start cannot stop or overwrite the newer server", async () => {
+  const children = [0, 1].map(() => {
+    const child = new EventEmitter();
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    child.killCount = 0;
+    child.kill = () => {
+      child.killCount += 1;
+      setImmediate(() => child.emit("exit", 0, null));
+      return true;
+    };
+    return child;
+  });
+  let firstFetchResolve;
+  const project = {
+    directory: process.cwd(), name: "demo", framework: "vite", packageManager: "npm",
+    scripts: [{ name: "dev", value: "vite" }], preferredScript: "dev",
+  };
+  const runtime = new WebPreviewRuntime({
+    spawnProcess: () => children.shift(),
+    fetchImpl: (url) => url.includes(":43124/")
+      ? new Promise((resolve) => { firstFetchResolve = resolve; })
+      : Promise.resolve({ status: 200 }),
+  });
+  const firstChild = children[0];
+  const secondChild = children[1];
+  const firstStart = runtime.start({ project, projectId: "first", script: "dev", port: 43124 });
+  while (!firstFetchResolve) await new Promise((resolve) => setImmediate(resolve));
+  const secondStart = runtime.start({ project, projectId: "second", script: "dev", port: 43125 });
+  const secondResult = await secondStart;
+  firstFetchResolve({ status: 200 });
+  await firstStart;
+  assert.equal(secondResult.status, "running");
+  assert.equal(runtime.publicState().projectId, "second");
+  assert.equal(runtime.child, secondChild);
+  assert.equal(secondChild.killCount, 0);
+  assert.ok(firstChild.killCount >= 1);
+  await runtime.stop();
+});
+
 test("preview runtime launches and stops a real package-script development server", { timeout: 15_000 }, async () => {
   const directory = temporaryProject({
     name: "live-preview-fixture",

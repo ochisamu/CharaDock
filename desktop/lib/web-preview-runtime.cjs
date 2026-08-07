@@ -122,6 +122,7 @@ class WebPreviewRuntime {
     this.fetchImpl = fetchImpl;
     this.child = null;
     this.stopRequested = false;
+    this.startGeneration = 0;
     this.state = { status: "idle", logs: [] };
   }
 
@@ -146,16 +147,17 @@ class WebPreviewRuntime {
     return this.publicState();
   }
 
-  appendLog(chunk) {
+  appendLog(chunk, child = this.child) {
+    if (child !== this.child) return;
     const lines = stripAnsi(chunk).replace(/\r/g, "").split("\n").map((line) => line.trimEnd()).filter(Boolean);
     if (!lines.length) return;
     const logs = [...(this.state.logs || []), ...lines.map((line) => line.slice(0, 2000))].slice(-MAX_LOG_LINES);
     this.publish({ logs });
   }
 
-  async waitUntilReady(url, timeoutMs = 45_000) {
+  async waitUntilReady(url, child, generation, timeoutMs = 45_000) {
     const deadline = Date.now() + timeoutMs;
-    while (Date.now() < deadline && this.child && !this.stopRequested) {
+    while (Date.now() < deadline && this.child === child && this.startGeneration === generation && !this.stopRequested) {
       try {
         const response = await this.fetchImpl(url, { redirect: "manual", signal: AbortSignal.timeout(900) });
         if (response && response.status < 600) return true;
@@ -166,8 +168,11 @@ class WebPreviewRuntime {
   }
 
   async start({ project, projectId, script, port = 0, commandOverride = null, runtime = "native" }) {
-    await this.stop();
+    const generation = ++this.startGeneration;
+    await this.stop({ invalidateStarts: false });
+    if (generation !== this.startGeneration) return this.publicState();
     const selectedPort = Number(port) || await freeLocalPort();
+    if (generation !== this.startGeneration) return this.publicState();
     const command = typeof commandOverride === "function"
       ? commandOverride(selectedPort)
       : commandOverride || commandForWebProject(project, script, selectedPort);
@@ -189,24 +194,28 @@ class WebPreviewRuntime {
       });
       this.child = child;
     } catch (error) {
-      this.publish({ status: "error", error: error.message });
+      if (generation === this.startGeneration) this.publish({ status: "error", error: error.message });
       throw error;
     }
-    child.stdout?.on("data", (chunk) => this.appendLog(chunk));
-    child.stderr?.on("data", (chunk) => this.appendLog(chunk));
+    child.stdout?.on("data", (chunk) => this.appendLog(chunk, child));
+    child.stderr?.on("data", (chunk) => this.appendLog(chunk, child));
     child.once("error", (error) => {
-      if (this.child === child) this.child = null;
+      if (this.child !== child || generation !== this.startGeneration) return;
+      this.child = null;
       if (!this.stopRequested) this.publish({ status: "error", error: error.message });
     });
     child.once("exit", (code, signal) => {
-      if (this.child === child) this.child = null;
+      if (this.child !== child || generation !== this.startGeneration) return;
+      this.child = null;
       if (this.stopRequested) this.publish({ status: "idle", url: "", error: "" });
       else this.publish({ status: "error", error: `Preview process exited (${code ?? signal ?? "unknown"}).` });
     });
-    const ready = await this.waitUntilReady(url);
+    const ready = await this.waitUntilReady(url, child, generation);
+    if (generation !== this.startGeneration || this.child !== child) return this.publicState();
     if (!ready) {
       const startupError = String(this.state.error || "");
-      if (this.child) await this.stop();
+      if (this.child === child) await this.stop({ invalidateStarts: false });
+      if (generation !== this.startGeneration) return this.publicState();
       const error = startupError || "The development server did not become ready in time.";
       this.publish({ status: "error", error });
       throw new Error(error);
@@ -214,7 +223,8 @@ class WebPreviewRuntime {
     return this.publish({ status: "running" });
   }
 
-  async stop() {
+  async stop({ invalidateStarts = true } = {}) {
+    if (invalidateStarts) this.startGeneration += 1;
     const child = this.child;
     if (!child) {
       if (this.state.status !== "idle") return this.publish({ status: "idle", url: "", error: "" });
@@ -239,6 +249,7 @@ class WebPreviewRuntime {
       try { child.kill("SIGKILL"); } catch {}
       this.child = null;
     }
+    if (this.child && this.child !== child) return this.publicState();
     return this.publish({ status: "idle", url: "", error: "" });
   }
 }

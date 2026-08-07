@@ -1502,7 +1502,10 @@ function registerArtifactPreviewProtocol() {
         headers: {
           "Content-Type": artifactMimeType(target),
           "Cache-Control": "no-store",
-          "Content-Security-Policy": "default-src 'self' data: blob:; connect-src 'none'; form-action 'none'; object-src 'none'; base-uri 'self'",
+          // Generated static pages commonly use inline interactions and HTTPS CDNs.
+          // The iframe sandbox isolates them from CharaDock; CSP still blocks insecure
+          // HTTP, eval-like execution, forms, frames, and native/plugin content.
+          "Content-Security-Policy": "default-src 'self' charadock-artifact: data: blob:; style-src 'self' charadock-artifact: 'unsafe-inline' data: https:; script-src 'self' charadock-artifact: 'unsafe-inline' https:; connect-src https: wss:; img-src 'self' charadock-artifact: data: blob: https:; font-src 'self' charadock-artifact: data: https:; media-src 'self' charadock-artifact: data: blob: https:; worker-src 'self' charadock-artifact: blob: https:; frame-src 'none'; form-action 'none'; object-src 'none'; base-uri 'self'",
           "X-Content-Type-Options": "nosniff",
         },
       });
@@ -3105,8 +3108,9 @@ async function runSmokeTest() {
         'const page = `<!doctype html><html lang="ja"><meta charset="utf-8"><style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:linear-gradient(145deg,#111827,#183153);color:#f8fafc;font:16px system-ui}.card{width:min(620px,82vw);padding:40px;border:1px solid #ffffff30;border-radius:28px;background:#ffffff12;box-shadow:0 24px 80px #0007}small{color:#6ee7d8;letter-spacing:.16em;text-transform:uppercase}h1{font-size:42px;margin:10px 0}p{color:#cbd5e1;line-height:1.7}.status{display:inline-flex;gap:8px;align-items:center;padding:9px 14px;border-radius:99px;background:#2dd4bf20}.dot{width:9px;height:9px;border-radius:50%;background:#5eead4;box-shadow:0 0 16px #5eead4}</style><body><main class="card"><small>CharaDock · Next.js</small><h1>Live workspace</h1><p>キャラクターと作った動的アプリを、作業履歴からそのまま確認できます。</p><span class="status"><i class="dot"></i>Fast Refresh ready</span></main></body></html>`;',
         'http.createServer((_request, response) => { response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }); response.end(page); }).listen(port, "127.0.0.1", () => console.log("CharaDock preview fixture ready"));',
       ].join("\n"));
-      fs.writeFileSync(path.join(previewProject, "dist", "index.html"), '<!doctype html><html lang="ja"><meta charset="utf-8"><link rel="stylesheet" href="styles.css"><body><main><small>STATIC OUTPUT</small><h1>成果物プレビュー</h1><p>生成したページをアプリ内で安全に確認できます。</p><div>ネットワーク通信なし · Sandbox</div></main></body></html>');
+      fs.writeFileSync(path.join(previewProject, "dist", "index.html"), '<!doctype html><html lang="ja"><meta charset="utf-8"><link rel="stylesheet" href="styles.css"><style>#interaction{cursor:pointer}</style><body><main><small>STATIC OUTPUT</small><h1>成果物プレビュー</h1><p>生成したページをアプリ内で安全に確認できます。</p><button id="interaction" type="button">Interaction 0</button></main><script src="app.js"></script></body></html>');
       fs.writeFileSync(path.join(previewProject, "dist", "styles.css"), 'body{margin:0;min-height:100vh;display:grid;place-items:center;background:linear-gradient(145deg,#18181b,#312e81);color:#fafafa;font:16px system-ui}main{width:min(620px,82vw);padding:40px;border:1px solid #ffffff30;border-radius:28px;background:#ffffff12;box-shadow:0 24px 80px #0008}small{color:#c4b5fd;letter-spacing:.16em}h1{font-size:40px;margin:10px 0}p{color:#d4d4d8}div{display:inline-block;padding:9px 14px;border-radius:99px;background:#ffffff12;color:#ddd6fe}');
+      fs.writeFileSync(path.join(previewProject, "dist", "app.js"), 'const button=document.querySelector("#interaction");button.addEventListener("click",()=>{button.textContent="Interaction 1"});button.click();');
       fs.writeFileSync(path.join(previewWorkspace, "REPORT.md"), [
         "# CharaDock Preview Report",
         "",
@@ -3219,6 +3223,17 @@ async function runSmokeTest() {
         return !document.querySelector('#artifactPreview').hidden && document.querySelector('#artifactPreview iframe')?.src.startsWith('charadock-artifact:');
       })()`);
       if (!staticPreviewVisible) throw new Error("sandboxed static artifact preview was not visible");
+      let staticArtifactReady = false;
+      for (let attempt = 0; attempt < 40 && !staticArtifactReady; attempt += 1) {
+        const artifactFrame = controlWindow.webContents.mainFrame.framesInSubtree.find((frame) => frame.url.startsWith("charadock-artifact:"));
+        staticArtifactReady = await artifactFrame?.executeJavaScript(`
+          document.querySelector('#interaction')?.textContent === 'Interaction 1' &&
+          getComputedStyle(document.body).backgroundImage.includes('linear-gradient') &&
+          getComputedStyle(document.querySelector('#interaction')).cursor === 'pointer'
+        `).catch(() => false) || false;
+        if (!staticArtifactReady) await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      if (!staticArtifactReady) throw new Error("sandboxed static artifact CSS or JavaScript did not run");
       fs.writeFileSync(path.join(outputDir, "evidence-static-artifact-preview.png"), (await capturePaintedWindow(controlWindow, "static artifact preview evidence")).toPNG());
 
       for (const evidence of [
@@ -4050,6 +4065,12 @@ async function startCodexRealtimeVoice(payload, target = "control") {
 }
 
 async function setCharacter(characterId) {
+  if (activeWorkRunId) {
+    throw new Error(mainText(
+      "Workの実行中はキャラクターを切り替えられません。完了を待つか、履歴から中断してください。",
+      "Characters cannot be switched while Work is running. Wait for completion or stop it from history.",
+    ));
+  }
   await stopDynamicWebPreview();
   const character = characterById(characterId);
   const characterTtsProfiles = { ...(preferences.data.characterTtsProfiles || {}) };

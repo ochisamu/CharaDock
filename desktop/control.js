@@ -1203,6 +1203,16 @@
     });
   }
 
+  function syncCharacterSwitchAvailability() {
+    const workRunning = Boolean(workHistoryState.activeWorkRunId);
+    for (const button of $$("#characterGrid .character-card")) {
+      button.disabled = workRunning;
+      button.title = workRunning
+        ? localized("Workの完了後、または中断後に切り替えられます", "Available after Work finishes or is stopped")
+        : "";
+    }
+  }
+
   function renderCharacters() {
     const grid = $("#characterGrid");
     grid.replaceChildren();
@@ -1246,6 +1256,7 @@
       });
       grid.appendChild(button);
     }
+    syncCharacterSwitchAvailability();
   }
 
   function renderOnboardingCharacters() {
@@ -2666,6 +2677,7 @@
     api.onWorkHistory?.((payload) => {
       workHistoryState = payload && Array.isArray(payload.runs) ? payload : { activeWorkRunId: null, runs: [] };
       if (state) state.workHistory = workHistoryState;
+      syncCharacterSwitchAvailability();
       if (chatHistoryView === "work") renderWorkHistory(workHistoryState);
     });
     api.onWebPreview?.((previewState) => {
