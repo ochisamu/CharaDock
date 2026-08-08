@@ -130,6 +130,13 @@ dialog::backdrop { background: rgba(16,24,36,.28); backdrop-filter: blur(4px); }
 .settings-toggle small { display: block; margin-top: 3px; color: var(--muted); font-size: 10px; line-height: 1.45; }
 .settings-toggle input { width: 22px; height: 22px; accent-color: var(--accent); }
 .settings-hint { margin: 0; padding: 12px 13px; border-radius: 12px; color: var(--muted); background: rgba(34,48,67,.055); font-size: 11px; line-height: 1.6; }
+.settings-save-status { position: sticky; bottom: 0; z-index: 2; min-height: 38px; margin: 0; padding: 10px 13px; border: 1px solid rgba(54,99,171,.16); border-radius: 12px; color: #355678; background: rgba(239,246,255,.96); box-shadow: 0 8px 22px rgba(30,50,74,.1); font-size: 11px; font-weight: 700; line-height: 1.45; backdrop-filter: blur(16px); }
+.settings-save-status[hidden] { display: none; }
+.settings-save-status[data-state="saving"]::before { content: ""; display: inline-block; width: 7px; height: 7px; margin-right: 8px; border-radius: 50%; background: var(--accent); animation: settings-status-pulse 1s ease-in-out infinite; }
+.settings-save-status[data-state="success"] { border-color: rgba(39,132,92,.18); color: #236746; background: rgba(237,250,243,.96); }
+.settings-save-status[data-state="error"] { border-color: rgba(184,64,64,.2); color: #913737; background: rgba(255,242,242,.97); }
+@keyframes settings-status-pulse { 50% { opacity: .3; transform: scale(.76); } }
+@media (prefers-reduced-motion: reduce) { .settings-save-status[data-state="saving"]::before { animation: none; } }
 .preview-dialog { inset: 3dvh 10px auto; width: calc(100% - 20px); height: 94dvh; max-width: 900px; border-radius: 22px; padding: 12px; background: #f7f9fc; box-shadow: 0 22px 70px rgba(15,28,47,.28); }
 .preview-dialog header { height: 44px; padding: 0 4px 8px 9px; }
 .preview-body { height: calc(100% - 44px); overflow: auto; border-radius: 14px; background: white; }

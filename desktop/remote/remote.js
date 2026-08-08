@@ -22,6 +22,7 @@
   let mobileSpeechPending = false;
   let activeMobileTtsStreamId = "";
   let settingsSaving = false;
+  let settingsStatusTimer = 0;
   let livePeer = null;
   let liveInputStream = null;
   let liveStarting = false;
@@ -419,6 +420,26 @@
     }
   }
 
+  function setSettingsStatus(message = "", state = "") {
+    const status = $("#settingsStatus");
+    clearTimeout(settingsStatusTimer);
+    settingsStatusTimer = 0;
+    status.textContent = String(message || "");
+    status.dataset.state = state;
+    status.hidden = !message;
+    if (message && state === "success") {
+      settingsStatusTimer = setTimeout(() => {
+        status.hidden = true;
+        status.textContent = "";
+        status.dataset.state = "";
+      }, 1800);
+    }
+  }
+
+  function setSettingsControlsBusy(value) {
+    for (const control of $("#settingsSheet").querySelectorAll("select, input")) control.disabled = Boolean(value);
+  }
+
   function syncRemoteSettings() {
     if (!appState) return;
     const voice = appState.voice || {};
@@ -426,11 +447,11 @@
     characterSelect.replaceChildren();
     for (const character of appState.characters || []) characterSelect.appendChild(new Option(character.name, character.id));
     characterSelect.value = appState.character?.id || "";
-    characterSelect.disabled = busy || Boolean(voice.liveConnected);
+    characterSelect.disabled = busy || settingsSaving || Boolean(voice.liveConnected);
 
     const responseMode = voice.responseMode === "live" ? "live" : "tts";
     $("#responseModeSelect").value = responseMode;
-    $("#responseModeSelect").disabled = busy;
+    $("#responseModeSelect").disabled = busy || settingsSaving;
     const liveOption = [...$("#responseModeSelect").options].find((option) => option.value === "live");
     if (liveOption) liveOption.disabled = !voice.liveSupported;
     const providerSelect = $("#ttsProviderSelect");
@@ -441,7 +462,7 @@
       providerSelect.appendChild(option);
     }
     providerSelect.value = voice.ttsProvider || "system";
-    providerSelect.disabled = busy || responseMode === "live";
+    providerSelect.disabled = busy || settingsSaving || responseMode === "live";
     $("#ttsProviderField").hidden = responseMode === "live";
     syncTtsModelSettings(responseMode);
 
@@ -449,12 +470,12 @@
     realtimeVoiceSelect.replaceChildren();
     for (const name of voice.realtimeVoices || []) realtimeVoiceSelect.appendChild(new Option(name.replace(/^./, (value) => value.toUpperCase()), name));
     realtimeVoiceSelect.value = voice.realtimeVoice || "cove";
-    realtimeVoiceSelect.disabled = busy || Boolean(voice.liveConnected);
+    realtimeVoiceSelect.disabled = busy || settingsSaving || Boolean(voice.liveConnected);
     $("#realtimeVoiceField").hidden = responseMode !== "live";
     $("#pcAudioToggle").checked = voice.pcAudioEnabled !== false;
-    $("#pcAudioToggle").disabled = busy;
+    $("#pcAudioToggle").disabled = busy || settingsSaving;
     $("#phoneAudioToggle").checked = audioEnabled;
-    $("#phoneAudioToggle").disabled = !appState.mobileTtsAllowed;
+    $("#phoneAudioToggle").disabled = settingsSaving || !appState.mobileTtsAllowed;
     $("#voiceRouteHint").textContent = responseMode === "live"
       ? voice.liveConnected
         ? voice.liveOwner === "remote"
@@ -474,15 +495,18 @@
     if (settingsSaving) return;
     settingsSaving = true;
     $("#settingsSheet").classList.add("is-saving");
+    setSettingsStatus(text("保存中…", "Saving…"), "saving");
+    setSettingsControlsBusy(true);
     try {
       const payload = await request("/api/settings", { method: "POST", body: JSON.stringify(patch) });
       applyState(payload.state);
+      setSettingsStatus(text("保存しました", "Saved"), "success");
     } catch (error) {
-      setResponseText(error.message);
-      syncRemoteSettings();
+      setSettingsStatus(text(`保存できませんでした: ${error.message}`, `Could not save: ${error.message}`), "error");
     } finally {
       settingsSaving = false;
       $("#settingsSheet").classList.remove("is-saving");
+      syncRemoteSettings();
     }
   }
 

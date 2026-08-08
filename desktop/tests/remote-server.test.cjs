@@ -186,11 +186,13 @@ test("the packaged phone surface keeps camera disabled and permits microphone on
   assert.match(page.headers.get("content-security-policy"), /connect-src 'self'/);
   assert.match(page.headers.get("content-security-policy"), /img-src 'self' data: blob:/);
   const html = await page.text();
-  for (const id of ["companionView", "avatarTapTarget", "avatarReactionShell", "avatarFace", "messageForm", "microphoneButton", "remoteLiveAudio", "interruptButton", "artifactList", "historySheet", "settingsSheet", "characterSelect", "responseModeSelect", "ttsModelSettings", "ttsModelFields", "bubbleExpandButton", "pairingCodeInput"]) assert.match(html, new RegExp(`id="${id}"`));
+  for (const id of ["companionView", "avatarTapTarget", "avatarReactionShell", "avatarFace", "messageForm", "microphoneButton", "remoteLiveAudio", "interruptButton", "artifactList", "historySheet", "settingsSheet", "settingsStatus", "characterSelect", "responseModeSelect", "ttsModelSettings", "ttsModelFields", "bubbleExpandButton", "pairingCodeInput"]) assert.match(html, new RegExp(`id="${id}"`));
   const script = await fetch(`${server.origin()}/remote.js`).then((response) => response.text());
   assert.match(script, /request\("\/api\/pet"/);
   assert.match(script, /remote-touch-spark/);
   assert.match(script, /ttsModel: \{ key: field\.key, value:/);
+  assert.match(script, /setSettingsStatus\(text\("保存中…", "Saving…"\), "saving"\)/);
+  assert.match(script, /setSettingsStatus\(text\("保存しました", "Saved"\), "success"\)/);
   const font = await fetch(`${server.origin()}/noto-sans-jp.ttf`);
   assert.equal(font.status, 200);
   assert.equal(Number(font.headers.get("content-length")) || (await font.arrayBuffer()).byteLength, 9_590_732);
