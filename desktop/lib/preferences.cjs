@@ -96,7 +96,11 @@ const DEFAULTS = Object.freeze({
   remoteTtsEnabled: true,
   remotePcAudioEnabled: true,
   remoteResponseMode: "tts",
+  remotePort: 41317,
   remoteSessionMinutes: 60,
+  remoteTailscaleHttpsPort: 443,
+  remoteTailscaleManaged: false,
+  remoteTrustedDevices: [],
   onboardingComplete: false,
   positionLocked: false,
   edgeSnap: true,
@@ -223,7 +227,13 @@ class Preferences {
   constructor(filePath, safeStorage = null) {
     this.filePath = filePath;
     this.safeStorage = safeStorage;
-    this.data = { ...DEFAULTS };
+    this.data = {
+      ...DEFAULTS,
+      characterTtsProfiles: Object.fromEntries(Object.entries(DEFAULT_CHARACTER_TTS_PROFILES).map(([id, profile]) => [id, {
+        ...profile,
+        styleBertVits2ModelId: Number(profile.styleBertVits2ModelId) || 0,
+      }])),
+    };
     this.sessionApiKey = "";
     this.load();
   }
@@ -259,7 +269,25 @@ class Preferences {
       if (typeof this.data.remoteTtsEnabled !== "boolean") this.data.remoteTtsEnabled = true;
       if (typeof this.data.remotePcAudioEnabled !== "boolean") this.data.remotePcAudioEnabled = true;
       if (!["tts", "live"].includes(this.data.remoteResponseMode)) this.data.remoteResponseMode = "tts";
+      this.data.remotePort = Math.max(1024, Math.min(65535, Math.round(Number(this.data.remotePort) || 41317)));
       this.data.remoteSessionMinutes = Math.max(15, Math.min(480, Math.round(Number(this.data.remoteSessionMinutes) || 60)));
+      this.data.remoteTailscaleHttpsPort = Math.max(1, Math.min(65535, Math.round(Number(this.data.remoteTailscaleHttpsPort) || 443)));
+      if (typeof this.data.remoteTailscaleManaged !== "boolean") this.data.remoteTailscaleManaged = false;
+      this.data.remoteTrustedDevices = (Array.isArray(this.data.remoteTrustedDevices) ? this.data.remoteTrustedDevices : []).slice(0, 8).flatMap((device) => {
+        const tokenHash = /^[a-f0-9]{64}$/.test(String(device?.tokenHash || "")) ? String(device.tokenHash) : "";
+        const csrf = /^[A-Za-z0-9_-]{24,128}$/.test(String(device?.csrf || "")) ? String(device.csrf) : "";
+        const id = /^[A-Za-z0-9_-]{12,64}$/.test(String(device?.id || "")) ? String(device.id) : "";
+        const expiresAt = Number(device?.expiresAt) || 0;
+        if (!tokenHash || !csrf || !id || expiresAt <= Date.now()) return [];
+        return [{
+          id, tokenHash, csrf,
+          name: String(device?.name || "Web browser").replace(/[\u0000-\u001f\u007f]/g, " ").trim().slice(0, 80),
+          address: String(device?.address || "").slice(0, 64),
+          pairedAt: Number(device?.pairedAt) || Date.now(),
+          lastSeenAt: Number(device?.lastSeenAt) || Number(device?.pairedAt) || Date.now(),
+          expiresAt,
+        }];
+      });
       if (typeof this.data.englishPronunciationEnabled !== "boolean") this.data.englishPronunciationEnabled = true;
       if (typeof this.data.englishPronunciationDictionary !== "string") this.data.englishPronunciationDictionary = "";
       this.data.englishPronunciationDictionary = this.data.englishPronunciationDictionary.slice(0, 12_000);
@@ -387,6 +415,7 @@ class Preferences {
           ? profile.provider : "system";
         return [[id, {
           provider,
+          styleBertVits2ModelId: Math.min(9999, Math.max(0, Math.round(Number(profile.styleBertVits2ModelId ?? this.data.styleBertVits2ModelId) || 0))),
           realtimeVoice: normalizeRealtimeVoice(profile.realtimeVoice, normalizeRealtimeVoice(this.data.realtimeVoice)),
           realtimeVoiceConversion: profile.realtimeVoiceConversion === "beatrice-v2" ? "beatrice-v2" : "none",
           beatriceModelId: String(profile.beatriceModelId || "").slice(0, 100),
@@ -450,7 +479,7 @@ class Preferences {
   publicState() {
     const state = {};
     for (const key of PUBLIC_KEYS) {
-      if (!["customCharacters", "workDirectory", "piperPlusExecutablePath", "piperPlusModelPath", "supertonicModelDirectory", "irodoriModelDirectory", "irodoriV4ModelDirectory", "irodoriV4Int4ModelDirectory", "irodoriReferenceAudioPath", "irodoriVoices", "kokoroModelDirectory", "sbv2Models", "beatriceVstPath", "beatriceModelPath", "beatriceModels", "characterTtsProfiles", "conversationHistories", "characterMemories", "characterWorkspaces", "webPreviewRuntimes", "workHistory"].includes(key)) state[key] = this.data[key];
+      if (!["customCharacters", "workDirectory", "piperPlusExecutablePath", "piperPlusModelPath", "supertonicModelDirectory", "irodoriModelDirectory", "irodoriV4ModelDirectory", "irodoriV4Int4ModelDirectory", "irodoriReferenceAudioPath", "irodoriVoices", "kokoroModelDirectory", "sbv2Models", "beatriceVstPath", "beatriceModelPath", "beatriceModels", "characterTtsProfiles", "conversationHistories", "characterMemories", "characterWorkspaces", "webPreviewRuntimes", "workHistory", "remoteTrustedDevices"].includes(key)) state[key] = this.data[key];
     }
     state.hasWorkDirectory = Boolean(this.data.workDirectory);
     state.workDirectoryName = this.data.workDirectory ? path.basename(this.data.workDirectory) : "";

@@ -415,6 +415,61 @@
     return model;
   }
 
+  function appendBeatriceDescription(container, value) {
+    const description = String(value || "").trim();
+    container.replaceChildren();
+    if (!description) {
+      container.textContent = localized("TOMLにdescriptionの記載はありません。", "No description is provided in the TOML.");
+      container.classList.add("is-empty");
+      return;
+    }
+    container.classList.remove("is-empty");
+    const urlPattern = /https?:\/\/[^\s<>"']+/g;
+    let cursor = 0;
+    for (const match of description.matchAll(urlPattern)) {
+      if (match.index > cursor) container.append(document.createTextNode(description.slice(cursor, match.index)));
+      let url = match[0];
+      let trailing = "";
+      while (/[.,;:!?、。）」』】》]$/.test(url)) {
+        trailing = url.slice(-1) + trailing;
+        url = url.slice(0, -1);
+      }
+      let safeUrl = null;
+      try {
+        const parsed = new URL(url);
+        if (["https:", "http:"].includes(parsed.protocol) && !parsed.username && !parsed.password) safeUrl = parsed.toString();
+      } catch {}
+      if (safeUrl) {
+        const link = document.createElement("a");
+        link.href = safeUrl;
+        link.textContent = url;
+        link.addEventListener("click", (event) => {
+          event.preventDefault();
+          api.openExternalUrl(safeUrl).catch((error) => setStatus($("#beatriceStatus"), error.message, true));
+        });
+        container.append(link);
+      } else container.append(document.createTextNode(url));
+      if (trailing) container.append(document.createTextNode(trailing));
+      cursor = match.index + match[0].length;
+    }
+    if (cursor < description.length) container.append(document.createTextNode(description.slice(cursor)));
+  }
+
+  function syncBeatriceDescriptionUi(model) {
+    const card = $("#beatriceDescriptionCard");
+    if (!model) {
+      card.hidden = true;
+      return;
+    }
+    card.hidden = false;
+    const voiceId = Number($("#beatriceVoiceSelect").value) || 0;
+    const voice = (model.voices || []).find((item) => item.id === voiceId) || model.voices?.[0] || null;
+    $("#beatriceModelDescriptionTitle").textContent = [model.name || "Beatrice model", model.version].filter(Boolean).join(" · ");
+    $("#beatriceVoiceDescriptionTitle").textContent = voice ? `${voice.id} · ${voice.name}` : localized("声がありません", "No voices");
+    appendBeatriceDescription($("#beatriceModelDescription"), model.description);
+    appendBeatriceDescription($("#beatriceVoiceDescription"), voice?.description);
+  }
+
   function renderBeatriceModelLibrary(selectedModelId) {
     const list = $("#beatriceModelLibraryList");
     const models = state.beatrice?.models || [];
@@ -497,6 +552,7 @@
     if (!modelSelect.options.length) modelSelect.appendChild(new Option(localized("モデル未追加", "No models added"), ""));
     modelSelect.value = selectedModelId;
     const selectedModel = populateBeatriceVoices(selectedModelId, state.beatriceVoiceId ?? state.characterTts?.beatriceVoiceId ?? 0);
+    syncBeatriceDescriptionUi(selectedModel);
 
     const tuning = {
       beatricePitchShift: 0,
@@ -1847,7 +1903,7 @@
       const detail = document.createElement("small");
       detail.textContent = device.connected
         ? localized(`表示中 · ${device.address}`, `Open now · ${device.address}`)
-        : localized(`最終接続 ${date(device.lastSeenAt)} · 期限 ${date(device.expiresAt)}`, `Last seen ${date(device.lastSeenAt)} · Expires ${date(device.expiresAt)}`);
+        : localized(`最終接続 ${date(device.lastSeenAt)} · 信頼期限 ${date(device.expiresAt)}`, `Last seen ${date(device.lastSeenAt)} · Trusted until ${date(device.expiresAt)}`);
       copy.append(title, detail);
       const remove = document.createElement("button");
       remove.type = "button";
@@ -1878,6 +1934,7 @@
     if (remoteLiveOption) remoteLiveOption.disabled = state.backend !== "codex";
     $("#remoteTtsToggle").disabled = remote.responseMode === "live";
     $("#remoteSessionSelect").value = String(remote.sessionMinutes || state.remoteSessionMinutes || 60);
+    $("#remotePortInput").value = String(remote.port || state.remotePort || 41317);
     const addressSelect = $("#remoteAddressSelect");
     const selectedAddress = remote.bindAddress || remote.address || "";
     addressSelect.replaceChildren();
@@ -1895,6 +1952,26 @@
     }
     addressSelect.value = [...addressSelect.options].some((option) => option.value === selectedAddress) ? selectedAddress : addressSelect.options[0].value;
     addressSelect.disabled = !enabled || !remote.availableAddresses?.length;
+    const tailscale = remote.tailscale || {};
+    const tailscaleManaged = Boolean(tailscale.managed);
+    $("#remotePortInput").disabled = !enabled || tailscaleManaged;
+    $("#remoteTailscaleHttpsPortInput").value = String(tailscale.httpsPort || state.remoteTailscaleHttpsPort || 443);
+    $("#remoteTailscaleHttpsPortInput").disabled = !enabled || tailscaleManaged;
+    $("#remoteTailscaleCommand").textContent = tailscale.command || `tailscale serve --bg --https=443 ${remote.port || 41317}`;
+    const tailscaleBadge = $("#remoteTailscaleBadge");
+    tailscaleBadge.textContent = tailscale.active ? localized("接続中", "Active") : tailscale.installed === false ? localized("未導入", "Not installed") : tailscale.installed === true ? localized("停止中", "Off") : localized("未確認", "Not checked");
+    tailscaleBadge.classList.toggle("is-ready", Boolean(tailscale.active));
+    const tailscaleUrl = $("#remoteTailscaleUrl");
+    tailscaleUrl.hidden = !tailscale.url;
+    tailscaleUrl.dataset.url = tailscale.url || "";
+    tailscaleUrl.textContent = tailscale.url || localized("HTTPS URLを開く", "Open HTTPS URL");
+    $("#refreshRemoteTailscaleButton").disabled = !enabled;
+    $("#startRemoteTailscaleButton").disabled = !active || Boolean(tailscale.active);
+    $("#stopRemoteTailscaleButton").hidden = !tailscaleManaged;
+    $("#stopRemoteTailscaleButton").disabled = !tailscaleManaged;
+    setStatus($("#remoteTailscaleStatus"), tailscale.error || (tailscale.active
+      ? tailscaleManaged ? localized("CharaDockが管理しているHTTPS接続です。", "This HTTPS route is managed by CharaDock.") : localized("既存のTailscale Serve設定を検出しました。上書きしません。", "An existing Tailscale Serve route was detected and will not be overwritten.")
+      : localized("Tailscaleは任意です。通常LANの文字操作だけなら不要です。", "Tailscale is optional and is not needed for text control on the LAN.")), Boolean(tailscale.error));
     const badge = $("#remoteStatusBadge");
     badge.classList.toggle("is-active", active);
     badge.textContent = active ? localized("接続受付中", "Available") : enabled ? localized("開始できません", "Unavailable") : localized("停止中", "Off");
@@ -1902,6 +1979,7 @@
     qr.src = active ? remote.qrDataUrl || "" : "";
     $("#remoteQrPlaceholder").textContent = remote.error || (active ? localized("QRコードを準備中…", "Preparing QR code…") : localized("接続を有効にしてください", "Enable phone access"));
     $("#remoteAccessUrl").textContent = remote.url || localized("接続先を準備中", "Preparing address");
+    $("#remotePairingCode").textContent = remote.pairingCode || "--------";
     $("#copyRemoteUrlButton").disabled = !remote.pairingUrl;
     $("#regenerateRemotePairingButton").disabled = !active;
     $("#revokeRemoteSessionsButton").disabled = !active;
@@ -1926,6 +2004,8 @@
         ttsEnabled: $("#remoteTtsToggle").checked,
         pcAudioEnabled: $("#remotePcAudioToggle").checked,
         responseMode: $("#remoteResponseModeSelect").value,
+        port: Number($("#remotePortInput").value),
+        tailscaleHttpsPort: Number($("#remoteTailscaleHttpsPortInput").value),
         sessionMinutes: Number($("#remoteSessionSelect").value),
       });
       syncUi();
@@ -2899,8 +2979,36 @@
     });
     api.onCharacterGeneration?.((payload) => updateGeneratorProgress(payload));
     $("#remoteAccessToggle").addEventListener("change", saveRemoteSettings);
-    ["#remoteAddressSelect", "#remoteSessionSelect", "#remoteResponseModeSelect", "#remoteWorkToggle", "#remoteTtsToggle", "#remotePcAudioToggle"].forEach((selector) => {
+    ["#remoteAddressSelect", "#remotePortInput", "#remoteSessionSelect", "#remoteResponseModeSelect", "#remoteWorkToggle", "#remoteTtsToggle", "#remotePcAudioToggle", "#remoteTailscaleHttpsPortInput"].forEach((selector) => {
       $(selector).addEventListener("change", saveRemoteSettings);
+    });
+    $("#refreshRemoteTailscaleButton").addEventListener("click", async () => {
+      const button = $("#refreshRemoteTailscaleButton");
+      button.disabled = true;
+      setStatus($("#remoteTailscaleStatus"), localized("Tailscaleの状態を確認しています…", "Checking Tailscale…"));
+      try { state = await api.refreshRemoteTailscale(); syncUi(); }
+      catch (error) { setStatus($("#remoteTailscaleStatus"), error.message, true); }
+      finally { button.disabled = false; }
+    });
+    $("#startRemoteTailscaleButton").addEventListener("click", async () => {
+      const button = $("#startRemoteTailscaleButton");
+      button.disabled = true;
+      setStatus($("#remoteTailscaleStatus"), localized("HTTPS接続を準備しています…", "Preparing HTTPS access…"));
+      try { state = await api.startRemoteTailscale(); syncUi(); }
+      catch (error) { setStatus($("#remoteTailscaleStatus"), error.message, true); }
+      finally { button.disabled = false; }
+    });
+    $("#stopRemoteTailscaleButton").addEventListener("click", async () => {
+      const button = $("#stopRemoteTailscaleButton");
+      button.disabled = true;
+      try { state = await api.stopRemoteTailscale(); syncUi(); }
+      catch (error) { setStatus($("#remoteTailscaleStatus"), error.message, true); }
+      finally { button.disabled = false; }
+    });
+    $("#remoteTailscaleUrl").addEventListener("click", (event) => {
+      event.preventDefault();
+      const url = event.currentTarget.dataset.url;
+      if (url) api.openExternalUrl(url).catch((error) => setStatus($("#remoteTailscaleStatus"), error.message, true));
     });
     $("#copyRemoteUrlButton").addEventListener("click", async () => {
       const pairingUrl = state?.remote?.pairingUrl || "";
@@ -3236,6 +3344,7 @@
     });
     $("#beatriceVoiceSelect").addEventListener("change", async () => {
       try {
+        syncBeatriceDescriptionUi((state.beatrice?.models || []).find((model) => model.id === $("#beatriceModelSelect").value));
         if (realtimePeerConnection || realtimeStarting) await stopCodexRealtimeVoice({ quiet: true });
         await saveSettings();
         syncBeatriceUi();
@@ -3247,7 +3356,8 @@
     $("#beatriceModelSelect").addEventListener("change", async () => {
       try {
         if (realtimePeerConnection || realtimeStarting) await stopCodexRealtimeVoice({ quiet: true });
-        populateBeatriceVoices($("#beatriceModelSelect").value, 0);
+        const selectedModel = populateBeatriceVoices($("#beatriceModelSelect").value, 0);
+        syncBeatriceDescriptionUi(selectedModel);
         await saveSettings();
         syncBeatriceUi();
         setStatus($("#beatriceStatus"), localized("このキャラクターのBeatriceモデルを保存しました。", "Saved the Beatrice model for this character."));

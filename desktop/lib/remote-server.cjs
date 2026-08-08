@@ -7,9 +7,15 @@ const path = require("node:path");
 const SESSION_COOKIE = "charadock_remote";
 const MAX_BODY_BYTES = 64 * 1024;
 const DEFAULT_PORT = 41317;
+const TRUSTED_DEVICE_DAYS = 180;
 
 function normalizeAddress(value) {
   return String(value || "").replace(/^::ffff:/, "");
+}
+
+function isLoopbackAddress(value) {
+  const normalized = normalizeAddress(value);
+  return normalized === "127.0.0.1" || normalized === "::1";
 }
 
 function isPrivateIpv4(value, { allowLoopback = false } = {}) {
@@ -72,7 +78,7 @@ function securityHeaders(contentType = "application/json; charset=utf-8") {
     "Content-Type": contentType,
     "Cross-Origin-Opener-Policy": "same-origin",
     "Cross-Origin-Resource-Policy": "same-origin",
-    "Permissions-Policy": "camera=(), microphone=(), geolocation=(), display-capture=()",
+    "Permissions-Policy": "camera=(), microphone=(self), geolocation=(), display-capture=()",
     "Referrer-Policy": "no-referrer",
     "X-Content-Type-Options": "nosniff",
     "X-Frame-Options": "DENY",
@@ -106,6 +112,7 @@ class RemoteCompanionServer {
     port = DEFAULT_PORT,
     sessionMinutes = 60,
     callbacks = {},
+    trustedDevices = [],
     allowLoopbackForTests = false,
     now = () => Date.now(),
   } = {}) {
@@ -119,11 +126,29 @@ class RemoteCompanionServer {
     this.now = now;
     this.server = null;
     this.sessions = new Map();
+    this.trustedDevices = new Map((Array.isArray(trustedDevices) ? trustedDevices : []).flatMap((device) => {
+      const tokenHash = /^[a-f0-9]{64}$/.test(String(device?.tokenHash || "")) ? String(device.tokenHash) : "";
+      const csrf = /^[A-Za-z0-9_-]{24,128}$/.test(String(device?.csrf || "")) ? String(device.csrf) : "";
+      const id = /^[A-Za-z0-9_-]{12,64}$/.test(String(device?.id || "")) ? String(device.id) : "";
+      if (!tokenHash || !csrf || !id || Number(device?.expiresAt) <= this.now()) return [];
+      return [[tokenHash, {
+        id,
+        tokenHash,
+        csrf,
+        name: sanitizedDeviceName(device.name),
+        address: normalizeAddress(device.address),
+        pairedAt: Number(device.pairedAt) || this.now(),
+        lastSeenAt: Number(device.lastSeenAt) || Number(device.pairedAt) || this.now(),
+        expiresAt: Number(device.expiresAt),
+      }]];
+    }));
     this.eventClients = new Set();
     this.rateLimits = new Map();
     this.pairingToken = "";
+    this.pairingCode = "";
     this.pairingExpiresAt = 0;
     this.cleanupTimer = null;
+    this.lastTrustedPersistAt = 0;
     this.rotatePairingToken();
   }
 
@@ -137,13 +162,13 @@ class RemoteCompanionServer {
 
   status() {
     const connectedTokenHashes = new Set([...this.eventClients].map((client) => client.tokenHash));
-    const devices = [...this.sessions.entries()].map(([tokenHash, session]) => ({
-      id: session.id,
-      name: session.name,
-      address: session.address,
-      pairedAt: new Date(session.pairedAt).toISOString(),
-      lastSeenAt: new Date(session.lastSeenAt).toISOString(),
-      expiresAt: new Date(session.expiresAt).toISOString(),
+    const devices = [...this.trustedDevices.entries()].map(([tokenHash, device]) => ({
+      id: device.id,
+      name: device.name,
+      address: device.address,
+      pairedAt: new Date(device.pairedAt).toISOString(),
+      lastSeenAt: new Date(device.lastSeenAt).toISOString(),
+      expiresAt: new Date(device.expiresAt).toISOString(),
       connected: connectedTokenHashes.has(tokenHash),
     })).sort((left, right) => Number(right.connected) - Number(left.connected) || right.lastSeenAt.localeCompare(left.lastSeenAt));
     return {
@@ -153,7 +178,8 @@ class RemoteCompanionServer {
       url: this.origin(),
       pairingUrl: this.pairingUrl(),
       pairingExpiresAt: this.pairingExpiresAt ? new Date(this.pairingExpiresAt).toISOString() : "",
-      clients: this.sessions.size,
+      pairingCode: this.pairingCode,
+      clients: this.trustedDevices.size,
       connectedClients: this.eventClients.size,
       devices,
       sessionMinutes: this.sessionMinutes,
@@ -162,6 +188,7 @@ class RemoteCompanionServer {
 
   rotatePairingToken() {
     this.pairingToken = crypto.randomBytes(32).toString("base64url");
+    this.pairingCode = crypto.randomBytes(5).toString("hex").slice(0, 8).toUpperCase();
     this.pairingExpiresAt = this.now() + 10 * 60_000;
     this.callbacks.onStatus?.(this.status());
     return this.status();
@@ -169,24 +196,28 @@ class RemoteCompanionServer {
 
   revokeAll() {
     this.sessions.clear();
+    this.trustedDevices.clear();
     for (const client of this.eventClients) client.response.end();
     this.eventClients.clear();
     this.rotatePairingToken();
+    this.persistTrustedDevices(true);
     this.callbacks.onStatus?.(this.status());
     return this.status();
   }
 
   revokeSession(sessionId) {
     const id = String(sessionId || "");
-    const match = [...this.sessions.entries()].find(([, session]) => session.id === id);
+    const match = [...this.trustedDevices.entries()].find(([, device]) => device.id === id);
     if (!match) return false;
     const [tokenHash] = match;
     this.sessions.delete(tokenHash);
+    this.trustedDevices.delete(tokenHash);
     for (const client of [...this.eventClients]) {
       if (client.tokenHash !== tokenHash) continue;
       client.response.end();
       this.eventClients.delete(client);
     }
+    this.persistTrustedDevices(true);
     this.callbacks.onStatus?.(this.status());
     return true;
   }
@@ -202,7 +233,9 @@ class RemoteCompanionServer {
     this.server.on("clientError", (_error, socket) => socket.end("HTTP/1.1 400 Bad Request\r\n\r\n"));
     await new Promise((resolve, reject) => {
       this.server.once("error", reject);
-      this.server.listen(this.port, this.address, () => {
+      // Listen on loopback too so an optional Tailscale Serve HTTPS proxy can
+      // reach the same authenticated service without replacing LAN access.
+      this.server.listen(this.port, "0.0.0.0", () => {
         this.server.off("error", reject);
         resolve();
       });
@@ -234,6 +267,13 @@ class RemoteCompanionServer {
         changed = true;
       }
     }
+    for (const [tokenHash, device] of this.trustedDevices) {
+      if (device.expiresAt <= now) {
+        this.trustedDevices.delete(tokenHash);
+        this.sessions.delete(tokenHash);
+        changed = true;
+      }
+    }
     for (const client of this.eventClients) {
       if (!this.sessions.has(client.tokenHash)) {
         client.response.end();
@@ -243,7 +283,17 @@ class RemoteCompanionServer {
         client.response.write(": keepalive\n\n");
       }
     }
-    if (changed) this.callbacks.onStatus?.(this.status());
+    if (changed) {
+      this.persistTrustedDevices(true);
+      this.callbacks.onStatus?.(this.status());
+    }
+  }
+
+  persistTrustedDevices(force = false) {
+    const now = this.now();
+    if (!force && now - this.lastTrustedPersistAt < 30_000) return;
+    this.lastTrustedPersistAt = now;
+    this.callbacks.onTrustedDevices?.([...this.trustedDevices.values()].map((device) => ({ ...device })));
   }
 
   publish(type, payload) {
@@ -272,11 +322,24 @@ class RemoteCompanionServer {
   }
 
   requestOrigin(request) {
-    return this.origin();
+    if (!this.isTrustedTailscaleRequest(request)) return this.origin();
+    const suppliedOrigin = String(request.headers.origin || "");
+    if (/^https:\/\/[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?\.ts\.net(?::\d+)?$/i.test(suppliedOrigin)) return suppliedOrigin;
+    const forwardedHost = String(request.headers["x-forwarded-host"] || request.headers.host || "");
+    return `https://${forwardedHost}`;
+  }
+
+  isTrustedTailscaleRequest(request) {
+    const host = String(request.headers.host || "");
+    const forwardedHost = String(request.headers["x-forwarded-host"] || "");
+    const expectedHost = /^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?\.ts\.net(?::\d+)?$/i;
+    return isLoopbackAddress(this.clientAddress(request))
+      && Boolean(String(request.headers["tailscale-user-login"] || "").trim())
+      && (expectedHost.test(host) || expectedHost.test(forwardedHost) || /^(?:127\.0\.0\.1|localhost)(?::\d+)?$/i.test(host));
   }
 
   validateHost(request) {
-    if (String(request.headers.host || "") !== new URL(this.origin()).host) {
+    if (String(request.headers.host || "") !== new URL(this.origin()).host && !this.isTrustedTailscaleRequest(request)) {
       throw Object.assign(new Error("Invalid host."), { statusCode: 400 });
     }
   }
@@ -284,15 +347,32 @@ class RemoteCompanionServer {
   authenticate(request, { csrf = false } = {}) {
     const rawToken = parseCookies(request.headers.cookie)[SESSION_COOKIE] || "";
     const tokenHash = crypto.createHash("sha256").update(rawToken).digest("hex");
-    const session = this.sessions.get(tokenHash);
-    if (!session || session.expiresAt <= this.now() || session.address !== this.clientAddress(request)) {
-      if (session) this.sessions.delete(tokenHash);
+    let session = this.sessions.get(tokenHash);
+    const trusted = this.trustedDevices.get(tokenHash);
+    const now = this.now();
+    if (!trusted || trusted.expiresAt <= now) {
+      if (trusted) {
+        this.trustedDevices.delete(tokenHash);
+        this.persistTrustedDevices(true);
+      }
+      this.sessions.delete(tokenHash);
       throw Object.assign(new Error("Pair this device again."), { statusCode: 401 });
+    }
+    if (!session || session.expiresAt <= now || session.address !== this.clientAddress(request)) {
+      session = {
+        ...trusted,
+        address: this.clientAddress(request),
+        expiresAt: now + this.sessionMinutes * 60_000,
+      };
+      this.sessions.set(tokenHash, session);
     }
     if (csrf && (!sameOrigin(request, this.requestOrigin(request)) || !constantTimeEqual(request.headers["x-charadock-csrf"], session.csrf))) {
       throw Object.assign(new Error("Invalid request token."), { statusCode: 403 });
     }
-    session.lastSeenAt = this.now();
+    session.lastSeenAt = now;
+    trusted.lastSeenAt = now;
+    trusted.address = session.address;
+    this.persistTrustedDevices();
     return { session, tokenHash };
   }
 
@@ -323,26 +403,37 @@ class RemoteCompanionServer {
     this.enforceRateLimit(request, "pair", 8);
     if (!sameOrigin(request, this.requestOrigin(request))) throw Object.assign(new Error("Invalid origin."), { statusCode: 403 });
     const body = await jsonBody(request);
-    if (this.pairingExpiresAt <= this.now() || !constantTimeEqual(body.token, this.pairingToken)) {
+    const submittedToken = String(body.token || "").trim();
+    const validToken = constantTimeEqual(submittedToken, this.pairingToken)
+      || constantTimeEqual(submittedToken.toUpperCase().replace(/[^A-Z0-9]/g, ""), this.pairingCode);
+    if (this.pairingExpiresAt <= this.now() || !validToken) {
       throw Object.assign(new Error("The pairing code has expired."), { statusCode: 401 });
     }
     const sessionToken = crypto.randomBytes(32).toString("base64url");
     const tokenHash = crypto.createHash("sha256").update(sessionToken).digest("hex");
-    const session = {
+    const trustedDevice = {
       id: crypto.randomBytes(12).toString("base64url"),
+      tokenHash,
       name: sanitizedDeviceName(body.deviceName, request.headers["user-agent"]),
       address: this.clientAddress(request),
       csrf: crypto.randomBytes(24).toString("base64url"),
       pairedAt: this.now(),
       lastSeenAt: this.now(),
-      expiresAt: this.now() + this.sessionMinutes * 60_000,
+      expiresAt: this.now() + TRUSTED_DEVICE_DAYS * 24 * 60 * 60_000,
     };
-    while (this.sessions.size >= 8) this.sessions.delete(this.sessions.keys().next().value);
+    while (this.trustedDevices.size >= 8) {
+      const oldest = this.trustedDevices.keys().next().value;
+      this.trustedDevices.delete(oldest);
+      this.sessions.delete(oldest);
+    }
+    const session = { ...trustedDevice, expiresAt: this.now() + this.sessionMinutes * 60_000 };
+    this.trustedDevices.set(tokenHash, trustedDevice);
     this.sessions.set(tokenHash, session);
+    this.persistTrustedDevices(true);
     this.rotatePairingToken();
     this.callbacks.onStatus?.(this.status());
     this.sendJson(response, 200, { csrfToken: session.csrf, state: await this.callbacks.getState?.() }, {
-      "Set-Cookie": `${SESSION_COOKIE}=${encodeURIComponent(sessionToken)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${this.sessionMinutes * 60}`,
+      "Set-Cookie": `${SESSION_COOKIE}=${encodeURIComponent(sessionToken)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${TRUSTED_DEVICE_DAYS * 24 * 60 * 60}${this.isTrustedTailscaleRequest(request) ? "; Secure" : ""}`,
     });
   }
 
@@ -353,7 +444,7 @@ class RemoteCompanionServer {
     if (request.method === "GET" && url.pathname === "/") return this.sendStatic(response, "index.html", "text/html; charset=utf-8");
     if (request.method === "GET" && url.pathname === "/remote.css") return this.sendStatic(response, "remote.css", "text/css; charset=utf-8");
     if (request.method === "GET" && url.pathname === "/remote.js") return this.sendStatic(response, "remote.js", "text/javascript; charset=utf-8");
-    if (request.method === "GET" && /^\/icons\/(?:voice|history|send|stop|settings)\.svg$/.test(url.pathname)) {
+    if (request.method === "GET" && /^\/icons\/(?:voice|history|send|stop|settings|microphone)\.svg$/.test(url.pathname)) {
       const body = fs.readFileSync(path.resolve(this.rootDir, "..", "..", "assets", "ui", url.pathname.slice(1)));
       response.writeHead(200, { ...securityHeaders("image/svg+xml"), "Content-Security-Policy": "default-src 'none'" });
       response.end(body);
@@ -414,19 +505,27 @@ class RemoteCompanionServer {
       return;
     }
 
-    if (request.method === "POST" && ["/api/message", "/api/interrupt", "/api/settings", "/api/tts", "/api/tts/next", "/api/tts/cancel", "/api/disconnect"].includes(url.pathname)) {
+    if (request.method === "POST" && ["/api/message", "/api/pet", "/api/interrupt", "/api/settings", "/api/live/start", "/api/live/stop", "/api/tts", "/api/tts/next", "/api/tts/cancel", "/api/disconnect"].includes(url.pathname)) {
       const { tokenHash } = this.authenticate(request, { csrf: true });
       const body = await jsonBody(request);
       if (url.pathname === "/api/message") {
         const result = await this.callbacks.sendMessage?.({ message: body.message, mode: body.mode });
         return this.sendJson(response, 200, { ok: true, result });
       }
+      if (url.pathname === "/api/pet") {
+        this.enforceRateLimit(request, "pet", 30);
+        return this.sendJson(response, 200, await this.callbacks.pet?.({ zone: body.zone === "head" ? "head" : "body" }));
+      }
       if (url.pathname === "/api/interrupt") return this.sendJson(response, 200, await this.callbacks.interrupt?.());
       if (url.pathname === "/api/settings") return this.sendJson(response, 200, { state: await this.callbacks.setSettings?.(body) });
+      if (url.pathname === "/api/live/start") return this.sendJson(response, 200, await this.callbacks.startLive?.(body));
+      if (url.pathname === "/api/live/stop") return this.sendJson(response, 200, await this.callbacks.stopLive?.());
       if (url.pathname === "/api/tts") return this.sendJson(response, 200, await this.callbacks.synthesizeTts?.(body.text));
       if (url.pathname === "/api/tts/next") return this.sendJson(response, 200, await this.callbacks.nextTtsChunk?.(body.streamId));
       if (url.pathname === "/api/tts/cancel") return this.sendJson(response, 200, await this.callbacks.cancelTts?.(body.streamId));
       this.sessions.delete(tokenHash);
+      this.trustedDevices.delete(tokenHash);
+      this.persistTrustedDevices(true);
       this.callbacks.onStatus?.(this.status());
       return this.sendJson(response, 200, { ok: true }, { "Set-Cookie": `${SESSION_COOKIE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0` });
     }

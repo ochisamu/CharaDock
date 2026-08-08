@@ -23,18 +23,38 @@ test("Beatrice installation discovery finds a VST3 bundle, model TOML, and voice
   const model = path.join(root, "models", "beatrice_voice.toml");
   fs.mkdirSync(vst);
   fs.mkdirSync(path.dirname(model));
-  fs.writeFileSync(model, '[model]\nname = "Test"\n[voice.0]\nname = "Alice"\n[voice.12]\nname = "Bob"\n');
+  fs.writeFileSync(model, `[model]
+name = "Test"
+description = """
+Test model description.
+https://example.com/model
+"""
+[voice.0]
+name = "Alice"
+description = "Single-line voice description"
+[voice.12]
+name = "Bob"
+description = """
+Bob's voice terms.
+https://example.com/voice
+"""
+`);
   const found = findBeatriceInstallation(root);
   assert.equal(found.vstPath, vst);
   assert.equal(found.modelPath, model);
-  assert.deepEqual(found.voices, [{ id: 0, name: "Alice" }, { id: 12, name: "Bob" }]);
+  assert.deepEqual(found.voices, [
+    { id: 0, name: "Alice", description: "Single-line voice description" },
+    { id: 12, name: "Bob", description: "Bob's voice terms.\nhttps://example.com/voice" },
+  ]);
   assert.equal(found.models[0].name, "Test");
   assert.equal(describeBeatriceModel(model).name, "Test");
+  assert.equal(describeBeatriceModel(model).description, "Test model description.\nhttps://example.com/model");
   assert.deepEqual(findBeatriceModels(path.dirname(model)).map((item) => item.id), [found.models[0].id]);
   assert.deepEqual(parseBeatriceVoices(model), found.voices);
   const status = beatriceStatus({ hostPath: __filename, vstPath: vst, modelPath: model, voiceId: 12 });
   assert.equal(status.ready, true);
   assert.equal(status.selectedVoice.name, "Bob");
+  assert.equal(status.selectedVoice.description, "Bob's voice terms.\nhttps://example.com/voice");
 });
 
 test("Beatrice settings are bounded and packaged helper path is deterministic", () => {

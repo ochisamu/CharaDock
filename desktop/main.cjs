@@ -94,6 +94,7 @@ const {
 } = require("./lib/beatrice-v2.cjs");
 const { MascotStaticServer } = require("./lib/static-server.cjs");
 const { RemoteCompanionServer, isPrivateIpv4 } = require("./lib/remote-server.cjs");
+const { TailscaleServeManager } = require("./lib/tailscale-serve.cjs");
 const { splitTtsText, styleBertVoiceEndpoint, synthesizeStyleBertVits2 } = require("./lib/style-bert-vits2.cjs");
 const {
   piperPlusStatus,
@@ -223,6 +224,8 @@ let remoteQrPairingUrl = "";
 let remoteLastError = "";
 let remoteBusy = false;
 let remoteLastDisplayText = "";
+let tailscaleServeManager = new TailscaleServeManager();
+let remoteTailscaleStatus = { installed: null, active: false, managed: false, url: "", output: "", error: "" };
 const REMOTE_TTS_OWNER_ID = "charadock-link";
 let codexClient;
 let workCodexClient;
@@ -282,6 +285,7 @@ let generationInProgress = false;
 let nextWorkRunId = 1;
 let activeWorkRunId = null;
 let activeRealtimeClient = null;
+let activeRealtimeTarget = "";
 let activeRealtimeTurnBuffer = null;
 let activeRealtimeInjectedSpeech = [];
 let activeRealtimeWorkDispatcher = null;
@@ -579,6 +583,7 @@ function characterTtsSettings(characterId = preferences.data.characterId) {
   return {
     provider: TTS_PROVIDERS.has(stored.provider) ? stored.provider
       : TTS_PROVIDERS.has(preferences.data.ttsProvider) ? preferences.data.ttsProvider : "system",
+    styleBertVits2ModelId: Math.min(9999, Math.max(0, Math.round(Number(stored.styleBertVits2ModelId ?? preferences.data.styleBertVits2ModelId) || 0))),
     realtimeVoice: normalizeRealtimeVoice(stored.realtimeVoice, normalizeRealtimeVoice(preferences.data.realtimeVoice)),
     realtimeVoiceConversion: normalizeBeatriceMode(stored.realtimeVoiceConversion),
     beatriceModelId: String(stored.beatriceModelId || "").slice(0, 100),
@@ -642,10 +647,10 @@ function publicBeatriceStatus(characterId = preferences.data.characterId) {
     try {
       const model = describeBeatriceModel(record.modelPath);
       return model
-        ? [{ id: record.id, name: record.name || model.name, version: record.version || model.version, ready: true, voices: model.voices }]
-        : [{ id: record.id, name: record.name || "Beatrice model", version: record.version || "", ready: false, voices: [] }];
+        ? [{ id: record.id, name: record.name || model.name, version: record.version || model.version, description: model.description, ready: true, voices: model.voices }]
+        : [{ id: record.id, name: record.name || "Beatrice model", version: record.version || "", description: "", ready: false, voices: [] }];
     } catch {
-      return [{ id: record.id, name: record.name || "Beatrice model", version: record.version || "", ready: false, voices: [] }];
+      return [{ id: record.id, name: record.name || "Beatrice model", version: record.version || "", description: "", ready: false, voices: [] }];
     }
   });
   const selectedModel = models.find((model) => model.id === settings.beatriceModelId) || models[0] || null;
@@ -1063,13 +1068,21 @@ function remoteServerStatus() {
   const status = remoteServer?.status() || {
     active: false,
     address: "",
-    port: 41317,
+    port: Number(preferences?.data?.remotePort) || 41317,
     url: "",
     pairingUrl: "",
     pairingExpiresAt: "",
-    clients: 0,
+    clients: preferences?.data?.remoteTrustedDevices?.length || 0,
     connectedClients: 0,
-    devices: [],
+    devices: (preferences?.data?.remoteTrustedDevices || []).map((device) => ({
+      id: device.id,
+      name: device.name,
+      address: device.address,
+      pairedAt: new Date(device.pairedAt).toISOString(),
+      lastSeenAt: new Date(device.lastSeenAt).toISOString(),
+      expiresAt: new Date(device.expiresAt).toISOString(),
+      connected: false,
+    })),
     sessionMinutes: Number(preferences?.data?.remoteSessionMinutes) || 60,
   };
   return {
@@ -1084,7 +1097,44 @@ function remoteServerStatus() {
     qrDataUrl: status.active ? remoteQrDataUrl : "",
     error: remoteLastError,
     experimental: true,
+    tailscale: {
+      ...remoteTailscaleStatus,
+      managed: Boolean(preferences?.data?.remoteTailscaleManaged),
+      httpsPort: Number(preferences?.data?.remoteTailscaleHttpsPort) || 443,
+      command: `tailscale serve --bg --https=${Number(preferences?.data?.remoteTailscaleHttpsPort) || 443} ${status.port}`,
+    },
   };
+}
+
+async function refreshRemoteTailscaleStatus({ broadcast = true } = {}) {
+  const status = await tailscaleServeManager.status();
+  remoteTailscaleStatus = {
+    ...status,
+    managed: Boolean(preferences.data.remoteTailscaleManaged && status.active),
+  };
+  if (preferences.data.remoteTailscaleManaged && !status.active) preferences.patch({ remoteTailscaleManaged: false });
+  return broadcast ? broadcastAppState() : remoteServerStatus();
+}
+
+async function startRemoteTailscale() {
+  if (!remoteServer?.status().active) throw new Error(mainText("先にリモート接続を有効にしてください。", "Enable remote access first."));
+  const result = await tailscaleServeManager.start({
+    localPort: remoteServer.status().port,
+    httpsPort: preferences.data.remoteTailscaleHttpsPort,
+  });
+  preferences.patch({ remoteTailscaleManaged: result.managed === true });
+  remoteTailscaleStatus = { ...result, managed: result.managed === true, error: "" };
+  return broadcastAppState();
+}
+
+async function stopRemoteTailscale() {
+  if (!preferences.data.remoteTailscaleManaged) {
+    throw new Error(mainText("CharaDockが開始したTailscale Serveではないため、既存設定を変更しません。", "This Tailscale Serve route was not started by CharaDock, so it will not be modified."));
+  }
+  const result = await tailscaleServeManager.stop({ httpsPort: preferences.data.remoteTailscaleHttpsPort });
+  preferences.patch({ remoteTailscaleManaged: false });
+  remoteTailscaleStatus = { ...result, managed: false, error: "" };
+  return broadcastAppState();
 }
 
 function remoteTtsProviderOptions(characterId = preferences.data.characterId) {
@@ -1095,7 +1145,18 @@ function remoteTtsProviderOptions(characterId = preferences.data.characterId) {
       if (provider === "style-bert-vits2") return { available: provider === selected, phone: true };
       if (provider === "piper-plus") return { available: piperPlusStatus({ executablePath: preferences.data.piperPlusExecutablePath, modelPath: preferences.data.piperPlusModelPath }).ready, phone: true };
       if (provider === "supertonic-3") return { available: supertonicStatus(preferences.data.supertonicModelDirectory).ready, phone: true };
-      if (provider === "irodori-webgpu") return { available: activeIrodoriStatus().ready, phone: true };
+      if (provider === "irodori-webgpu") {
+        const settings = characterTtsSettings(characterId);
+        const voice = activeIrodoriVoice(characterId);
+        const referencePath = voice ? irodoriVoiceLibrary.voicePath(voice) : "";
+        const candidates = [
+          [preferences.data.irodoriModelDirectory, "500m-v3"],
+          [preferences.data.irodoriV4ModelDirectory, "v4-small"],
+          [preferences.data.irodoriV4Int4ModelDirectory, "v4-small"],
+        ];
+        const available = candidates.some(([directory, version]) => irodoriModelStatus(directory, referencePath, irodoriWebGpuAvailable, { version, mode: settings.irodoriMode }).ready);
+        return { available, phone: true };
+      }
       if (provider === "kokoro") return { available: kokoroModelStatus(preferences.data.kokoroModelDirectory, kokoroWebGpuAvailable).ready, phone: true };
       if (provider === "sbv2-jp-extra") {
         const model = sbv2ModelLibrary?.selectedModel(preferences.data.sbv2Models, characterTtsSettings(characterId).sbv2ModelId);
@@ -1114,6 +1175,94 @@ function remoteTtsProviderOptions(characterId = preferences.data.characterId) {
     "sbv2-jp-extra": "SBV2 JP-Extra",
   };
   return [...TTS_PROVIDERS].map((provider) => ({ id: provider, name: names[provider] || provider, ...status(provider) }));
+}
+
+function remoteTtsModelSettings(characterId = preferences.data.characterId) {
+  const settings = characterTtsSettings(characterId);
+  const selectField = (key, label, value, options) => ({ key, label, type: "select", value: String(value ?? ""), options });
+  const option = (value, label, available = true) => ({ value: String(value), label: String(label), available: Boolean(available) });
+  if (settings.provider === "style-bert-vits2") {
+    return {
+      provider: settings.provider,
+      hint: mainText("Style-Bert-VITS2 APIで読み込まれているモデルIDを指定します。", "Enter the model ID loaded by the Style-Bert-VITS2 API."),
+      fields: [{
+        key: "styleBertVits2ModelId",
+        label: mainText("モデルID", "Model ID"),
+        type: "number",
+        value: settings.styleBertVits2ModelId,
+        min: 0,
+        max: 9999,
+        step: 1,
+      }],
+    };
+  }
+  if (settings.provider === "piper-plus") {
+    const status = piperPlusStatus({ executablePath: preferences.data.piperPlusExecutablePath, modelPath: preferences.data.piperPlusModelPath });
+    return {
+      provider: settings.provider,
+      hint: mainText("Piper Plusモデルの追加・変更はPC版の設定から行えます。", "Add or change Piper Plus models in the desktop settings."),
+      fields: [{ key: "piperPlusModel", label: mainText("使用中のモデル", "Active model"), type: "display", value: status.modelName || mainText("未選択", "Not selected") }],
+    };
+  }
+  if (settings.provider === "supertonic-3") {
+    const voices = ["F1", "F2", "F3", "F4", "F5", "M1", "M2", "M3", "M4", "M5"];
+    return {
+      provider: settings.provider,
+      hint: mainText("このキャラクターに使うSupertonic 3の声を選びます。", "Choose the Supertonic 3 voice used by this character."),
+      fields: [selectField("supertonicVoice", mainText("音声モデル", "Voice model"), settings.supertonicVoice, voices.map((voice) => option(voice, `${voice} · ${voice.startsWith("F") ? mainText("女性系", "Feminine") : mainText("男性系", "Masculine")}`)))],
+    };
+  }
+  if (settings.provider === "kokoro") {
+    return {
+      provider: settings.provider,
+      hint: mainText("このキャラクターに使うKokoroの日本語音声を選びます。", "Choose the Japanese Kokoro voice used by this character."),
+      fields: [selectField("kokoroVoice", mainText("音声モデル", "Voice model"), settings.kokoroVoice, KOKORO_VOICES.map((voice) => option(
+        voice.id,
+        `${voice.label.replace(/（.*$/, "")} · ${voice.id.startsWith("jf_") ? mainText("女性系", "Feminine") : mainText("男性系", "Masculine")}`,
+      )))],
+    };
+  }
+  if (settings.provider === "irodori-webgpu") {
+    const voice = activeIrodoriVoice(characterId);
+    const referencePath = voice ? irodoriVoiceLibrary.voicePath(voice) : "";
+    const variants = [
+      { value: "500m-v3:fp16", label: "500M-v3 · FP16", version: "500m-v3", precision: "fp16", directory: preferences.data.irodoriModelDirectory },
+      { value: "v4-small:fp16", label: "v4 Small · FP16", version: "v4-small", precision: "fp16", directory: preferences.data.irodoriV4ModelDirectory },
+      { value: "v4-small:int4", label: "v4 Small · INT4", version: "v4-small", precision: "int4", directory: preferences.data.irodoriV4Int4ModelDirectory },
+    ].map((variant) => ({
+      ...variant,
+      available: irodoriModelStatus(variant.directory, referencePath, irodoriWebGpuAvailable, { version: variant.version, mode: settings.irodoriMode }).modelReady,
+    }));
+    const selectedVariant = settings.irodoriVersion === "500m-v3" ? "500m-v3:fp16" : `v4-small:${settings.irodoriPrecision}`;
+    const voices = irodoriVoiceLibrary.publicVoices(preferences.data.irodoriVoices, settings.irodoriVoiceId);
+    return {
+      provider: settings.provider,
+      hint: mainText("未導入のモデルはPC版でダウンロードすると選べるようになります。参照音声もキャラクターごとに保存されます。", "Download unavailable models on the desktop first. Reference voices are also saved per character."),
+      fields: [
+        selectField("irodoriModelVariant", mainText("モデル", "Model"), selectedVariant, variants.map((variant) => option(variant.value, `${variant.label}${variant.available ? "" : mainText(" · 未導入", " · Not installed")}`, variant.available))),
+        selectField("irodoriVoiceId", mainText("参照音声", "Reference voice"), settings.irodoriVoiceId, voices.map((item) => option(item.id, `${item.name}${item.ready ? "" : mainText(" · ファイルなし", " · Missing file")}`, item.ready))),
+      ],
+    };
+  }
+  if (settings.provider === "sbv2-jp-extra") {
+    const models = sbv2ModelLibrary?.publicModels(preferences.data.sbv2Models, settings.sbv2ModelId) || [];
+    const model = sbv2ModelLibrary?.selectedModel(preferences.data.sbv2Models, settings.sbv2ModelId) || null;
+    const selection = validSbv2VoiceSelection(model, settings.sbv2SpeakerId, settings.sbv2StyleId);
+    const voices = (model?.speakers || []).flatMap((speaker) => (speaker.styles || []).map((style) => option(`${speaker.localId}:${style.localId}`, `${speaker.name} · ${style.name}`)));
+    return {
+      provider: settings.provider,
+      hint: mainText("AIVMXモデルの追加・削除はPC版で行い、ここではキャラクターに使うモデルと話者を選びます。", "Manage AIVMX files on the desktop, then choose the model and speaker used by this character here."),
+      fields: [
+        selectField("sbv2ModelId", mainText("音声モデル", "Voice model"), model?.id || "", models.map((item) => option(item.id, `${item.name}${item.ready ? "" : mainText(" · ファイルなし", " · Missing file")}`, item.ready))),
+        selectField("sbv2Voice", mainText("話者・スタイル", "Speaker and style"), `${selection.speakerId}:${selection.styleId}`, voices),
+      ],
+    };
+  }
+  return {
+    provider: settings.provider,
+    hint: mainText("この音声方式にはスマートフォンで変更できるモデルがありません。", "This voice method has no model that can be changed from the phone."),
+    fields: [],
+  };
 }
 
 async function refreshRemotePairingQr() {
@@ -1188,18 +1337,20 @@ function publicRemoteState() {
     interactionMode: preferences.data.interactionMode === "work" ? "work" : "chat",
     workAllowed: Boolean(preferences.data.remoteWorkEnabled && preferences.data.backend === "codex" && workDirectory),
     workDirectoryName: workDirectory ? path.basename(workDirectory) : "",
-    mobileTtsAllowed: Boolean(preferences.data.remoteResponseMode !== "live" && preferences.data.remoteTtsEnabled && preferences.data.ttsEnabled && generatedTts),
+    mobileTtsAllowed: Boolean(preferences.data.remoteTtsEnabled && preferences.data.ttsEnabled && generatedTts),
     voice: {
       responseMode: preferences.data.remoteResponseMode === "live" ? "live" : "tts",
       pcAudioEnabled: preferences.data.remotePcAudioEnabled !== false,
       ttsProvider: characterTts.provider,
       ttsProviderOptions: remoteTtsProviderOptions(),
+      ttsModelSettings: remoteTtsModelSettings(),
       realtimeVoice: characterTts.realtimeVoice,
       realtimeVoices: [...REALTIME_VOICES],
       realtimeConversion: characterTts.realtimeVoiceConversion,
       liveConnected: Boolean(currentRealtimeClient()),
+      liveOwner: currentRealtimeClient() ? activeRealtimeTarget || "pc" : "",
       liveSupported: preferences.data.backend === "codex",
-      liveAudioTarget: "pc",
+      liveAudioTarget: activeRealtimeTarget === "remote" ? "phone" : "pc",
     },
     busy: remoteBusy,
     lastDisplayText: remotePublicText(remoteLastDisplayText || activeRun?.activities?.at(-1) || activeRun?.result || lastAssistant || mainText("スマートフォンから話しかけられるよ。", "You can talk to me from your phone.")),
@@ -1248,7 +1399,8 @@ async function sendRemoteMessage(payload = {}) {
   }
   const liveMode = preferences.data.remoteResponseMode === "live";
   if (liveMode) {
-    if (!currentRealtimeClient()) throw new Error(mainText("PC側でLiveを開始してください。接続後はスマートフォンの文字入力をGPT-Liveへ送れます。", "Start Live on the PC first. Once connected, phone text can be sent to GPT-Live."));
+    if (!currentRealtimeClient()) throw new Error(mainText("先にスマートフォンのマイクボタンからLiveを開始してください。", "Start Live with the microphone button on this phone first."));
+    if (activeRealtimeTarget !== "remote") throw new Error(mainText("PC側のLiveが使用中です。PCで停止してからスマートフォンのLiveを開始してください。", "Live is currently owned by the PC. Stop it there before starting Live on this phone."));
     if (mode !== preferences.data.interactionMode) throw new Error(mainText("Live接続中はPCと同じChat / Workを選んでください。", "While Live is connected, choose the same Chat / Work mode as the PC."));
     remoteBusy = true;
     remoteLastDisplayText = mainText("Liveへ送信したよ。", "Sent to Live.");
@@ -1276,6 +1428,106 @@ async function sendRemoteMessage(payload = {}) {
   }
 }
 
+async function startRemoteRealtime(payload = {}) {
+  if (preferences.data.remoteResponseMode !== "live") {
+    throw new Error(mainText("応答音声をGPT-Liveへ変更してください。", "Change the response voice to GPT-Live first."));
+  }
+  const mode = payload.mode === "work" ? "work" : "chat";
+  if (mode === "work" && !(preferences.data.remoteWorkEnabled && preferences.data.backend === "codex" && validWorkDirectory())) {
+    throw new Error(mainText("スマートフォンからのWorkが許可されていないか、作業先がありません。", "Phone Work is not allowed or no work folder is selected."));
+  }
+  if (currentRealtimeClient()) {
+    throw new Error(activeRealtimeTarget === "remote"
+      ? mainText("このスマートフォンのLiveを一度停止してから接続し直してください。", "Stop this phone's current Live session before reconnecting.")
+      : mainText("PC側のLiveが使用中です。PCで停止してから開始してください。", "Live is currently owned by the PC. Stop it there first."));
+  }
+  if (mode !== preferences.data.interactionMode) await setInteractionMode(mode);
+  remoteBusy = true;
+  remoteLastDisplayText = mainText("Liveへ接続中…", "Connecting to Live…");
+  publishRemoteState();
+  try {
+    const result = await startCodexRealtimeVoice({ sdp: payload.sdp }, "remote");
+    return { accepted: true, ...result };
+  } catch (error) {
+    remoteBusy = false;
+    publishRemoteState();
+    throw error;
+  }
+}
+
+async function stopRemoteRealtime() {
+  if (!currentRealtimeClient()) return { stopped: false };
+  if (activeRealtimeTarget !== "remote") throw new Error(mainText("PC側で開始したLiveはPCから停止してください。", "Stop a PC-owned Live session from the PC."));
+  return { stopped: await stopActiveRealtime() };
+}
+
+function applyRemoteTtsModelSetting(setting = {}) {
+  if (!setting || typeof setting !== "object" || Array.isArray(setting)) return false;
+  const key = String(setting.key || "");
+  const value = String(setting.value ?? "");
+  const current = characterTtsSettings();
+  let profilePatch = null;
+  let preferencePatch = {};
+  if (key === "styleBertVits2ModelId" && current.provider === "style-bert-vits2") {
+    const modelId = Math.min(9999, Math.max(0, Math.round(Number(value) || 0)));
+    profilePatch = { styleBertVits2ModelId: modelId };
+    preferencePatch = { styleBertVits2ModelId: modelId };
+  } else if (key === "supertonicVoice" && current.provider === "supertonic-3") {
+    if (!/^[FM][1-5]$/.test(value)) throw new Error(mainText("Supertonic 3の声が正しくありません。", "The Supertonic 3 voice is invalid."));
+    profilePatch = { supertonicVoice: value };
+    preferencePatch = { supertonicVoice: value };
+  } else if (key === "kokoroVoice" && current.provider === "kokoro") {
+    if (!KOKORO_VOICES.some((voice) => voice.id === value)) throw new Error(mainText("Kokoroの声が正しくありません。", "The Kokoro voice is invalid."));
+    profilePatch = { kokoroVoice: value };
+    preferencePatch = { kokoroVoice: value };
+  } else if (key === "irodoriModelVariant" && current.provider === "irodori-webgpu") {
+    const [version, requestedPrecision] = value.split(":");
+    const precision = version === "500m-v3" ? "fp16" : requestedPrecision;
+    if (![["500m-v3", "fp16"], ["v4-small", "fp16"], ["v4-small", "int4"]].some(([allowedVersion, allowedPrecision]) => version === allowedVersion && precision === allowedPrecision)) {
+      throw new Error(mainText("Irodoriのモデル指定が正しくありません。", "The Irodori model selection is invalid."));
+    }
+    const directory = version === "500m-v3"
+      ? preferences.data.irodoriModelDirectory
+      : precision === "int4" ? preferences.data.irodoriV4Int4ModelDirectory : preferences.data.irodoriV4ModelDirectory;
+    const voice = activeIrodoriVoice();
+    const referencePath = voice ? irodoriVoiceLibrary.voicePath(voice) : "";
+    const status = irodoriModelStatus(directory, referencePath, irodoriWebGpuAvailable, { version, mode: current.irodoriMode });
+    if (!status.modelReady) throw new Error(mainText("このIrodoriモデルはPC側に導入されていません。", "This Irodori model is not installed on the PC."));
+    profilePatch = { irodoriVersion: version, irodoriPrecision: precision };
+    preferencePatch = { irodoriVersion: version, irodoriPrecision: precision };
+  } else if (key === "irodoriVoiceId" && current.provider === "irodori-webgpu") {
+    const voice = preferences.data.irodoriVoices.find((item) => item.id === value);
+    if (!voice || !irodoriVoiceLibrary.isReady(voice)) throw new Error(mainText("このIrodori参照音声は利用できません。", "This Irodori reference voice is unavailable."));
+    profilePatch = { irodoriVoiceId: voice.id };
+    preferencePatch = { irodoriVoiceId: voice.id };
+  } else if (key === "sbv2ModelId" && current.provider === "sbv2-jp-extra") {
+    const model = preferences.data.sbv2Models.find((item) => item.id === value);
+    if (!model || !sbv2ModelLibrary?.isReady(model)) throw new Error(mainText("このJP-Extraモデルは利用できません。", "This JP-Extra model is unavailable."));
+    const selection = validSbv2VoiceSelection(model, current.sbv2SpeakerId, current.sbv2StyleId);
+    profilePatch = { sbv2ModelId: model.id, sbv2SpeakerId: selection.speakerId, sbv2StyleId: selection.styleId };
+    preferencePatch = { sbv2ModelId: model.id, sbv2SpeakerId: selection.speakerId, sbv2StyleId: selection.styleId };
+  } else if (key === "sbv2Voice" && current.provider === "sbv2-jp-extra") {
+    const model = activeSbv2Model();
+    const [speakerText, styleText] = value.split(":");
+    const speakerId = Number(speakerText);
+    const styleId = Number(styleText);
+    const speaker = model?.speakers?.find((item) => item.localId === speakerId);
+    const style = speaker?.styles?.find((item) => item.localId === styleId);
+    if (!model || !speaker || !style) throw new Error(mainText("話者・スタイルが正しくありません。", "The speaker or style is invalid."));
+    profilePatch = { sbv2ModelId: model.id, sbv2SpeakerId: speakerId, sbv2StyleId: styleId };
+    preferencePatch = { sbv2ModelId: model.id, sbv2SpeakerId: speakerId, sbv2StyleId: styleId };
+  } else {
+    throw new Error(mainText("この音声モデル設定は変更できません。", "This voice model setting cannot be changed."));
+  }
+  preferences.patch({
+    ...preferencePatch,
+    characterTtsProfiles: updatedCharacterTtsProfiles(preferences.data.characterId, profilePatch),
+  });
+  if (current.provider === "irodori-webgpu") scheduleIrodoriPrewarm();
+  mascotWindow?.webContents.send("mascot:tts", { enabled: preferences.data.ttsEnabled, provider: characterTtsSettings().provider });
+  return true;
+}
+
 async function applyRemoteClientSettings(patch = {}) {
   if (remoteBusy || activeWorkRunId) throw new Error(mainText("応答またはWorkの完了後に設定を変更してください。", "Change settings after the current response or Work finishes."));
   const requestedCharacterId = String(patch.characterId || preferences.data.characterId);
@@ -1286,6 +1538,10 @@ async function applyRemoteClientSettings(patch = {}) {
   }
   const responseMode = patch.responseMode === "live" ? "live" : patch.responseMode === "tts" ? "tts" : preferences.data.remoteResponseMode;
   if (responseMode === "live" && preferences.data.backend !== "codex") throw new Error(mainText("GPT-LiveはCodex app-server接続時に利用できます。", "GPT-Live requires a Codex app-server connection."));
+  if (responseMode !== preferences.data.remoteResponseMode && currentRealtimeClient()) {
+    if (activeRealtimeTarget !== "remote") throw new Error(mainText("応答音声を変える前にPC側のLiveを停止してください。", "Stop Live on the PC before changing the response voice."));
+    await stopActiveRealtime();
+  }
   const requestedProvider = String(patch.ttsProvider || characterTtsSettings().provider);
   if (requestedProvider !== characterTtsSettings().provider) {
     const option = remoteTtsProviderOptions().find((item) => item.id === requestedProvider);
@@ -1297,6 +1553,7 @@ async function applyRemoteClientSettings(patch = {}) {
     mascotWindow?.webContents.send("mascot:tts", { enabled: preferences.data.ttsEnabled, provider: requestedProvider });
     scheduleIrodoriPrewarm();
   }
+  if (patch.ttsModel !== undefined) applyRemoteTtsModelSetting(patch.ttsModel);
   const previousVoice = characterTtsSettings().realtimeVoice;
   const realtimeVoice = normalizeRealtimeVoice(patch.realtimeVoice, previousVoice);
   if (realtimeVoice !== previousVoice && currentRealtimeClient()) {
@@ -1313,12 +1570,13 @@ async function applyRemoteClientSettings(patch = {}) {
   return publicRemoteState();
 }
 
-function createRemoteServer(address, sessionMinutes = preferences.data.remoteSessionMinutes) {
+function createRemoteServer(address, sessionMinutes = preferences.data.remoteSessionMinutes, port = preferences.data.remotePort) {
   return new RemoteCompanionServer({
     rootDir: path.join(projectRoot, "desktop", "remote"),
     address,
-    port: 41317,
+    port,
     sessionMinutes,
+    trustedDevices: preferences.data.remoteTrustedDevices,
     callbacks: {
       getState: publicRemoteState,
       getAvatarAsset: (key) => {
@@ -1330,6 +1588,9 @@ function createRemoteServer(address, sessionMinutes = preferences.data.remoteSes
       },
       getArtifact: remoteArtifact,
       sendMessage: sendRemoteMessage,
+      pet: remoteCharacterPet,
+      startLive: startRemoteRealtime,
+      stopLive: stopRemoteRealtime,
       setSettings: applyRemoteClientSettings,
       interrupt: interruptActiveInteraction,
       synthesizeTts: (text) => {
@@ -1338,6 +1599,7 @@ function createRemoteServer(address, sessionMinutes = preferences.data.remoteSes
       },
       nextTtsChunk: (streamId) => nextIrodoriTtsChunk(streamId, REMOTE_TTS_OWNER_ID),
       cancelTts: (streamId) => ({ cancelled: cancelIrodoriTtsStream(streamId, REMOTE_TTS_OWNER_ID) }),
+      onTrustedDevices: (devices) => preferences.patch({ remoteTrustedDevices: devices }),
       onStatus: () => {
         refreshRemotePairingQr().catch((error) => { remoteLastError = error.message; });
       },
@@ -1349,6 +1611,12 @@ async function applyRemoteConfiguration(patch = {}) {
   const enabled = patch.enabled === true;
   const address = selectedRemoteAddress(patch.bindAddress);
   const sessionMinutes = Math.max(15, Math.min(480, Math.round(Number(patch.sessionMinutes) || 60)));
+  const port = Math.max(1024, Math.min(65535, Math.round(Number(patch.port) || preferences.data.remotePort || 41317)));
+  const tailscaleHttpsPort = Math.max(1, Math.min(65535, Math.round(Number(patch.tailscaleHttpsPort) || preferences.data.remoteTailscaleHttpsPort || 443)));
+  if (preferences.data.remoteTailscaleManaged
+    && (port !== preferences.data.remotePort || tailscaleHttpsPort !== preferences.data.remoteTailscaleHttpsPort)) {
+    throw new Error(mainText("ポートを変更する前にCharaDockからTailscale Serveを停止してください。", "Stop Tailscale Serve from CharaDock before changing ports."));
+  }
   const nextPreferences = {
     remoteAccessEnabled: enabled,
     remoteBindAddress: address,
@@ -1359,11 +1627,18 @@ async function applyRemoteConfiguration(patch = {}) {
       ? (patch.responseMode === "live" && preferences.data.backend === "codex" ? "live" : "tts")
       : (preferences.data.remoteResponseMode === "live" ? "live" : "tts"),
     remoteSessionMinutes: sessionMinutes,
+    remotePort: port,
+    remoteTailscaleHttpsPort: tailscaleHttpsPort,
   };
   const currentStatus = remoteServer?.status();
   const restartNeeded = enabled
-    ? !remoteServer || currentStatus.address !== address || currentStatus.sessionMinutes !== sessionMinutes
+    ? !remoteServer || currentStatus.address !== address || currentStatus.sessionMinutes !== sessionMinutes || currentStatus.port !== port
     : Boolean(remoteServer);
+  if (!enabled && preferences.data.remoteTailscaleManaged) {
+    const stopped = await tailscaleServeManager.stop({ httpsPort: preferences.data.remoteTailscaleHttpsPort });
+    preferences.patch({ remoteTailscaleManaged: false });
+    remoteTailscaleStatus = { ...stopped, managed: false, error: "" };
+  }
   if (!restartNeeded) {
     preferences.patch(nextPreferences);
     controlWindow?.webContents.send("remote:pcAudio", { enabled: preferences.data.remotePcAudioEnabled !== false });
@@ -1377,7 +1652,7 @@ async function applyRemoteConfiguration(patch = {}) {
   remoteLastError = "";
   if (enabled) {
     if (!address) throw new Error(mainText("接続できるプライベートLANが見つかりません。Wi-Fiまたは有線LANを確認してください。", "No private LAN connection was found. Check Wi-Fi or Ethernet."));
-    const candidate = createRemoteServer(address, sessionMinutes);
+    const candidate = createRemoteServer(address, sessionMinutes, port);
     try {
       await candidate.start();
       remoteServer = candidate;
@@ -1406,6 +1681,7 @@ function publicAppState() {
     remote: remoteServerStatus(),
     appUpdate: publicAppUpdateStatus(),
     ttsProvider: characterTts.provider,
+    styleBertVits2ModelId: characterTts.styleBertVits2ModelId,
     realtimeVoice: characterTts.realtimeVoice,
     realtimeVoiceConversion: characterTts.realtimeVoiceConversion,
     beatriceModelId: characterTts.beatriceModelId,
@@ -4215,7 +4491,7 @@ function synthesizeConfiguredTts(text, ownerId = 0) {
   return synthesizeStyleBertVits2({
     text: spokenText,
     url: preferences.data.styleBertVits2Url,
-    modelId: preferences.data.styleBertVits2ModelId,
+    modelId: characterTts.styleBertVits2ModelId,
     speed: preferences.data.styleBertVits2Speed,
   });
 }
@@ -4349,6 +4625,74 @@ async function appendRealtimeReactionSpeech(text) {
   return { active: true, spoken: appended, busy: false };
 }
 
+async function characterPetResponse(payload = {}, options = {}) {
+  const character = activeCharacter();
+  const phrases = character.petPhrases || [mainText("なあに？", "What's up?")];
+  let phraseIndex = Math.floor(Math.random() * phrases.length);
+  if (phrases.length > 1 && phraseIndex === lastPetPhraseIndex.get(character.id)) phraseIndex = (phraseIndex + 1) % phrases.length;
+  lastPetPhraseIndex.set(character.id, phraseIndex);
+  const text = phrases[phraseIndex];
+  const headTouch = payload?.zone === "head";
+  const reactions = headTouch
+    ? [
+        { forceMouth: 1, forceEyesClosed: false, emotion: "happy", reaction: "happy", durationMs: 1500 },
+        { forceMouth: 0, forceEyesClosed: false, emotion: "soft", reaction: "soft", durationMs: 1900 },
+        { forceMouth: 2, forceEyesClosed: false, emotion: "surprised", reaction: "surprised", durationMs: 1100 },
+      ]
+    : [
+        { forceMouth: 2, forceEyesClosed: false, emotion: "surprised", reaction: "surprised", durationMs: 1150 },
+        { forceMouth: 1, forceEyesClosed: false, emotion: "happy", reaction: "happy", durationMs: 1450 },
+        { forceMouth: 0, forceEyesClosed: true, emotion: "soft", reaction: "soft", durationMs: 1350 },
+      ];
+  const reaction = reactions[Math.floor(Math.random() * reactions.length)];
+  localServer.pushInput({ ...currentCursorInput(), ...reaction });
+  const useRealtimeVoice = typeof options.useRealtimeVoice === "boolean"
+    ? options.useRealtimeVoice
+    : preferences.data.backend === "codex" && preferences.data.speechInputProvider === "realtime";
+  const spokenText = configuredSpeechText(text);
+  let realtimeSpeech = { active: false, spoken: false, busy: false };
+  let realtimeSpeechError = "";
+  if (useRealtimeVoice) {
+    try {
+      realtimeSpeech = await appendRealtimeReactionSpeech(spokenText);
+    } catch (error) {
+      realtimeSpeechError = String(error?.message || error || mainText("Realtime音声を再生できませんでした。", "Realtime voice could not be played."));
+    }
+  }
+  return {
+    text,
+    zone: headTouch ? "head" : "body",
+    emotion: reaction.emotion,
+    expression: reaction,
+    durationMs: reaction.durationMs,
+    persistent: true,
+    ttsEnabled: (!useRealtimeVoice || !realtimeSpeech.active) && Boolean(preferences.data.ttsEnabled),
+    ttsProvider: characterTtsSettings().provider,
+    speechLanguage: preferences.data.speechLanguage || "ja-JP",
+    spokenText,
+    realtimeSpeech: realtimeSpeech.spoken,
+    realtimeSpeechBusy: realtimeSpeech.busy,
+    realtimeSpeechError,
+  };
+}
+
+async function remoteCharacterPet(payload = {}) {
+  if (remoteBusy || activeWorkRunId) {
+    return { busy: true, text: mainText("いまの応答が終わったら、もう一度触れてね。", "Tap me again after this response finishes.") };
+  }
+  const result = await characterPetResponse(payload, {
+    useRealtimeVoice: preferences.data.backend === "codex"
+      && preferences.data.remoteResponseMode === "live"
+      && activeRealtimeTarget === "remote",
+  });
+  remoteLastDisplayText = result.text;
+  if (result.ttsEnabled && !currentRealtimeClient() && preferences.data.remotePcAudioEnabled !== false && mascotWindow && !mascotWindow.isDestroyed()) {
+    mascotWindow.webContents.send("mascot:speech", result);
+  }
+  publishRemoteState();
+  return result;
+}
+
 async function startCodexRealtimeVoice(payload, target = "control") {
   if (preferences.data.backend !== "codex") throw new Error("GPT-Live / Codex VoiceはCodex app-server接続時のみ利用できます。");
   const sdp = String(payload?.sdp || "");
@@ -4359,8 +4703,14 @@ async function startCodexRealtimeVoice(payload, target = "control") {
   // normal workspace-scoped worker so completion and artifacts are deterministic.
   const realtimeClient = codexClient;
   const previousRealtimeClient = currentRealtimeClient();
+  if (previousRealtimeClient && activeRealtimeTarget && activeRealtimeTarget !== target) {
+    throw new Error(activeRealtimeTarget === "remote"
+      ? mainText("スマートフォン側でLiveを停止してからPCで開始してください。", "Stop Live on the phone before starting it on the PC.")
+      : mainText("PC側でLiveを停止してからスマートフォンで開始してください。", "Stop Live on the PC before starting it on the phone."));
+  }
   if (previousRealtimeClient && previousRealtimeClient !== realtimeClient) await previousRealtimeClient.stopRealtime().catch(() => {});
   activeRealtimeClient = realtimeClient;
+  activeRealtimeTarget = target;
   publishRemoteState();
   const realtimeTurnBuffer = new RealtimeTurnBuffer();
   activeRealtimeTurnBuffer = realtimeTurnBuffer;
@@ -4460,8 +4810,14 @@ async function startCodexRealtimeVoice(payload, target = "control") {
         }
         if (target === "control" && !controlWindow?.isDestroyed()) controlWindow.webContents.send("audio:realtimeEvent", forwarded);
         if (target === "mascot" && !mascotWindow?.isDestroyed()) mascotWindow.webContents.send("mascot:realtimeEvent", forwarded);
+        if (target === "remote") remoteServer?.publish("live", forwarded);
       const method = String(message?.method || "");
       const params = message?.params || {};
+      if (method === "thread/realtime/started" && target === "remote") {
+        remoteBusy = false;
+        remoteLastDisplayText = mainText("つながったよ。そのまま話してね。", "Connected. Go ahead and speak.");
+        publishRemoteState();
+      }
       if (method === "thread/realtime/transcript/delta" && params.role === "assistant") {
         const delta = String(params.delta || "");
         if (!assistantTranscript.active) {
@@ -4548,7 +4904,10 @@ async function startCodexRealtimeVoice(payload, target = "control") {
         if (activeRealtimeWorkDispatcher === realtimeWorkDispatcher) activeRealtimeWorkDispatcher = null;
         if (activeRealtimeWorkSpeech === realtimeWorkSpeech) activeRealtimeWorkSpeech = null;
         realtimeWorkSpeech?.stop();
-        if (activeRealtimeClient === realtimeClient) activeRealtimeClient = null;
+        if (activeRealtimeClient === realtimeClient) {
+          activeRealtimeClient = null;
+          activeRealtimeTarget = "";
+        }
         if (activeRealtimeTurnBuffer === realtimeTurnBuffer) activeRealtimeTurnBuffer = null;
         realtimeTurnBuffer.clear();
         activeRealtimeInjectedSpeech = [];
@@ -4567,7 +4926,10 @@ async function startCodexRealtimeVoice(payload, target = "control") {
     if (activeRealtimeWorkDispatcher === realtimeWorkDispatcher) activeRealtimeWorkDispatcher = null;
     if (activeRealtimeWorkSpeech === realtimeWorkSpeech) activeRealtimeWorkSpeech = null;
     realtimeWorkSpeech?.stop();
-    if (activeRealtimeClient === realtimeClient) activeRealtimeClient = null;
+    if (activeRealtimeClient === realtimeClient) {
+      activeRealtimeClient = null;
+      activeRealtimeTarget = "";
+    }
     if (activeRealtimeTurnBuffer === realtimeTurnBuffer) activeRealtimeTurnBuffer = null;
     realtimeTurnBuffer.clear();
     activeRealtimeInjectedSpeech = [];
@@ -5018,51 +5380,7 @@ function registerIpc() {
   });
   ipcMain.handle("mascotInline:pet", async (event, payload = {}) => {
     assertTrustedSender(event, "mascot");
-    const character = activeCharacter();
-    const phrases = character.petPhrases || ["なあに？"];
-    let phraseIndex = Math.floor(Math.random() * phrases.length);
-    if (phrases.length > 1 && phraseIndex === lastPetPhraseIndex.get(character.id)) phraseIndex = (phraseIndex + 1) % phrases.length;
-    lastPetPhraseIndex.set(character.id, phraseIndex);
-    const text = phrases[phraseIndex];
-    const headTouch = payload?.zone === "head";
-    const reactions = headTouch
-      ? [
-          { forceMouth: 1, forceEyesClosed: false, emotion: "happy", reaction: "happy", durationMs: 1500 },
-          { forceMouth: 0, forceEyesClosed: false, emotion: "soft", reaction: "soft", durationMs: 1900 },
-          { forceMouth: 2, forceEyesClosed: false, emotion: "surprised", reaction: "surprised", durationMs: 1100 },
-        ]
-      : [
-          { forceMouth: 2, forceEyesClosed: false, emotion: "surprised", reaction: "surprised", durationMs: 1150 },
-          { forceMouth: 1, forceEyesClosed: false, emotion: "happy", reaction: "happy", durationMs: 1450 },
-          { forceMouth: 0, forceEyesClosed: true, emotion: "soft", reaction: "soft", durationMs: 1350 },
-        ];
-    const reaction = reactions[Math.floor(Math.random() * reactions.length)];
-    localServer.pushInput({ ...currentCursorInput(), ...reaction });
-    const useRealtimeVoice = preferences.data.backend === "codex" && preferences.data.speechInputProvider === "realtime";
-    const spokenText = configuredSpeechText(text);
-    let realtimeSpeech = { active: false, spoken: false, busy: false };
-    let realtimeSpeechError = "";
-    if (useRealtimeVoice) {
-      try {
-        realtimeSpeech = await appendRealtimeReactionSpeech(spokenText);
-      } catch (error) {
-        realtimeSpeechError = String(error?.message || error || "Realtime音声を再生できませんでした。");
-      }
-    }
-    return {
-      text,
-      zone: headTouch ? "head" : "body",
-      emotion: reaction.emotion,
-      durationMs: 1500,
-      persistent: true,
-      ttsEnabled: (!useRealtimeVoice || !realtimeSpeech.active) && Boolean(preferences.data.ttsEnabled),
-      ttsProvider: characterTtsSettings().provider,
-      speechLanguage: preferences.data.speechLanguage || "ja-JP",
-      spokenText,
-      realtimeSpeech: realtimeSpeech.spoken,
-      realtimeSpeechBusy: realtimeSpeech.busy,
-      realtimeSpeechError,
-    };
+    return characterPetResponse(payload);
   });
   ipcMain.handle("mascotInline:transcribe", async (event, payload) => {
     assertTrustedSender(event, "mascot");
@@ -5134,13 +5452,27 @@ function registerIpc() {
   ipcMain.handle("remote:revokeAll", async (event) => {
     assertTrustedSender(event);
     if (remoteServer) remoteServer.revokeAll();
+    else preferences.patch({ remoteTrustedDevices: [] });
     await refreshRemotePairingQr();
     return broadcastAppState();
   });
   ipcMain.handle("remote:revokeSession", async (event, sessionId) => {
     assertTrustedSender(event);
-    remoteServer?.revokeSession(sessionId);
+    if (remoteServer) remoteServer.revokeSession(sessionId);
+    else preferences.patch({ remoteTrustedDevices: preferences.data.remoteTrustedDevices.filter((device) => device.id !== String(sessionId || "")) });
     return broadcastAppState();
+  });
+  ipcMain.handle("remote:tailscaleStatus", async (event) => {
+    assertTrustedSender(event);
+    return refreshRemoteTailscaleStatus();
+  });
+  ipcMain.handle("remote:tailscaleStart", async (event) => {
+    assertTrustedSender(event);
+    return startRemoteTailscale();
+  });
+  ipcMain.handle("remote:tailscaleStop", async (event) => {
+    assertTrustedSender(event);
+    return stopRemoteTailscale();
   });
   ipcMain.handle("app:openExternalUrl", async (event, value) => {
     assertTrustedSender(event);
@@ -5220,6 +5552,7 @@ function registerIpc() {
       ? Math.max(0, Math.min(2, Number(patch.sbv2StyleWeight))) : 1;
     const characterTtsProfiles = updatedCharacterTtsProfiles(activeCharacterId, {
       provider: ttsProvider,
+      styleBertVits2ModelId: Math.min(9999, Math.max(0, Math.round(Number(patch?.styleBertVits2ModelId ?? characterTtsSettings(activeCharacterId).styleBertVits2ModelId) || 0))),
       realtimeVoice,
       realtimeVoiceConversion,
       beatriceModelId,

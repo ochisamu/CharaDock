@@ -19,18 +19,26 @@
         <p class="eyebrow">PRIVATE LAN BETA</p>
         <h1 id="pairingTitle">スマートフォンを接続</h1>
         <p id="pairingMessage">CharaDockの設定画面にあるQRコードを読み取ってください。</p>
+        <form id="pairingCodeForm" class="pairing-code-form">
+          <label for="pairingCodeInput">ペアリングコード</label>
+          <div><input id="pairingCodeInput" type="text" inputmode="text" autocomplete="one-time-code" maxlength="12" placeholder="8桁のコード" /><button type="submit">接続</button></div>
+        </form>
         <button id="retryPairButton" class="primary-button" type="button" hidden>もう一度接続</button>
-        <small>信頼できる自宅・社内Wi-Fiでのみ使用してください。マイク、画面撮影、ブラウザ・PC操作は利用できません。</small>
+        <small>信頼できる自宅・社内Wi-Fiでのみ使用してください。マイクはHTTPS接続時に利用できます。画面撮影、ブラウザ・PC操作は利用できません。</small>
       </div>
     </section>
 
     <section id="companionView" class="companion-view" hidden>
       <section class="avatar-stage" aria-label="キャラクター">
-        <div id="avatarMotion" class="avatar-motion">
-          <img id="avatarBackHair" class="avatar-layer back-hair" alt="" draggable="false" />
-          <img id="avatarFace" class="avatar-layer face" alt="キャラクター" draggable="false" />
-          <img id="avatarFrontHair" class="avatar-layer front-hair" alt="" draggable="false" />
-        </div>
+        <button id="avatarTapTarget" class="avatar-tap-target" type="button" aria-label="キャラクターに触れる">
+          <span id="avatarReactionShell" class="avatar-reaction-shell">
+            <span id="avatarMotion" class="avatar-motion">
+              <img id="avatarBackHair" class="avatar-layer back-hair" alt="" draggable="false" />
+              <img id="avatarFace" class="avatar-layer face" alt="キャラクター" draggable="false" />
+              <img id="avatarFrontHair" class="avatar-layer front-hair" alt="" draggable="false" />
+            </span>
+          </span>
+        </button>
         <div id="responseBubble" class="response-bubble" role="status" aria-live="polite">
           <small id="responseSpeaker">CharaDock</small>
           <div class="response-text-row"><p id="responseText">スマートフォンから話しかけられるよ。</p><button id="bubbleExpandButton" class="bubble-expand-button" type="button" aria-label="全文と履歴を表示" hidden>全文</button></div>
@@ -45,6 +53,7 @@
             <button id="chatModeButton" class="is-active" type="button" role="radio" aria-checked="true">Chat</button>
             <button id="workModeButton" type="button" role="radio" aria-checked="false">Work</button>
           </div>
+          <button id="microphoneButton" class="round-button microphone-button" type="button" aria-label="音声入力またはLiveを開始" title="音声入力"><span class="remote-icon remote-icon-microphone" aria-hidden="true"></span></button>
           <button id="audioButton" class="round-button" type="button" aria-label="スマートフォンで音声を再生" title="スマートフォンで音声を再生"><span class="remote-icon remote-icon-voice" aria-hidden="true"></span></button>
           <button id="historyButton" class="round-button" type="button" aria-label="履歴を表示" title="履歴を表示"><span class="remote-icon remote-icon-history" aria-hidden="true"></span></button>
           <button id="settingsButton" class="round-button" type="button" aria-label="リモート設定" title="リモート設定"><span class="remote-icon remote-icon-settings" aria-hidden="true"></span></button>
@@ -54,16 +63,19 @@
           <button id="sendButton" class="send-button" type="submit" aria-label="送信"><span class="remote-icon remote-icon-send" aria-hidden="true"></span></button>
           <button id="interruptButton" class="interrupt-button" type="button" aria-label="中断" hidden><span class="remote-icon remote-icon-stop" aria-hidden="true"></span></button>
         </form>
-        <p id="composerHint" class="composer-hint">マイクなし · ローカルLAN内だけで接続</p>
+        <p id="composerHint" class="composer-hint">ローカルLAN内だけで接続</p>
       </section>
+      <audio id="remoteLiveAudio" autoplay playsinline></audio>
     </section>
   </main>
 
-  <dialog id="historySheet" class="bottom-sheet">
-    <header><div><p class="eyebrow">CONTINUITY</p><h2>最近の履歴</h2></div><button id="closeHistoryButton" type="button" aria-label="閉じる">×</button></header>
-    <section class="current-response-card"><small>現在のセリフ</small><p id="historyCurrentText"></p></section>
-    <div id="historyList" class="history-list"></div>
-    <button id="disconnectButton" class="danger-link" type="button">このスマートフォンの接続を解除</button>
+  <dialog id="historySheet" class="bottom-sheet history-sheet">
+    <header class="sheet-header"><div><p class="eyebrow">CONTINUITY</p><h2>会話とWork</h2></div><button id="closeHistoryButton" type="button" aria-label="閉じる">×</button></header>
+    <div class="history-scroll">
+      <section class="current-response-card"><small>現在のセリフ</small><p id="historyCurrentText"></p></section>
+      <div id="historyList" class="history-list"></div>
+      <button id="disconnectButton" class="danger-link" type="button">このスマートフォンの接続を解除</button>
+    </div>
   </dialog>
 
   <dialog id="settingsSheet" class="bottom-sheet settings-sheet">
@@ -71,11 +83,17 @@
     <div class="remote-settings-form">
       <label class="settings-field"><span>キャラクター</span><select id="characterSelect"></select></label>
       <label class="settings-field"><span>応答音声</span><select id="responseModeSelect"><option value="tts">通常TTS</option><option value="live">GPT-Live</option></select></label>
-      <label id="ttsProviderField" class="settings-field"><span>通常TTSの声</span><select id="ttsProviderSelect"></select></label>
+      <label id="ttsProviderField" class="settings-field"><span id="ttsProviderLabel">TTS方式</span><select id="ttsProviderSelect"></select></label>
+      <section id="ttsModelSettings" class="remote-model-settings" aria-labelledby="ttsModelSettingsTitle" hidden>
+        <div class="remote-model-heading"><span id="ttsModelSettingsTitle">音声モデル</span><small>選択中のキャラクターに保存</small></div>
+        <div id="ttsModelFields" class="remote-model-fields"></div>
+        <p id="ttsModelHint" class="settings-hint"></p>
+      </section>
       <label id="realtimeVoiceField" class="settings-field" hidden><span>GPT-Liveの声</span><select id="realtimeVoiceSelect"></select></label>
       <label class="settings-toggle"><span><strong>PCでも音を出す</strong><small>リモートから送った回答をPC側でも再生します</small></span><input id="pcAudioToggle" type="checkbox" /></label>
-      <label class="settings-toggle"><span><strong>この端末で通常TTSを再生</strong><small>GPT-Liveの変換音声は現在PC側で再生します</small></span><input id="phoneAudioToggle" type="checkbox" /></label>
+      <label class="settings-toggle"><span><strong>この端末で通常TTSを再生</strong><small>GPT-Liveは接続中の端末へ直接音声を返します</small></span><input id="phoneAudioToggle" type="checkbox" /></label>
       <p id="voiceRouteHint" class="settings-hint"></p>
+      <p id="microphoneSecurityHint" class="settings-hint"></p>
     </div>
   </dialog>
 

@@ -14,6 +14,53 @@ function normalizeBeatriceVoiceId(value) {
   return Math.max(0, Math.min(999, Math.round(Number(value) || 0)));
 }
 
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function normalizeTomlDescription(value) {
+  return String(value || "")
+    .replace(/\r\n?/g, "\n")
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "")
+    .trim()
+    .slice(0, 20_000);
+}
+
+function tomlSectionBody(text, section) {
+  const source = String(text || "");
+  const sectionMatch = source.match(new RegExp(`^\\s*\\[${escapeRegExp(section)}\\]\\s*(?:#.*)?$`, "m"));
+  if (!sectionMatch) return "";
+  const start = sectionMatch.index + sectionMatch[0].length;
+  const next = source.slice(start).search(/^\s*\[/m);
+  return source.slice(start, next < 0 ? source.length : start + next);
+}
+
+function parseTomlStringFromBody(body, key) {
+  const source = String(body || "");
+  const assignment = source.match(new RegExp(`^\\s*${escapeRegExp(key)}\\s*=\\s*`, "m"));
+  if (!assignment) return "";
+  const value = source.slice(assignment.index + assignment[0].length);
+  if (value.startsWith('"""') || value.startsWith("'''")) {
+    const delimiter = value.slice(0, 3);
+    const end = value.indexOf(delimiter, 3);
+    if (end < 0) return "";
+    let result = value.slice(3, end);
+    if (result.startsWith("\r\n")) result = result.slice(2);
+    else if (result.startsWith("\n")) result = result.slice(1);
+    return normalizeTomlDescription(result);
+  }
+  if (value.startsWith('"')) {
+    const quoted = value.match(/^"(?:\\.|[^"\\])*"/s)?.[0];
+    if (!quoted) return "";
+    try { return normalizeTomlDescription(JSON.parse(quoted)); } catch { return normalizeTomlDescription(quoted.slice(1, -1)); }
+  }
+  if (value.startsWith("'")) {
+    const end = value.indexOf("'", 1);
+    return end < 0 ? "" : normalizeTomlDescription(value.slice(1, end));
+  }
+  return "";
+}
+
 function parseBeatriceVoices(tomlPath) {
   if (!tomlPath || !fs.statSync(tomlPath, { throwIfNoEntry: false })?.isFile()) return [];
   const text = fs.readFileSync(tomlPath, "utf8");
@@ -24,19 +71,15 @@ function parseBeatriceVoices(tomlPath) {
     const start = section.lastIndex;
     const next = text.slice(start).search(/^\s*\[/m);
     const body = text.slice(start, next < 0 ? text.length : start + next);
-    const name = body.match(/^\s*name\s*=\s*"([^"]+)"\s*$/m)?.[1] || `Voice ${match[1]}`;
-    voices.push({ id: Number(match[1]), name: String(name).slice(0, 100) });
+    const name = parseTomlStringFromBody(body, "name") || `Voice ${match[1]}`;
+    const description = parseTomlStringFromBody(body, "description");
+    voices.push({ id: Number(match[1]), name: String(name).slice(0, 100), description });
   }
   return voices.slice(0, 1000);
 }
 
 function parseTomlString(text, key, section = "model") {
-  const sectionMatch = text.match(new RegExp(`^\\s*\\[${section.replace(/[.*+?^${}()|[\\]\\]/g, "\\$&")}\\]\\s*$`, "m"));
-  if (!sectionMatch) return "";
-  const start = sectionMatch.index + sectionMatch[0].length;
-  const next = text.slice(start).search(/^\s*\[/m);
-  const body = text.slice(start, next < 0 ? text.length : start + next);
-  return body.match(new RegExp(`^\\s*${key}\\s*=\\s*"([^"]*)"\\s*$`, "m"))?.[1] || "";
+  return parseTomlStringFromBody(tomlSectionBody(text, section), key);
 }
 
 function beatriceModelId(modelPath) {
@@ -51,6 +94,7 @@ function describeBeatriceModel(modelPath) {
     id: beatriceModelId(modelPath),
     name: String(parseTomlString(text, "name") || path.basename(path.dirname(modelPath)) || "Beatrice model").slice(0, 100),
     version: String(parseTomlString(text, "version") || "").slice(0, 40),
+    description: parseTomlString(text, "description"),
     modelPath: path.resolve(modelPath),
     voices,
   };

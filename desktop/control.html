@@ -102,9 +102,9 @@
 
       <section class="page" data-page-panel="remote">
         <header class="page-header"><div><p class="eyebrow">CharaDock Link · Beta</p><h1>リモートアクセス</h1></div><span id="remoteStatusBadge" class="remote-status-badge">停止中</span></header>
-        <p class="page-lead">同じWi-Fiにある端末へキャラクターとChat / Workを表示し、文字で指示できます。マイクは使いません。</p>
+        <p class="page-lead">同じWi-Fiにある端末へキャラクターとChat / Workを表示します。HTTPS接続ならマイクとGPT-Liveもスマートフォンだけで利用できます。</p>
         <section id="remoteAccessCard" class="card settings-card remote-access-card">
-          <label class="switch-row remote-master-switch"><span><strong>ローカルLAN接続を有効にする</strong><small>初期状態はOFF。選んだプライベートLANだけで待ち受けます</small></span><input id="remoteAccessToggle" type="checkbox" /><i></i></label>
+          <label class="switch-row remote-master-switch"><span><strong>リモート接続を有効にする</strong><small>初期状態はOFF。選んだプライベートLANと任意のTailscale Serveを受け付けます</small></span><input id="remoteAccessToggle" type="checkbox" /><i></i></label>
           <div id="remoteEnabledSettings" class="remote-enabled-settings" hidden>
             <div class="remote-pairing-layout">
               <div class="remote-qr-panel">
@@ -114,22 +114,33 @@
               <div class="remote-pairing-copy">
                 <p class="eyebrow">PAIR THIS DEVICE</p>
                 <h2>QRコードを読み取る</h2>
-                <p>端末ごとに標準カメラで1回読み取ります。URLは最初のペアリングまたは10分で無効になりますが、その端末は設定した有効時間まで再コピーなしで開けます。</p>
+                <p>端末ごとに標準カメラで1回読み取ります。URLは最初のペアリングまたは10分で無効になりますが、ペアリング済み端末は操作セッションが切れても自動再接続します。</p>
                 <div class="remote-url-row"><code id="remoteAccessUrl">接続先を準備中</code><button id="copyRemoteUrlButton" class="button button-secondary" type="button">URLをコピー</button></div>
+                <div class="remote-pairing-code"><span>ペアリングコード</span><strong id="remotePairingCode">--------</strong><small>HTTPSやTailscale ServeのURLから開いた場合に入力します</small></div>
                 <p id="remoteConnectionSummary" class="inline-status" role="status"></p>
                 <p class="remote-firewall-hint">接続できない場合は、Windows Defenderの確認で「プライベート ネットワーク」を許可し、両端末が同じWi-Fiか確認してください。</p>
               </div>
             </div>
             <div class="settings-stack remote-options">
               <label>接続に使うネットワーク<select id="remoteAddressSelect"></select></label>
-              <label>端末セッションの有効時間<select id="remoteSessionSelect"><option value="15">15分</option><option value="30">30分</option><option value="60">1時間</option><option value="120">2時間</option><option value="480">8時間</option></select></label>
-              <label>リモートの応答音声<select id="remoteResponseModeSelect"><option value="tts">通常TTS</option><option value="live">GPT-Live（PCでLive接続中）</option></select></label>
+              <label>ローカル待受ポート<input id="remotePortInput" type="number" min="1024" max="65535" step="1" /></label>
+              <label>操作セッションの再確認間隔<select id="remoteSessionSelect"><option value="15">15分</option><option value="30">30分</option><option value="60">1時間</option><option value="120">2時間</option><option value="480">8時間</option></select></label>
+              <label>リモートの応答音声<select id="remoteResponseModeSelect"><option value="tts">通常TTS</option><option value="live">GPT-Live（スマートフォンで開始）</option></select></label>
               <label class="switch-row"><span><strong>スマートフォンでWorkを許可</strong><small>現在の作業先と、このキャラのホーム内で作業できます</small></span><input id="remoteWorkToggle" type="checkbox" /><i></i></label>
               <label class="switch-row"><span><strong>スマートフォンでキャラ音声を再生</strong><small>通常TTSの設定済み音声をスマートフォン側でも生成します</small></span><input id="remoteTtsToggle" type="checkbox" /><i></i></label>
               <label class="switch-row"><span><strong>PCでも回答音声を再生</strong><small>OFFにするとリモートから送った通常TTSをPCでは鳴らしません</small></span><input id="remotePcAudioToggle" type="checkbox" /><i></i></label>
+              <section class="remote-tailscale-note" aria-labelledby="remoteTailscaleTitle">
+                <div class="remote-tailscale-heading"><strong id="remoteTailscaleTitle">Tailscale HTTPS（任意）</strong><span id="remoteTailscaleBadge" class="setup-state-badge">未確認</span></div>
+                <p>マイクや外出先からの接続に使います。CharaDockは既存のServe設定を上書きせず、ここで開始した設定だけ停止します。</p>
+                <label>Tailscale側のHTTPSポート<input id="remoteTailscaleHttpsPortInput" type="number" min="1" max="65535" step="1" /></label>
+                <code id="remoteTailscaleCommand">tailscale serve --bg --https=443 41317</code>
+                <a id="remoteTailscaleUrl" href="#" hidden>HTTPS URLを開く</a>
+                <div class="remote-tailscale-actions"><button id="refreshRemoteTailscaleButton" class="button button-secondary" type="button">状態を確認</button><button id="startRemoteTailscaleButton" class="button button-primary" type="button">HTTPS接続を開始</button><button id="stopRemoteTailscaleButton" class="button button-danger" type="button" hidden>停止</button></div>
+                <p id="remoteTailscaleStatus" class="inline-status" role="status"></p>
+              </section>
             </div>
             <section class="remote-device-section" aria-labelledby="remoteDeviceTitle">
-              <div class="section-row"><div><strong id="remoteDeviceTitle">ペアリング中の端末</strong><small>端末名、最終接続、有効期限を確認して個別に解除できます</small></div><span id="remoteDeviceCount" class="setup-state-badge">0台</span></div>
+              <div class="section-row"><div><strong id="remoteDeviceTitle">ペアリング済み端末</strong><small>操作セッションが切れても自動再接続します。端末の信頼は180日または解除まで保持されます</small></div><span id="remoteDeviceCount" class="setup-state-badge">0台</span></div>
               <div id="remoteDeviceList" class="remote-device-list"></div>
             </section>
             <div class="remote-actions">
@@ -140,7 +151,7 @@
         </section>
         <aside class="remote-security-note">
           <span class="ui-symbol ui-symbol-support" aria-hidden="true"></span>
-          <div><strong>プライベートネットワーク専用の実験機能です</strong><p>通信はHTTPSではありません。信頼できる自宅・社内Wi-Fiでのみ使用してください。スマートフォンから画面撮影、ブラウザ操作、PC操作、許可への回答はできません。外出先からのアクセスやルーターのポート開放には使用しないでください。</p></div>
+          <div><strong>通常LANまたは任意のTailscale接続に対応する実験機能です</strong><p>通常LANは信頼できる自宅・社内Wi-Fiでのみ使用してください。マイクにはHTTPSが必要です。外出先から利用する場合もルーターのポートは開放せず、Tailscale Serveなどアクセス制御された経路を利用してください。</p></div>
         </aside>
       </section>
 
@@ -427,6 +438,22 @@
                       <label>モデル<select id="beatriceModelSelect"><option value="">モデル未追加</option></select></label>
                       <label>声<select id="beatriceVoiceSelect"><option value="0">Voice 0</option></select></label>
                     </div>
+                    <details id="beatriceDescriptionCard" class="beatrice-description-card" open hidden>
+                      <summary><span>モデル・声の説明と利用条件</span><small>TOMLのdescription</small></summary>
+                      <div class="beatrice-description-content">
+                        <section>
+                          <p class="beatrice-description-label">MODEL</p>
+                          <strong id="beatriceModelDescriptionTitle">Beatrice model</strong>
+                          <div id="beatriceModelDescription" class="beatrice-description-text"></div>
+                        </section>
+                        <section>
+                          <p class="beatrice-description-label">VOICE</p>
+                          <strong id="beatriceVoiceDescriptionTitle">Voice 0</strong>
+                          <div id="beatriceVoiceDescription" class="beatrice-description-text"></div>
+                        </section>
+                        <p class="beatrice-description-note">モデルファイルのTOMLに記載された内容です。利用前に各条件を確認してください。</p>
+                      </div>
+                    </details>
                     <div class="beatrice-tuning" aria-label="Beatriceの声質調整">
                       <label class="parameter-slider"><span><strong>ピッチ</strong><output id="beatricePitchShiftOutput">0 st</output></span><input id="beatricePitchShiftInput" type="range" min="-24" max="24" step="0.25" value="0" /></label>
                       <label class="parameter-slider"><span><strong>フォルマント</strong><output id="beatriceFormantShiftOutput">0 st</output></span><input id="beatriceFormantShiftInput" type="range" min="-2" max="2" step="0.25" value="0" /></label>

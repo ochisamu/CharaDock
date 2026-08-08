@@ -630,6 +630,22 @@ select option { color: #f8f5fa; background: #252229; }
 .beatrice-license-note { margin: 0; padding-top: 2px; color: var(--muted); font-size: 9px; line-height: 1.55; }
 .beatrice-character-settings { display: grid; gap: 14px; padding: 14px; background: color-mix(in srgb, var(--accent) 4%, var(--surface-soft)); border: 1px solid color-mix(in srgb, var(--accent) 20%, var(--line)); border-radius: 13px; }
 .beatrice-selection-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; }
+.beatrice-description-card { overflow: clip; background: color-mix(in srgb, var(--surface-raised) 90%, transparent); border: 1px solid color-mix(in srgb, var(--accent) 17%, var(--line)); border-radius: 12px; }
+.beatrice-description-card summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 11px 12px; color: var(--text-secondary); cursor: pointer; list-style: none; font-size: 10px; font-weight: 750; }
+.beatrice-description-card summary::-webkit-details-marker { display: none; }
+.beatrice-description-card summary::after { width: 7px; height: 7px; margin-left: auto; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; content: ""; transform: rotate(45deg); transition: transform 160ms ease; }
+.beatrice-description-card[open] summary { color: var(--accent); border-bottom: 1px solid var(--line); }
+.beatrice-description-card[open] summary::after { transform: rotate(225deg); }
+.beatrice-description-card summary small { color: var(--muted); font-size: 8px; font-weight: 650; }
+.beatrice-description-content { display: grid; gap: 14px; padding: 13px; }
+.beatrice-description-content section { display: grid; gap: 5px; min-width: 0; }
+.beatrice-description-content section + section { padding-top: 13px; border-top: 1px solid var(--line); }
+.beatrice-description-content strong { color: var(--text); font-size: 11px; overflow-wrap: anywhere; }
+.beatrice-description-label { margin: 0; color: var(--accent); font-size: 8px; font-weight: 800; letter-spacing: .12em; }
+.beatrice-description-text { color: var(--text-secondary); font-size: 10px; line-height: 1.65; overflow-wrap: anywhere; white-space: pre-wrap; user-select: text; }
+.beatrice-description-text a { color: var(--accent); text-decoration: underline; text-decoration-color: color-mix(in srgb, var(--accent) 45%, transparent); text-underline-offset: 2px; }
+.beatrice-description-text a:hover { text-decoration-color: currentColor; }
+.beatrice-description-note { margin: 0; padding: 9px 10px; color: var(--muted); background: color-mix(in srgb, var(--accent) 5%, transparent); border-radius: 9px; font-size: 9px; line-height: 1.55; }
 .beatrice-tuning { display: grid; gap: 12px; }
 .parameter-slider { display: grid; gap: 2px; }
 .parameter-slider > span { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
@@ -737,9 +753,23 @@ input[type="range"]:active::-webkit-slider-thumb { transform: scale(1.16); box-s
 .remote-pairing-copy .remote-firewall-hint { margin-top: 9px; font-size: 9px; }
 .remote-url-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
 .remote-url-row code { display: block; min-width: 0; padding: 10px 12px; overflow: hidden; color: var(--text-secondary); background: var(--field); border: 1px solid var(--line); border-radius: 10px; font: 10px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; text-overflow: ellipsis; white-space: nowrap; }
+.remote-pairing-code { display: grid; grid-template-columns: auto 1fr; align-items: baseline; gap: 4px 12px; margin-top: 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 11px; background: var(--field); }
+.remote-pairing-code span { color: var(--text-secondary); font-size: 9px; font-weight: 700; }
+.remote-pairing-code strong { font: 750 17px/1.2 ui-monospace, SFMono-Regular, Consolas, monospace; letter-spacing: .1em; }
+.remote-pairing-code small { grid-column: 1 / -1; color: var(--text-tertiary); font-size: 9px; }
 .remote-options { grid-template-columns: repeat(2, minmax(0, 1fr)); padding: 16px; background: var(--field); border: 1px solid var(--line); border-radius: 14px; }
-.remote-options > label:not(.switch-row) { display: grid; gap: 6px; color: var(--text-secondary); font-size: 10px; font-weight: 680; }
+.remote-options > label:not(.switch-row), .remote-tailscale-note > label { display: grid; gap: 6px; color: var(--text-secondary); font-size: 10px; font-weight: 680; }
+.remote-options input[type="number"] { width: 100%; min-height: 35px; border: 1px solid var(--line); border-radius: 9px; padding: 0 10px; color: var(--text); background: var(--surface); }
 .remote-options .switch-row { min-height: 52px; }
+.remote-tailscale-note { grid-column: 1 / -1; padding: 13px 14px; border: 1px solid color-mix(in srgb, var(--accent) 24%, var(--line)); border-radius: 12px; background: color-mix(in srgb, var(--accent) 6%, var(--surface)); }
+.remote-tailscale-note strong { font-size: 11px; }
+.remote-tailscale-note p { margin: 5px 0 0; color: var(--text-secondary); font-size: 9px; line-height: 1.6; }
+.remote-tailscale-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.remote-tailscale-note > label { margin-top: 11px; }
+.remote-tailscale-note > code { display: block; margin-top: 10px; padding: 8px 10px; overflow-x: auto; border-radius: 8px; color: var(--text-secondary); background: var(--field); font: 9px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; user-select: all; white-space: nowrap; }
+.remote-tailscale-note > a { display: inline-block; margin-top: 10px; color: var(--accent); font-size: 10px; font-weight: 700; }
+.remote-tailscale-actions { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 11px; }
+.remote-tailscale-actions .button { min-height: 31px; padding: 0 11px; font-size: 9px; }
 .remote-device-section { display: grid; gap: 12px; padding: 16px; border: 1px solid var(--line); border-radius: 14px; background: color-mix(in srgb, var(--surface-soft) 72%, transparent); }
 .remote-device-section .section-row { align-items: center; }
 .remote-device-section .section-row small { display: block; margin-top: 3px; color: var(--muted); font-size: 9px; font-weight: 500; }
