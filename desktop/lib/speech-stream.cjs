@@ -36,6 +36,7 @@ function sanitizeSpeechText(value) {
     .replace(/\b[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}\b/g, " ")
     .replace(/\b[A-Za-z]:\\[^\s]+/g, " ")
     .replace(/(^|\s)(?:\.{0,2}\/|\/)[^\s]+/g, "$1")
+    .replace(/(^|[\s、。,:：；;（(])(?:[\w.-]+[\\/])+[\w.-]+(?=\s|$|[、。！？!?])/g, "$1")
     .replace(/(^|\s)--?[a-z][\w-]*/g, "$1")
     .replace(/\b[\w-]+\.(?:html?|css|js|cjs|mjs|ts|tsx|jsx|json|yaml|yml|toml|ini|exe|dll|wasm|onnx|bin|zip|png|jpe?g|webp|wav|mp3|md)\b/gi, " ")
     .replace(/(^|\s)(?:[\w.-]+[\\/])+(?=\s|$)/g, "$1")

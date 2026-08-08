@@ -315,7 +315,8 @@ test("Work voice reports contextual milestones and keeps artifact buttons out of
   assert.match(main, /new WorkVoiceReporter\([\s\S]*onAnnouncement: announceWork/);
   assert.match(main, /String\(item\?\.phase \|\| ""\) !== "commentary"/);
   assert.match(main, /phase: "announcement"[\s\S]*speechSegments: streamTtsEnabled/);
-  assert.match(main, /conciseWorkAnnouncement\(rawDisplayText, 140\)/);
+  assert.match(main, /workCompletionDisplayText\(result\.text\)/);
+  assert.match(main, /workCompletionSpeechText\(displayText, interfaceLanguage\(\)\)/);
   assert.match(main, /deferDisplayToRealtime: deliverViaRealtime/);
   assert.match(main, /appendRealtimeOutputSpeech\(configuredSpeechText\(displayText\), "completion"\)/);
   assert.match(mascot, /payload\?\.phase === "announcement"/);

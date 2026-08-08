@@ -231,6 +231,54 @@ test("Codex client sends per-turn model and reasoning effort overrides", async (
   await pending;
 });
 
+test("Codex client returns the final agent answer without replaying commentary", async () => {
+  const client = new CodexAppServerClient();
+  client.ensureStarted = async () => {};
+  client.ensureThread = async () => "thread-final";
+  const deltas = [];
+  client.request = async (method) => {
+    if (method !== "turn/start") return {};
+    setImmediate(() => {
+      client.handleLine(JSON.stringify({
+        method: "item/started",
+        params: { turnId: "turn-final", item: { id: "comment-1", type: "agentMessage", phase: "commentary" } },
+      }));
+      client.handleLine(JSON.stringify({
+        method: "item/agentMessage/delta",
+        params: { turnId: "turn-final", itemId: "comment-1", delta: "ファイルを更新しています。" },
+      }));
+      client.handleLine(JSON.stringify({
+        method: "item/completed",
+        params: { turnId: "turn-final", item: { id: "comment-1", type: "agentMessage", phase: "commentary", text: "ファイルを更新しています。" } },
+      }));
+      client.handleLine(JSON.stringify({
+        method: "item/started",
+        params: { turnId: "turn-final", item: { id: "answer-1", type: "agentMessage", phase: "final_answer" } },
+      }));
+      client.handleLine(JSON.stringify({
+        method: "item/agentMessage/delta",
+        params: { turnId: "turn-final", itemId: "answer-1", delta: "作成できました。確認も完了です。" },
+      }));
+      client.handleLine(JSON.stringify({
+        method: "item/completed",
+        params: { turnId: "turn-final", item: { id: "answer-1", type: "agentMessage", phase: "final_answer", text: "作成できました。確認も完了です。" } },
+      }));
+      client.handleLine(JSON.stringify({
+        method: "turn/completed",
+        params: { turn: { id: "turn-final", status: "completed" } },
+      }));
+    });
+    return { turn: { id: "turn-final" } };
+  };
+
+  const result = await client.sendMessage("ページを作って", {
+    onDelta: (delta, fullText) => deltas.push({ delta, fullText }),
+  });
+  assert.equal(result.text, "作成できました。確認も完了です。");
+  assert.equal(result.transcriptText, "ファイルを更新しています。作成できました。確認も完了です。");
+  assert.deepEqual(deltas, [{ delta: "作成できました。確認も完了です。", fullText: "作成できました。確認も完了です。" }]);
+});
+
 test("Codex client discovers skills for its working directory", async () => {
   const client = new CodexAppServerClient({ cwd: "/Users/test/Documents" });
   client.ensureStarted = async () => {};

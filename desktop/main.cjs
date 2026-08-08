@@ -56,7 +56,12 @@ const { computerContinuationAction, computerConversationAction, normalizeCompute
 const { runWindowsInput } = require("./lib/windows-input.cjs");
 const { StreamingTextSegmenter, sanitizeSpeechText } = require("./lib/speech-stream.cjs");
 const { normalizeSpeechPronunciation } = require("./lib/speech-pronunciation.cjs");
-const { cleanAssistantText, latestWorkDisplayText } = require("./lib/assistant-text.cjs");
+const {
+  cleanAssistantText,
+  latestWorkDisplayText,
+  workCompletionDisplayText,
+  workCompletionSpeechText,
+} = require("./lib/assistant-text.cjs");
 const { discoverWorkArtifacts, fileChangeCandidates, isArtifactInsideWorkspace } = require("./lib/work-artifacts.cjs");
 const { boundedConversationHistory, recentConversationContext } = require("./lib/conversation-context.cjs");
 const { clearCharacterMemories, removeCharacterMemory, saveCharacterMemory, updateCharacterMemory } = require("./lib/character-memory.cjs");
@@ -485,8 +490,8 @@ function scheduleAppUpdateCheck() {
 
 function workModeInstructions() {
   return `${WORK_MODE_INSTRUCTION_BASE}\n${mainText(
-    "ツールを使う前に、依頼固有の対象と行うことを含む短い着手確認をcommentaryとして一度伝えてください。「内容を確認しているよ」「作業を始めるね」のような汎用文は禁止です。長い作業では、実際に到達した意味のある節目だけを、対象と現在の処理が分かる短いcommentaryで伝えてください。コマンド、URL、ファイルパス、内部推論は含めないでください。最後に検証済みの結果を簡潔に報告してください。",
-    "Before using tools, send one brief commentary acknowledgement that names the request-specific subject and action. Generic lines such as 'I'm checking the content' or 'I'm getting started' are not allowed. For longer work, report only meaningful milestones, briefly naming the subject and the actual current action. Do not include commands, URLs, file paths, or internal reasoning. End with a concise, verified result.",
+    "ツールを使う前に、依頼固有の対象と行うことを含む短い着手確認をcommentaryとして一度伝えてください。「内容を確認しているよ」「作業を始めるね」のような汎用文は禁止です。長い作業では、実際に到達した意味のある節目だけを、対象と現在の処理が分かる短いcommentaryで伝えてください。コマンド、URL、ファイルパス、内部推論は含めないでください。Character Home、継続記録、メモリ管理など内部の継続処理は、ユーザーから明示的に聞かれない限りcommentaryや最終報告へ含めないでください。最後に検証済みの結果を簡潔に報告してください。",
+    "Before using tools, send one brief commentary acknowledgement that names the request-specific subject and action. Generic lines such as 'I'm checking the content' or 'I'm getting started' are not allowed. For longer work, report only meaningful milestones, briefly naming the subject and the actual current action. Do not include commands, URLs, file paths, or internal reasoning. Never mention internal Character Home, continuity-record, or memory-maintenance steps in commentary or the final report unless the user explicitly asks about them. End with a concise, verified result.",
   )}${characterHomeWorkInstructions()}`;
 }
 
@@ -6398,9 +6403,11 @@ async function sendChatMessage(message, {
     ? workAcknowledgementFallback(requestText, interfaceLanguage())
     : "";
   if (workVoiceReporter && !workAcknowledged) {
-    workVoiceReporter.scheduleFallback(workAcknowledgement, 600);
+    // Normal TTS should prefer the worker's request-aware commentary over a
+    // deterministic fallback. Realtime already supplies its own natural
+    // acknowledgement, so keep its existing timing unchanged.
+    workVoiceReporter.scheduleFallback(workAcknowledgement, realtimeOutput ? 600 : 2800);
   }
-  workVoiceReporter?.activity(mainText("依頼内容を確認しています…", "Reviewing the request…"));
   let thinkingFillerTimer = null;
   if (!workMode && preferences.data.ttsEnabled && mascotWindow?.isVisible()) {
     thinkingFillerTimer = setTimeout(() => {
@@ -6624,12 +6631,13 @@ async function sendChatMessage(message, {
       })
       : [];
     if (workMode && workRun) updateWorkRun(workRun, { status: "completed", result: result.text, artifacts, finished: true });
-    const rawDisplayText = workMode ? latestWorkDisplayText(result.text) : result.text;
+    const rawDisplayText = workMode ? workCompletionDisplayText(result.text) : result.text;
     const displayText = workMode
-      ? conciseWorkAnnouncement(rawDisplayText, 140) || mainText("作業が完了したよ。", "The work is complete.")
+      ? rawDisplayText || mainText("作業が完了したよ。", "The work is complete.")
       : rawDisplayText;
+    const workSpeechText = workMode ? workCompletionSpeechText(displayText, interfaceLanguage()) : "";
     const finalSpeechSegments = expressiveSpeechSegments(workMode
-      ? [displayText]
+      ? speechSegmenter.push(workSpeechText, { flush: true })
       : speechSegmenter.push(speechSegmenter.fullText || result.text, { flush: true }));
     if (!streamTtsEnabled) {
       for (const segment of finalSpeechSegments) pushMascotExpression(segment.expression);

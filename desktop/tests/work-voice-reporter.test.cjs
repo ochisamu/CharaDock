@@ -6,6 +6,7 @@ const {
   WorkVoiceReporter,
   contextualizeWorkProgress,
   conciseWorkAnnouncement,
+  hasWorkSpeechTechnicalDetail,
   isMeaningfulWorkProgress,
   workAcknowledgementFallback,
 } = require("../lib/work-voice-reporter.cjs");
@@ -44,6 +45,8 @@ test("work acknowledgements are content-aware", () => {
   assert.match(nagoya, /HTML/);
   assert.match(workAcknowledgementFallback("Windows版をビルドして"), /Windows版.*ビルド/);
   assert.match(workAcknowledgementFallback("このバグを修正して"), /このバグ.*修正/);
+  assert.match(workAcknowledgementFallback("名古屋の予算表をPDFにまとめてください"), /名古屋の予算表.*PDF.*まとめる/);
+  assert.match(workAcknowledgementFallback("Windows版を別名でビルドしてスクリーンショットを撮ってください"), /Windows版.*スクリーンショット.*撮る/);
   assert.equal(
     workAcknowledgementFallback("CharaDock Voice Sequence 123 という名古屋の天気ダッシュボードを、artifacts/demo に4ファイルで作ってください。"),
     "名古屋の天気ダッシュボードを作るね。",
@@ -54,12 +57,29 @@ test("work acknowledgements are content-aware", () => {
 test("work announcements never speak links, paths, or code fences", () => {
   const text = conciseWorkAnnouncement("確認中です https://example.com `npm test` C:\\Users\\name\\secret.txt artifacts/result.html");
   assert.equal(text, "確認中です");
+  assert.equal(conciseWorkAnnouncement("artifacts/voice-sequence-123 を更新しているよ。"), "を更新しているよ。");
+  assert.equal(hasWorkSpeechTechnicalDetail("artifacts/voice-sequence-123 を更新しているよ。"), true);
+  assert.equal(hasWorkSpeechTechnicalDetail("天気ダッシュボードを、artifacts/voice-sequence-123 に作るね。"), true);
   const acknowledgement = workAcknowledgementFallback("artifacts/result.html を作成してください。見出しに 天気ダッシュボード、本文に予報を入れてください。");
   assert.equal(acknowledgement, "天気ダッシュボードのHTMLを作成するね。");
   assert.doesNotMatch(acknowledgement, /artifacts|result|[\\/]/i);
   assert.equal(
     contextualizeWorkProgress("ファイルを更新中…", "artifacts/result.html を作成してください。見出しに 天気ダッシュボード、本文に予報を入れてください。"),
-    "天気ダッシュボードのHTMLをファイルへ反映しているよ。",
+    "天気ダッシュボードのHTMLを仕上げているよ。",
+  );
+});
+
+test("a technical worker acknowledgement falls back to a safe request-aware message", () => {
+  const announcements = [];
+  const reporter = new WorkVoiceReporter({
+    request: "名古屋の天気ダッシュボードを artifacts/demo/index.html に作ってください",
+    onAnnouncement: (entry) => announcements.push(entry),
+  });
+  reporter.commentary("名古屋の天気ダッシュボードを artifacts/demo/index.html に作り始めるね。");
+  assert.deepEqual(announcements, [{ kind: "ack", text: "名古屋の天気ダッシュボードを作るね。" }]);
+  assert.equal(
+    workAcknowledgementFallback("名古屋の天気ダッシュボードを、artifacts/demo の index.html に作ってください。"),
+    "名古屋の天気ダッシュボードを作るね。",
   );
 });
 
@@ -67,10 +87,71 @@ test("progress speech keeps concrete milestones and drops context-management cha
   assert.equal(isMeaningfulWorkProgress("HTMLとCSSのつながりを確認しているよ。"), true);
   assert.equal(isMeaningfulWorkProgress("原因が分かって、構成が固まったよ。"), true);
   assert.equal(isMeaningfulWorkProgress("前のやつは文脈として見てるだけで、今の依頼だけ進めるよ。"), false);
+  assert.equal(isMeaningfulWorkProgress("継続記録を確認して、前回の成果物を見ています。"), false);
+  assert.equal(isMeaningfulWorkProgress("継続メモの基本情報を確認しています。"), false);
   assert.equal(
     contextualizeWorkProgress("ファイルを更新しているよ。", "Windows版をビルドして"),
-    "Windows版のビルドをファイルへ反映しているよ。",
+    "Windows版のビルドを進めているよ。",
   );
+  assert.equal(
+    contextualizeWorkProgress("ファイルを更新中…", "READMEの文章を公開向けに英語化して、日本語版へのリンクも入れてください"),
+    "READMEの英語版を仕上げているよ。",
+  );
+  assert.equal(
+    contextualizeWorkProgress("コマンドを実行中…", "作業モードの進捗メッセージが不自然なので改善してください"),
+    "作業モードの進捗メッセージの改善を直しているよ。",
+  );
+  assert.equal(
+    contextualizeWorkProgress("コマンドを実行中…", "CharaDock TTS確認メモを artifacts/demo/STATUS.md に作ってください"),
+    "CharaDock TTS確認メモを作っているよ。",
+  );
+});
+
+test("a commentary milestone does not announce overall completion before verification", () => {
+  const clock = fakeClock();
+  const announcements = [];
+  const reporter = new WorkVoiceReporter({
+    request: "CharaDock TTS確認メモを作ってください",
+    alreadyAcknowledged: true,
+    onAnnouncement: (entry) => announcements.push(entry),
+    now: clock.now,
+    schedule: clock.schedule,
+    cancel: clock.cancel,
+    progressDelayMs: 1000,
+    progressIntervalMs: 1000,
+  });
+  reporter.commentary("着手するね。");
+  reporter.commentary("メモの作成は完了です。");
+  clock.advance(1000);
+  assert.deepEqual(announcements, [{
+    kind: "progress",
+    text: "CharaDock TTS確認メモの仕上がりを確認しているよ。",
+  }]);
+});
+
+test("natural worker progress is not overwritten by a later low-level activity", () => {
+  const clock = fakeClock();
+  const announcements = [];
+  const reporter = new WorkVoiceReporter({
+    request: "名古屋の週間天気ページを作って",
+    alreadyAcknowledged: true,
+    onAnnouncement: (entry) => announcements.push(entry),
+    now: clock.now,
+    schedule: clock.schedule,
+    cancel: clock.cancel,
+    progressDelayMs: 3000,
+    progressIntervalMs: 5000,
+  });
+
+  reporter.commentary("名古屋の週間天気ページを作り始めるね。");
+  reporter.commentary("週間予報を見やすいカードにまとめているよ。");
+  reporter.activity("ファイルを更新中…");
+  clock.advance(5000);
+
+  assert.deepEqual(announcements, [{
+    kind: "progress",
+    text: "週間予報を見やすいカードにまとめているよ。",
+  }]);
 });
 
 test("first commentary is the acknowledgement and later progress is throttled", () => {
@@ -215,6 +296,6 @@ test("Realtime acknowledgement suppresses the first worker commentary but keeps 
   reporter.activity("ファイルを更新しているよ。");
   clock.advance(5000);
   assert.deepEqual(announcements.map(({ kind, text }) => ({ kind, text })), [
-    { kind: "progress", text: "READMEをファイルへ反映しているよ。" },
+    { kind: "progress", text: "READMEの英語版を仕上げているよ。" },
   ]);
 });

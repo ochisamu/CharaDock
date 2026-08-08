@@ -279,12 +279,41 @@ class CodexAppServerClient {
       if (message.method === "turn/completed" && this.activeTurnId === message.params?.turn?.id) this.activeTurnId = null;
       realtimeHandler(message);
     }
+    const item = message.params?.item;
+    const itemCollector = this.turnCollectors.get(message.params?.turnId);
+    if (itemCollector && ["item/started", "item/completed"].includes(message.method)
+      && String(item?.type || "") === "agentMessage") {
+      const itemId = String(item?.id || message.params?.itemId || "");
+      const phase = String(item?.phase || "");
+      itemCollector.agentMessagePhases ||= new Map();
+      if (itemId) itemCollector.agentMessagePhases.set(itemId, phase);
+      if (message.method === "item/started") itemCollector.activeAgentMessagePhase = phase;
+      if (message.method === "item/completed") {
+        if (phase !== "commentary" && String(item?.text || "").trim()) {
+          // The completed final item is authoritative. Delta text is useful
+          // for live display, but app-server also streams commentary items in
+          // the same turn and those must not be replayed as the final answer.
+          itemCollector.finalText = String(item.text);
+        }
+        itemCollector.activeAgentMessagePhase = "";
+      }
+    }
     if (message.method === "item/agentMessage/delta") {
       const collector = this.turnCollectors.get(message.params?.turnId);
       if (collector) {
         const delta = String(message.params?.delta || "");
         collector.text += delta;
-        if (delta) collector.onDelta?.(delta, collector.text);
+        const itemId = String(message.params?.itemId || "");
+        const phase = String(
+          message.params?.phase
+          || collector.agentMessagePhases?.get(itemId)
+          || collector.activeAgentMessagePhase
+          || "",
+        );
+        if (phase !== "commentary") {
+          collector.finalText = `${collector.finalText || ""}${delta}`;
+          if (delta) collector.onDelta?.(delta, collector.finalText);
+        }
       }
       return;
     }
@@ -306,8 +335,8 @@ class CodexAppServerClient {
       clearTimeout(collector.timer);
       if (this.activeTurnId === turn.id) this.activeTurnId = null;
       if (turn.status === "completed") {
-        const text = collector.text.trim();
-        if (text) collector.resolve({ text, provider: "codex", threadId: this.threadId });
+        const text = String(collector.finalText || collector.text || "").trim();
+        if (text) collector.resolve({ text, transcriptText: collector.text.trim(), provider: "codex", threadId: this.threadId });
         else collector.reject(new Error("Codexからテキスト応答を取得できませんでした。"));
       } else {
         collector.reject(new Error(turn.error?.message || `Codex turn ${turn.status || "failed"}`));
@@ -548,7 +577,17 @@ class CodexAppServerClient {
           if (this.activeTurnId === turnId) this.activeTurnId = null;
           reject(new Error("Codexの応答がタイムアウトしました。"));
         }, Math.max(30_000, Number(timeoutMs) || 180_000));
-        this.turnCollectors.set(turnId, { text: "", resolve, reject, timer, onDelta, onEvent });
+        this.turnCollectors.set(turnId, {
+          text: "",
+          finalText: "",
+          agentMessagePhases: new Map(),
+          activeAgentMessagePhase: "",
+          resolve,
+          reject,
+          timer,
+          onDelta,
+          onEvent,
+        });
       });
     };
     const result = this.queue.then(run, run);
