@@ -26,6 +26,7 @@
       this.playbackSamples = 0;
       this.nextPlaybackTime = 0;
       this.playbackSources = new Set();
+      this.muted = false;
     }
 
     queuePlayback(value) {
@@ -144,6 +145,7 @@
       decodeAudio.srcObject = stream;
       this.context = context;
       this.output = output;
+      output.gain.value = this.muted ? 0 : 1;
       this.decodeAudio = decodeAudio;
       this.unsubscribeAudio = this.api.onBeatriceAudio((audio) => this.queuePlayback(audio));
       this.unsubscribeError = this.api.onBeatriceError((message) => this.onError(new Error(String(message))));
@@ -153,6 +155,11 @@
       const track = stream.getAudioTracks()[0];
       if (!track) throw new Error("Realtimeの回答音声トラックがありません。");
       this.startCapture(track);
+    }
+
+    setMuted(value) {
+      this.muted = Boolean(value);
+      if (this.output) this.output.gain.setTargetAtTime(this.muted ? 0 : 1, this.context?.currentTime || 0, .012);
     }
 
     async stop() {

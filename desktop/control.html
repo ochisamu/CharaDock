@@ -26,6 +26,7 @@
       <nav class="nav-tabs" aria-label="設定カテゴリ">
         <p class="nav-section-label">コンパニオン</p>
         <button class="nav-tab is-active" type="button" data-page="chat"><span class="ui-symbol ui-symbol-chat" aria-hidden="true"></span>Chat</button>
+        <button class="nav-tab" type="button" data-page="remote"><span class="ui-symbol ui-symbol-settings" aria-hidden="true"></span>リモート</button>
         <button class="nav-tab" type="button" data-page="character"><span class="ui-symbol ui-symbol-character" aria-hidden="true"></span>キャラクター</button>
         <button class="nav-tab" type="button" data-page="voice"><span class="ui-symbol ui-symbol-voice" aria-hidden="true"></span>音声</button>
         <p class="nav-section-label">システム</p>
@@ -97,6 +98,50 @@
           </form>
           <p id="chatStatus" class="inline-status" role="status">Codex app-serverを使用します。</p>
         </div>
+      </section>
+
+      <section class="page" data-page-panel="remote">
+        <header class="page-header"><div><p class="eyebrow">CharaDock Link · Beta</p><h1>リモートアクセス</h1></div><span id="remoteStatusBadge" class="remote-status-badge">停止中</span></header>
+        <p class="page-lead">同じWi-Fiにある端末へキャラクターとChat / Workを表示し、文字で指示できます。マイクは使いません。</p>
+        <section id="remoteAccessCard" class="card settings-card remote-access-card">
+          <label class="switch-row remote-master-switch"><span><strong>ローカルLAN接続を有効にする</strong><small>初期状態はOFF。選んだプライベートLANだけで待ち受けます</small></span><input id="remoteAccessToggle" type="checkbox" /><i></i></label>
+          <div id="remoteEnabledSettings" class="remote-enabled-settings" hidden>
+            <div class="remote-pairing-layout">
+              <div class="remote-qr-panel">
+                <img id="remoteQrImage" alt="スマートフォン接続用QRコード" />
+                <span id="remoteQrPlaceholder">QRコードを準備中…</span>
+              </div>
+              <div class="remote-pairing-copy">
+                <p class="eyebrow">PAIR THIS DEVICE</p>
+                <h2>QRコードを読み取る</h2>
+                <p>端末ごとに標準カメラで1回読み取ります。URLは最初のペアリングまたは10分で無効になりますが、その端末は設定した有効時間まで再コピーなしで開けます。</p>
+                <div class="remote-url-row"><code id="remoteAccessUrl">接続先を準備中</code><button id="copyRemoteUrlButton" class="button button-secondary" type="button">URLをコピー</button></div>
+                <p id="remoteConnectionSummary" class="inline-status" role="status"></p>
+                <p class="remote-firewall-hint">接続できない場合は、Windows Defenderの確認で「プライベート ネットワーク」を許可し、両端末が同じWi-Fiか確認してください。</p>
+              </div>
+            </div>
+            <div class="settings-stack remote-options">
+              <label>接続に使うネットワーク<select id="remoteAddressSelect"></select></label>
+              <label>端末セッションの有効時間<select id="remoteSessionSelect"><option value="15">15分</option><option value="30">30分</option><option value="60">1時間</option><option value="120">2時間</option><option value="480">8時間</option></select></label>
+              <label>リモートの応答音声<select id="remoteResponseModeSelect"><option value="tts">通常TTS</option><option value="live">GPT-Live（PCでLive接続中）</option></select></label>
+              <label class="switch-row"><span><strong>スマートフォンでWorkを許可</strong><small>現在の作業先と、このキャラのホーム内で作業できます</small></span><input id="remoteWorkToggle" type="checkbox" /><i></i></label>
+              <label class="switch-row"><span><strong>スマートフォンでキャラ音声を再生</strong><small>通常TTSの設定済み音声をスマートフォン側でも生成します</small></span><input id="remoteTtsToggle" type="checkbox" /><i></i></label>
+              <label class="switch-row"><span><strong>PCでも回答音声を再生</strong><small>OFFにするとリモートから送った通常TTSをPCでは鳴らしません</small></span><input id="remotePcAudioToggle" type="checkbox" /><i></i></label>
+            </div>
+            <section class="remote-device-section" aria-labelledby="remoteDeviceTitle">
+              <div class="section-row"><div><strong id="remoteDeviceTitle">ペアリング中の端末</strong><small>端末名、最終接続、有効期限を確認して個別に解除できます</small></div><span id="remoteDeviceCount" class="setup-state-badge">0台</span></div>
+              <div id="remoteDeviceList" class="remote-device-list"></div>
+            </section>
+            <div class="remote-actions">
+              <button id="regenerateRemotePairingButton" class="button button-secondary" type="button">新しいQRコード</button>
+              <button id="revokeRemoteSessionsButton" class="button button-danger" type="button">すべての端末を解除</button>
+            </div>
+          </div>
+        </section>
+        <aside class="remote-security-note">
+          <span class="ui-symbol ui-symbol-support" aria-hidden="true"></span>
+          <div><strong>プライベートネットワーク専用の実験機能です</strong><p>通信はHTTPSではありません。信頼できる自宅・社内Wi-Fiでのみ使用してください。スマートフォンから画面撮影、ブラウザ操作、PC操作、許可への回答はできません。外出先からのアクセスやルーターのポート開放には使用しないでください。</p></div>
+        </aside>
       </section>
 
       <section class="page" data-page-panel="character">

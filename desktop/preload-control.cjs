@@ -6,6 +6,11 @@ contextBridge.exposeInMainWorld("mascotDesktop", {
   openExternalUrl: (url) => ipcRenderer.invoke("app:openExternalUrl", url),
   getPathForFile: (file) => webUtils.getPathForFile(file),
   saveSettings: (settings) => ipcRenderer.invoke("settings:save", settings),
+  getRemoteStatus: () => ipcRenderer.invoke("remote:getStatus"),
+  setRemoteConfig: (settings) => ipcRenderer.invoke("remote:setConfig", settings),
+  regenerateRemotePairing: () => ipcRenderer.invoke("remote:regeneratePairing"),
+  revokeRemoteSessions: () => ipcRenderer.invoke("remote:revokeAll"),
+  revokeRemoteSession: (sessionId) => ipcRenderer.invoke("remote:revokeSession", sessionId),
   setApiKey: (key) => ipcRenderer.invoke("settings:setApiKey", key),
   setCharacter: (id) => ipcRenderer.invoke("character:set", id),
   removeCharacter: (id) => ipcRenderer.invoke("character:remove", id),
@@ -117,6 +122,11 @@ contextBridge.exposeInMainWorld("mascotDesktop", {
     const listener = (_event, payload) => callback(payload);
     ipcRenderer.on("audio:realtimeEvent", listener);
     return () => ipcRenderer.removeListener("audio:realtimeEvent", listener);
+  },
+  onRemotePcAudio: (callback) => {
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on("remote:pcAudio", listener);
+    return () => ipcRenderer.removeListener("remote:pcAudio", listener);
   },
   onBeatriceAudio: (callback) => {
     const listener = (_event, audio) => callback(audio);

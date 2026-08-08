@@ -720,6 +720,44 @@ input[type="range"]:active::-webkit-slider-thumb { transform: scale(1.16); box-s
 .nested-settings { display: grid; gap: 12px; margin-top: -4px; padding: 13px; border: 1px solid var(--line); border-radius: 12px; background: color-mix(in srgb, var(--field) 74%, transparent); transition: opacity 140ms ease; }
 .nested-settings.is-disabled { opacity: .45; }
 .nested-settings .switch-row { min-height: 32px; }
+.remote-status-badge { align-self: center; padding: 6px 10px; color: var(--muted); background: var(--surface-soft); border: 1px solid var(--line); border-radius: 999px; font-size: 9px; font-weight: 750; }
+.remote-status-badge.is-active { color: var(--success); border-color: color-mix(in srgb, var(--success) 34%, var(--line)); background: color-mix(in srgb, var(--success) 9%, transparent); }
+.remote-access-card { gap: 0; overflow: hidden; padding: 0; }
+.remote-master-switch { min-height: 76px; padding: 18px 20px; }
+.remote-enabled-settings { display: grid; gap: 18px; padding: 0 20px 20px; border-top: 1px solid var(--line); }
+.remote-enabled-settings[hidden] { display: none; }
+.remote-pairing-layout { display: grid; grid-template-columns: 190px minmax(0, 1fr); gap: 22px; align-items: center; padding-top: 20px; }
+.remote-qr-panel { position: relative; display: grid; place-items: center; width: 190px; aspect-ratio: 1; overflow: hidden; background: #fff; border-radius: 18px; box-shadow: 0 12px 34px rgba(0,0,0,.2); }
+.remote-qr-panel img { display: block; width: 100%; height: 100%; padding: 8px; object-fit: contain; }
+.remote-qr-panel img:not([src]), .remote-qr-panel img[src=""] { display: none; }
+.remote-qr-panel span { padding: 24px; color: #666; font-size: 10px; text-align: center; }
+.remote-qr-panel:has(img[src]:not([src=""])) span { display: none; }
+.remote-pairing-copy h2 { margin: 0 0 8px; font-size: 19px; letter-spacing: -.02em; }
+.remote-pairing-copy > p:not(.eyebrow) { max-width: 580px; margin: 0 0 14px; color: var(--muted); font-size: 10px; line-height: 1.65; }
+.remote-pairing-copy .remote-firewall-hint { margin-top: 9px; font-size: 9px; }
+.remote-url-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
+.remote-url-row code { display: block; min-width: 0; padding: 10px 12px; overflow: hidden; color: var(--text-secondary); background: var(--field); border: 1px solid var(--line); border-radius: 10px; font: 10px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; text-overflow: ellipsis; white-space: nowrap; }
+.remote-options { grid-template-columns: repeat(2, minmax(0, 1fr)); padding: 16px; background: var(--field); border: 1px solid var(--line); border-radius: 14px; }
+.remote-options > label:not(.switch-row) { display: grid; gap: 6px; color: var(--text-secondary); font-size: 10px; font-weight: 680; }
+.remote-options .switch-row { min-height: 52px; }
+.remote-device-section { display: grid; gap: 12px; padding: 16px; border: 1px solid var(--line); border-radius: 14px; background: color-mix(in srgb, var(--surface-soft) 72%, transparent); }
+.remote-device-section .section-row { align-items: center; }
+.remote-device-section .section-row small { display: block; margin-top: 3px; color: var(--muted); font-size: 9px; font-weight: 500; }
+.remote-device-list { display: grid; gap: 8px; }
+.remote-device-empty { margin: 0; padding: 15px; color: var(--muted); border: 1px dashed var(--line); border-radius: 11px; text-align: center; font-size: 10px; }
+.remote-device-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 12px 13px; border: 1px solid var(--line); border-radius: 12px; background: var(--field); }
+.remote-device-copy { min-width: 0; }
+.remote-device-title { display: flex; align-items: center; gap: 7px; }
+.remote-device-title i { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
+.remote-device-title i.is-connected { background: var(--success); box-shadow: 0 0 0 4px color-mix(in srgb, var(--success) 14%, transparent); }
+.remote-device-copy strong { display: block; overflow: hidden; color: var(--text-secondary); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.remote-device-copy small { display: block; margin-top: 4px; color: var(--muted); font-size: 9px; }
+.remote-device-remove { min-height: 30px; padding: 0 10px; border: 1px solid color-mix(in srgb, var(--danger) 32%, var(--line)); border-radius: 9px; color: var(--danger); background: transparent; font-size: 9px; font-weight: 700; }
+.remote-actions { display: flex; justify-content: flex-end; gap: 9px; }
+.remote-security-note { display: flex; gap: 13px; margin-top: 14px; padding: 15px 17px; color: var(--muted); background: color-mix(in srgb, var(--accent) 5%, var(--surface)); border: 1px solid var(--line); border-radius: 15px; }
+.remote-security-note > .ui-symbol { width: 23px; height: 23px; color: var(--accent); }
+.remote-security-note strong { color: var(--text-secondary); font-size: 11px; }
+.remote-security-note p { margin: 4px 0 0; font-size: 9px; line-height: 1.65; }
 .tts-settings, .tts-provider-settings { display: grid; gap: 11px; }
 .tts-settings { padding: 13px; background: var(--field); border: 1px solid var(--line); border-radius: 13px; }
 .tts-provider-settings[hidden] { display: none; }
@@ -935,6 +973,9 @@ input[type="range"]:active::-webkit-slider-thumb { transform: scale(1.16); box-s
   .beatrice-character-footer { align-items: flex-start; flex-direction: column; }
   .page-section-nav { display: flex; width: 100%; }
   .web-preview-launch-controls { grid-template-columns: 1fr; }
+  .remote-pairing-layout { grid-template-columns: 1fr; }
+  .remote-qr-panel { width: min(210px, 100%); justify-self: center; }
+  .remote-options { grid-template-columns: 1fr; }
 }
 
 @media (prefers-color-scheme: light) {

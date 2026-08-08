@@ -351,6 +351,22 @@ test("user-facing interaction modes are consistently named Chat and Work", () =>
   assert.match(mascot, /modeButton\.textContent = workMode \? "Work" : "Chat"/);
 });
 
+test("remote access exposes compact avatar dialogue, device controls, and Live routing", () => {
+  const controlHtml = fs.readFileSync(path.join(projectRoot, "desktop", "control.html"), "utf8");
+  const controlJs = fs.readFileSync(path.join(projectRoot, "desktop", "control.js"), "utf8");
+  const remoteHtml = fs.readFileSync(path.join(projectRoot, "desktop", "remote", "index.html"), "utf8");
+  const remoteCss = fs.readFileSync(path.join(projectRoot, "desktop", "remote", "remote.css"), "utf8");
+  const remoteJs = fs.readFileSync(path.join(projectRoot, "desktop", "remote", "remote.js"), "utf8");
+  assert.match(controlHtml, /data-page="remote"[\s\S]*ui-symbol-settings[\s\S]*リモート/);
+  for (const id of ["remoteDeviceList", "remotePcAudioToggle", "remoteResponseModeSelect"]) assert.match(controlHtml, new RegExp(`id="${id}"`));
+  assert.match(controlJs, /revokeRemoteSession\(device\.id\)/);
+  for (const id of ["bubbleExpandButton", "settingsSheet", "characterSelect", "ttsProviderSelect", "realtimeVoiceSelect", "pcAudioToggle"]) assert.match(remoteHtml, new RegExp(`id="${id}"`));
+  assert.match(remoteCss, /-webkit-line-clamp:\s*4/);
+  assert.match(remoteCss, /@keyframes avatar-idle/);
+  assert.match(remoteJs, /character\?\.motion/);
+  assert.match(remoteJs, /\["delta", "realtime-caption"\]/);
+});
+
 test("WSL can launch Windows Electron from a persistent isolated development mirror", () => {
   const shell = fs.readFileSync(path.join(projectRoot, "scripts", "windows-dev.sh"), "utf8");
   const batch = fs.readFileSync(path.join(projectRoot, "scripts", "windows-dev.cmd"), "utf8");

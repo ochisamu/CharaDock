@@ -64,6 +64,14 @@ CharaDock is an unofficial derivative of [rotejin/PuruPuruPNGTuber](https://gith
 
 Temporary requests, guesses, content copied from external websites, secrets, contact details, addresses, and sensitive attributes are not stored as long-term memory. Memories are never shared between characters.
 
+### CharaDock Link — experimental remote access
+
+From Settings, you can explicitly enable an avatar-first remote view on the same private Wi-Fi. Pair each device with a short-lived QR code, then send text to Chat or an opt-in Work mode, follow progress, interrupt a turn, revisit recent history, and open output cards. You can switch characters and ready standard-TTS providers remotely, with independent PC and phone playback. While GPT-Live is already connected on the PC, remote text can join that session with synchronized captions; configured Beatrice 2 conversion is played on the PC. The remote page never requests microphone, camera, screen-capture, browser-control, or computer-control access.
+
+The pairing URL expires after its first use or 10 minutes. A paired device can reopen the base URL without copying it again until its configured session expires. The PC lists device name, connection state, last activity, and expiry, with individual and global revocation. Pair again after a PC restart, IP-address change, expiry, or revocation.
+
+This v0.1.4 feature is a local-LAN PoC and uses plain HTTP. It binds to one selected private IPv4 address—not `0.0.0.0`—and is off by default. Use it only on a trusted home or workplace network; never expose its port through router forwarding. Pairing uses a high-entropy expiring token, an HttpOnly same-site session cookie, per-session CSRF protection, revocation controls, and bounded output access tied to the active workspace.
+
 ### Choose how the character listens and speaks
 
 The input provider is always selected explicitly. CharaDock does not start Codex Realtime automatically or silently fall back to another provider after a failure.

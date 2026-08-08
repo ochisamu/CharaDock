@@ -3,6 +3,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const os = require("node:os");
 const { createHash } = require("node:crypto");
+const QRCode = require("qrcode");
 const {
   app,
   BrowserWindow,
@@ -71,7 +72,7 @@ const {
   removeGeneratedCharacterDirectory,
   resolveGeneratedCharacterDirectory,
 } = require("./lib/generated-character-store.cjs");
-const { normalizeRealtimeVoice, normalizeRealtimeVoiceList } = require("./lib/realtime-voice.cjs");
+const { REALTIME_VOICES, normalizeRealtimeVoice, normalizeRealtimeVoiceList } = require("./lib/realtime-voice.cjs");
 const { normalizeMascotPointerMode, shouldAutoHideMascot } = require("./lib/mascot-pointer-mode.cjs");
 const { localAttachmentInstructions, normalizeLocalAttachments } = require("./lib/local-attachments.cjs");
 const { RealtimeTurnBuffer, normalizedText } = require("./lib/realtime-turn-buffer.cjs");
@@ -92,6 +93,7 @@ const {
   resolveBeatriceHostExecutable,
 } = require("./lib/beatrice-v2.cjs");
 const { MascotStaticServer } = require("./lib/static-server.cjs");
+const { RemoteCompanionServer, isPrivateIpv4 } = require("./lib/remote-server.cjs");
 const { splitTtsText, styleBertVoiceEndpoint, synthesizeStyleBertVits2 } = require("./lib/style-bert-vits2.cjs");
 const {
   piperPlusStatus,
@@ -111,7 +113,7 @@ const { EmbeddedTtsModels } = require("./lib/tts-model-download.cjs");
 const { ttsSetupGuidance } = require("./lib/tts-readiness.cjs");
 const { MAX_MODEL_BYTES: MAX_SBV2_MODEL_BYTES, Sbv2ModelLibrary } = require("./lib/sbv2-models.cjs");
 const { Sbv2WorkerClient } = require("./lib/sbv2-worker-client.cjs");
-const { DiagnosticLog, createSupportBundle, diagnosticsAsText, sanitizeDiagnosticValue } = require("./lib/support-diagnostics.cjs");
+const { DiagnosticLog, createSupportBundle, diagnosticsAsText, redactDiagnosticText, sanitizeDiagnosticValue } = require("./lib/support-diagnostics.cjs");
 const { RELEASES_PAGE_URL, checkForAppUpdate } = require("./lib/app-update.cjs");
 const { validateAvatarOutput } = require("../.agents/skills/build-purupuru-avatar/scripts/validate-output.cjs");
 const { WebPreviewRuntime, commandForWebProject, findWebProject } = require("./lib/web-preview-runtime.cjs");
@@ -215,6 +217,13 @@ let characterHomeManager;
 let webPreviewRuntime;
 let diagnosticLog;
 let localServer;
+let remoteServer;
+let remoteQrDataUrl = "";
+let remoteQrPairingUrl = "";
+let remoteLastError = "";
+let remoteBusy = false;
+let remoteLastDisplayText = "";
+const REMOTE_TTS_OWNER_ID = "charadock-link";
 let codexClient;
 let workCodexClient;
 let browserCodexClient;
@@ -1025,6 +1034,366 @@ function buildAvatarSnapshot(characterId, motionOverride = null) {
   };
 }
 
+function privateLanAddresses() {
+  const results = [];
+  for (const [interfaceName, entries] of Object.entries(os.networkInterfaces())) {
+    for (const entry of entries || []) {
+      const address = String(entry?.address || "");
+      if (entry?.internal || entry?.family !== "IPv4" || !isPrivateIpv4(address)) continue;
+      if (!results.some((item) => item.address === address)) results.push({ address, interfaceName: String(interfaceName || "LAN").slice(0, 80) });
+    }
+  }
+  const score = (item) => {
+    const name = item.interfaceName.toLowerCase();
+    let value = item.address.startsWith("192.168.") ? 0 : item.address.startsWith("10.") ? 10 : item.address.startsWith("172.") ? 20 : 30;
+    if (/wi-?fi|wireless|ethernet|イーサネット/.test(name)) value -= 4;
+    if (/wsl|hyper-v|vethernet|docker|vmware|virtualbox|loopback|vpn|tailscale|zerotier/.test(name)) value += 100;
+    return value;
+  };
+  return results.sort((left, right) => score(left) - score(right) || left.interfaceName.localeCompare(right.interfaceName));
+}
+
+function selectedRemoteAddress(requested = preferences?.data?.remoteBindAddress) {
+  const addresses = privateLanAddresses();
+  const selected = addresses.find((item) => item.address === String(requested || ""));
+  return selected?.address || addresses[0]?.address || "";
+}
+
+function remoteServerStatus() {
+  const status = remoteServer?.status() || {
+    active: false,
+    address: "",
+    port: 41317,
+    url: "",
+    pairingUrl: "",
+    pairingExpiresAt: "",
+    clients: 0,
+    connectedClients: 0,
+    devices: [],
+    sessionMinutes: Number(preferences?.data?.remoteSessionMinutes) || 60,
+  };
+  return {
+    ...status,
+    enabled: Boolean(preferences?.data?.remoteAccessEnabled),
+    bindAddress: String(preferences?.data?.remoteBindAddress || ""),
+    workEnabled: Boolean(preferences?.data?.remoteWorkEnabled),
+    ttsEnabled: preferences?.data?.remoteTtsEnabled !== false,
+    pcAudioEnabled: preferences?.data?.remotePcAudioEnabled !== false,
+    responseMode: preferences?.data?.remoteResponseMode === "live" ? "live" : "tts",
+    availableAddresses: privateLanAddresses(),
+    qrDataUrl: status.active ? remoteQrDataUrl : "",
+    error: remoteLastError,
+    experimental: true,
+  };
+}
+
+function remoteTtsProviderOptions(characterId = preferences.data.characterId) {
+  const selected = characterTtsSettings(characterId).provider;
+  const status = (provider) => {
+    try {
+      if (provider === "system") return { available: true, phone: false };
+      if (provider === "style-bert-vits2") return { available: provider === selected, phone: true };
+      if (provider === "piper-plus") return { available: piperPlusStatus({ executablePath: preferences.data.piperPlusExecutablePath, modelPath: preferences.data.piperPlusModelPath }).ready, phone: true };
+      if (provider === "supertonic-3") return { available: supertonicStatus(preferences.data.supertonicModelDirectory).ready, phone: true };
+      if (provider === "irodori-webgpu") return { available: activeIrodoriStatus().ready, phone: true };
+      if (provider === "kokoro") return { available: kokoroModelStatus(preferences.data.kokoroModelDirectory, kokoroWebGpuAvailable).ready, phone: true };
+      if (provider === "sbv2-jp-extra") {
+        const model = sbv2ModelLibrary?.selectedModel(preferences.data.sbv2Models, characterTtsSettings(characterId).sbv2ModelId);
+        return { available: Boolean(model && sbv2ModelLibrary?.isReady(model)), phone: true };
+      }
+    } catch {}
+    return { available: provider === selected, phone: false };
+  };
+  const names = {
+    system: "System Voice",
+    "style-bert-vits2": "Style-Bert-VITS2",
+    "piper-plus": "Piper Plus",
+    "supertonic-3": "Supertonic 3",
+    "irodori-webgpu": "Irodori WebGPU",
+    kokoro: "Kokoro",
+    "sbv2-jp-extra": "SBV2 JP-Extra",
+  };
+  return [...TTS_PROVIDERS].map((provider) => ({ id: provider, name: names[provider] || provider, ...status(provider) }));
+}
+
+async function refreshRemotePairingQr() {
+  const pairingUrl = remoteServer?.pairingUrl() || "";
+  if (pairingUrl !== remoteQrPairingUrl) {
+    remoteQrPairingUrl = pairingUrl;
+    remoteQrDataUrl = "";
+    const generatedQr = pairingUrl ? await QRCode.toDataURL(pairingUrl, {
+      errorCorrectionLevel: "M",
+      margin: 1,
+      width: 512,
+      color: { dark: "#172033", light: "#ffffff" },
+    }) : "";
+    if (remoteQrPairingUrl !== pairingUrl) return;
+    remoteQrDataUrl = generatedQr;
+  }
+  controlWindow?.webContents.send("app:stateChanged", publicAppState());
+}
+
+function remoteAvatarAssetKeys() {
+  const character = activeCharacter();
+  const directory = characterAssetDirectory(character);
+  return [...Object.entries({ ...AVATAR_IMAGE_FILES, ...OPTIONAL_AVATAR_IMAGE_FILES })]
+    .filter(([, filename]) => fs.existsSync(path.join(directory, filename)))
+    .map(([key]) => key);
+}
+
+function remoteAvatarAssetVersion() {
+  const character = activeCharacter();
+  const directory = characterAssetDirectory(character);
+  const timestamps = remoteAvatarAssetKeys().map((key) => {
+    const filename = AVATAR_IMAGE_FILES[key] || OPTIONAL_AVATAR_IMAGE_FILES[key];
+    try { return fs.statSync(path.join(directory, filename)).mtimeMs; } catch { return 0; }
+  });
+  return createHash("sha256").update(`${character.id}:${timestamps.join(":")}`).digest("hex").slice(0, 12);
+}
+
+function remotePublicText(value, limit = 12_000) {
+  return redactDiagnosticText(String(value || ""), diagnosticRedactionOptions())
+    .replace(/\b[A-Za-z]:[\\/][^\s<>"']+/g, "[local path]")
+    .replace(/\/(?:home|Users|mnt|tmp)\/[^\s<>"']+/g, "[local path]")
+    .slice(0, limit);
+}
+
+function publicRemoteState() {
+  const character = activeCharacter();
+  const characterTts = characterTtsSettings();
+  const workDirectory = validWorkDirectory();
+  const generatedTts = ["style-bert-vits2", "piper-plus", "supertonic-3", "irodori-webgpu", "kokoro", "sbv2-jp-extra"].includes(characterTtsSettings().provider);
+  const runs = publicWorkHistory().slice(0, 8).map((run) => ({
+    ...run,
+    request: remotePublicText(run.request, 3000),
+    result: remotePublicText(run.result, 6000),
+    activities: (run.activities || []).slice(-8).map((item) => remotePublicText(item, 300)),
+    artifacts: (run.artifacts || []).slice(0, 8),
+  }));
+  const lastAssistant = [...conversationHistory].reverse().find((entry) => entry.role === "assistant")?.text || "";
+  const activeRun = runs.find((run) => run.id === activeWorkRunId);
+  return {
+    language: interfaceLanguage(),
+    character: {
+      id: character.id,
+      name: character.name,
+      assetKeys: remoteAvatarAssetKeys(),
+      assetVersion: remoteAvatarAssetVersion(),
+      motion: sanitizedMotion(character.motion, characterMotionDefaults(character)),
+    },
+    characters: allCharacters().map((item) => {
+      const effective = effectiveCharacter(item);
+      return { id: effective.id, name: effective.name };
+    }),
+    interactionMode: preferences.data.interactionMode === "work" ? "work" : "chat",
+    workAllowed: Boolean(preferences.data.remoteWorkEnabled && preferences.data.backend === "codex" && workDirectory),
+    workDirectoryName: workDirectory ? path.basename(workDirectory) : "",
+    mobileTtsAllowed: Boolean(preferences.data.remoteResponseMode !== "live" && preferences.data.remoteTtsEnabled && preferences.data.ttsEnabled && generatedTts),
+    voice: {
+      responseMode: preferences.data.remoteResponseMode === "live" ? "live" : "tts",
+      pcAudioEnabled: preferences.data.remotePcAudioEnabled !== false,
+      ttsProvider: characterTts.provider,
+      ttsProviderOptions: remoteTtsProviderOptions(),
+      realtimeVoice: characterTts.realtimeVoice,
+      realtimeVoices: [...REALTIME_VOICES],
+      realtimeConversion: characterTts.realtimeVoiceConversion,
+      liveConnected: Boolean(currentRealtimeClient()),
+      liveSupported: preferences.data.backend === "codex",
+      liveAudioTarget: "pc",
+    },
+    busy: remoteBusy,
+    lastDisplayText: remotePublicText(remoteLastDisplayText || activeRun?.activities?.at(-1) || activeRun?.result || lastAssistant || mainText("スマートフォンから話しかけられるよ。", "You can talk to me from your phone.")),
+    conversationHistory: conversationHistory.slice(-16).map((entry) => ({
+      role: entry.role === "user" ? "user" : "assistant",
+      text: remotePublicText(entry.text, 6000),
+      createdAt: String(entry.createdAt || "").slice(0, 40),
+    })),
+    workHistory: { activeWorkRunId, runs },
+  };
+}
+
+function publishRemoteState() {
+  remoteServer?.publish("state", publicRemoteState());
+}
+
+async function remoteArtifact(runId, relativePath) {
+  let { artifact, target } = resolveWorkArtifact(runId, relativePath);
+  let stat = fs.statSync(target);
+  if (stat.isDirectory()) {
+    const entry = artifactHtmlEntry(target);
+    if (!entry) throw new Error(mainText("このフォルダーはスマートフォンでプレビューできません。", "This folder cannot be previewed on a phone."));
+    target = entry;
+    stat = fs.statSync(target);
+  }
+  if (!stat.isFile() || stat.size > 32 * 1024 * 1024) throw new Error(mainText("成果物が大きすぎます。", "The artifact is too large."));
+  const contentType = artifactMimeType(target);
+  const html = contentType.startsWith("text/html");
+  return {
+    body: fs.readFileSync(target),
+    contentType,
+    fileName: artifact.name || path.basename(target),
+    inline: true,
+    contentSecurityPolicy: html
+      ? "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data: blob:; media-src data: blob:; connect-src 'none'; form-action 'none'; object-src 'none'; base-uri 'none'; sandbox allow-scripts"
+      : "default-src 'none'; img-src 'self' data:; media-src 'self'; style-src 'unsafe-inline'; sandbox",
+  };
+}
+
+async function sendRemoteMessage(payload = {}) {
+  const message = String(payload.message || "").trim().slice(0, 12_000);
+  if (!message) throw new Error(mainText("メッセージを入力してください。", "Enter a message."));
+  const mode = payload.mode === "work" ? "work" : "chat";
+  if (mode === "work" && !(preferences.data.remoteWorkEnabled && preferences.data.backend === "codex" && validWorkDirectory())) {
+    throw new Error(mainText("スマートフォンからのWorkが許可されていないか、作業先がありません。", "Phone Work is not allowed or no work folder is selected."));
+  }
+  const liveMode = preferences.data.remoteResponseMode === "live";
+  if (liveMode) {
+    if (!currentRealtimeClient()) throw new Error(mainText("PC側でLiveを開始してください。接続後はスマートフォンの文字入力をGPT-Liveへ送れます。", "Start Live on the PC first. Once connected, phone text can be sent to GPT-Live."));
+    if (mode !== preferences.data.interactionMode) throw new Error(mainText("Live接続中はPCと同じChat / Workを選んでください。", "While Live is connected, choose the same Chat / Work mode as the PC."));
+    remoteBusy = true;
+    remoteLastDisplayText = mainText("Liveへ送信したよ。", "Sent to Live.");
+    publishRemoteState();
+    controlWindow?.webContents.send("remote:pcAudio", { enabled: preferences.data.remotePcAudioEnabled !== false });
+    const appended = await appendActiveRealtimeText(message);
+    if (!appended) {
+      remoteBusy = false;
+      publishRemoteState();
+      throw new Error(mainText("Liveへメッセージを送信できませんでした。接続し直してください。", "The message could not be sent to Live. Reconnect and try again."));
+    }
+    return { accepted: true, realtime: true };
+  }
+  if (currentRealtimeClient()) throw new Error(mainText("通常TTSで送るにはPC側のLiveを停止してください。", "Stop Live on the PC to use standard TTS."));
+  if (mode !== preferences.data.interactionMode) await setInteractionMode(mode);
+  remoteBusy = true;
+  remoteLastDisplayText = message;
+  publishRemoteState();
+  try {
+    await sendChatMessage(message, { suppressPcAudio: preferences.data.remotePcAudioEnabled === false });
+    return { completed: true };
+  } finally {
+    remoteBusy = false;
+    publishRemoteState();
+  }
+}
+
+async function applyRemoteClientSettings(patch = {}) {
+  if (remoteBusy || activeWorkRunId) throw new Error(mainText("応答またはWorkの完了後に設定を変更してください。", "Change settings after the current response or Work finishes."));
+  const requestedCharacterId = String(patch.characterId || preferences.data.characterId);
+  if (requestedCharacterId !== preferences.data.characterId) {
+    if (currentRealtimeClient()) throw new Error(mainText("キャラクターを変える前にPC側のLiveを停止してください。", "Stop Live on the PC before changing characters."));
+    if (!allCharacters().some((item) => item.id === requestedCharacterId)) throw new Error(mainText("キャラクターが見つかりません。", "Character not found."));
+    await setCharacter(requestedCharacterId);
+  }
+  const responseMode = patch.responseMode === "live" ? "live" : patch.responseMode === "tts" ? "tts" : preferences.data.remoteResponseMode;
+  if (responseMode === "live" && preferences.data.backend !== "codex") throw new Error(mainText("GPT-LiveはCodex app-server接続時に利用できます。", "GPT-Live requires a Codex app-server connection."));
+  const requestedProvider = String(patch.ttsProvider || characterTtsSettings().provider);
+  if (requestedProvider !== characterTtsSettings().provider) {
+    const option = remoteTtsProviderOptions().find((item) => item.id === requestedProvider);
+    if (!option?.available) throw new Error(mainText("この音声モデルはPC側で準備されていません。", "This voice model is not ready on the PC."));
+    preferences.patch({
+      ttsProvider: requestedProvider,
+      characterTtsProfiles: updatedCharacterTtsProfiles(preferences.data.characterId, { provider: requestedProvider }),
+    });
+    mascotWindow?.webContents.send("mascot:tts", { enabled: preferences.data.ttsEnabled, provider: requestedProvider });
+    scheduleIrodoriPrewarm();
+  }
+  const previousVoice = characterTtsSettings().realtimeVoice;
+  const realtimeVoice = normalizeRealtimeVoice(patch.realtimeVoice, previousVoice);
+  if (realtimeVoice !== previousVoice && currentRealtimeClient()) {
+    throw new Error(mainText("GPT-Liveの声を変える前にPC側のLiveを停止してください。", "Stop Live on the PC before changing its voice."));
+  }
+  preferences.patch({
+    remoteResponseMode: responseMode,
+    remotePcAudioEnabled: typeof patch.pcAudioEnabled === "boolean" ? patch.pcAudioEnabled : preferences.data.remotePcAudioEnabled !== false,
+    realtimeVoice,
+    characterTtsProfiles: updatedCharacterTtsProfiles(preferences.data.characterId, { realtimeVoice }),
+  });
+  controlWindow?.webContents.send("remote:pcAudio", { enabled: preferences.data.remotePcAudioEnabled !== false });
+  broadcastAppState();
+  return publicRemoteState();
+}
+
+function createRemoteServer(address, sessionMinutes = preferences.data.remoteSessionMinutes) {
+  return new RemoteCompanionServer({
+    rootDir: path.join(projectRoot, "desktop", "remote"),
+    address,
+    port: 41317,
+    sessionMinutes,
+    callbacks: {
+      getState: publicRemoteState,
+      getAvatarAsset: (key) => {
+        const filename = AVATAR_IMAGE_FILES[key] || OPTIONAL_AVATAR_IMAGE_FILES[key];
+        if (!filename) return null;
+        const target = path.join(characterAssetDirectory(activeCharacter()), filename);
+        if (!fs.existsSync(target)) return null;
+        return { body: fs.readFileSync(target), contentType: "image/png" };
+      },
+      getArtifact: remoteArtifact,
+      sendMessage: sendRemoteMessage,
+      setSettings: applyRemoteClientSettings,
+      interrupt: interruptActiveInteraction,
+      synthesizeTts: (text) => {
+        if (!preferences.data.remoteTtsEnabled) throw new Error(mainText("スマートフォン音声は設定で無効です。", "Phone audio is disabled in Settings."));
+        return synthesizeConfiguredTts(String(text || "").slice(0, 4000), REMOTE_TTS_OWNER_ID);
+      },
+      nextTtsChunk: (streamId) => nextIrodoriTtsChunk(streamId, REMOTE_TTS_OWNER_ID),
+      cancelTts: (streamId) => ({ cancelled: cancelIrodoriTtsStream(streamId, REMOTE_TTS_OWNER_ID) }),
+      onStatus: () => {
+        refreshRemotePairingQr().catch((error) => { remoteLastError = error.message; });
+      },
+    },
+  });
+}
+
+async function applyRemoteConfiguration(patch = {}) {
+  const enabled = patch.enabled === true;
+  const address = selectedRemoteAddress(patch.bindAddress);
+  const sessionMinutes = Math.max(15, Math.min(480, Math.round(Number(patch.sessionMinutes) || 60)));
+  const nextPreferences = {
+    remoteAccessEnabled: enabled,
+    remoteBindAddress: address,
+    remoteWorkEnabled: patch.workEnabled === true,
+    remoteTtsEnabled: patch.ttsEnabled !== false,
+    remotePcAudioEnabled: typeof patch.pcAudioEnabled === "boolean" ? patch.pcAudioEnabled : preferences.data.remotePcAudioEnabled !== false,
+    remoteResponseMode: typeof patch.responseMode === "string"
+      ? (patch.responseMode === "live" && preferences.data.backend === "codex" ? "live" : "tts")
+      : (preferences.data.remoteResponseMode === "live" ? "live" : "tts"),
+    remoteSessionMinutes: sessionMinutes,
+  };
+  const currentStatus = remoteServer?.status();
+  const restartNeeded = enabled
+    ? !remoteServer || currentStatus.address !== address || currentStatus.sessionMinutes !== sessionMinutes
+    : Boolean(remoteServer);
+  if (!restartNeeded) {
+    preferences.patch(nextPreferences);
+    controlWindow?.webContents.send("remote:pcAudio", { enabled: preferences.data.remotePcAudioEnabled !== false });
+    publishRemoteState();
+    return broadcastAppState();
+  }
+  await remoteServer?.stop();
+  remoteServer = null;
+  remoteQrDataUrl = "";
+  remoteQrPairingUrl = "";
+  remoteLastError = "";
+  if (enabled) {
+    if (!address) throw new Error(mainText("接続できるプライベートLANが見つかりません。Wi-Fiまたは有線LANを確認してください。", "No private LAN connection was found. Check Wi-Fi or Ethernet."));
+    const candidate = createRemoteServer(address, sessionMinutes);
+    try {
+      await candidate.start();
+      remoteServer = candidate;
+    } catch (error) {
+      await candidate.stop().catch(() => {});
+      remoteLastError = error.message;
+      preferences.patch({ ...nextPreferences, remoteAccessEnabled: false });
+      throw error;
+    }
+  }
+  preferences.patch(nextPreferences);
+  controlWindow?.webContents.send("remote:pcAudio", { enabled: preferences.data.remotePcAudioEnabled !== false });
+  await refreshRemotePairingQr();
+  return broadcastAppState();
+}
+
 function publicAppState() {
   const workDirectory = validWorkDirectory();
   const characterTts = characterTtsSettings();
@@ -1034,6 +1403,7 @@ function publicAppState() {
   const sbv2Selection = validSbv2VoiceSelection(sbv2Model, characterTts.sbv2SpeakerId, characterTts.sbv2StyleId);
   return {
     ...preferences.publicState(),
+    remote: remoteServerStatus(),
     appUpdate: publicAppUpdateStatus(),
     ttsProvider: characterTts.provider,
     realtimeVoice: characterTts.realtimeVoice,
@@ -1614,6 +1984,7 @@ function broadcastWorkHistory() {
   const payload = { activeWorkRunId, runs: publicWorkHistory() };
   mascotWindow?.webContents.send("mascot:workHistory", payload);
   controlWindow?.webContents.send("work:history", payload);
+  remoteServer?.publish("history", publicRemoteState().workHistory);
   return payload;
 }
 
@@ -1709,6 +2080,7 @@ function broadcastAppState() {
     sherpaModelId: state.sherpaModelId,
     sherpaModel: state.sherpaModel,
   });
+  publishRemoteState();
   return state;
 }
 
@@ -3869,6 +4241,7 @@ function rememberConversationTurn(userText, assistantText) {
   preferences.patch({ conversationHistories: histories });
   mascotWindow?.webContents.send("mascot:conversationHistory", conversationHistory);
   controlWindow?.webContents.send("chat:history", conversationHistory);
+  publishRemoteState();
 }
 
 function conversationHistoryForCharacter(characterId = activeCharacter().id) {
@@ -3883,6 +4256,8 @@ function clearCurrentConversationHistory() {
   preferences.patch({ conversationHistories: histories });
   mascotWindow?.webContents.send("mascot:conversationHistory", []);
   controlWindow?.webContents.send("chat:history", []);
+  remoteLastDisplayText = "";
+  publishRemoteState();
 }
 
 function currentRealtimeClient() {
@@ -3900,6 +4275,8 @@ async function stopActiveRealtime() {
   activeRealtimeTurnBuffer?.clear();
   activeRealtimeTurnBuffer = null;
   activeRealtimeInjectedSpeech = [];
+  remoteBusy = false;
+  publishRemoteState();
   return stopped;
 }
 
@@ -3984,6 +4361,7 @@ async function startCodexRealtimeVoice(payload, target = "control") {
   const previousRealtimeClient = currentRealtimeClient();
   if (previousRealtimeClient && previousRealtimeClient !== realtimeClient) await previousRealtimeClient.stopRealtime().catch(() => {});
   activeRealtimeClient = realtimeClient;
+  publishRemoteState();
   const realtimeTurnBuffer = new RealtimeTurnBuffer();
   activeRealtimeTurnBuffer = realtimeTurnBuffer;
   activeRealtimeInjectedSpeech = [];
@@ -4100,6 +4478,15 @@ async function startCodexRealtimeVoice(payload, target = "control") {
           }
         }
         assistantTranscript.text += delta;
+        remoteBusy = true;
+        remoteLastDisplayText = remotePublicText(workMode ? latestWorkDisplayText(assistantTranscript.text) : assistantTranscript.text);
+        remoteServer?.publish("stream", {
+          phase: "realtime-caption",
+          mode: workMode ? "work" : "chat",
+          delta: remotePublicText(delta),
+          text: remotePublicText(assistantTranscript.text),
+          displayText: remoteLastDisplayText,
+        });
         mascotWindow?.webContents.send("mascot:stream", {
           phase: "realtime-caption",
           delta,
@@ -4117,6 +4504,16 @@ async function startCodexRealtimeVoice(payload, target = "control") {
             final: true,
           });
           localServer.pushInput({ ...currentCursorInput(), ...responseExpression(assistantTranscript.text) });
+          remoteLastDisplayText = remotePublicText(workMode ? latestWorkDisplayText(assistantTranscript.text) : assistantTranscript.text);
+          remoteServer?.publish("stream", {
+            phase: workMode ? "realtime-caption" : "done",
+            mode: workMode ? "work" : "chat",
+            text: remotePublicText(assistantTranscript.text),
+            displayText: remoteLastDisplayText,
+            realtimeOutput: true,
+            final: true,
+          });
+          if (!workMode) remoteBusy = false;
           const coordinatedSpeech = realtimeWorkSpeech?.assistantTranscriptDone(assistantTranscript.text) || null;
           const injectedSpeech = coordinatedSpeech || consumeRealtimeInjectedAssistant(assistantTranscript.text);
           if (!workMode) {
@@ -4155,6 +4552,14 @@ async function startCodexRealtimeVoice(payload, target = "control") {
         if (activeRealtimeTurnBuffer === realtimeTurnBuffer) activeRealtimeTurnBuffer = null;
         realtimeTurnBuffer.clear();
         activeRealtimeInjectedSpeech = [];
+        remoteBusy = false;
+        remoteServer?.publish("stream", {
+          phase: method.endsWith("error") ? "error" : "done",
+          message: method.endsWith("error") ? remotePublicText(forwarded?.params?.message, 1000) : "",
+          displayText: remoteLastDisplayText,
+          realtimeOutput: true,
+        });
+        publishRemoteState();
       }
       },
     });
@@ -4166,6 +4571,8 @@ async function startCodexRealtimeVoice(payload, target = "control") {
     if (activeRealtimeTurnBuffer === realtimeTurnBuffer) activeRealtimeTurnBuffer = null;
     realtimeTurnBuffer.clear();
     activeRealtimeInjectedSpeech = [];
+    remoteBusy = false;
+    publishRemoteState();
     const message = userFacingRealtimeError(error);
     if (message !== error.message) console.warn("Codex Realtime:", error.message);
     throw new Error(message);
@@ -4708,6 +5115,32 @@ function registerIpc() {
   ipcMain.handle("app:getState", (event) => {
     assertTrustedSender(event);
     return publicAppState();
+  });
+  ipcMain.handle("remote:getStatus", (event) => {
+    assertTrustedSender(event);
+    return remoteServerStatus();
+  });
+  ipcMain.handle("remote:setConfig", async (event, patch) => {
+    assertTrustedSender(event);
+    return applyRemoteConfiguration(patch);
+  });
+  ipcMain.handle("remote:regeneratePairing", async (event) => {
+    assertTrustedSender(event);
+    if (!remoteServer) throw new Error(mainText("先にスマートフォン接続を有効にしてください。", "Enable phone access first."));
+    remoteServer.rotatePairingToken();
+    await refreshRemotePairingQr();
+    return broadcastAppState();
+  });
+  ipcMain.handle("remote:revokeAll", async (event) => {
+    assertTrustedSender(event);
+    if (remoteServer) remoteServer.revokeAll();
+    await refreshRemotePairingQr();
+    return broadcastAppState();
+  });
+  ipcMain.handle("remote:revokeSession", async (event, sessionId) => {
+    assertTrustedSender(event);
+    remoteServer?.revokeSession(sessionId);
+    return broadcastAppState();
   });
   ipcMain.handle("app:openExternalUrl", async (event, value) => {
     assertTrustedSender(event);
@@ -6340,6 +6773,7 @@ async function sendChatMessage(message, {
   computerSession = null,
   realtimeOutput = false,
   workAcknowledged = false,
+  suppressPcAudio = false,
 } = {}) {
   const text = String(message || "").trim().slice(0, 12_000);
   if (!text && !localAttachments.length) throw new Error("メッセージを入力してください。");
@@ -6362,12 +6796,28 @@ async function sendChatMessage(message, {
   const sendStream = (payload) => {
     controlWindow?.webContents.send("chat:stream", payload);
     mascotWindow?.webContents.send("mascot:stream", payload);
+    const visible = remotePublicText(payload.displayText || payload.text || payload.message);
+    if (visible && ["announcement", "activity", "delta", "done", "error"].includes(payload.phase)) remoteLastDisplayText = visible;
+    if (["done", "error"].includes(payload.phase)) remoteBusy = false;
+    remoteServer?.publish("stream", {
+      phase: String(payload.phase || ""),
+      mode: payload.mode === "work" ? "work" : "chat",
+      text: remotePublicText(payload.text),
+      displayText: remotePublicText(payload.displayText),
+      message: remotePublicText(payload.message, 1000),
+      workRunId: String(payload.workRunId || "").slice(0, 120),
+      artifacts: (Array.isArray(payload.artifacts) ? payload.artifacts : []).slice(0, 8).map((artifact) => ({
+        path: String(artifact?.path || "").slice(0, 1000),
+        name: String(artifact?.name || "").slice(0, 260),
+        kind: artifact?.kind === "directory" ? "directory" : "file",
+      })),
+    });
   };
   const activeTtsProvider = characterTtsSettings().provider;
   const speechSegmenter = new StreamingTextSegmenter({
     maxLength: activeTtsProvider === "irodori-webgpu" ? IRODORI_CHUNK_LENGTH + IRODORI_CHUNK_OVERFLOW : 64,
   });
-  const streamTtsEnabled = Boolean(preferences.data.ttsEnabled) && !realtimeOutput;
+  const streamTtsEnabled = Boolean(preferences.data.ttsEnabled) && !realtimeOutput && !suppressPcAudio;
   sendStream({
     phase: "start",
     character: activeCharacter().name,
@@ -6409,7 +6859,7 @@ async function sendChatMessage(message, {
     workVoiceReporter.scheduleFallback(workAcknowledgement, realtimeOutput ? 600 : 2800);
   }
   let thinkingFillerTimer = null;
-  if (!workMode && preferences.data.ttsEnabled && mascotWindow?.isVisible()) {
+  if (!workMode && preferences.data.ttsEnabled && !suppressPcAudio && mascotWindow?.isVisible()) {
     thinkingFillerTimer = setTimeout(() => {
       mascotWindow?.webContents.send("mascot:thinkingFiller", {
         text: thinkingFillerText(),
@@ -6643,7 +7093,7 @@ async function sendChatMessage(message, {
       for (const segment of finalSpeechSegments) pushMascotExpression(segment.expression);
     }
     const deliverViaRealtime = Boolean(realtimeOutput && currentRealtimeClient() && activeRealtimeWorkSpeech);
-    const fallbackTtsEnabled = Boolean(realtimeOutput && !deliverViaRealtime && preferences.data.ttsEnabled);
+    const fallbackTtsEnabled = Boolean(realtimeOutput && !deliverViaRealtime && preferences.data.ttsEnabled && !suppressPcAudio);
     sendStream({
       phase: "done",
       text: result.text,
@@ -6915,6 +7365,23 @@ async function boot() {
   localServer = new MascotStaticServer(projectRoot);
   await localServer.start();
   localServer.setSnapshot(buildAvatarSnapshot(preferences.data.characterId), false);
+  if (preferences.data.remoteAccessEnabled && !process.argv.includes("--smoke-test")) {
+    const remoteAddress = selectedRemoteAddress();
+    if (remoteAddress) {
+      try {
+        preferences.patch({ remoteBindAddress: remoteAddress });
+        remoteServer = createRemoteServer(remoteAddress);
+        await remoteServer.start();
+        await refreshRemotePairingQr();
+      } catch (error) {
+        remoteLastError = error.message;
+        await remoteServer?.stop().catch(() => {});
+        remoteServer = null;
+      }
+    } else {
+      remoteLastError = mainText("プライベートLANが見つかりません。", "No private LAN connection was found.");
+    }
+  }
   openAIClient = new OpenAIClient();
   codexCommand = await resolveCodexCommand({ cacheDirectory: path.join(app.getPath("userData"), "codex-bin") });
   wslCodexCommand = resolveWslCodexCommand();
@@ -6998,6 +7465,7 @@ app.on("before-quit", () => {
   destroyIrodoriWindow();
   destroyKokoroWindow();
   sbv2Worker?.stop();
+  remoteServer?.stop().catch(() => {});
   localServer?.stop();
 });
 

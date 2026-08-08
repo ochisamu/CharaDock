@@ -90,6 +90,13 @@ const DEFAULTS = Object.freeze({
   updateChecksEnabled: true,
   updateChannel: "stable",
   updateLastCheckedAt: "",
+  remoteAccessEnabled: false,
+  remoteBindAddress: "",
+  remoteWorkEnabled: false,
+  remoteTtsEnabled: true,
+  remotePcAudioEnabled: true,
+  remoteResponseMode: "tts",
+  remoteSessionMinutes: 60,
   onboardingComplete: false,
   positionLocked: false,
   edgeSnap: true,
@@ -246,6 +253,13 @@ class Preferences {
       if (typeof this.data.updateChecksEnabled !== "boolean") this.data.updateChecksEnabled = true;
       if (!["stable", "beta"].includes(this.data.updateChannel)) this.data.updateChannel = "stable";
       this.data.updateLastCheckedAt = typeof this.data.updateLastCheckedAt === "string" ? this.data.updateLastCheckedAt.slice(0, 40) : "";
+      if (typeof this.data.remoteAccessEnabled !== "boolean") this.data.remoteAccessEnabled = false;
+      this.data.remoteBindAddress = typeof this.data.remoteBindAddress === "string" ? this.data.remoteBindAddress.slice(0, 45) : "";
+      if (typeof this.data.remoteWorkEnabled !== "boolean") this.data.remoteWorkEnabled = false;
+      if (typeof this.data.remoteTtsEnabled !== "boolean") this.data.remoteTtsEnabled = true;
+      if (typeof this.data.remotePcAudioEnabled !== "boolean") this.data.remotePcAudioEnabled = true;
+      if (!["tts", "live"].includes(this.data.remoteResponseMode)) this.data.remoteResponseMode = "tts";
+      this.data.remoteSessionMinutes = Math.max(15, Math.min(480, Math.round(Number(this.data.remoteSessionMinutes) || 60)));
       if (typeof this.data.englishPronunciationEnabled !== "boolean") this.data.englishPronunciationEnabled = true;
       if (typeof this.data.englishPronunciationDictionary !== "string") this.data.englishPronunciationDictionary = "";
       this.data.englishPronunciationDictionary = this.data.englishPronunciationDictionary.slice(0, 12_000);

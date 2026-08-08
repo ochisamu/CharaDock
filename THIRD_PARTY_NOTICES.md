@@ -103,6 +103,18 @@ complete license is retained at `assets/fonts/LICENSE-NotoSansJP.txt`.
 The MIT permission notices for Electron and pngjs are retained with the
 corresponding installed packages and packaged runtime license files.
 
+### node-qrcode
+
+- Project: node-qrcode
+- Copyright: Ryan Day and contributors
+- Source: https://github.com/soldair/node-qrcode
+- Runtime package: `qrcode` 1.5.4
+- License: MIT License
+
+The package generates CharaDock Link pairing QR codes locally. Pairing tokens
+are not sent to an external QR-code service. The MIT license is retained with
+the installed package and packaged runtime license files.
+
 ### highlight.js
 
 - Project: highlight.js
