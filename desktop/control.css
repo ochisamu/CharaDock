@@ -630,6 +630,22 @@ select option { color: #f8f5fa; background: #252229; }
 .beatrice-license-note { margin: 0; padding-top: 2px; color: var(--muted); font-size: 9px; line-height: 1.55; }
 .beatrice-character-settings { display: grid; gap: 14px; padding: 14px; background: color-mix(in srgb, var(--accent) 4%, var(--surface-soft)); border: 1px solid color-mix(in srgb, var(--accent) 20%, var(--line)); border-radius: 13px; }
 .beatrice-selection-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; }
+.beatrice-description-card { overflow: clip; background: color-mix(in srgb, var(--surface-raised) 90%, transparent); border: 1px solid color-mix(in srgb, var(--accent) 17%, var(--line)); border-radius: 12px; }
+.beatrice-description-card summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 11px 12px; color: var(--text-secondary); cursor: pointer; list-style: none; font-size: 10px; font-weight: 750; }
+.beatrice-description-card summary::-webkit-details-marker { display: none; }
+.beatrice-description-card summary::after { width: 7px; height: 7px; margin-left: auto; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; content: ""; transform: rotate(45deg); transition: transform 160ms ease; }
+.beatrice-description-card[open] summary { color: var(--accent); border-bottom: 1px solid var(--line); }
+.beatrice-description-card[open] summary::after { transform: rotate(225deg); }
+.beatrice-description-card summary small { color: var(--muted); font-size: 8px; font-weight: 650; }
+.beatrice-description-content { display: grid; gap: 14px; padding: 13px; }
+.beatrice-description-content section { display: grid; gap: 5px; min-width: 0; }
+.beatrice-description-content section + section { padding-top: 13px; border-top: 1px solid var(--line); }
+.beatrice-description-content strong { color: var(--text); font-size: 11px; overflow-wrap: anywhere; }
+.beatrice-description-label { margin: 0; color: var(--accent); font-size: 8px; font-weight: 800; letter-spacing: .12em; }
+.beatrice-description-text { color: var(--text-secondary); font-size: 10px; line-height: 1.65; overflow-wrap: anywhere; white-space: pre-wrap; user-select: text; }
+.beatrice-description-text a { color: var(--accent); text-decoration: underline; text-decoration-color: color-mix(in srgb, var(--accent) 45%, transparent); text-underline-offset: 2px; }
+.beatrice-description-text a:hover { text-decoration-color: currentColor; }
+.beatrice-description-note { margin: 0; padding: 9px 10px; color: var(--muted); background: color-mix(in srgb, var(--accent) 5%, transparent); border-radius: 9px; font-size: 9px; line-height: 1.55; }
 .beatrice-tuning { display: grid; gap: 12px; }
 .parameter-slider { display: grid; gap: 2px; }
 .parameter-slider > span { display: flex; align-items: center; justify-content: space-between; gap: 12px; }

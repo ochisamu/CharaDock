@@ -382,6 +382,22 @@
                       <label>モデル<select id="beatriceModelSelect"><option value="">モデル未追加</option></select></label>
                       <label>声<select id="beatriceVoiceSelect"><option value="0">Voice 0</option></select></label>
                     </div>
+                    <details id="beatriceDescriptionCard" class="beatrice-description-card" open hidden>
+                      <summary><span>モデル・声の説明と利用条件</span><small>TOMLのdescription</small></summary>
+                      <div class="beatrice-description-content">
+                        <section>
+                          <p class="beatrice-description-label">MODEL</p>
+                          <strong id="beatriceModelDescriptionTitle">Beatrice model</strong>
+                          <div id="beatriceModelDescription" class="beatrice-description-text"></div>
+                        </section>
+                        <section>
+                          <p class="beatrice-description-label">VOICE</p>
+                          <strong id="beatriceVoiceDescriptionTitle">Voice 0</strong>
+                          <div id="beatriceVoiceDescription" class="beatrice-description-text"></div>
+                        </section>
+                        <p class="beatrice-description-note">モデルファイルのTOMLに記載された内容です。利用前に各条件を確認してください。</p>
+                      </div>
+                    </details>
                     <div class="beatrice-tuning" aria-label="Beatriceの声質調整">
                       <label class="parameter-slider"><span><strong>ピッチ</strong><output id="beatricePitchShiftOutput">0 st</output></span><input id="beatricePitchShiftInput" type="range" min="-24" max="24" step="0.25" value="0" /></label>
                       <label class="parameter-slider"><span><strong>フォルマント</strong><output id="beatriceFormantShiftOutput">0 st</output></span><input id="beatriceFormantShiftInput" type="range" min="-2" max="2" step="0.25" value="0" /></label>
