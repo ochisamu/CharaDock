@@ -633,10 +633,10 @@ function publicBeatriceStatus(characterId = preferences.data.characterId) {
     try {
       const model = describeBeatriceModel(record.modelPath);
       return model
-        ? [{ id: record.id, name: record.name || model.name, version: record.version || model.version, ready: true, voices: model.voices }]
-        : [{ id: record.id, name: record.name || "Beatrice model", version: record.version || "", ready: false, voices: [] }];
+        ? [{ id: record.id, name: record.name || model.name, version: record.version || model.version, description: model.description, ready: true, voices: model.voices }]
+        : [{ id: record.id, name: record.name || "Beatrice model", version: record.version || "", description: "", ready: false, voices: [] }];
     } catch {
-      return [{ id: record.id, name: record.name || "Beatrice model", version: record.version || "", ready: false, voices: [] }];
+      return [{ id: record.id, name: record.name || "Beatrice model", version: record.version || "", description: "", ready: false, voices: [] }];
     }
   });
   const selectedModel = models.find((model) => model.id === settings.beatriceModelId) || models[0] || null;

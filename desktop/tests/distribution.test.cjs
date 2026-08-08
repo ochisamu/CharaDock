@@ -130,7 +130,12 @@ test("Beatrice integration packages only CharaDock's host helper", () => {
   for (const id of [
     "beatriceLibraryCard", "beatriceModelLibraryList", "beatriceModelAddButton", "beatriceModelSelect",
     "beatricePitchShiftInput", "beatriceFormantShiftInput", "beatriceOutputGainInput", "beatriceAdvancedSettings",
+    "beatriceDescriptionCard", "beatriceModelDescription", "beatriceVoiceDescription",
   ]) assert.match(html, new RegExp(`id="${id}"`));
+  const control = fs.readFileSync(path.join(projectRoot, "desktop", "control.js"), "utf8");
+  assert.match(control, /appendBeatriceDescription\(\$\("#beatriceModelDescription"\), model\.description\)/);
+  assert.match(control, /appendBeatriceDescription\(\$\("#beatriceVoiceDescription"\), voice\?\.description\)/);
+  assert.doesNotMatch(control.match(/function appendBeatriceDescription[\s\S]*?\n  }/)?.[0] || "", /innerHTML/);
   const host = fs.readFileSync(path.join(projectRoot, "native", "beatrice-host", "src", "main.cpp"), "utf8");
   for (const parameterId of [3, 4, 7, 8, 9, 10, 11]) assert.match(host, new RegExp(`inner, ${parameterId},`));
   assert.match(host, /_setmode\(_fileno\(stdin\), _O_BINARY\)/);

@@ -413,6 +413,61 @@
     return model;
   }
 
+  function appendBeatriceDescription(container, value) {
+    const description = String(value || "").trim();
+    container.replaceChildren();
+    if (!description) {
+      container.textContent = localized("TOMLにdescriptionの記載はありません。", "No description is provided in the TOML.");
+      container.classList.add("is-empty");
+      return;
+    }
+    container.classList.remove("is-empty");
+    const urlPattern = /https?:\/\/[^\s<>"']+/g;
+    let cursor = 0;
+    for (const match of description.matchAll(urlPattern)) {
+      if (match.index > cursor) container.append(document.createTextNode(description.slice(cursor, match.index)));
+      let url = match[0];
+      let trailing = "";
+      while (/[.,;:!?、。）」』】》]$/.test(url)) {
+        trailing = url.slice(-1) + trailing;
+        url = url.slice(0, -1);
+      }
+      let safeUrl = null;
+      try {
+        const parsed = new URL(url);
+        if (["https:", "http:"].includes(parsed.protocol) && !parsed.username && !parsed.password) safeUrl = parsed.toString();
+      } catch {}
+      if (safeUrl) {
+        const link = document.createElement("a");
+        link.href = safeUrl;
+        link.textContent = url;
+        link.addEventListener("click", (event) => {
+          event.preventDefault();
+          api.openExternalUrl(safeUrl).catch((error) => setStatus($("#beatriceStatus"), error.message, true));
+        });
+        container.append(link);
+      } else container.append(document.createTextNode(url));
+      if (trailing) container.append(document.createTextNode(trailing));
+      cursor = match.index + match[0].length;
+    }
+    if (cursor < description.length) container.append(document.createTextNode(description.slice(cursor)));
+  }
+
+  function syncBeatriceDescriptionUi(model) {
+    const card = $("#beatriceDescriptionCard");
+    if (!model) {
+      card.hidden = true;
+      return;
+    }
+    card.hidden = false;
+    const voiceId = Number($("#beatriceVoiceSelect").value) || 0;
+    const voice = (model.voices || []).find((item) => item.id === voiceId) || model.voices?.[0] || null;
+    $("#beatriceModelDescriptionTitle").textContent = [model.name || "Beatrice model", model.version].filter(Boolean).join(" · ");
+    $("#beatriceVoiceDescriptionTitle").textContent = voice ? `${voice.id} · ${voice.name}` : localized("声がありません", "No voices");
+    appendBeatriceDescription($("#beatriceModelDescription"), model.description);
+    appendBeatriceDescription($("#beatriceVoiceDescription"), voice?.description);
+  }
+
   function renderBeatriceModelLibrary(selectedModelId) {
     const list = $("#beatriceModelLibraryList");
     const models = state.beatrice?.models || [];
@@ -495,6 +550,7 @@
     if (!modelSelect.options.length) modelSelect.appendChild(new Option(localized("モデル未追加", "No models added"), ""));
     modelSelect.value = selectedModelId;
     const selectedModel = populateBeatriceVoices(selectedModelId, state.beatriceVoiceId ?? state.characterTts?.beatriceVoiceId ?? 0);
+    syncBeatriceDescriptionUi(selectedModel);
 
     const tuning = {
       beatricePitchShift: 0,
@@ -3074,6 +3130,7 @@
     });
     $("#beatriceVoiceSelect").addEventListener("change", async () => {
       try {
+        syncBeatriceDescriptionUi((state.beatrice?.models || []).find((model) => model.id === $("#beatriceModelSelect").value));
         if (realtimePeerConnection || realtimeStarting) await stopCodexRealtimeVoice({ quiet: true });
         await saveSettings();
         syncBeatriceUi();
@@ -3085,7 +3142,8 @@
     $("#beatriceModelSelect").addEventListener("change", async () => {
       try {
         if (realtimePeerConnection || realtimeStarting) await stopCodexRealtimeVoice({ quiet: true });
-        populateBeatriceVoices($("#beatriceModelSelect").value, 0);
+        const selectedModel = populateBeatriceVoices($("#beatriceModelSelect").value, 0);
+        syncBeatriceDescriptionUi(selectedModel);
         await saveSettings();
         syncBeatriceUi();
         setStatus($("#beatriceStatus"), localized("このキャラクターのBeatriceモデルを保存しました。", "Saved the Beatrice model for this character."));
