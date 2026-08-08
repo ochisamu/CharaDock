@@ -19,6 +19,14 @@ test("browser use is requested and approved in natural conversation", () => {
   assert.equal(browserConversationAction("https://example.com/docs を読んで"), "request");
   assert.equal(browserConversationAction("ブラウザ操作できなくなった"), "request");
   assert.equal(browserConversationAction("ブラウザの意味を教えて"), "");
+  assert.equal(browserConversationAction("artifacts/index.htmlを作って、HTMLとCSSの連携を確認して"), "");
+  assert.equal(browserConversationAction("README.mdとapp.jsを更新して確認して"), "");
+  assert.equal(browserConversationAction("web/index.htmlを作って確認して"), "");
+  assert.equal(browserConversationAction("assets/preview.webpを更新して確認して"), "");
+  assert.equal(browserConversationAction("サイト用のindex.htmlを作って確認して"), "");
+  assert.equal(browserConversationAction("ブラウザでindex.htmlを開いて"), "request");
+  assert.equal(browserConversationAction("example.com/index.htmlを開いて"), "request");
+  assert.equal(browserConversationAction("docs.example.com/report.pdfを開いて"), "request");
   assert.equal(browserConversationAction("いいよ、開いて", true), "approve");
   assert.equal(browserConversationAction("今は使わない", true), "deny");
 });

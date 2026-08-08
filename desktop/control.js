@@ -2303,7 +2303,9 @@
       if (params.role === "assistant") {
         if (!realtimeAssistantActive) {
           realtimeAssistantActive = true;
-          realtimeAssistantMessage = null;
+          realtimeAssistantMessage = state?.interactionMode === "work" && streamingMessage
+            ? streamingMessage
+            : null;
           realtimeAssistantText = "";
         }
         realtimeAssistantText += delta;
@@ -2320,8 +2322,13 @@
         realtimePendingTypedText = "";
         realtimeUserTranscript = "";
         $("#chatInput").value = "";
+        if (state?.interactionMode === "work" && !streamingMessage) {
+          streamingMessage = appendMessage("assistant", localized("考え中", "Thinking"), true);
+          streamingMessage.dataset.realtimeWork = "true";
+          setChatBusy(true);
+        }
         if (!realtimeAssistantActive) {
-          realtimeAssistantMessage = null;
+          realtimeAssistantMessage = state?.interactionMode === "work" ? streamingMessage : null;
           realtimeAssistantText = "";
         }
         setStatus($("#chatStatus"), "Codexが考えています…");
@@ -2606,13 +2613,25 @@
     setChatHistoryView("conversation");
     if (realtimePeerConnection && !realtimeStarting) {
       appendMessage("user", message);
+      const liveWork = state?.interactionMode === "work";
+      if (liveWork) {
+        streamingMessage = appendMessage("assistant", localized("考え中", "Thinking"), true);
+        streamingMessage.dataset.realtimeWork = "true";
+        setChatBusy(true);
+      }
       realtimePendingTypedText = message;
       setStatus($("#chatStatus"), "Live音声で応答を生成しています…");
       try {
-        const appended = await api.appendCodexRealtimeSpeech(message);
+        const appended = await api.appendCodexRealtimeText(message);
         if (!appended) throw new Error("Liveセッションへ文字を送信できませんでした。");
       } catch (error) {
         realtimePendingTypedText = "";
+        if (liveWork && streamingMessage) {
+          streamingMessage.classList.remove("is-thinking");
+          streamingMessage.querySelector("p").textContent = "エラー: " + error.message;
+          streamingMessage = null;
+          setChatBusy(false);
+        }
         setStatus($("#chatStatus"), error.message, true);
       }
       input.focus();
@@ -2651,6 +2670,23 @@
     }
   }
 
+  function finishDetachedRealtimeWork(workRunId = "") {
+    if (!streamingMessage?.dataset.realtimeWork) return;
+    const expectedRunId = String(workRunId || "");
+    if (expectedRunId && (!streamingMessage.dataset.workRunId || streamingMessage.dataset.workRunId !== expectedRunId)) return;
+    setChatBusy(false);
+    streamingMessage = null;
+    $("#chatInput").focus();
+    const followUp = pendingChatFollowUp;
+    pendingChatFollowUp = null;
+    if (followUp) {
+      $("#chatInput").value = followUp.message;
+      chatAttachments = followUp.attachments;
+      renderChatAttachments();
+      queueMicrotask(() => sendChat());
+    }
+  }
+
   function bindEvents() {
     api.onStateChanged?.((nextState) => {
       state = nextState;
@@ -2667,13 +2703,34 @@
       setStatus($("#beatriceStatus"), message);
     });
     api.onChatStream?.((payload) => {
+      if (!streamingMessage && payload?.phase === "start" && payload?.realtimeOutput && payload?.mode === "work") {
+        streamingMessage = appendMessage("assistant", localized("考え中", "Thinking"), true);
+        streamingMessage.dataset.realtimeWork = "true";
+        setChatBusy(true);
+      }
       if (!streamingMessage) return;
+      if (payload?.phase === "start" && payload?.realtimeOutput && payload?.mode === "work") {
+        streamingMessage.dataset.workRunId = String(payload?.workRunId || "");
+        realtimePendingTypedText = "";
+      }
       const paragraph = streamingMessage.querySelector("p");
       if (payload?.phase === "start") paragraph.textContent = "考え中";
-      if (payload?.phase === "delta") {
+      if (["delta", "announcement", "realtime-caption"].includes(payload?.phase)) {
         streamingMessage.classList.remove("is-thinking");
         paragraph.textContent = String(payload.displayText || payload.text || "");
         $("#chatLog").scrollTop = $("#chatLog").scrollHeight;
+      }
+      if (payload?.phase === "done") {
+        streamingMessage.classList.remove("is-thinking");
+        paragraph.textContent = String(payload.displayText || payload.text || "");
+        appendWorkArtifactActions(streamingMessage, payload.artifacts, payload.workRunId);
+        if (payload?.realtimeOutput && !payload?.realtimeSpeechPending) finishDetachedRealtimeWork(payload?.workRunId);
+      }
+      if (payload?.phase === "realtime-work-complete") finishDetachedRealtimeWork(payload?.workRunId);
+      if (payload?.phase === "error" && payload?.realtimeOutput) {
+        streamingMessage.classList.remove("is-thinking");
+        paragraph.textContent = "エラー: " + (payload.message || "作業を完了できませんでした。");
+        finishDetachedRealtimeWork(payload?.workRunId);
       }
     });
     api.onChatHistory?.((entries) => {

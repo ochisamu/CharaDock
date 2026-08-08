@@ -432,7 +432,14 @@ class CodexAppServerClient {
     return true;
   }
 
-  async startRealtime({ sdp, prompt = "", voice = "", onEvent } = {}) {
+  async startRealtime({
+    sdp,
+    prompt = "",
+    voice = "",
+    clientManagedHandoffs = false,
+    delegationAckFiller,
+    onEvent,
+  } = {}) {
     if (!String(sdp || "").startsWith("v=0")) throw new Error("WebRTCの音声接続情報が正しくありません。");
     await this.ensureStarted();
     if (this.realtimeHandlers.size) await this.stopRealtime().catch(() => {});
@@ -457,10 +464,11 @@ class CodexAppServerClient {
         codexResponseHandoffMode: "bemTags",
         prompt: String(prompt || "").slice(0, 4000),
         includeStartupContext: true,
-        clientManagedHandoffs: false,
+        clientManagedHandoffs: Boolean(clientManagedHandoffs),
         flushTranscriptTailOnSessionEnd: true,
         transport: { type: "webrtc", sdp: String(sdp) },
       };
+      if (typeof delegationAckFiller === "boolean") params.delegationAckFiller = delegationAckFiller;
       if (voice) params.voice = String(voice);
       await Promise.race([this.request("thread/realtime/start", params, 60_000), startupFailure]);
       return { threadId };
@@ -490,6 +498,15 @@ class CodexAppServerClient {
     const normalized = String(text || "").trim().slice(0, 1000);
     if (!normalized || !threadId || !this.realtimeHandlers.has(threadId)) return false;
     await this.request("thread/realtime/appendSpeech", { threadId, text: normalized }, 30_000);
+    return true;
+  }
+
+  async appendRealtimeText(text, role = "user") {
+    const threadId = this.threadId;
+    const normalized = String(text || "").trim().slice(0, 1000);
+    const normalizedRole = ["user", "developer", "assistant"].includes(role) ? role : "user";
+    if (!normalized || !threadId || !this.realtimeHandlers.has(threadId)) return false;
+    await this.request("thread/realtime/appendText", { threadId, text: normalized, role: normalizedRole }, 30_000);
     return true;
   }
 

@@ -70,6 +70,12 @@ const { normalizeRealtimeVoice, normalizeRealtimeVoiceList } = require("./lib/re
 const { normalizeMascotPointerMode, shouldAutoHideMascot } = require("./lib/mascot-pointer-mode.cjs");
 const { localAttachmentInstructions, normalizeLocalAttachments } = require("./lib/local-attachments.cjs");
 const { RealtimeTurnBuffer, normalizedText } = require("./lib/realtime-turn-buffer.cjs");
+const {
+  WorkVoiceReporter,
+  conciseWorkAnnouncement,
+  workAcknowledgementFallback,
+} = require("./lib/work-voice-reporter.cjs");
+const { RealtimeWorkSpeechCoordinator } = require("./lib/realtime-work-speech.cjs");
 const { BeatriceHostClient } = require("./lib/beatrice-host-client.cjs");
 const {
   beatriceStatus,
@@ -264,6 +270,8 @@ let activeWorkRunId = null;
 let activeRealtimeClient = null;
 let activeRealtimeTurnBuffer = null;
 let activeRealtimeInjectedSpeech = [];
+let activeRealtimeWorkDispatcher = null;
+let activeRealtimeWorkSpeech = null;
 let lastRealtimePetSpeechAt = 0;
 let beatriceHostClient = null;
 let beatriceAudioOwner = null;
@@ -477,8 +485,8 @@ function scheduleAppUpdateCheck() {
 
 function workModeInstructions() {
   return `${WORK_MODE_INSTRUCTION_BASE}\n${mainText(
-    "Report progress and the final result concisely in Japanese.",
-    "Report progress and the final result concisely in English.",
+    "ツールを使う前に、依頼固有の対象と行うことを含む短い着手確認をcommentaryとして一度伝えてください。「内容を確認しているよ」「作業を始めるね」のような汎用文は禁止です。長い作業では、実際に到達した意味のある節目だけを、対象と現在の処理が分かる短いcommentaryで伝えてください。コマンド、URL、ファイルパス、内部推論は含めないでください。最後に検証済みの結果を簡潔に報告してください。",
+    "Before using tools, send one brief commentary acknowledgement that names the request-specific subject and action. Generic lines such as 'I'm checking the content' or 'I'm getting started' are not allowed. For longer work, report only meaningful milestones, briefly naming the subject and the actual current action. Do not include commands, URLs, file paths, or internal reasoning. End with a concise, verified result.",
   )}${characterHomeWorkInstructions()}`;
 }
 
@@ -1646,6 +1654,7 @@ function updateWorkRun(run, changes = {}) {
 async function interruptActiveWork() {
   const run = workHistory.find((item) => item.id === activeWorkRunId);
   if (!run || run.status !== "running") return broadcastWorkHistory();
+  activeRealtimeWorkSpeech?.cancelQueued();
   run.status = "stopping";
   updateWorkRun(run, { activity: "中断を要求しています…" });
   try {
@@ -3877,6 +3886,9 @@ function currentRealtimeClient() {
 }
 
 async function stopActiveRealtime() {
+  activeRealtimeWorkDispatcher = null;
+  activeRealtimeWorkSpeech?.stop();
+  activeRealtimeWorkSpeech = null;
   const client = currentRealtimeClient();
   if (!client) return false;
   const stopped = await client.stopRealtime();
@@ -3886,41 +3898,72 @@ async function stopActiveRealtime() {
   return stopped;
 }
 
-async function appendActiveRealtimeSpeech(text) {
+async function appendActiveRealtimeText(text) {
   const client = currentRealtimeClient();
   if (!client) return false;
   const normalized = normalizedText(text).slice(0, 1000);
-  const appended = await client.appendRealtimeSpeech(normalized);
-  if (appended) activeRealtimeTurnBuffer?.addTyped(normalized);
+  if (preferences.data.interactionMode === "work" && activeRealtimeWorkDispatcher) {
+    return Boolean(activeRealtimeWorkDispatcher.dispatch(normalized, "typed"));
+  }
+  let appended = false;
+  appended = await client.appendRealtimeText(normalized, "user");
+  if (appended) {
+    activeRealtimeTurnBuffer?.addTyped(normalized);
+  }
   return appended;
 }
 
-function consumeRealtimeInjectedAssistant() {
-  const cutoff = Date.now() - 30_000;
-  activeRealtimeInjectedSpeech = activeRealtimeInjectedSpeech.filter((entry) => entry.createdAt >= cutoff);
-  if (!activeRealtimeInjectedSpeech.length) return false;
-  activeRealtimeInjectedSpeech.shift();
-  return true;
+function injectedSpeechComparable(value) {
+  return normalizedText(value).replace(/[\s、。！？!?.,・]/g, "").toLowerCase();
 }
 
-async function appendRealtimeReactionSpeech(text) {
+function consumeRealtimeInjectedAssistant(text) {
+  const cutoff = Date.now() - 30_000;
+  activeRealtimeInjectedSpeech = activeRealtimeInjectedSpeech.filter((entry) => entry.createdAt >= cutoff);
+  const comparable = injectedSpeechComparable(text);
+  const index = activeRealtimeInjectedSpeech.findIndex((entry) => {
+    const pending = injectedSpeechComparable(entry.text);
+    return pending && comparable && (pending === comparable || pending.includes(comparable) || comparable.includes(pending));
+  });
+  if (index < 0) return null;
+  return activeRealtimeInjectedSpeech.splice(index, 1)[0] || null;
+}
+
+async function appendRealtimeOutputSpeechDirect(text, kind = "update") {
   const client = currentRealtimeClient();
-  if (!client) return { active: false, spoken: false, busy: false };
-  if (client.hasActiveTurn?.()) return { active: true, spoken: false, busy: true };
-  const now = Date.now();
-  if (now - lastRealtimePetSpeechAt < 1_800) return { active: true, spoken: false, busy: false };
   const normalized = normalizedText(text).slice(0, 1000);
-  if (!normalized) return { active: true, spoken: false, busy: false };
-  const pendingSpeech = { text: normalized, createdAt: now };
-  lastRealtimePetSpeechAt = now;
+  if (!client || !normalized) return false;
+  const pendingSpeech = { text: normalized, kind, createdAt: Date.now() };
   activeRealtimeInjectedSpeech.push(pendingSpeech);
-  activeRealtimeInjectedSpeech = activeRealtimeInjectedSpeech.slice(-8);
+  activeRealtimeInjectedSpeech = activeRealtimeInjectedSpeech.slice(-12);
   let appended = false;
   try {
     appended = await client.appendRealtimeSpeech(normalized);
   } finally {
     if (!appended) activeRealtimeInjectedSpeech = activeRealtimeInjectedSpeech.filter((entry) => entry !== pendingSpeech);
   }
+  return appended;
+}
+
+async function appendRealtimeOutputSpeech(text, kind = "update") {
+  const normalized = normalizedText(text).slice(0, 1000);
+  if (!normalized) return false;
+  if (activeRealtimeWorkSpeech && preferences.data.interactionMode === "work") {
+    return activeRealtimeWorkSpeech.enqueue(normalized, kind);
+  }
+  return appendRealtimeOutputSpeechDirect(normalized, kind);
+}
+
+async function appendRealtimeReactionSpeech(text) {
+  const client = currentRealtimeClient();
+  if (!client) return { active: false, spoken: false, busy: false };
+  if (activeWorkRunId || client.hasActiveTurn?.()) return { active: true, spoken: false, busy: true };
+  const now = Date.now();
+  if (now - lastRealtimePetSpeechAt < 1_800) return { active: true, spoken: false, busy: false };
+  const normalized = normalizedText(text).slice(0, 1000);
+  if (!normalized) return { active: true, spoken: false, busy: false };
+  lastRealtimePetSpeechAt = now;
+  const appended = await appendRealtimeOutputSpeech(normalized, "reaction");
   return { active: true, spoken: appended, busy: false };
 }
 
@@ -3930,27 +3973,94 @@ async function startCodexRealtimeVoice(payload, target = "control") {
   if (!sdp.startsWith("v=0") || sdp.length > 300_000) throw new Error("音声接続情報が正しくありません。");
   const workMode = preferences.data.interactionMode === "work";
   if (workMode && activeWorkRunId) throw new Error("実行中の作業があります。完了を待つか、中断してください。");
-  const realtimeClient = workMode ? ensureWorkClient() : codexClient;
+  // LIVE is the audio/transcript frontend. Work itself always runs through the
+  // normal workspace-scoped worker so completion and artifacts are deterministic.
+  const realtimeClient = codexClient;
   const previousRealtimeClient = currentRealtimeClient();
   if (previousRealtimeClient && previousRealtimeClient !== realtimeClient) await previousRealtimeClient.stopRealtime().catch(() => {});
   activeRealtimeClient = realtimeClient;
   const realtimeTurnBuffer = new RealtimeTurnBuffer();
   activeRealtimeTurnBuffer = realtimeTurnBuffer;
   activeRealtimeInjectedSpeech = [];
+  activeRealtimeWorkSpeech?.stop();
+  const realtimeWorkSpeech = workMode
+    ? new RealtimeWorkSpeechCoordinator({
+      appendSpeech: (text) => realtimeClient.appendRealtimeSpeech(text),
+    })
+    : null;
+  activeRealtimeWorkSpeech = realtimeWorkSpeech;
   const assistantTranscript = { text: "", active: false };
-  let realtimeWorkRun = null;
-  const realtimeArtifactCandidates = [];
-  const realtimeRuntimeDirectory = workMode ? realtimeClient.cwd : "";
+  let lastDispatchedWorkRequest = { text: "", at: 0, source: "" };
+  let pendingInterruptedRequest = null;
+  let acknowledgementPrepared = false;
+  const prepareRealtimeWork = () => {
+    if (!workMode || acknowledgementPrepared) return false;
+    acknowledgementPrepared = Boolean(realtimeWorkSpeech?.beginAcknowledgement());
+    return acknowledgementPrepared;
+  };
+  const dispatchRealtimeWork = (request, source = "voice", options = {}) => {
+    const normalized = String(request || "").trim();
+    if (!workMode || !normalized) return false;
+    const now = Date.now();
+    if (source === "voice"
+      && lastDispatchedWorkRequest.source === "typed"
+      && normalized === lastDispatchedWorkRequest.text
+      && now - lastDispatchedWorkRequest.at < 15_000) return true;
+    if (source === "voice" && !options.acknowledgementPrepared) prepareRealtimeWork();
+    if (activeWorkRunId) {
+      pendingInterruptedRequest = { text: normalized, source };
+      realtimeWorkSpeech?.cancelQueued();
+      interruptActiveWork().catch((error) => {
+        pendingInterruptedRequest = null;
+        realtimeWorkSpeech?.cancelAcknowledgement();
+        const message = String(error?.message || error);
+        mascotWindow?.webContents.send("mascot:stream", { phase: "error", message });
+      });
+      return true;
+    }
+    acknowledgementPrepared = false;
+    lastDispatchedWorkRequest = { text: normalized, at: now, source };
+    queueMicrotask(() => {
+      sendChatMessage(normalized, { realtimeOutput: true, workAcknowledged: source === "voice" })
+        .catch((error) => {
+          diagnosticLog?.write("warn", "realtime-work-failed", String(error?.message || error));
+        })
+        .finally(() => {
+          const pending = pendingInterruptedRequest;
+          pendingInterruptedRequest = null;
+          if (pending && activeRealtimeWorkDispatcher === realtimeWorkDispatcher) {
+            dispatchRealtimeWork(pending.text, pending.source, { acknowledgementPrepared: true });
+          }
+        });
+    });
+    diagnosticLog?.write("info", "realtime-work-dispatched", { source, length: normalized.length });
+    return true;
+  };
+  const realtimeWorkDispatcher = {
+    prepare(request) {
+      const normalized = String(request || "").trim();
+      if (!workMode || !normalized || activeWorkRunId) return false;
+      return prepareRealtimeWork();
+    },
+    cancelPreparation() {
+      acknowledgementPrepared = false;
+      realtimeWorkSpeech?.cancelAcknowledgement();
+    },
+    dispatch: dispatchRealtimeWork,
+  };
+  activeRealtimeWorkDispatcher = workMode ? realtimeWorkDispatcher : null;
   try {
     return await realtimeClient.startRealtime({
       sdp,
       voice: characterTtsSettings().realtimeVoice,
       prompt: workMode
         ? `${personaInstructions()}\n\n${characterMemoryContext()}\n\n${mainText(
-          "Workです。ユーザーの音声指示をCodexへハンドオフし、選択済みの作業フォルダー内で実際に作業してください。進行と完了結果は日本語で簡潔に音声報告してください。",
-          "This is work mode. Hand the user's spoken request to Codex and carry out the task in the selected work folder. Report progress and completion concisely in spoken English.",
+          "あなたはWorkの音声フロントです。ユーザーの依頼内容に合わせ、30文字前後の自然な一文だけで着手を確認してください。言い換えや補足を重ねないでください。作業の実行、委譲、推測での完了報告はしないでください。進捗と検証済みの完了結果はアプリから別途与えられます。その場合は語句を足したり言い換えたりせず、与えられた一文をそのまま読み上げてください。",
+          "You are the voice frontend for Work. Acknowledge the user's specific request in exactly one natural sentence of roughly 12 words. Do not add a paraphrase or follow-up sentence. Do not execute or delegate the task, and never infer or claim completion. The app will separately provide progress and the verified final result. When it does, repeat that single sentence verbatim without adding or rephrasing any words.",
         )}`
         : `${personaInstructions()}\n\n${characterMemoryContext()}\n\n${mainText("日本語の自然な短い音声会話として応答してください。", "Respond as a natural, concise spoken conversation in English.")}`,
+      clientManagedHandoffs: workMode,
+      delegationAckFiller: workMode ? false : undefined,
       onEvent: (message) => {
         let forwarded = message;
         if (message?.method === "thread/realtime/error") {
@@ -3969,30 +4079,24 @@ async function startCodexRealtimeVoice(payload, target = "control") {
         if (target === "mascot" && !mascotWindow?.isDestroyed()) mascotWindow.webContents.send("mascot:realtimeEvent", forwarded);
       const method = String(message?.method || "");
       const params = message?.params || {};
-      const itemType = String(params.item?.type || "");
-      if (workMode && realtimeWorkRun) {
-        if (itemType === "fileChange") realtimeArtifactCandidates.push(...fileChangeCandidates(params.item));
-        const activity = itemType === "commandExecution" ? mainText("コマンドを実行中…", "Running a command…")
-          : itemType === "fileChange" ? mainText("ファイルを更新中…", "Updating files…")
-            : itemType === "webSearch" ? mainText("情報を確認中…", "Checking information…") : "";
-        if (activity) updateWorkRun(realtimeWorkRun, { activity });
-      }
       if (method === "thread/realtime/transcript/delta" && params.role === "assistant") {
         const delta = String(params.delta || "");
         if (!assistantTranscript.active) {
           assistantTranscript.active = true;
           assistantTranscript.text = "";
-          mascotWindow?.webContents.send("mascot:stream", {
-            phase: "start",
-            mode: workMode ? "work" : "chat",
-            ttsEnabled: false,
-            ttsProvider: characterTtsSettings().provider,
-            speechLanguage: preferences.data.speechLanguage || "ja-JP",
-          });
+          if (!workMode) {
+            mascotWindow?.webContents.send("mascot:stream", {
+              phase: "start",
+              mode: workMode ? "work" : "chat",
+              ttsEnabled: false,
+              ttsProvider: characterTtsSettings().provider,
+              speechLanguage: preferences.data.speechLanguage || "ja-JP",
+            });
+          }
         }
         assistantTranscript.text += delta;
         mascotWindow?.webContents.send("mascot:stream", {
-          phase: "delta",
+          phase: "realtime-caption",
           delta,
           text: assistantTranscript.text,
           displayText: workMode ? latestWorkDisplayText(assistantTranscript.text) : assistantTranscript.text,
@@ -4001,26 +4105,23 @@ async function startCodexRealtimeVoice(payload, target = "control") {
       if (method === "thread/realtime/transcript/done" && params.role === "assistant") {
         assistantTranscript.text = String(params.text || assistantTranscript.text).trim();
         if (assistantTranscript.text) {
-          const artifacts = workMode ? discoverWorkArtifacts(validWorkDirectory(), {
-            eventCandidates: realtimeArtifactCandidates,
-            resultText: assistantTranscript.text,
-            runtimeDirectory: realtimeRuntimeDirectory,
-          }) : [];
           mascotWindow?.webContents.send("mascot:stream", {
-            phase: "done",
+            phase: "realtime-caption",
             text: assistantTranscript.text,
             displayText: workMode ? latestWorkDisplayText(assistantTranscript.text) : assistantTranscript.text,
-            artifacts,
-            workRunId: realtimeWorkRun?.id || "",
+            final: true,
           });
           localServer.pushInput({ ...currentCursorInput(), ...responseExpression(assistantTranscript.text) });
-          if (workMode && realtimeWorkRun) {
-            updateWorkRun(realtimeWorkRun, { status: "completed", result: assistantTranscript.text, artifacts, finished: true });
-            realtimeWorkRun = null;
-            realtimeArtifactCandidates.length = 0;
+          const coordinatedSpeech = realtimeWorkSpeech?.assistantTranscriptDone(assistantTranscript.text) || null;
+          const injectedSpeech = coordinatedSpeech || consumeRealtimeInjectedAssistant(assistantTranscript.text);
+          if (!workMode) {
+            mascotWindow?.webContents.send("mascot:stream", {
+              phase: "done",
+              text: assistantTranscript.text,
+              displayText: assistantTranscript.text,
+            });
           }
-          const isInjectedSpeech = consumeRealtimeInjectedAssistant();
-          if (!workMode && !isInjectedSpeech) {
+          if (!workMode && !injectedSpeech) {
             const completedTurn = realtimeTurnBuffer.addAssistant(assistantTranscript.text);
             if (completedTurn) rememberConversationTurn(completedTurn.user, completedTurn.assistant);
           }
@@ -4036,24 +4137,15 @@ async function startCodexRealtimeVoice(payload, target = "control") {
           if (completedTurn) rememberConversationTurn(completedTurn.user, completedTurn.assistant);
         }
         if (workMode && request) {
-          if (!realtimeWorkRun && !activeWorkRunId) realtimeWorkRun = beginWorkRun(request);
-          if (realtimeWorkRun) updateWorkRun(realtimeWorkRun, { activity: mainText("Realtimeから作業を開始しました…", "Work started from Realtime…") });
+          dispatchRealtimeWork(request, "voice");
         }
       }
       if (["thread/realtime/error", "thread/realtime/closed"].includes(method)) {
-        if (assistantTranscript.active) mascotWindow?.webContents.send("mascot:stream", { phase: "done", text: assistantTranscript.text });
+        if (assistantTranscript.active && !workMode) mascotWindow?.webContents.send("mascot:stream", { phase: "done", text: assistantTranscript.text });
         assistantTranscript.active = false;
-        if (workMode && realtimeWorkRun) {
-          const failed = method === "thread/realtime/error";
-          updateWorkRun(realtimeWorkRun, {
-            status: failed ? "failed" : "interrupted",
-            result: failed
-              ? `${mainText("エラー", "Error")}: ${params.message || mainText("Realtime作業を完了できませんでした。", "Realtime work could not be completed.")}`
-              : mainText("Realtime作業を中断しました。", "Realtime work was stopped."),
-            finished: true,
-          });
-          realtimeWorkRun = null;
-        }
+        if (activeRealtimeWorkDispatcher === realtimeWorkDispatcher) activeRealtimeWorkDispatcher = null;
+        if (activeRealtimeWorkSpeech === realtimeWorkSpeech) activeRealtimeWorkSpeech = null;
+        realtimeWorkSpeech?.stop();
         if (activeRealtimeClient === realtimeClient) activeRealtimeClient = null;
         if (activeRealtimeTurnBuffer === realtimeTurnBuffer) activeRealtimeTurnBuffer = null;
         realtimeTurnBuffer.clear();
@@ -4062,6 +4154,9 @@ async function startCodexRealtimeVoice(payload, target = "control") {
       },
     });
   } catch (error) {
+    if (activeRealtimeWorkDispatcher === realtimeWorkDispatcher) activeRealtimeWorkDispatcher = null;
+    if (activeRealtimeWorkSpeech === realtimeWorkSpeech) activeRealtimeWorkSpeech = null;
+    realtimeWorkSpeech?.stop();
     if (activeRealtimeClient === realtimeClient) activeRealtimeClient = null;
     if (activeRealtimeTurnBuffer === realtimeTurnBuffer) activeRealtimeTurnBuffer = null;
     realtimeTurnBuffer.clear();
@@ -4585,9 +4680,9 @@ function registerIpc() {
     assertTrustedSender(event, "mascot");
     return stopActiveRealtime();
   });
-  ipcMain.handle("mascotInline:realtimeAppendSpeech", async (event, text) => {
+  ipcMain.handle("mascotInline:realtimeAppendText", async (event, text) => {
     assertTrustedSender(event, "mascot");
-    return appendActiveRealtimeSpeech(String(text || ""));
+    return appendActiveRealtimeText(String(text || ""));
   });
   ipcMain.handle("mascotInline:synthesizeTts", (event, text) => {
     assertTrustedSender(event, "mascot");
@@ -5422,7 +5517,11 @@ function registerIpc() {
   });
   ipcMain.handle("audio:realtimeAppendSpeech", async (event, text) => {
     assertTrustedSender(event);
-    return appendActiveRealtimeSpeech(String(text || ""));
+    return appendRealtimeOutputSpeech(String(text || ""), "manual");
+  });
+  ipcMain.handle("audio:realtimeAppendText", async (event, text) => {
+    assertTrustedSender(event);
+    return appendActiveRealtimeText(String(text || ""));
   });
   ipcMain.handle("audio:realtimeStop", async (event) => {
     assertTrustedSender(event);
@@ -6229,7 +6328,14 @@ async function handleMascotConversation(message) {
   return sendChatMessage(text);
 }
 
-async function sendChatMessage(message, { localImagePath = "", localAttachments = [], browserSession = null, computerSession = null } = {}) {
+async function sendChatMessage(message, {
+  localImagePath = "",
+  localAttachments = [],
+  browserSession = null,
+  computerSession = null,
+  realtimeOutput = false,
+  workAcknowledged = false,
+} = {}) {
   const text = String(message || "").trim().slice(0, 12_000);
   if (!text && !localAttachments.length) throw new Error("メッセージを入力してください。");
   const requestText = text || mainText("添付したファイルを確認してください。", "Please review the attached files.");
@@ -6256,17 +6362,47 @@ async function sendChatMessage(message, { localImagePath = "", localAttachments 
   const speechSegmenter = new StreamingTextSegmenter({
     maxLength: activeTtsProvider === "irodori-webgpu" ? IRODORI_CHUNK_LENGTH + IRODORI_CHUNK_OVERFLOW : 64,
   });
-  const streamTtsEnabled = Boolean(preferences.data.ttsEnabled);
+  const streamTtsEnabled = Boolean(preferences.data.ttsEnabled) && !realtimeOutput;
   sendStream({
     phase: "start",
     character: activeCharacter().name,
     mode: workMode ? "work" : "chat",
-    ttsEnabled: Boolean(preferences.data.ttsEnabled),
+    ttsEnabled: streamTtsEnabled,
+    realtimeOutput,
     ttsProvider: activeTtsProvider,
     speechLanguage: preferences.data.speechLanguage || "ja-JP",
+    workRunId: workRun?.id || "",
   });
+  const announceWork = ({ kind, text: announcement }) => {
+    if (!workMode || !announcement) return;
+    if (realtimeOutput) {
+      appendRealtimeOutputSpeech(announcement, kind).catch(() => false);
+      return;
+    }
+    sendStream({
+      phase: "announcement",
+      mode: "work",
+      kind,
+      text: announcement,
+      displayText: announcement,
+      speechSegments: streamTtsEnabled ? expressiveSpeechSegments([announcement]) : [],
+    });
+  };
+  const workVoiceReporter = workMode ? new WorkVoiceReporter({
+    alreadyAcknowledged: workAcknowledged,
+    onAnnouncement: announceWork,
+    request: requestText,
+    language: interfaceLanguage(),
+  }) : null;
+  const workAcknowledgement = workMode
+    ? workAcknowledgementFallback(requestText, interfaceLanguage())
+    : "";
+  if (workVoiceReporter && !workAcknowledged) {
+    workVoiceReporter.scheduleFallback(workAcknowledgement, 600);
+  }
+  workVoiceReporter?.activity(mainText("依頼内容を確認しています…", "Reviewing the request…"));
   let thinkingFillerTimer = null;
-  if (preferences.data.ttsEnabled && mascotWindow?.isVisible()) {
+  if (!workMode && preferences.data.ttsEnabled && mascotWindow?.isVisible()) {
     thinkingFillerTimer = setTimeout(() => {
       mascotWindow?.webContents.send("mascot:thinkingFiller", {
         text: thinkingFillerText(),
@@ -6281,9 +6417,10 @@ async function sendChatMessage(message, { localImagePath = "", localAttachments 
     thinkingFillerTimer = null;
   };
   const onDelta = (delta, fullText) => {
+    if (workMode) return;
     stopThinkingFiller();
     const visibleText = cleanAssistantText(fullText, { streaming: true });
-    const speechSegments = workMode ? [] : expressiveSpeechSegments(speechSegmenter.push(fullText));
+    const speechSegments = expressiveSpeechSegments(speechSegmenter.push(fullText));
     if (!streamTtsEnabled) {
       for (const segment of speechSegments) pushMascotExpression(segment.expression);
     }
@@ -6291,7 +6428,7 @@ async function sendChatMessage(message, { localImagePath = "", localAttachments 
       phase: "delta",
       delta: cleanAssistantText(delta, { streaming: true }),
       text: visibleText,
-      displayText: workMode ? latestWorkDisplayText(visibleText) : visibleText,
+      displayText: visibleText,
       speechSegments,
     });
   };
@@ -6301,12 +6438,19 @@ async function sendChatMessage(message, { localImagePath = "", localAttachments 
     if (String(item?.type || "") !== "fileChange") return;
     workArtifactCandidates.push(...fileChangeCandidates(item));
   };
+  const observeWorkAgentMessage = (message) => {
+    const item = message?.params?.item;
+    if (!workVoiceReporter || String(item?.type || "") !== "agentMessage") return;
+    if (String(item?.phase || "") !== "commentary") return;
+    workVoiceReporter.commentary(String(item?.text || ""));
+  };
   try {
     let result;
     if (computerSession) {
       computerSession.onActivity = (label) => {
         updateWorkRun(workRun, { activity: label });
         sendStream({ phase: "activity", text: label, mode: workMode ? "work" : "chat" });
+        workVoiceReporter?.activity(label);
       };
       if (process.platform === "win32") {
         computerCodexClient?.stop();
@@ -6330,7 +6474,7 @@ async function sendChatMessage(message, { localImagePath = "", localAttachments 
           onDynamicToolCall: (params) => handleComputerToolCall(computerSession, params),
         });
         computerCodexClient.setPersona(personaInstructions());
-        result = await computerCodexClient.sendMessage(codexText, { onDelta });
+        result = await computerCodexClient.sendMessage(codexText, { onDelta, onEvent: observeWorkAgentMessage });
       } else if (process.platform === "darwin") {
         const skillClient = new CodexAppServerClient({
           cwd: app.getPath("documents"),
@@ -6359,7 +6503,7 @@ async function sendChatMessage(message, { localImagePath = "", localAttachments 
           }
           skillClient.setTurnStartSkillItems([computerUseSkill]);
           skillClient.setPersona(personaInstructions());
-          result = await skillClient.sendMessage(`$computer-use:computer-use ${codexText}`, { onDelta });
+          result = await skillClient.sendMessage(`$computer-use:computer-use ${codexText}`, { onDelta, onEvent: observeWorkAgentMessage });
         } finally {
           skillClient.stop();
           macComputerSkillClient = null;
@@ -6374,10 +6518,13 @@ async function sendChatMessage(message, { localImagePath = "", localAttachments 
       browserSession.onActivity = (label) => {
         updateWorkRun(workRun, { activity: label });
         sendStream({ phase: "activity", text: label, mode: workMode ? "work" : "chat" });
+        workVoiceReporter?.activity(label);
       };
       const visibleBrowser = ensureBrowserWindow(browserSession);
       visibleBrowser.showInactive();
-      sendStream({ phase: "activity", text: mainText("専用ブラウザで操作しています…", "Working in the dedicated browser…"), mode: workMode ? "work" : "chat" });
+      const browserStartActivity = mainText("専用ブラウザで操作しています…", "Working in the dedicated browser…");
+      sendStream({ phase: "activity", text: browserStartActivity, mode: workMode ? "work" : "chat" });
+      workVoiceReporter?.activity(browserStartActivity);
       const initialBrowserUrl = browserSession.initialUrl;
       browserSession.initialUrl = "";
       if (initialBrowserUrl) await openBrowserPage(browserSession, initialBrowserUrl);
@@ -6410,7 +6557,13 @@ async function sendChatMessage(message, { localImagePath = "", localAttachments 
         onDynamicToolCall: (params) => handleBrowserToolCall(browserSession, params),
       });
       browserCodexClient.setPersona(personaInstructions());
-      result = await browserCodexClient.sendMessage(codexText, { onDelta, onEvent: (message) => collectWorkArtifacts(message.params?.item) });
+      result = await browserCodexClient.sendMessage(codexText, {
+        onDelta,
+        onEvent: (message) => {
+          collectWorkArtifacts(message.params?.item);
+          observeWorkAgentMessage(message);
+        },
+      });
       if (!browserSession.toolCallCount) throw new Error("Codexが専用ブラウザを使わずに回答しようとしたため停止しました。もう一度ブラウザ操作を依頼してください。");
       if (workMode) {
         result = { ...result, mode: "work", workDirectoryName: path.basename(validWorkDirectory()) };
@@ -6426,6 +6579,7 @@ async function sendChatMessage(message, { localImagePath = "", localAttachments 
         onEvent: (message) => {
           const itemType = String(message.params?.item?.type || "");
           collectWorkArtifacts(message.params?.item);
+          observeWorkAgentMessage(message);
           const label = itemType === "commandExecution" ? mainText("コマンドを実行中…", "Running a command…")
             : itemType === "fileChange" ? mainText("ファイルを更新中…", "Updating files…")
               : itemType === "webSearch" ? mainText("情報を確認中…", "Checking information…") : "";
@@ -6433,6 +6587,7 @@ async function sendChatMessage(message, { localImagePath = "", localAttachments 
             lastActivity = label;
             updateWorkRun(workRun, { activity: label });
             sendStream({ phase: "activity", text: label, mode: "work" });
+            workVoiceReporter?.activity(label);
           }
         },
       });
@@ -6460,6 +6615,7 @@ async function sendChatMessage(message, { localImagePath = "", localAttachments 
       });
     }
     result = { ...result, text: cleanAssistantText(result.text) };
+    workVoiceReporter?.complete();
     const artifacts = workMode
       ? discoverWorkArtifacts(validWorkDirectory(), {
         eventCandidates: workArtifactCandidates,
@@ -6468,24 +6624,53 @@ async function sendChatMessage(message, { localImagePath = "", localAttachments 
       })
       : [];
     if (workMode && workRun) updateWorkRun(workRun, { status: "completed", result: result.text, artifacts, finished: true });
-    const displayText = workMode ? latestWorkDisplayText(result.text) : result.text;
+    const rawDisplayText = workMode ? latestWorkDisplayText(result.text) : result.text;
+    const displayText = workMode
+      ? conciseWorkAnnouncement(rawDisplayText, 140) || mainText("作業が完了したよ。", "The work is complete.")
+      : rawDisplayText;
     const finalSpeechSegments = expressiveSpeechSegments(workMode
       ? [displayText]
       : speechSegmenter.push(speechSegmenter.fullText || result.text, { flush: true }));
     if (!streamTtsEnabled) {
       for (const segment of finalSpeechSegments) pushMascotExpression(segment.expression);
     }
+    const deliverViaRealtime = Boolean(realtimeOutput && currentRealtimeClient() && activeRealtimeWorkSpeech);
+    const fallbackTtsEnabled = Boolean(realtimeOutput && !deliverViaRealtime && preferences.data.ttsEnabled);
     sendStream({
       phase: "done",
       text: result.text,
       displayText,
-      speechSegments: streamTtsEnabled ? finalSpeechSegments : [],
+      speechSegments: streamTtsEnabled || fallbackTtsEnabled ? finalSpeechSegments : [],
       artifacts,
       workRunId: workRun?.id || "",
+      deferDisplayToRealtime: deliverViaRealtime,
+      realtimeOutput,
+      realtimeSpeechPending: deliverViaRealtime,
+      ttsEnabled: streamTtsEnabled || fallbackTtsEnabled,
+      ttsProvider: activeTtsProvider,
+      speechLanguage: preferences.data.speechLanguage || "ja-JP",
     });
+    if (deliverViaRealtime && workMode) {
+      const delivered = await appendRealtimeOutputSpeech(configuredSpeechText(displayText), "completion").catch(() => false);
+      if (!delivered) {
+        sendStream({
+          phase: "announcement",
+          mode: "work",
+          kind: "completion",
+          text: displayText,
+          displayText,
+          ttsEnabled: Boolean(preferences.data.ttsEnabled),
+          ttsProvider: activeTtsProvider,
+          speechLanguage: preferences.data.speechLanguage || "ja-JP",
+          speechSegments: preferences.data.ttsEnabled ? finalSpeechSegments : [],
+        });
+      }
+      sendStream({ phase: "realtime-work-complete", mode: "work", realtimeOutput: true, workRunId: workRun?.id || "" });
+    }
     if (!workMode) rememberConversationTurn(requestText, result.text);
     return { ...result, displayText, artifacts, workRunId: workRun?.id || "", streamed: true };
   } catch (error) {
+    workVoiceReporter?.complete();
     if (workRun) {
       const interrupted = workRun.status === "stopping" || /interrupt|cancel|中断/i.test(String(error.message || ""));
       updateWorkRun(workRun, {
@@ -6494,7 +6679,7 @@ async function sendChatMessage(message, { localImagePath = "", localAttachments 
         finished: true,
       });
     }
-    sendStream({ phase: "error", message: error.message });
+    sendStream({ phase: "error", message: error.message, realtimeOutput, workRunId: workRun?.id || "" });
     throw error;
   } finally {
     stopThinkingFiller();

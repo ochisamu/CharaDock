@@ -309,6 +309,23 @@ test("the latest answer stays visible while active work and Realtime expose elap
   assert.match(styles, /is-processing #desktopMascotWorkActivity::before/);
 });
 
+test("Work voice reports contextual milestones and keeps artifact buttons out of speech", () => {
+  const main = fs.readFileSync(path.join(projectRoot, "desktop", "main.cjs"), "utf8");
+  const mascot = fs.readFileSync(path.join(projectRoot, "desktop", "preload-mascot.cjs"), "utf8");
+  assert.match(main, /new WorkVoiceReporter\([\s\S]*onAnnouncement: announceWork/);
+  assert.match(main, /String\(item\?\.phase \|\| ""\) !== "commentary"/);
+  assert.match(main, /phase: "announcement"[\s\S]*speechSegments: streamTtsEnabled/);
+  assert.match(main, /conciseWorkAnnouncement\(rawDisplayText, 140\)/);
+  assert.match(main, /deferDisplayToRealtime: deliverViaRealtime/);
+  assert.match(main, /appendRealtimeOutputSpeech\(configuredSpeechText\(displayText\), "completion"\)/);
+  assert.match(mascot, /payload\?\.phase === "announcement"/);
+  assert.match(mascot, /payload\?\.phase === "realtime-caption"/);
+  assert.match(mascot, /!payload\?\.deferDisplayToRealtime/);
+  assert.match(mascot, /if \(payload\?\.realtimeOutput\) \{\s*if \(!payload\?\.realtimeSpeechPending\) finishDetachedRealtimeWork/);
+  assert.match(mascot, /renderArtifactActions\(artifactActions, payload\?\.artifacts, payload\?\.workRunId\)/);
+  assert.doesNotMatch(mascot, /renderArtifactActions[\s\S]{0,300}queueStreamSpeech\(payload\?\.artifacts/);
+});
+
 test("mascot Japanese text uses a stable Windows font stack and notices clear the composer", () => {
   const mascot = fs.readFileSync(path.join(projectRoot, "desktop", "preload-mascot.cjs"), "utf8");
   const styles = fs.readFileSync(path.join(projectRoot, "desktop", "mascot-overlay.css"), "utf8");

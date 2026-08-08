@@ -331,12 +331,21 @@ test("Codex client starts WebRTC realtime and forwards transcript events", async
     calls.push({ method, params });
     return {};
   };
-  const result = await client.startRealtime({ sdp: "v=0\r\n...", prompt: "日本語", voice: "maple", onEvent: (event) => events.push(event) });
+  const result = await client.startRealtime({
+    sdp: "v=0\r\n...",
+    prompt: "日本語",
+    voice: "maple",
+    clientManagedHandoffs: true,
+    delegationAckFiller: false,
+    onEvent: (event) => events.push(event),
+  });
   assert.equal(result.threadId, "thread-voice");
   assert.equal(calls[0].method, "thread/realtime/start");
   assert.equal(calls[0].params.outputModality, "audio");
   assert.equal(calls[0].params.version, "v3");
   assert.equal(calls[0].params.codexResponseHandoffMode, "bemTags");
+  assert.equal(calls[0].params.clientManagedHandoffs, true);
+  assert.equal(calls[0].params.delegationAckFiller, false);
   assert.equal(calls[0].params.voice, "maple");
   assert.deepEqual(calls[0].params.transport, { type: "webrtc", sdp: "v=0\r\n..." });
   client.handleLine(JSON.stringify({ method: "thread/realtime/transcript/delta", params: { threadId: "thread-voice", role: "user", delta: "こんにちは" } }));
@@ -387,6 +396,20 @@ test("Codex client appends click and preview speech to the active realtime sessi
   assert.deepEqual(call, {
     method: "thread/realtime/appendSpeech",
     params: { threadId: "thread-voice", text: "なあに？" },
+  });
+});
+
+test("Codex client appends typed user input as realtime text", async () => {
+  const client = new CodexAppServerClient();
+  assert.equal(await client.appendRealtimeText("作業して", "user"), false);
+  client.threadId = "thread-voice";
+  client.realtimeHandlers.set("thread-voice", () => {});
+  let call;
+  client.request = async (method, params) => { call = { method, params }; return {}; };
+  assert.equal(await client.appendRealtimeText("  HTMLを作って  ", "user"), true);
+  assert.deepEqual(call, {
+    method: "thread/realtime/appendText",
+    params: { threadId: "thread-voice", text: "HTMLを作って", role: "user" },
   });
 });
 

@@ -200,6 +200,8 @@ window.addEventListener("DOMContentLoaded", () => {
   let streamFullText = "";
   let streamCurrentSpeechText = "";
   let thinkingFillerActive = false;
+  let detachedRealtimeWorkBusy = false;
+  let detachedRealtimeWorkRunId = "";
 
   const normalizeDisplayText = (value) => String(value ?? "").normalize("NFC");
 
@@ -943,20 +945,11 @@ window.addEventListener("DOMContentLoaded", () => {
   };
   const queueStreamSpeech = (segments) => {
     if (!streamTtsConfig.enabled) return;
-    let firstQueuedText = "";
     for (const segment of Array.isArray(segments) ? segments : []) {
       const text = String(segment?.text || segment || "").trim();
       if (text) {
-        firstQueuedText ||= text;
         streamTtsQueue.push(typeof segment === "object" ? { ...segment, text } : { text });
       }
-    }
-    // While synthesis is pending, show the text that is about to be spoken.
-    // Do not flash the already-complete answer before playback catches up.
-    if (!thinkingFillerActive && !streamCurrentSpeechText && firstQueuedText) {
-      streamCurrentSpeechText = firstQueuedText;
-      if (!bubble.classList.contains("is-expanded")) bubbleText.textContent = normalizeDisplayText(firstQueuedText);
-      syncBubbleOverflow();
     }
     streamTtsQueueSignal?.();
     streamTtsQueueSignal = null;
@@ -1089,11 +1082,14 @@ window.addEventListener("DOMContentLoaded", () => {
   const sendMascotMessage = async (message) => {
     setSendingControls(true);
     const useActiveRealtime = Boolean(realtimePeer);
+    let streamOwnsBusyState = false;
     setStatus(useActiveRealtime ? "Live音声で応答を生成…" : appState?.interactionMode === "work" ? "作業を開始…" : "考え中…", 30_000);
     try {
       if (useActiveRealtime) {
-        const appended = await ipcRenderer.invoke("mascotInline:realtimeAppendSpeech", message);
+        const appended = await ipcRenderer.invoke("mascotInline:realtimeAppendText", message);
         if (!appended) throw new Error("Liveセッションへ文字を送信できませんでした。");
+        streamOwnsBusyState = appState?.interactionMode === "work";
+        detachedRealtimeWorkBusy = streamOwnsBusyState;
         setStatus("Liveへ文字を送信しました", 5000);
         return;
       }
@@ -1123,12 +1119,26 @@ window.addEventListener("DOMContentLoaded", () => {
       showSpeech({ text: interrupted ? interruptedText : `エラー: ${error.message}`, durationMs: 12_000 });
       setStatus(interrupted ? appState?.interactionMode === "work" ? "作業を中断しました" : "応答を中断しました" : "送信できませんでした");
     } finally {
-      setSendingControls(false);
-      input.focus();
-      const followUp = pendingFollowUpMessage;
-      pendingFollowUpMessage = "";
-      if (followUp) queueMicrotask(() => sendMascotMessage(followUp));
+      if (!streamOwnsBusyState) {
+        setSendingControls(false);
+        input.focus();
+        const followUp = pendingFollowUpMessage;
+        pendingFollowUpMessage = "";
+        if (followUp) queueMicrotask(() => sendMascotMessage(followUp));
+      }
     }
+  };
+  const finishDetachedRealtimeWork = (workRunId = "") => {
+    if (!detachedRealtimeWorkBusy) return;
+    const expectedRunId = String(workRunId || "");
+    if (expectedRunId && (!detachedRealtimeWorkRunId || expectedRunId !== detachedRealtimeWorkRunId)) return;
+    detachedRealtimeWorkBusy = false;
+    detachedRealtimeWorkRunId = "";
+    setSendingControls(false);
+    input.focus();
+    const followUp = pendingFollowUpMessage;
+    pendingFollowUpMessage = "";
+    if (followUp) queueMicrotask(() => sendMascotMessage(followUp));
   };
 
   form.addEventListener("submit", async (event) => {
@@ -1920,6 +1930,10 @@ window.addEventListener("DOMContentLoaded", () => {
       };
       sending = true;
       streamWorkMode = payload?.mode === "work";
+      if (payload?.realtimeOutput && streamWorkMode) {
+        detachedRealtimeWorkBusy = true;
+        detachedRealtimeWorkRunId = String(payload?.workRunId || "");
+      }
       streamHasActivity = false;
       clearTimeout(hideTimer);
       if (!bubble.classList.contains("is-visible") || !bubbleText.textContent.trim()) {
@@ -1951,12 +1965,54 @@ window.addEventListener("DOMContentLoaded", () => {
       queueStreamSpeech(payload?.speechSegments);
       return;
     }
+    if (payload?.phase === "announcement") {
+      if (payload?.ttsEnabled !== undefined) {
+        streamTtsConfig = {
+          enabled: Boolean(payload.ttsEnabled),
+          provider: payload?.ttsProvider || streamTtsConfig.provider || "system",
+          language: payload?.speechLanguage || streamTtsConfig.language || "ja-JP",
+        };
+      }
+      const announcement = normalizeDisplayText(payload.displayText || payload.text);
+      if (announcement) {
+        streamFullText = announcement;
+        bubblePersistent = true;
+        bubble.classList.add("is-visible");
+        if (!streamTtsConfig.enabled) bubbleText.textContent = announcement;
+        syncBubbleOverflow();
+      }
+      queueStreamSpeech(payload?.speechSegments);
+      return;
+    }
+    if (payload?.phase === "realtime-caption") {
+      const caption = normalizeDisplayText(payload.displayText || payload.text);
+      if (caption) {
+        streamFullText = caption;
+        streamCurrentSpeechText = caption;
+        bubbleText.textContent = caption;
+        bubblePersistent = true;
+        bubble.classList.add("is-visible");
+        syncBubbleOverflow();
+      }
+      return;
+    }
     if (payload?.phase === "activity") {
       streamHasActivity = true;
       setWorkActivity(String(payload.text || "作業中…"), { trackElapsed: true });
       return;
     }
+    if (payload?.phase === "realtime-work-complete") {
+      finishDetachedRealtimeWork(payload?.workRunId);
+      return;
+    }
     if (payload?.phase === "done") {
+      if (payload?.ttsEnabled !== undefined) {
+        streamTtsConfig = {
+          enabled: Boolean(payload.ttsEnabled),
+          provider: payload?.ttsProvider || streamTtsConfig.provider || "system",
+          language: payload?.speechLanguage || streamTtsConfig.language || "ja-JP",
+        };
+      }
       if (payload?.text) streamFullText = normalizeDisplayText(payload.displayText || payload.text);
       streamTtsFinished = true;
       bubblePersistent = true;
@@ -1964,12 +2020,14 @@ window.addEventListener("DOMContentLoaded", () => {
       renderArtifactActions(artifactActions, payload?.artifacts, payload?.workRunId);
       if (!streamTtsConfig.enabled || (!streamTtsDraining && !streamTtsQueue.length)) {
         streamCurrentSpeechText = "";
-        if (!bubble.classList.contains("is-expanded") && streamFullText) bubbleText.textContent = normalizeDisplayText(streamFullText);
+        if (!payload?.deferDisplayToRealtime && !bubble.classList.contains("is-expanded") && streamFullText) bubbleText.textContent = normalizeDisplayText(streamFullText);
         if (streamTtsConfig.enabled) finishTtsPlayback();
       }
       syncBubbleOverflow();
       scheduleBubbleHide(Math.max(9000, bubbleHideDuration));
-      sending = false;
+      if (payload?.realtimeOutput) {
+        if (!payload?.realtimeSpeechPending) finishDetachedRealtimeWork(payload?.workRunId);
+      } else sending = false;
       if (streamWorkMode) setWorkActivity(appState?.language === "en" ? "Work complete" : "作業完了", { finish: true });
       else setWorkActivity("");
       streamWorkMode = false;
@@ -1978,7 +2036,8 @@ window.addEventListener("DOMContentLoaded", () => {
       stopTtsPlayback();
       streamCurrentSpeechText = "";
       if (!bubble.classList.contains("is-expanded") && streamFullText) bubbleText.textContent = normalizeDisplayText(streamFullText);
-      sending = false;
+      if (payload?.realtimeOutput) finishDetachedRealtimeWork(payload?.workRunId);
+      else sending = false;
       bubblePersistent = true;
       if (streamWorkMode) setWorkActivity(appState?.language === "en" ? "Work could not be completed" : "作業を完了できませんでした", { finish: true });
       else setWorkActivity("");

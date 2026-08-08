@@ -58,9 +58,18 @@ function browserConversationAction(message, hasPendingRequest = false) {
     if (text.length <= 48 && APPROVE_PATTERN.test(text)) return "approve";
     return "replace";
   }
-  const browserMentioned = /(?:ブラウザ|browser|ウェブ|web|サイト|ホームページ|URL|リンク)/i.test(text);
+  const explicitBrowserMentioned = /(?:ブラウザ|browser|URL|リンク)/i.test(text);
+  const siteMentioned = /(?:ウェブ|web|サイト|ホームページ)/i.test(text);
   const browserAction = /(?:開いて|開く|見て|みて|確認して|読んで|調べて|検索して|探して|閲覧して|アクセスして|移動して|操作して|操作|使って|起動して)/i.test(text);
-  const explicitTarget = Boolean(extractBrowserTarget(text));
+  const localArtifactMentioned = !/https?:\/\//i.test(text)
+    && /(?:^|[\s"'`/\\])[^\s"'`/\\]+\.(?:html?|css|js|cjs|mjs|ts|tsx|jsx|json|md|pdf|png|jpe?g|webp|svg|wav|mp3)(?=$|[\s、。"'`をのにへでと])/i.test(text);
+  const artifactAuthoring = localArtifactMentioned
+    && /(?:作って|作る|作成|生成|実装|更新|修正|直して|書いて|保存|変換|連携)/i.test(text);
+  const target = extractBrowserTarget(text);
+  const fileLikeHostname = Boolean(target)
+    && /\.(?:html?|css|js|cjs|mjs|ts|tsx|jsx|json|md|pdf|png|jpe?g|webp|svg|wav|mp3)$/i.test(target.hostname);
+  const explicitTarget = Boolean(target) && (Boolean(text.match(/https?:\/\//i)) || !fileLikeHostname);
+  const browserMentioned = explicitBrowserMentioned || (siteMentioned && !artifactAuthoring);
   return (browserMentioned || explicitTarget) && browserAction ? "request" : "";
 }
 

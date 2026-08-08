@@ -67,6 +67,7 @@ contextBridge.exposeInMainWorld("mascotDesktop", {
   removeSbv2Model: (id) => ipcRenderer.invoke("tts:sbv2RemoveModel", id),
   normalizeTtsText: (text) => ipcRenderer.invoke("tts:normalizeText", text),
   startCodexRealtime: (payload) => ipcRenderer.invoke("audio:realtimeStart", payload),
+  appendCodexRealtimeText: (text) => ipcRenderer.invoke("audio:realtimeAppendText", text),
   appendCodexRealtimeSpeech: (text) => ipcRenderer.invoke("audio:realtimeAppendSpeech", text),
   stopCodexRealtime: () => ipcRenderer.invoke("audio:realtimeStop"),
   getBeatriceStatus: () => ipcRenderer.invoke("beatrice:status"),
