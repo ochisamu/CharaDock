@@ -2,7 +2,8 @@
 
 ## 公開前の必須確認
 
-- [x] 組み込み4キャラクターの元絵と生成差分がOpenAI `gpt-image-2`で作成された来歴を、READMEと`DISTRIBUTION_ASSET_LICENSE.md`に記録した。
+- [x] プロジェクトオリジナル4キャラクターの元絵と生成差分がOpenAI `gpt-image-2`で作成された来歴を、READMEと`DISTRIBUTION_ASSET_LICENSE.md`に記録した。
+- [x] AIニケちゃんの収録許可とクレジットを、アプリ、README、配布物のライセンス文書に記録した。
 - [ ] 生成時の入力に、許諾のない第三者画像・商標・実在人物の肖像が含まれていないことを最終確認する。
 - [ ] `docs/images/charadock-work-mode.png`、`app-icon.ico`、`app-icon.png`を公開できる。
 - [ ] `DISTRIBUTION_ASSET_LICENSE.md`の条件が権利者の意図と一致している。

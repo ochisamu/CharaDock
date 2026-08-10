@@ -14,6 +14,7 @@ const DEFAULT_CHARACTER_TTS_PROFILES = Object.freeze({
   "bronze-avatar": Object.freeze({ provider: "supertonic-3", realtimeVoice: "juniper", realtimeVoiceConversion: "none", beatriceModelId: "", beatriceVoiceId: 0, beatricePitchShift: 0, beatriceFormantShift: 0, beatriceInputGain: 0, beatriceOutputGain: 0, beatriceIntonation: 1, beatricePitchCorrection: 0, beatricePitchCorrectionType: 0, irodoriVoiceId: "builtin-kohaku", irodoriVersion: "500m-v3", irodoriPrecision: "fp16", supertonicVoice: "F2", kokoroVoice: "jf_alpha", sbv2ModelId: "", sbv2SpeakerId: 0, sbv2StyleId: 0, sbv2StyleWeight: 1 }),
   "towa-avatar": Object.freeze({ provider: "irodori-webgpu", realtimeVoice: "spruce", realtimeVoiceConversion: "none", beatriceModelId: "", beatriceVoiceId: 0, beatricePitchShift: 0, beatriceFormantShift: 0, beatriceInputGain: 0, beatriceOutputGain: 0, beatriceIntonation: 1, beatricePitchCorrection: 0, beatricePitchCorrectionType: 0, irodoriVoiceId: "builtin-hiro", irodoriVersion: "500m-v3", irodoriPrecision: "fp16", supertonicVoice: "M4", kokoroVoice: "jf_alpha", sbv2ModelId: "", sbv2SpeakerId: 0, sbv2StyleId: 0, sbv2StyleWeight: 1 }),
   "sage-avatar": Object.freeze({ provider: "supertonic-3", realtimeVoice: "ember", realtimeVoiceConversion: "none", beatriceModelId: "", beatriceVoiceId: 0, beatricePitchShift: 0, beatriceFormantShift: 0, beatriceInputGain: 0, beatriceOutputGain: 0, beatriceIntonation: 1, beatricePitchCorrection: 0, beatricePitchCorrectionType: 0, irodoriVoiceId: "builtin-hiro", irodoriVersion: "500m-v3", irodoriPrecision: "fp16", supertonicVoice: "M2", kokoroVoice: "jf_gongitsune", sbv2ModelId: "", sbv2SpeakerId: 0, sbv2StyleId: 0, sbv2StyleWeight: 1 }),
+  "nike-avatar": Object.freeze({ provider: "system", realtimeVoice: "maple", realtimeVoiceConversion: "none", beatriceModelId: "", beatriceVoiceId: 0, beatricePitchShift: 0, beatriceFormantShift: 0, beatriceInputGain: 0, beatriceOutputGain: 0, beatriceIntonation: 1, beatricePitchCorrection: 0, beatricePitchCorrectionType: 0, irodoriVoiceId: "builtin-kohaku", irodoriVersion: "v4-small", irodoriPrecision: "int4", supertonicVoice: "F5", kokoroVoice: "jf_alpha", sbv2ModelId: "", sbv2SpeakerId: 0, sbv2StyleId: 0, sbv2StyleWeight: 1 }),
 });
 
 const DEFAULTS = Object.freeze({
@@ -122,6 +123,8 @@ const PUBLIC_KEYS = new Set(Object.keys(DEFAULTS));
 const LEGACY_TOWA_CHARACTER_ID = "user-avatar-ms5afs58";
 const BUILT_IN_TOWA_CHARACTER_ID = "towa-avatar";
 const BUILT_IN_KOHAKU_CHARACTER_ID = "amber-avatar";
+const LEGACY_NIKE_CHARACTER_ID = "user-avatar-ai-nike-smooth-v2";
+const BUILT_IN_NIKE_CHARACTER_ID = "nike-avatar";
 const LEGACY_KOHAKU_DISPLAY_NAME = "琥珀";
 const BUILT_IN_KOHAKU_DISPLAY_NAME = "コハク";
 
@@ -219,6 +222,42 @@ function migrateBundledKohakuDisplayName(data) {
         changed = true;
       }
     }
+  }
+  return changed;
+}
+
+function migrateBundledNikePreferenceData(data) {
+  let changed = false;
+  if (data.characterId === LEGACY_NIKE_CHARACTER_ID) {
+    data.characterId = BUILT_IN_NIKE_CHARACTER_ID;
+    changed = true;
+  }
+  if (Array.isArray(data.customCharacters)) {
+    const remaining = data.customCharacters.filter((character) => character?.id !== LEGACY_NIKE_CHARACTER_ID);
+    if (remaining.length !== data.customCharacters.length) {
+      data.customCharacters = remaining;
+      changed = true;
+    }
+  }
+  for (const profileKey of ["characterProfiles", "characterTtsProfiles", "conversationHistories", "characterMemories", "characterWorkspaces"]) {
+    const profiles = data[profileKey];
+    if (!profiles || typeof profiles !== "object" || Array.isArray(profiles) || !profiles[LEGACY_NIKE_CHARACTER_ID]) continue;
+    if (!profiles[BUILT_IN_NIKE_CHARACTER_ID]) profiles[BUILT_IN_NIKE_CHARACTER_ID] = profiles[LEGACY_NIKE_CHARACTER_ID];
+    delete profiles[LEGACY_NIKE_CHARACTER_ID];
+    changed = true;
+  }
+  if (Array.isArray(data.workHistory)) {
+    for (const run of data.workHistory) {
+      if (run?.characterId === LEGACY_NIKE_CHARACTER_ID) {
+        run.characterId = BUILT_IN_NIKE_CHARACTER_ID;
+        changed = true;
+      }
+    }
+  }
+  data.characterTtsProfiles ||= {};
+  if (!data.characterTtsProfiles[BUILT_IN_NIKE_CHARACTER_ID]) {
+    data.characterTtsProfiles[BUILT_IN_NIKE_CHARACTER_ID] = { ...DEFAULT_CHARACTER_TTS_PROFILES[BUILT_IN_NIKE_CHARACTER_ID] };
+    changed = true;
   }
   return changed;
 }
@@ -463,7 +502,8 @@ class Preferences {
       if (typeof parsed.encryptedApiKey === "string") this.data.encryptedApiKey = parsed.encryptedApiKey;
       const migratedTowa = migrateBundledTowaPreferenceData(this.data);
       const migratedKohaku = migrateBundledKohakuDisplayName(this.data);
-      if (migratedTowa || migratedKohaku) this.save();
+      const migratedNike = migrateBundledNikePreferenceData(this.data);
+      if (migratedTowa || migratedKohaku || migratedNike) this.save();
     } catch (error) {
       if (error?.code !== "ENOENT") console.warn("Preferences load failed:", error);
     }
@@ -528,4 +568,4 @@ class Preferences {
   }
 }
 
-module.exports = { DEFAULTS, Preferences, migrateBundledTowaPreferenceData, normalizeConversationHistories, normalizeWorkHistory };
+module.exports = { DEFAULTS, Preferences, migrateBundledTowaPreferenceData, migrateBundledNikePreferenceData, normalizeConversationHistories, normalizeWorkHistory };

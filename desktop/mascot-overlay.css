@@ -43,6 +43,7 @@
 :root[data-character="bronze-avatar"] { --pet-accent: #dc9568; --pet-accent-strong: #b8663d; --pet-accent-ink: #25130c; }
 :root[data-character="towa-avatar"] { --pet-accent: #33b5b3; --pet-accent-strong: #168d91; --pet-accent-ink: #071b1c; }
 :root[data-character="sage-avatar"] { --pet-accent: #8cae9f; --pet-accent-strong: #527969; --pet-accent-ink: #0c1d18; }
+:root[data-character="nike-avatar"] { --pet-accent: #a98cf5; --pet-accent-strong: #7657d8; --pet-accent-ink: #120a2b; }
 .ui-symbol {
   display: inline-block;
   width: 1.15em;

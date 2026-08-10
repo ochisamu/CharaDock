@@ -25,6 +25,7 @@ const assets = [
   ["docs/images/characters/bronze-complete-v2.png", "assets/characters/bronze.png"],
   ["docs/images/characters/towa-complete-v1.png", "assets/characters/towa.png"],
   ["docs/images/characters/sage-complete-v1.png", "assets/characters/sage.png"],
+  ["docs/images/characters/nike-complete-v1.png", "assets/characters/nike.png"],
 ];
 
 for (const [from, to] of assets) {

@@ -39,7 +39,7 @@ test("avatar alpha cleanup removes green spill only at transparent edges", () =>
 
 test("bundled desktop avatars have fully transparent background corners", () => {
   const projectRoot = path.resolve(__dirname, "../..");
-  for (const directory of ["amber-avatar", "bronze-avatar", "towa-avatar", "sage-avatar"]) {
+  for (const directory of ["amber-avatar", "bronze-avatar", "towa-avatar", "sage-avatar", "nike-avatar"]) {
     const assetDirectory = path.join(projectRoot, "assets", directory);
     for (const name of fs.readdirSync(assetDirectory).filter((entry) => entry.endsWith(".png"))) {
       const png = PNG.sync.read(fs.readFileSync(path.join(assetDirectory, name)));

@@ -12,6 +12,7 @@ const characters = [
   ["bronze-avatar", "bronze-complete-v2.png"],
   ["towa-avatar", "towa-complete-v1.png"],
   ["sage-avatar", "sage-complete-v1.png"],
+  ["nike-avatar", "nike-complete-v1.png"],
 ];
 
 function readPng(file) {

@@ -21,14 +21,17 @@ Output may not be unique, and this statement does not waive or guarantee
 clearance of any independently existing third-party rights. See:
 https://openai.com/policies/terms-of-use/
 
-The CharaDock distribution contains only the four newly prepared character
-sets under `assets/amber-avatar`, `assets/bronze-avatar`,
-`assets/towa-avatar`, and `assets/sage-avatar`; the CharaDock icon in
+The CharaDock distribution contains the four project-original character sets
+under `assets/amber-avatar`, `assets/bronze-avatar`, `assets/towa-avatar`, and
+`assets/sage-avatar`; the separately authorized AI Nike-chan character under
+`assets/nike-avatar`; the CharaDock icon in
 `app-icon.png` and `app-icon.ico`; and screenshots that visibly incorporate
 these characters, including `docs/images/charadock-work-mode.png`.
 
-Public distribution of these character sets as part of CharaDock is
-permitted under the usage conditions below. This notice does not grant rights
+Public distribution of the four project-original character sets as part of
+CharaDock is permitted under the usage conditions below. AI Nike-chan is
+included with permission and remains subject to its individual notice at
+`assets/nike-avatar/ASSET_NOTICE.md`. This notice does not grant rights
 to OpenAI trademarks, the upstream project, or any independently existing
 third-party material.
 
@@ -42,6 +45,21 @@ may not be repurposed as another product's icon, logo, or standalone asset.
 User-imported characters remain subject to the rights and permissions attached
 to the user's source image. Users must have permission to upload, transform and
 use every image they add to the application.
+
+## AI Nike-chan
+
+AIニケちゃん / AI Nike-chan and its derived eye and mouth variants are bundled
+with permission. They are not licensed under Apache License 2.0 and are not
+covered by the project-original asset grant above.
+
+Required credit:
+
+- tegnike: https://x.com/tegnike
+- Official site: https://nikechan.com/
+
+Permission to include these files in CharaDock does not grant a standalone
+redistribution, extraction, model-training, resale, or reuse license. See the
+asset-specific notice for the controlling distribution statement.
 
 The original PuruPuru PNGTuber demo avatars and favicon are not included in the
 distribution and are not covered by these terms.

@@ -207,6 +207,10 @@
             <label>名前<input id="characterNameInput" type="text" maxlength="40" /></label>
             <label class="profile-personality">性格・話し方<textarea id="characterPersonalityInput" rows="4" maxlength="2000"></textarea></label>
           </div>
+          <section id="characterCredit" class="character-credit" aria-labelledby="characterCreditTitle" hidden>
+            <div><h3 id="characterCreditTitle">キャラクタークレジット</h3><p id="characterCreditText"></p></div>
+            <div id="characterCreditLinks" class="character-credit-links"></div>
+          </section>
           <section class="character-memory" aria-labelledby="characterMemoryTitle">
             <header><div><h3 id="characterMemoryTitle">このキャラのメモリ</h3><p>会話から自動で覚えた呼び名・好み・継続目標です。ほかのキャラとは共有しません。</p></div><button id="clearCharacterMemoriesButton" class="button button-quiet" type="button" hidden>すべて忘れる</button></header>
             <div id="characterMemoryList" class="character-memory-list"></div>
@@ -695,6 +699,7 @@
           <div><p class="eyebrow">ライセンス</p><h2>配布とクレジット</h2></div>
           <p>CharaDockは、Apache License 2.0のPuruPuru PNGTuberを基にした非公式派生アプリです。元開発者による公式製品ではありません。</p>
           <p>旧デモキャラクターと旧faviconは配布物に含めていません。画像を追加・公開するときは、アップロード・加工・配布に必要な権利を利用者自身で確認してください。</p>
+          <p>AIニケちゃんは、<a href="https://x.com/tegnike" target="_blank" rel="noreferrer">tegnike</a>さんの許可を受けて収録しています。<a href="https://nikechan.com/" target="_blank" rel="noreferrer">AIニケちゃん公式サイト</a></p>
           <p>同梱のKohaku参照音声には、<a href="https://amitaro.net/" target="_blank" rel="noreferrer">あみたろの声素材工房</a>の音声素材を使用しています。</p>
           <small>同梱文書: LICENSE / NOTICE / MODIFICATIONS.md / DISTRIBUTION_ASSET_LICENSE.md / THIRD_PARTY_NOTICES.md</small>
         </section>
@@ -780,7 +785,7 @@
       </div>
       <div class="onboarding-step" data-onboarding-step="1">
         <span class="onboarding-step-icon"><span class="ui-symbol ui-symbol-character" aria-hidden="true"></span></span>
-        <div><p class="eyebrow">2 · キャラクター</p><h2>最初のキャラクター</h2><p>同梱の4キャラから選べます。一枚絵からの追加はCodex Avatar Studioで行えます。</p></div>
+        <div><p class="eyebrow">2 · キャラクター</p><h2>最初のキャラクター</h2><p>同梱の5キャラから選べます。一枚絵からの追加はCodex Avatar Studioで行えます。</p></div>
         <div id="onboardingCharacterGrid" class="onboarding-character-grid"></div>
         <button id="onboardingOpenGeneratorButton" class="button button-quiet" type="button">＋ 自分の画像からキャラを追加</button>
         <p class="onboarding-legal">画像を追加する場合、その画像をアップロード・加工・利用する権利が必要です。生成処理では画像がCodexへ送信されます。</p>
