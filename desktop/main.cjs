@@ -121,6 +121,7 @@ const { DiagnosticLog, createSupportBundle, diagnosticsAsText, redactDiagnosticT
 const { RELEASES_PAGE_URL, checkForAppUpdate } = require("./lib/app-update.cjs");
 const { validateAvatarOutput } = require("../.agents/skills/build-purupuru-avatar/scripts/validate-output.cjs");
 const { WebPreviewRuntime, commandForWebProject, findWebProject } = require("./lib/web-preview-runtime.cjs");
+const { normalizeExternalHttpUrl, secureWindowNavigation } = require("./lib/window-navigation.cjs");
 
 // Local TTS often completes several seconds after the click that requested it,
 // and conversation speech has no click at all. Keep Chromium from discarding
@@ -2829,9 +2830,10 @@ function artifactPreviewBoundsNearMascot() {
 }
 
 function secureWindow(window, allowedPrefix) {
-  window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
-  window.webContents.on("will-navigate", (event, url) => {
-    if (!url.startsWith(allowedPrefix)) event.preventDefault();
+  secureWindowNavigation(window.webContents, {
+    allowedPrefix,
+    openExternal: (url) => shell.openExternal(url, { activate: true }),
+    onError: (error) => console.warn("External URL open failed:", error?.message || error),
   });
 }
 
@@ -5815,11 +5817,11 @@ function registerIpc() {
   });
   ipcMain.handle("app:openExternalUrl", async (event, value) => {
     assertTrustedSender(event);
-    const url = new URL(String(value || ""));
-    if (!["https:", "http:"].includes(url.protocol) || url.username || url.password) {
+    const url = normalizeExternalHttpUrl(value);
+    if (!url) {
       throw new Error(mainText("安全なHTTPリンクではありません。", "This is not a safe HTTP link."));
     }
-    await shell.openExternal(url.toString(), { activate: true });
+    await shell.openExternal(url, { activate: true });
     return true;
   });
   ipcMain.handle("codex:models", async (event) => {
