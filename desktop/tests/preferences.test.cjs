@@ -89,9 +89,9 @@ test("new installs enable onboarding and desktop positioning defaults", () => {
   assert.equal(state.voiceAutoSendDelayMs, 1500);
   assert.equal(state.remoteAccessEnabled, false);
   assert.equal(state.remoteBindAddress, "");
-  assert.equal(state.remoteWorkEnabled, false);
+  assert.equal(state.remoteWorkEnabled, true);
   assert.equal(state.remoteTtsEnabled, true);
-  assert.equal(state.remotePcAudioEnabled, true);
+  assert.equal(state.remotePcAudioEnabled, false);
   assert.equal(state.remoteResponseMode, "tts");
   assert.equal(state.remotePort, 41317);
   assert.equal(state.remoteSessionMinutes, 60);

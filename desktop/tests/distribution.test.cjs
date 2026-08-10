@@ -363,7 +363,7 @@ test("remote access exposes compact avatar dialogue, device controls, and Live r
   const remoteCss = fs.readFileSync(path.join(projectRoot, "desktop", "remote", "remote.css"), "utf8");
   const remoteJs = fs.readFileSync(path.join(projectRoot, "desktop", "remote", "remote.js"), "utf8");
   assert.match(controlHtml, /data-page="remote"[\s\S]*ui-symbol-settings[\s\S]*リモート/);
-  for (const id of ["remoteDeviceList", "remotePcAudioToggle", "remoteResponseModeSelect", "remotePairingCode", "remotePortInput", "remoteTailscaleHttpsPortInput", "startRemoteTailscaleButton", "stopRemoteTailscaleButton"]) assert.match(controlHtml, new RegExp(`id="${id}"`));
+  for (const id of ["remoteDeviceList", "remotePcAudioToggle", "remoteResponseModeSelect", "remotePairingCode", "remotePairingTransport", "remotePairingRouteHint", "remotePortInput", "remoteTailscaleHttpsPortInput", "startRemoteTailscaleButton", "stopRemoteTailscaleButton"]) assert.match(controlHtml, new RegExp(`id="${id}"`));
   assert.match(controlJs, /revokeRemoteSession\(device\.id\)/);
   assert.match(controlJs, /startRemoteTailscale\(\)/);
   for (const id of ["bubbleExpandButton", "historySheet", "settingsSheet", "microphoneButton", "remoteLiveAudio", "characterSelect", "ttsProviderSelect", "realtimeVoiceSelect", "pcAudioToggle"]) assert.match(remoteHtml, new RegExp(`id="${id}"`));
@@ -374,6 +374,11 @@ test("remote access exposes compact avatar dialogue, device controls, and Live r
   assert.match(remoteJs, /\["delta", "realtime-caption"\]/);
   assert.match(remoteJs, /\/api\/live\/start/);
   assert.match(remoteJs, /getUserMedia/);
+  assert.match(remoteJs, /waitForIceGatheringComplete\(peer\)/);
+  assert.match(remoteJs, /charadock\.remote\.audio"\) !== "0"/);
+  assert.match(remoteJs, /gain\.gain\.value = audioEnabled \? 1 : 0/);
+  assert.match(remoteHtml, /PCでも音を出す<\/strong><small>初期状態はOFF/);
+  assert.match(remoteHtml, /この端末で回答音声を再生<\/strong><small>初期状態はON/);
 });
 
 test("WSL can launch Windows Electron from a persistent isolated development mirror", () => {

@@ -20,6 +20,32 @@ function tailscaleUrl(value) {
   return cleanOutput(value).match(/https:\/\/[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?\.ts\.net(?::\d+)?/i)?.[0] || "";
 }
 
+function tailscalePairingUrl(baseUrl, pairingUrl) {
+  try {
+    const base = new URL(String(baseUrl || ""));
+    const pairing = new URL(String(pairingUrl || ""));
+    const token = new URLSearchParams(pairing.hash.slice(1)).get("token") || "";
+    if (base.protocol !== "https:"
+      || base.username
+      || base.password
+      || !/^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?\.ts\.net$/i.test(base.hostname)
+      || !/^[A-Za-z0-9_-]{32,128}$/.test(token)) return "";
+    base.pathname = "/";
+    base.search = "";
+    base.hash = `token=${encodeURIComponent(token)}`;
+    return base.toString();
+  } catch {
+    return "";
+  }
+}
+
+function preferredRemotePairingDestination({ lanUrl = "", lanPairingUrl = "", tailscaleActive = false, tailscaleBaseUrl = "" } = {}) {
+  const securePairingUrl = tailscaleActive ? tailscalePairingUrl(tailscaleBaseUrl, lanPairingUrl) : "";
+  return securePairingUrl
+    ? { url: new URL(securePairingUrl).origin, pairingUrl: securePairingUrl, transport: "tailscale", secure: true }
+    : { url: String(lanUrl || ""), pairingUrl: String(lanPairingUrl || ""), transport: "lan", secure: false };
+}
+
 class TailscaleServeManager {
   constructor({ platform = process.platform, env = process.env, exists = fs.existsSync, run } = {}) {
     this.platform = platform;
@@ -91,4 +117,11 @@ class TailscaleServeManager {
   }
 }
 
-module.exports = { TailscaleServeManager, cleanOutput, normalizePort, tailscaleUrl };
+module.exports = {
+  TailscaleServeManager,
+  cleanOutput,
+  normalizePort,
+  preferredRemotePairingDestination,
+  tailscalePairingUrl,
+  tailscaleUrl,
+};

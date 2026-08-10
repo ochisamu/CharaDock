@@ -54,11 +54,19 @@ function visibilityStats(png) {
   const cornerHeight = Math.max(8, Math.floor(png.height * .08));
   let visible = 0;
   let cornerVisible = 0;
+  let minX = png.width;
+  let minY = png.height;
+  let maxX = -1;
+  let maxY = -1;
   for (let y = 0; y < png.height; y += 1) {
     for (let x = 0; x < png.width; x += 1) {
       const index = (y * png.width + x) * 4;
       if (effectivePixel(png, index)[3] <= 16) continue;
       visible += 1;
+      minX = Math.min(minX, x);
+      minY = Math.min(minY, y);
+      maxX = Math.max(maxX, x);
+      maxY = Math.max(maxY, y);
       if ((x < cornerWidth || x >= png.width - cornerWidth)
         && (y < cornerHeight || y >= png.height - cornerHeight)) cornerVisible += 1;
     }
@@ -66,6 +74,40 @@ function visibilityStats(png) {
   return {
     coverage: visible / total,
     cornerCoverage: cornerVisible / (cornerWidth * cornerHeight * 4),
+    bounds: visible ? { minX, minY, maxX, maxY } : null,
+  };
+}
+
+function axisAlignedBoundaryStats(png) {
+  const visibleAt = (x, y) => {
+    if (x < 0 || y < 0 || x >= png.width || y >= png.height) return false;
+    return effectivePixel(png, (y * png.width + x) * 4)[3] > 16;
+  };
+  let longestVertical = 0;
+  for (let x = 1; x < png.width; x += 1) {
+    let run = 0;
+    for (let y = 0; y < png.height; y += 1) {
+      if (visibleAt(x - 1, y) !== visibleAt(x, y)) {
+        run += 1;
+        longestVertical = Math.max(longestVertical, run);
+      } else run = 0;
+    }
+  }
+  let longestHorizontal = 0;
+  for (let y = 1; y < png.height; y += 1) {
+    let run = 0;
+    for (let x = 0; x < png.width; x += 1) {
+      if (visibleAt(x, y - 1) !== visibleAt(x, y)) {
+        run += 1;
+        longestHorizontal = Math.max(longestHorizontal, run);
+      } else run = 0;
+    }
+  }
+  return {
+    longestVertical,
+    longestHorizontal,
+    verticalFraction: longestVertical / png.height,
+    horizontalFraction: longestHorizontal / png.width,
   };
 }
 
@@ -193,6 +235,7 @@ function validateAvatarOutput(directory, { writePreview = false, requireHairRefe
     try {
       const image = readPng(hairReferencePath);
       if (expectedSize && (image.png.width !== expectedSize.width || image.png.height !== expectedSize.height)) errors.push(`${HAIR_REFERENCE_NAME} size differs from other images`);
+      image.visibility = visibilityStats(image.png);
       images.set(HAIR_REFERENCE_NAME, image);
     } catch (error) {
       errors.push(`${HAIR_REFERENCE_NAME} is not a readable PNG: ${error.message}`);
@@ -209,6 +252,7 @@ function validateAvatarOutput(directory, { writePreview = false, requireHairRefe
     if (!String(character.personality || "").trim()) errors.push("character personality is empty");
     if (!Array.isArray(character.petPhrases) || character.petPhrases.length < 3) errors.push("petPhrases must contain at least 3 entries");
     else if (new Set(character.petPhrases.map((value) => String(value || "").trim()).filter(Boolean)).size < 3) errors.push("petPhrases must contain 3 distinct non-empty entries");
+    if (character.hairMode != null && !["layered", "static"].includes(character.hairMode)) errors.push("hairMode must be layered or static");
   } catch (error) {
     errors.push(`invalid character.json: ${error.message}`);
   }
@@ -233,14 +277,34 @@ function validateAvatarOutput(directory, { writePreview = false, requireHairRefe
   }
 
   if (ALL_IMAGE_NAMES.every((name) => images.has(name))) {
+    const hairMode = character?.hairMode === "static" ? "static" : "layered";
     for (const name of EXPRESSION_NAMES) {
       const { coverage, cornerCoverage } = images.get(name).visibility;
       if (coverage < .08) errors.push(`${name} contains too little visible character artwork`);
       if (coverage > .9 || cornerCoverage > .8) errors.push(`${name} has an opaque/baked background; real alpha or flat #00FF00 is required`);
     }
     const hairVisibility = images.get(HAIR_NAME).visibility;
-    if (hairVisibility.coverage < .005) errors.push(`${HAIR_NAME} is empty; generate the movable hair layer or explicitly repair it`);
+    if (hairMode === "layered" && hairVisibility.coverage < .005) errors.push(`${HAIR_NAME} is empty; generate the movable hair layer or use the documented static fallback after a failed clean separation`);
+    if (hairMode === "static" && hairVisibility.coverage > .0001) errors.push(`${HAIR_NAME} must be transparent when hairMode is static; keep the complete hair in every expression frame`);
     if (hairVisibility.coverage > .58 || hairVisibility.cornerCoverage > .5) errors.push(`${HAIR_NAME} contains a background or too much non-hair artwork`);
+    if (hairMode === "layered") {
+      const boundary = axisAlignedBoundaryStats(images.get(HAIR_NAME).png);
+      qualityMetrics.frontHairBoundary = boundary;
+      if (boundary.verticalFraction > .15 || boundary.horizontalFraction > .15) {
+        errors.push(`${HAIR_NAME} has a long axis-aligned cut boundary (${Math.round(boundary.verticalFraction * 100)}% vertical, ${Math.round(boundary.horizontalFraction * 100)}% horizontal); repair the rectangular/straight clipping seam or use the documented static fallback`);
+      }
+    }
+
+    if (requireHairReference && images.has(HAIR_REFERENCE_NAME)) {
+      const bounds = images.get(HAIR_REFERENCE_NAME).visibility?.bounds;
+      if (bounds) {
+        const minimumX = Math.max(8, Math.round(expectedSize.width * .025));
+        const minimumY = Math.max(8, Math.round(expectedSize.height * .025));
+        if (bounds.minX < minimumX || expectedSize.width - 1 - bounds.maxX < minimumX || bounds.minY < minimumY) {
+          errors.push(`${HAIR_REFERENCE_NAME} is cropped too tightly; keep at least 2.5% transparent padding at the top and both sides`);
+        }
+      }
+    }
 
     const expressionHashes = EXPRESSION_NAMES.map((name) => images.get(name).hash);
     if (new Set(expressionHashes).size !== expressionHashes.length) errors.push("the 6 expression PNGs must be distinct; copying one image into every filename is forbidden");
@@ -286,8 +350,9 @@ function validateAvatarOutput(directory, { writePreview = false, requireHairRefe
         const reference = images.get(HAIR_REFERENCE_NAME).png;
         const base = images.get(EXPRESSION_NAMES[0]).png;
         const sourceDifference = differenceMetrics(reference, base);
-        if (sourceDifference.changedFraction < .0035) errors.push(`${HAIR_REFERENCE_NAME} barely differs from the hairless base; no useful movable hair was extracted`);
-        if (sourceDifference.changedFraction > .32) errors.push(`hair removal changes too much of the canonical reference; preserve the face, body, pose, and rigid hair`);
+        if (hairMode === "layered" && sourceDifference.changedFraction < .0035) errors.push(`${HAIR_REFERENCE_NAME} barely differs from the hairless base; no useful movable hair was extracted`);
+        if (hairMode === "static" && sourceDifference.changedFraction > .002) errors.push(`${HAIR_REFERENCE_NAME} must match the intact static-hair base; do not remove or redraw hair in static mode`);
+        if (hairMode === "layered" && sourceDifference.changedFraction > .32) errors.push(`hair removal changes too much of the canonical reference; preserve the face, body, pose, and rigid hair`);
         const reconstructed = compositeImage(base, hair);
         const reconstruction = differenceMetrics(reference, reconstructed);
         qualityMetrics.hairReconstructionChangedFraction = reconstruction.changedFraction;
@@ -318,7 +383,7 @@ function validateAvatarOutput(directory, { writePreview = false, requireHairRefe
   return report;
 }
 
-module.exports = { ALL_IMAGE_NAMES, EXPRESSION_NAMES, isChromaGreen, validateAvatarOutput, writeQaPreview };
+module.exports = { ALL_IMAGE_NAMES, EXPRESSION_NAMES, axisAlignedBoundaryStats, isChromaGreen, validateAvatarOutput, writeQaPreview };
 
 if (require.main === module) {
   try {

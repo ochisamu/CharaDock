@@ -92,9 +92,9 @@ const DEFAULTS = Object.freeze({
   updateLastCheckedAt: "",
   remoteAccessEnabled: false,
   remoteBindAddress: "",
-  remoteWorkEnabled: false,
+  remoteWorkEnabled: true,
   remoteTtsEnabled: true,
-  remotePcAudioEnabled: true,
+  remotePcAudioEnabled: false,
   remoteResponseMode: "tts",
   remotePort: 41317,
   remoteSessionMinutes: 60,
@@ -265,9 +265,9 @@ class Preferences {
       this.data.updateLastCheckedAt = typeof this.data.updateLastCheckedAt === "string" ? this.data.updateLastCheckedAt.slice(0, 40) : "";
       if (typeof this.data.remoteAccessEnabled !== "boolean") this.data.remoteAccessEnabled = false;
       this.data.remoteBindAddress = typeof this.data.remoteBindAddress === "string" ? this.data.remoteBindAddress.slice(0, 45) : "";
-      if (typeof this.data.remoteWorkEnabled !== "boolean") this.data.remoteWorkEnabled = false;
+      if (typeof this.data.remoteWorkEnabled !== "boolean") this.data.remoteWorkEnabled = true;
       if (typeof this.data.remoteTtsEnabled !== "boolean") this.data.remoteTtsEnabled = true;
-      if (typeof this.data.remotePcAudioEnabled !== "boolean") this.data.remotePcAudioEnabled = true;
+      if (typeof this.data.remotePcAudioEnabled !== "boolean") this.data.remotePcAudioEnabled = false;
       if (!["tts", "live"].includes(this.data.remoteResponseMode)) this.data.remoteResponseMode = "tts";
       this.data.remotePort = Math.max(1024, Math.min(65535, Math.round(Number(this.data.remotePort) || 41317)));
       this.data.remoteSessionMinutes = Math.max(15, Math.min(480, Math.round(Number(this.data.remoteSessionMinutes) || 60)));

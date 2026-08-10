@@ -20,8 +20,10 @@ test("remote server requires pairing, same-origin CSRF, and strips token from th
   const messages = [];
   const settings = [];
   const pets = [];
+  const approvals = [];
   const liveStarts = [];
   let liveStops = 0;
+  let secureHandoffs = 0;
   const server = new RemoteCompanionServer({
     rootDir,
     address: "127.0.0.1",
@@ -32,6 +34,8 @@ test("remote server requires pairing, same-origin CSRF, and strips token from th
       sendMessage: (payload) => { messages.push(payload); return { ok: true }; },
       pet: (payload) => { pets.push(payload); return { text: "Hello!", emotion: "happy" }; },
       setSettings: (payload) => { settings.push(payload); return { character: { name: "Towa" } }; },
+      resolveApproval: (payload) => { approvals.push(payload); return { ok: true }; },
+      secureHandoff: () => { secureHandoffs += 1; return { url: "https://charadock.example.ts.net/#token=secure" }; },
       startLive: (payload) => { liveStarts.push(payload); return { accepted: true }; },
       stopLive: () => { liveStops += 1; return { stopped: true }; },
       interrupt: () => ({ interrupted: true }),
@@ -69,7 +73,7 @@ test("remote server requires pairing, same-origin CSRF, and strips token from th
     body: JSON.stringify({ message: "hello", mode: "chat" }),
   });
   assert.equal(sent.status, 200);
-  assert.deepEqual(messages, [{ message: "hello", mode: "chat" }]);
+  assert.deepEqual(messages, [{ message: "hello", mode: "chat", secureActionsAllowed: false }]);
 
   const petted = await fetch(`${origin}/api/pet`, {
     method: "POST",
@@ -89,11 +93,40 @@ test("remote server requires pairing, same-origin CSRF, and strips token from th
   assert.deepEqual(settings, [{ characterId: "towa-avatar", pcAudioEnabled: false, ttsModel: { key: "kokoroVoice", value: "jm_kumo" } }]);
   assert.equal((await configured.json()).state.character.name, "Towa");
 
+  const insecureApproval = await fetch(`${origin}/api/approval`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Origin: origin, Cookie: cookie, "X-CharaDock-CSRF": payload.csrfToken },
+    body: JSON.stringify({ id: "screen-1", action: "approve" }),
+  });
+  assert.equal(insecureApproval.status, 403);
+  assert.deepEqual(approvals, []);
+
+  const tailscaleOrigin = "https://charadock.example.ts.net";
+  const secureApproval = await fetch(`${origin}/api/approval`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Host: "charadock.example.ts.net",
+      Origin: tailscaleOrigin,
+      Cookie: cookie,
+      "Tailscale-User-Login": "user@example.com",
+      "X-CharaDock-CSRF": payload.csrfToken,
+    },
+    body: JSON.stringify({ id: "screen-1", action: "approve" }),
+  });
+  assert.equal(secureApproval.status, 200);
+  assert.deepEqual(approvals, [{ id: "screen-1", action: "approve" }]);
+
   const liveHeaders = { "Content-Type": "application/json", Origin: origin, Cookie: cookie, "X-CharaDock-CSRF": payload.csrfToken };
   assert.equal((await fetch(`${origin}/api/live/start`, { method: "POST", headers: liveHeaders, body: JSON.stringify({ sdp: "v=0\r\n...", mode: "chat" }) })).status, 200);
   assert.deepEqual(liveStarts, [{ sdp: "v=0\r\n...", mode: "chat" }]);
   assert.equal((await fetch(`${origin}/api/live/stop`, { method: "POST", headers: liveHeaders, body: "{}" })).status, 200);
   assert.equal(liveStops, 1);
+
+  const handoff = await fetch(`${origin}/api/secure-handoff`, { method: "POST", headers: liveHeaders, body: "{}" });
+  assert.equal(handoff.status, 200);
+  assert.deepEqual(await handoff.json(), { url: "https://charadock.example.ts.net/#token=secure" });
+  assert.equal(secureHandoffs, 1);
 
   assert.equal(server.revokeSession(server.status().devices[0].id), true);
   assert.equal(server.status().devices.length, 0);
@@ -183,16 +216,31 @@ test("the packaged phone surface keeps camera disabled and permits microphone on
   const page = await fetch(server.origin());
   assert.equal(page.status, 200);
   assert.match(page.headers.get("permissions-policy"), /microphone=\(self\)/);
+  assert.match(page.headers.get("permissions-policy"), /screen-wake-lock=\(self\)/);
   assert.match(page.headers.get("content-security-policy"), /connect-src 'self'/);
   assert.match(page.headers.get("content-security-policy"), /img-src 'self' data: blob:/);
   const html = await page.text();
-  for (const id of ["companionView", "avatarTapTarget", "avatarReactionShell", "avatarFace", "messageForm", "microphoneButton", "remoteLiveAudio", "interruptButton", "artifactList", "historySheet", "settingsSheet", "settingsStatus", "characterSelect", "responseModeSelect", "ttsModelSettings", "ttsModelFields", "bubbleExpandButton", "pairingCodeInput"]) assert.match(html, new RegExp(`id="${id}"`));
+  for (const id of ["companionView", "avatarTapTarget", "avatarReactionShell", "avatarFace", "messageForm", "microphoneButton", "remoteLiveAudio", "interruptButton", "artifactList", "historySheet", "settingsSheet", "settingsStatus", "characterSelect", "responseModeSelect", "ttsModelSettings", "ttsModelFields", "bubbleExpandButton", "pairingCodeInput", "approvalCard", "approveApprovalButton", "workProgressCard", "workProgressSheet", "progressFollowUpForm", "installAppButton", "notificationToggle", "wakeLockToggle"]) assert.match(html, new RegExp(`id="${id}"`));
+  assert.match(html, /rel="manifest" href="\/manifest\.webmanifest"/);
   const script = await fetch(`${server.origin()}/remote.js`).then((response) => response.text());
   assert.match(script, /request\("\/api\/pet"/);
   assert.match(script, /remote-touch-spark/);
   assert.match(script, /ttsModel: \{ key: field\.key, value:/);
   assert.match(script, /setSettingsStatus\(text\("保存中…", "Saving…"\), "saving"\)/);
   assert.match(script, /setSettingsStatus\(text\("保存しました", "Saved"\), "success"\)/);
+  assert.match(script, /request\("\/api\/approval"/);
+  assert.match(script, /pendingRemoteFollowUp/);
+  assert.match(script, /showRemoteNotification/);
+  assert.match(script, /navigator\.wakeLock\.request\("screen"\)/);
+  assert.match(script, /request\("\/api\/secure-handoff"/);
+  const manifest = await fetch(`${server.origin()}/manifest.webmanifest`);
+  assert.equal(manifest.status, 200);
+  assert.equal((await manifest.json()).display, "standalone");
+  const worker = await fetch(`${server.origin()}/service-worker.js`);
+  assert.equal(worker.status, 200);
+  assert.equal(worker.headers.get("service-worker-allowed"), "/");
+  assert.match(await worker.text(), /notificationclick/);
+  assert.equal((await fetch(`${server.origin()}/app-icon.png`)).status, 200);
   const font = await fetch(`${server.origin()}/noto-sans-jp.ttf`);
   assert.equal(font.status, 200);
   assert.equal(Number(font.headers.get("content-length")) || (await font.arrayBuffer()).byteLength, 9_590_732);

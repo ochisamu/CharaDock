@@ -7,7 +7,7 @@
   let eventSource = null;
   let currentMode = "chat";
   let busy = false;
-  let audioEnabled = localStorage.getItem("charadock.remote.audio") === "1";
+  let audioEnabled = localStorage.getItem("charadock.remote.audio") !== "0";
   let audioContext = null;
   let activeAudioSource = null;
   let mouthTimer = 0;
@@ -23,17 +23,61 @@
   let activeMobileTtsStreamId = "";
   let settingsSaving = false;
   let settingsStatusTimer = 0;
+  let pendingRemoteFollowUp = "";
+  let approvalCountdownTimer = 0;
+  let workElapsedTimer = 0;
+  let selectedWorkRunId = "";
+  let stateTransitionsInitialized = false;
+  let observedApprovalId = "";
+  const observedWorkStatuses = new Map();
+  let deferredInstallPrompt = null;
+  let serviceWorkerRegistration = null;
+  let notificationEnabled = localStorage.getItem("charadock.remote.notifications") === "1";
+  let wakeLockEnabled = localStorage.getItem("charadock.remote.wake-lock") !== "0";
+  let wakeLockSentinel = null;
   let livePeer = null;
   let liveInputStream = null;
   let liveStarting = false;
   let liveAudioContext = null;
   let liveAudioFrame = 0;
   let liveAudioSource = null;
+  let liveAudioGain = null;
   let speechRecognition = null;
 
   const text = (ja, en) => appState?.language === "en" ? en : ja;
   const artifactUrl = (runId, artifactPath) => `/api/artifact?runId=${encodeURIComponent(runId)}&path=${encodeURIComponent(artifactPath)}`;
   const microphoneAvailable = () => Boolean(window.isSecureContext && navigator.mediaDevices?.getUserMedia);
+  const microphoneHandoffAvailable = () => Boolean(!microphoneAvailable() && appState?.secureMicrophoneHandoff);
+  const secureApprovalAvailable = () => Boolean(window.isSecureContext && /(?:^|\.)ts\.net$/i.test(location.hostname));
+  const standaloneMode = () => window.matchMedia("(display-mode: standalone)").matches || window.navigator.standalone === true;
+
+  function phoneAudioAvailable() {
+    const voice = appState?.voice || {};
+    return voice.responseMode === "live" ? Boolean(voice.liveSupported) : Boolean(appState?.mobileTtsAllowed);
+  }
+
+  async function primeAudioOutput() {
+    if (!audioEnabled) return;
+    audioContext ||= new AudioContext({ latencyHint: "interactive" });
+    await audioContext.resume();
+  }
+
+  function waitForIceGatheringComplete(peer, timeoutMs = 5000) {
+    if (peer.iceGatheringState === "complete") return Promise.resolve();
+    return new Promise((resolve) => {
+      let timer = 0;
+      const finish = () => {
+        clearTimeout(timer);
+        peer.removeEventListener("icegatheringstatechange", onStateChange);
+        resolve();
+      };
+      const onStateChange = () => {
+        if (peer.iceGatheringState === "complete") finish();
+      };
+      peer.addEventListener("icegatheringstatechange", onStateChange);
+      timer = setTimeout(finish, timeoutMs);
+    });
+  }
 
   async function request(path, options = {}) {
     const headers = { "Content-Type": "application/json", ...(options.headers || {}) };
@@ -42,6 +86,133 @@
     const body = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(body.error || `HTTP ${response.status}`);
     return body;
+  }
+
+  async function registerPwa() {
+    if (!window.isSecureContext || !("serviceWorker" in navigator)) return;
+    try {
+      serviceWorkerRegistration = await navigator.serviceWorker.register("/service-worker.js", { scope: "/" });
+      serviceWorkerRegistration.update().catch(() => {});
+    } catch {
+      serviceWorkerRegistration = null;
+    }
+  }
+
+  function syncPwaSettings() {
+    const installButton = $("#installAppButton");
+    const hint = $("#installAppHint");
+    const secure = window.isSecureContext;
+    const ios = /iPhone|iPad|iPod/i.test(navigator.userAgent || "");
+    installButton.hidden = standaloneMode() || !secure;
+    installButton.textContent = deferredInstallPrompt
+      ? text("ホーム画面に追加", "Install CharaDock Link")
+      : ios ? text("追加方法を表示", "Show install steps") : text("ホーム画面に追加", "Install CharaDock Link");
+    hint.textContent = standaloneMode()
+      ? text("ホーム画面アプリとして起動しています。", "Running as a Home Screen app.")
+      : !secure
+        ? text("ホーム画面への追加と通知にはTailscale HTTPS接続が必要です。", "Installing and notifications require Tailscale HTTPS.")
+        : ios
+          ? text("共有メニューから「ホーム画面に追加」を選ぶと、CharaDock専用アプリのように開けます。", "Choose Add to Home Screen from the Share menu to open CharaDock like a dedicated app.")
+          : text("対応ブラウザではホーム画面へ追加できます。", "Supported browsers can install CharaDock to the Home Screen.");
+    const notificationToggle = $("#notificationToggle");
+    const notificationSupported = secure && "Notification" in window && "serviceWorker" in navigator;
+    notificationToggle.checked = notificationSupported && notificationEnabled && Notification.permission === "granted";
+    notificationToggle.disabled = !notificationSupported || Notification.permission === "denied";
+    $("#wakeLockToggle").checked = wakeLockEnabled;
+    $("#wakeLockToggle").disabled = !secure || !("wakeLock" in navigator);
+  }
+
+  async function installRemoteApp() {
+    if (deferredInstallPrompt) {
+      await deferredInstallPrompt.prompt();
+      await deferredInstallPrompt.userChoice.catch(() => null);
+      deferredInstallPrompt = null;
+      syncPwaSettings();
+      return;
+    }
+    $("#installAppHint").textContent = /iPhone|iPad|iPod/i.test(navigator.userAgent || "")
+      ? text("Safariの共有ボタンを開き、「ホーム画面に追加」を選んでください。", "Open Safari's Share menu and choose Add to Home Screen.")
+      : text("ブラウザのメニューから「アプリをインストール」または「ホーム画面に追加」を選んでください。", "Choose Install app or Add to Home Screen from the browser menu.");
+  }
+
+  async function setNotificationSetting(enabled) {
+    if (!enabled) {
+      notificationEnabled = false;
+      localStorage.setItem("charadock.remote.notifications", "0");
+      syncPwaSettings();
+      return;
+    }
+    if (!window.isSecureContext || !("Notification" in window) || !("serviceWorker" in navigator)) {
+      throw new Error(text("通知にはTailscale HTTPS接続が必要です。", "Notifications require Tailscale HTTPS."));
+    }
+    const permission = Notification.permission === "granted" ? "granted" : await Notification.requestPermission();
+    if (permission !== "granted") throw new Error(text("通知が許可されませんでした。ブラウザの設定を確認してください。", "Notifications were not allowed. Check the browser settings."));
+    notificationEnabled = true;
+    localStorage.setItem("charadock.remote.notifications", "1");
+    serviceWorkerRegistration ||= await navigator.serviceWorker.ready;
+    syncPwaSettings();
+  }
+
+  async function showRemoteNotification(title, body, tag) {
+    if (!notificationEnabled || !("Notification" in window) || document.visibilityState === "visible" || Notification.permission !== "granted") return;
+    try {
+      serviceWorkerRegistration ||= await navigator.serviceWorker.ready;
+      await serviceWorkerRegistration.showNotification(title, {
+        body: String(body || "").slice(0, 240),
+        tag,
+        renotify: true,
+        icon: "/app-icon.png",
+        badge: "/app-icon.png",
+        data: { path: "/" },
+      });
+    } catch {}
+  }
+
+  async function syncWakeLock() {
+    const shouldHold = wakeLockEnabled && window.isSecureContext && document.visibilityState === "visible"
+      && Boolean(busy || appState?.voice?.liveConnected);
+    if (!shouldHold) {
+      const current = wakeLockSentinel;
+      wakeLockSentinel = null;
+      await current?.release?.().catch(() => {});
+      return;
+    }
+    if (wakeLockSentinel || !("wakeLock" in navigator)) return;
+    try {
+      wakeLockSentinel = await navigator.wakeLock.request("screen");
+      wakeLockSentinel.addEventListener("release", () => { wakeLockSentinel = null; }, { once: true });
+    } catch {
+      wakeLockSentinel = null;
+    }
+  }
+
+  function observeStateTransitions(nextState) {
+    const approval = nextState?.approval || null;
+    if (stateTransitionsInitialized && approval?.id && approval.id !== observedApprovalId) {
+      navigator.vibrate?.([18, 45, 18]);
+      showRemoteNotification(
+        text("CharaDockが確認を待っています", "CharaDock needs your approval"),
+        approval.title || approval.question,
+        `approval-${approval.id}`,
+      );
+    }
+    observedApprovalId = approval?.id || "";
+    const runs = Array.isArray(nextState?.workHistory?.runs) ? nextState.workHistory.runs : [];
+    for (const run of runs) {
+      const previous = observedWorkStatuses.get(run.id);
+      if (stateTransitionsInitialized && ["running", "stopping"].includes(previous) && !["running", "stopping"].includes(run.status)) {
+        const failed = ["failed", "interrupted"].includes(run.status);
+        showRemoteNotification(
+          failed ? text("Workを確認してください", "Work needs attention") : text("Workが完了しました", "Work complete"),
+          failed ? run.result || run.activities?.at(-1) : run.result || run.request,
+          `work-${run.id}`,
+        );
+      }
+      observedWorkStatuses.set(run.id, run.status);
+    }
+    const visibleRunIds = new Set(runs.map((run) => run.id));
+    for (const runId of observedWorkStatuses.keys()) if (!visibleRunIds.has(runId)) observedWorkStatuses.delete(runId);
+    stateTransitionsInitialized = true;
   }
 
   function setConnection(connected, label) {
@@ -193,6 +364,130 @@
     }
   }
 
+  function activeWorkRun() {
+    const history = appState?.workHistory || {};
+    return (history.runs || []).find((run) => run.id === history.activeWorkRunId) || null;
+  }
+
+  function formatElapsed(startedAt) {
+    const start = new Date(startedAt).getTime();
+    const seconds = Math.max(0, Math.floor((Date.now() - (Number.isFinite(start) ? start : Date.now())) / 1000));
+    return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+  }
+
+  function updateWorkElapsed() {
+    const run = activeWorkRun();
+    $("#workProgressElapsed").textContent = run ? formatElapsed(run.startedAt) : "";
+  }
+
+  function workStatusLabel(run) {
+    if (!run) return text("Work", "Work");
+    return {
+      running: text("Work実行中", "Work in progress"),
+      stopping: text("中断中", "Stopping"),
+      completed: text("Work完了", "Work complete"),
+      interrupted: text("中断済み", "Interrupted"),
+      failed: text("確認が必要", "Needs attention"),
+    }[run.status] || text("Work", "Work");
+  }
+
+  function renderWorkProgress() {
+    clearInterval(workElapsedTimer);
+    workElapsedTimer = 0;
+    const runs = Array.isArray(appState?.workHistory?.runs) ? appState.workHistory.runs : [];
+    const active = activeWorkRun();
+    const card = $("#workProgressCard");
+    card.hidden = !active;
+    if (active) {
+      $("#workProgressLabel").textContent = workStatusLabel(active);
+      $("#workProgressActivity").textContent = active.activities?.at(-1) || text("依頼を確認しています…", "Reviewing the request…");
+      updateWorkElapsed();
+      workElapsedTimer = setInterval(updateWorkElapsed, 1000);
+    }
+    let selected = runs.find((run) => run.id === selectedWorkRunId);
+    if (!selected) selected = active || runs[0] || null;
+    selectedWorkRunId = selected?.id || "";
+    $("#workProgressTitle").textContent = selected ? workStatusLabel(selected) : text("Workの進捗", "Work progress");
+    $("#workProgressRequest").textContent = selected?.request || text("まだWorkはありません。", "No Work yet.");
+    const timeline = $("#workProgressTimeline");
+    timeline.replaceChildren();
+    const activities = selected?.activities?.length ? selected.activities : selected ? [text("依頼を受け付けました", "Request received")] : [];
+    for (const [index, activity] of activities.entries()) {
+      const item = document.createElement("li");
+      item.textContent = activity;
+      item.classList.toggle("is-current", Boolean(selected && ["running", "stopping"].includes(selected.status) && index === activities.length - 1));
+      timeline.appendChild(item);
+    }
+    const resultCard = $("#workProgressResultCard");
+    resultCard.hidden = !selected?.result;
+    $("#workProgressResult").textContent = selected?.result || "";
+    $("#progressFollowUpForm").hidden = !active;
+  }
+
+  function renderApproval() {
+    clearInterval(approvalCountdownTimer);
+    approvalCountdownTimer = 0;
+    const approval = appState?.approval || null;
+    const card = $("#approvalCard");
+    card.hidden = !approval;
+    $("#companionView").classList.toggle("has-approval", Boolean(approval));
+    if (!approval) return;
+    $("#approvalTitle").textContent = approval.title || text("操作の確認", "Approval required");
+    $("#approvalQuestion").textContent = approval.question || "";
+    $("#approvalDetail").textContent = approval.detail || "";
+    $("#approvalScope").textContent = approval.scope || text("今回だけ", "This request only");
+    $("#approvalTypeIcon").textContent = approval.type === "screen" ? "◫" : approval.type === "browser" ? "↗" : "⌁";
+    const secure = secureApprovalAvailable();
+    const securityHint = $("#approvalSecurityHint");
+    securityHint.textContent = secure
+      ? text("Tailscaleで確認済みのHTTPS接続です。回答をPCへ安全に送信します。", "Verified Tailscale HTTPS connection. Your response will be sent securely to the PC.")
+      : text("この操作への回答はTailscale HTTPS接続時だけ利用できます。PC側で回答することもできます。", "Approval responses are available only over Tailscale HTTPS. You can also respond on the PC.");
+    securityHint.classList.toggle("is-blocked", !secure);
+    const approveButton = $("#approveApprovalButton");
+    const denyButton = $("#denyApprovalButton");
+    approveButton.textContent = approval.type === "screen"
+      ? text("撮影を許可", "Allow capture")
+      : approval.type === "browser" ? text("ブラウザを許可", "Allow browser") : text("操作を許可", "Allow control");
+    approveButton.disabled = !secure;
+    denyButton.disabled = !secure;
+    const updateCountdown = () => {
+      const seconds = Math.max(0, Math.ceil((new Date(approval.expiresAt).getTime() - Date.now()) / 1000));
+      $("#approvalCountdown").textContent = `${seconds}${text("秒", "s")}`;
+      if (!seconds) {
+        approveButton.disabled = true;
+        denyButton.disabled = true;
+        securityHint.textContent = text("この確認は期限切れです。もう一度依頼してください。", "This approval has expired. Request it again.");
+        securityHint.classList.add("is-blocked");
+        clearInterval(approvalCountdownTimer);
+      }
+    };
+    updateCountdown();
+    approvalCountdownTimer = setInterval(updateCountdown, 1000);
+  }
+
+  async function answerApproval(action) {
+    const approval = appState?.approval;
+    if (!approval || !secureApprovalAvailable()) return;
+    primeAudioOutput().catch(() => {});
+    const buttons = [$("#approveApprovalButton"), $("#denyApprovalButton")];
+    for (const button of buttons) button.disabled = true;
+    $("#approvalSecurityHint").textContent = action === "approve"
+      ? text("許可を送信しています…", "Sending approval…")
+      : text("拒否を送信しています…", "Sending denial…");
+    try {
+      const payload = await request("/api/approval", { method: "POST", body: JSON.stringify({ id: approval.id, action }) });
+      if (payload.state) applyState(payload.state);
+      if (payload.result?.text) {
+        setResponseText(payload.result.text);
+        if (action === "deny") speak(payload.result.text).catch(() => {});
+      }
+    } catch (error) {
+      $("#approvalSecurityHint").textContent = error.message;
+      $("#approvalSecurityHint").classList.add("is-blocked");
+      renderApproval();
+    }
+  }
+
   function setMode(mode) {
     const requested = mode === "work" ? "work" : "chat";
     if (requested === "work" && !appState?.workAllowed) return;
@@ -210,13 +505,19 @@
   }
 
   function setBusy(value) {
+    const wasBusy = busy;
     busy = Boolean(value);
-    $("#sendButton").hidden = busy;
+    $("#sendButton").hidden = false;
+    $("#sendButton").classList.toggle("is-follow-up", busy);
+    $("#sendButton").setAttribute("aria-label", busy ? text("フォローアップを差し込む", "Queue follow-up") : text("送信", "Send"));
     $("#interruptButton").hidden = !busy;
-    $("#messageInput").disabled = busy;
+    $("#messageInput").disabled = false;
+    $("#messageInput").placeholder = busy ? text("追加の指示を差し込む", "Add a follow-up") : text("メッセージを入力", "Type a message");
     $("#activityIndicator").hidden = !busy;
     $("#responseBubble").classList.toggle("is-busy", busy);
     syncRemoteSettings();
+    syncWakeLock();
+    if (wasBusy && !busy && pendingRemoteFollowUp) setTimeout(flushPendingRemoteFollowUp, 80);
   }
 
   function closeRemoteLivePeer() {
@@ -228,8 +529,9 @@
     cancelAnimationFrame(liveAudioFrame);
     liveAudioFrame = 0;
     try { liveAudioSource?.disconnect(); } catch {}
+    try { liveAudioGain?.disconnect(); } catch {}
     liveAudioSource = null;
-    liveAudioContext?.close().catch(() => {});
+    liveAudioGain = null;
     liveAudioContext = null;
     currentMouth = "closed";
     showFace(faceKey(true));
@@ -243,14 +545,21 @@
 
   async function followLiveAudio(stream) {
     cancelAnimationFrame(liveAudioFrame);
-    liveAudioContext?.close().catch(() => {});
-    const context = new AudioContext({ latencyHint: "interactive" });
+    try { liveAudioSource?.disconnect(); } catch {}
+    try { liveAudioGain?.disconnect(); } catch {}
+    audioContext ||= new AudioContext({ latencyHint: "interactive" });
+    const context = audioContext;
     const source = context.createMediaStreamSource(stream);
     const analyser = context.createAnalyser();
+    const gain = context.createGain();
     analyser.fftSize = 256;
     source.connect(analyser);
+    analyser.connect(gain);
+    gain.connect(context.destination);
+    gain.gain.value = audioEnabled ? 1 : 0;
     liveAudioContext = context;
     liveAudioSource = source;
+    liveAudioGain = gain;
     await context.resume();
     const samples = new Uint8Array(analyser.frequencyBinCount);
     const animate = () => {
@@ -272,17 +581,32 @@
     const remoteOwnsLive = voice.liveConnected && voice.liveOwner === "remote";
     const pcOwnsLive = voice.liveConnected && voice.liveOwner !== "remote";
     const button = $("#microphoneButton");
-    button.disabled = busy || liveStarting || pcOwnsLive || (!liveMode && !microphoneAvailable());
+    button.disabled = busy || liveStarting || pcOwnsLive || (!liveMode && !microphoneAvailable() && !microphoneHandoffAvailable());
     button.classList.toggle("is-live", Boolean(livePeer && remoteOwnsLive));
     button.classList.toggle("is-listening", Boolean(speechRecognition));
     button.title = liveMode
       ? remoteOwnsLive ? text("Liveを停止", "Stop Live") : pcOwnsLive ? text("PC側のLiveが使用中", "Live is active on the PC") : text("この端末でLiveを開始", "Start Live on this phone")
-      : microphoneAvailable() ? text("音声で入力", "Dictate") : text("音声入力にはHTTPS接続が必要", "Voice input requires HTTPS");
+      : microphoneAvailable()
+        ? text("音声で入力", "Dictate")
+        : microphoneHandoffAvailable()
+          ? text("HTTPSへ切り替えて音声入力", "Switch to HTTPS for voice input")
+          : text("音声入力にはHTTPS接続が必要", "Voice input requires HTTPS");
     button.setAttribute("aria-label", button.title);
+  }
+
+  async function handoffToSecureMicrophone() {
+    setResponseText(text("安全なHTTPS接続へ切り替えています…", "Switching to a secure HTTPS connection…"));
+    const result = await request("/api/secure-handoff", { method: "POST", body: "{}" });
+    const destination = new URL(String(result?.url || ""));
+    if (destination.protocol !== "https:" || !/(?:^|\.)ts\.net$/i.test(destination.hostname)) {
+      throw new Error(text("安全な音声入力URLを確認できませんでした。", "The secure microphone URL could not be verified."));
+    }
+    location.assign(destination.toString());
   }
 
   async function startRemoteLive({ microphone = true } = {}) {
     if (livePeer || liveStarting) return true;
+    primeAudioOutput().catch(() => {});
     liveStarting = true;
     syncMicrophoneButton();
     setResponseText(text("Liveへ接続中…", "Connecting to Live…"));
@@ -301,8 +625,8 @@
         const stream = event.streams[0] || new MediaStream([event.track]);
         const audio = $("#remoteLiveAudio");
         audio.srcObject = stream;
-        audio.play().catch(() => setResponseText(text("音声を再生するには画面を一度タップしてください。", "Tap the screen once to enable audio.")));
-        followLiveAudio(stream).catch(() => {});
+        audio.muted = true;
+        followLiveAudio(stream).catch(() => setResponseText(text("音声を再生できませんでした。画面を一度タップして、もう一度Liveを開始してください。", "Audio could not start. Tap the screen and start Live again.")));
         event.track.addEventListener("ended", () => {
           $("#avatarMotion").classList.remove("is-speaking");
           currentMouth = "closed";
@@ -317,7 +641,9 @@
       });
       const offer = await peer.createOffer();
       await peer.setLocalDescription(offer);
-      await request("/api/live/start", { method: "POST", body: JSON.stringify({ sdp: peer.localDescription?.sdp || offer.sdp, mode: currentMode }) });
+      await waitForIceGatheringComplete(peer);
+      const localSdp = peer.localDescription?.sdp || offer.sdp;
+      await request("/api/live/start", { method: "POST", body: JSON.stringify({ sdp: localSdp, mode: currentMode }) });
       return true;
     } catch (error) {
       if (livePeer === peer) closeRemoteLivePeer();
@@ -472,10 +798,10 @@
     realtimeVoiceSelect.value = voice.realtimeVoice || "cove";
     realtimeVoiceSelect.disabled = busy || settingsSaving || Boolean(voice.liveConnected);
     $("#realtimeVoiceField").hidden = responseMode !== "live";
-    $("#pcAudioToggle").checked = voice.pcAudioEnabled !== false;
+    $("#pcAudioToggle").checked = voice.pcAudioEnabled === true;
     $("#pcAudioToggle").disabled = busy || settingsSaving;
     $("#phoneAudioToggle").checked = audioEnabled;
-    $("#phoneAudioToggle").disabled = settingsSaving || !appState.mobileTtsAllowed;
+    $("#phoneAudioToggle").disabled = settingsSaving || !phoneAudioAvailable();
     $("#voiceRouteHint").textContent = responseMode === "live"
       ? voice.liveConnected
         ? voice.liveOwner === "remote"
@@ -513,6 +839,7 @@
   function applyState(nextState) {
     if (!nextState) return;
     const changedCharacter = appState?.character?.id !== nextState.character?.id || appState?.character?.assetVersion !== nextState.character?.assetVersion;
+    observeStateTransitions(nextState);
     appState = nextState;
     document.documentElement.lang = appState.language === "en" ? "en" : "ja";
     $("#pairingView").hidden = true;
@@ -527,8 +854,12 @@
     setBusy(Boolean(activeRun || appState.busy));
     setConnection(true);
     renderHistory();
+    renderApproval();
+    renderWorkProgress();
     syncAudioButton();
     syncRemoteSettings();
+    syncPwaSettings();
+    syncWakeLock();
   }
 
   async function refreshState() {
@@ -543,8 +874,13 @@
     eventSource.addEventListener("state", (event) => applyState(JSON.parse(event.data)));
     eventSource.addEventListener("stream", (event) => handleStream(JSON.parse(event.data)));
     eventSource.addEventListener("history", (event) => {
-      if (appState) appState.workHistory = JSON.parse(event.data);
+      if (!appState) return;
+      const nextWorkHistory = JSON.parse(event.data);
+      observeStateTransitions({ ...appState, workHistory: nextWorkHistory });
+      appState.workHistory = nextWorkHistory;
       renderHistory();
+      renderWorkProgress();
+      setBusy(Boolean(nextWorkHistory.activeWorkRunId || appState.busy));
     });
     eventSource.addEventListener("live", (event) => handleLiveEvent(JSON.parse(event.data)).catch((error) => {
       setResponseText(error.message);
@@ -594,25 +930,58 @@
     setConnection(false);
   }
 
-  async function sendMessage(event) {
-    event.preventDefault();
-    const input = $("#messageInput");
-    const message = input.value.trim();
-    if (!message || busy) return;
-    input.value = "";
-    input.style.height = "auto";
-    setResponseText(message);
+  async function queueRemoteFollowUp(message) {
+    pendingRemoteFollowUp = String(message || "").trim();
+    if (!pendingRemoteFollowUp) return;
+    stopMobileSpeech();
+    $("#composerHint").textContent = text("差し込みを受け付けました。現在の応答を止めています…", "Follow-up queued. Stopping the current response…");
+    try {
+      await request("/api/interrupt", { method: "POST", body: "{}" });
+    } catch (error) {
+      pendingRemoteFollowUp = "";
+      $("#composerHint").textContent = error.message;
+      throw error;
+    }
+  }
+
+  async function sendRemoteText(message) {
+    const normalized = String(message || "").trim();
+    if (!normalized) return;
+    primeAudioOutput().catch(() => {});
+    if (busy) {
+      await queueRemoteFollowUp(normalized);
+      return;
+    }
+    setResponseText(normalized);
     renderArtifacts([], "");
     setBusy(true);
     try {
       if (appState?.voice?.responseMode === "live" && !appState.voice.liveConnected) {
         await startRemoteLive({ microphone: false });
       }
-      await request("/api/message", { method: "POST", body: JSON.stringify({ message, mode: currentMode }) });
+      await request("/api/message", { method: "POST", body: JSON.stringify({ message: normalized, mode: currentMode }) });
     } catch (error) {
       setBusy(false);
       setResponseText(error.message);
     }
+  }
+
+  async function flushPendingRemoteFollowUp() {
+    const message = pendingRemoteFollowUp;
+    if (!message || busy) return;
+    pendingRemoteFollowUp = "";
+    setMode(currentMode);
+    await sendRemoteText(message);
+  }
+
+  async function sendMessage(event) {
+    event.preventDefault();
+    const input = $("#messageInput");
+    const message = input.value.trim();
+    if (!message) return;
+    input.value = "";
+    input.style.height = "auto";
+    await sendRemoteText(message);
   }
 
   function stopDictation() {
@@ -661,7 +1030,12 @@
 
   async function toggleMicrophone() {
     const voice = appState?.voice || {};
+    primeAudioOutput().catch(() => {});
     try {
+      if (!microphoneAvailable() && microphoneHandoffAvailable()) {
+        await handoffToSecureMicrophone();
+        return;
+      }
       if (voice.responseMode === "live") {
         if (voice.liveConnected || livePeer) await stopRemoteLive();
         else await startRemoteLive({ microphone: true });
@@ -722,24 +1096,28 @@
   }
 
   async function setPhoneAudio(enabled) {
-    if (enabled) {
-      audioContext ||= new AudioContext();
-      await audioContext.resume();
-    }
     audioEnabled = Boolean(enabled);
+    if (enabled) {
+      await primeAudioOutput();
+    }
     localStorage.setItem("charadock.remote.audio", audioEnabled ? "1" : "0");
-    if (!audioEnabled && activeAudioSource) activeAudioSource.stop();
+    if (!audioEnabled) stopMobileSpeech();
+    if (liveAudioGain && liveAudioContext) {
+      liveAudioGain.gain.setValueAtTime(audioEnabled ? 1 : 0, liveAudioContext.currentTime);
+    }
     syncAudioButton();
     syncRemoteSettings();
   }
 
   function syncAudioButton() {
-    const allowed = Boolean(appState?.mobileTtsAllowed);
+    const allowed = phoneAudioAvailable();
     const button = $("#audioButton");
     button.disabled = !allowed;
     button.classList.toggle("is-active", allowed && audioEnabled);
-    button.title = allowed ? text("スマートフォン音声", "Phone audio") : text("設定でスマートフォン音声が無効です", "Phone audio is disabled in Settings");
-    $("#phoneAudioToggle").checked = allowed && audioEnabled;
+    button.title = allowed
+      ? audioEnabled ? text("この端末の音声をミュート", "Mute audio on this device") : text("この端末の音声を再開", "Resume audio on this device")
+      : text("選択中の音声はこの端末で再生できません", "The selected voice cannot play on this device");
+    $("#phoneAudioToggle").checked = audioEnabled;
     $("#phoneAudioToggle").disabled = !allowed;
   }
 
@@ -836,6 +1214,7 @@
 
   async function tapCharacter(event) {
     if (petRequestInFlight) return;
+    primeAudioOutput().catch(() => {});
     const speaking = Boolean(mobileSpeechPending || activeAudioSource || $("#avatarMotion").classList.contains("is-speaking"));
     if (speaking) {
       if (appState?.voice?.responseMode === "live" && appState.voice.liveConnected) await interrupt().catch(() => {});
@@ -916,17 +1295,51 @@
     catch { input.select(); }
     finally { button.disabled = false; }
   });
-  $("#interruptButton").addEventListener("click", interrupt);
+  $("#interruptButton").addEventListener("click", () => { pendingRemoteFollowUp = ""; interrupt(); });
   $("#chatModeButton").addEventListener("click", () => setMode("chat"));
   $("#workModeButton").addEventListener("click", () => setMode("work"));
   $("#microphoneButton").addEventListener("click", toggleMicrophone);
   $("#audioButton").addEventListener("click", unlockAudio);
   $("#historyButton").addEventListener("click", () => { renderHistory(); $("#historySheet").showModal(); });
-  $("#settingsButton").addEventListener("click", () => { syncRemoteSettings(); $("#settingsSheet").showModal(); });
+  $("#settingsButton").addEventListener("click", () => { syncRemoteSettings(); syncPwaSettings(); $("#settingsSheet").showModal(); });
   $("#bubbleExpandButton").addEventListener("click", () => { renderHistory(); $("#historySheet").showModal(); });
   $("#closeHistoryButton").addEventListener("click", () => $("#historySheet").close());
   $("#closeSettingsButton").addEventListener("click", () => $("#settingsSheet").close());
   $("#closePreviewButton").addEventListener("click", () => $("#previewDialog").close());
+  $("#workProgressCard").addEventListener("click", () => {
+    selectedWorkRunId = appState?.workHistory?.activeWorkRunId || selectedWorkRunId;
+    renderWorkProgress();
+    $("#workProgressSheet").showModal();
+  });
+  $("#closeWorkProgressButton").addEventListener("click", () => $("#workProgressSheet").close());
+  $("#progressFollowUpForm").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const input = $("#progressFollowUpInput");
+    const message = input.value.trim();
+    if (!message) return;
+    input.value = "";
+    await sendRemoteText(message);
+  });
+  $("#approveApprovalButton").addEventListener("click", () => answerApproval("approve"));
+  $("#denyApprovalButton").addEventListener("click", () => answerApproval("deny"));
+  $("#installAppButton").addEventListener("click", () => installRemoteApp().catch((error) => { $("#installAppHint").textContent = error.message; }));
+  $("#notificationToggle").addEventListener("change", async (event) => {
+    try {
+      await setNotificationSetting(event.target.checked);
+      setSettingsStatus(event.target.checked ? text("通知を有効にしました", "Notifications enabled") : text("通知を無効にしました", "Notifications disabled"), "success");
+    } catch (error) {
+      notificationEnabled = false;
+      localStorage.setItem("charadock.remote.notifications", "0");
+      syncPwaSettings();
+      setSettingsStatus(error.message, "error");
+    }
+  });
+  $("#wakeLockToggle").addEventListener("change", async (event) => {
+    wakeLockEnabled = event.target.checked;
+    localStorage.setItem("charadock.remote.wake-lock", wakeLockEnabled ? "1" : "0");
+    await syncWakeLock();
+    setSettingsStatus(wakeLockEnabled ? text("画面点灯を有効にしました", "Keep awake enabled") : text("画面点灯を無効にしました", "Keep awake disabled"), "success");
+  });
   $("#retryPairButton").addEventListener("click", () => location.reload());
   $("#disconnectButton").addEventListener("click", async () => {
     if (appState?.voice?.liveOwner === "remote") await stopRemoteLive().catch(() => {});
@@ -945,7 +1358,30 @@
   $("#realtimeVoiceSelect").addEventListener("change", (event) => saveRemoteClientSettings({ realtimeVoice: event.target.value }));
   $("#pcAudioToggle").addEventListener("change", (event) => saveRemoteClientSettings({ pcAudioEnabled: event.target.checked }));
   $("#phoneAudioToggle").addEventListener("change", (event) => setPhoneAudio(event.target.checked).catch(() => { event.target.checked = false; }));
+  window.addEventListener("beforeinstallprompt", (event) => {
+    event.preventDefault();
+    deferredInstallPrompt = event;
+    syncPwaSettings();
+  });
+  window.addEventListener("appinstalled", () => {
+    deferredInstallPrompt = null;
+    syncPwaSettings();
+    setSettingsStatus(text("ホーム画面へ追加しました", "Installed on the Home Screen"), "success");
+  });
+  document.addEventListener("visibilitychange", () => syncWakeLock());
+  navigator.serviceWorker?.addEventListener("message", (event) => {
+    if (event.data?.type !== "notification-open") return;
+    if (String(event.data.tag || "").startsWith("work-")) {
+      renderWorkProgress();
+      if (!$("#workProgressSheet").open) $("#workProgressSheet").showModal();
+    }
+  });
   window.addEventListener("pagehide", () => {
+    clearInterval(approvalCountdownTimer);
+    clearInterval(workElapsedTimer);
+    const currentWakeLock = wakeLockSentinel;
+    wakeLockSentinel = null;
+    currentWakeLock?.release?.().catch(() => {});
     if (appState?.voice?.liveOwner !== "remote" || !csrfToken) return;
     fetch("/api/live/stop", {
       method: "POST",
@@ -955,5 +1391,6 @@
       body: "{}",
     }).catch(() => {});
   });
+  registerPwa().finally(syncPwaSettings);
   pairFromFragment();
 })();

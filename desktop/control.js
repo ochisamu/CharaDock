@@ -22,7 +22,7 @@
   let realtimeDataChannel = null;
   let realtimeRemoteAudio = null;
   let realtimeBeatriceConverter = null;
-  let remotePcAudioEnabled = true;
+  let remotePcAudioEnabled = false;
   let realtimeStarting = false;
   let realtimeUserTranscript = "";
   let realtimeAssistantMessage = null;
@@ -1963,7 +1963,7 @@
     tailscaleBadge.classList.toggle("is-ready", Boolean(tailscale.active));
     const tailscaleUrl = $("#remoteTailscaleUrl");
     tailscaleUrl.hidden = !tailscale.url;
-    tailscaleUrl.dataset.url = tailscale.url || "";
+    tailscaleUrl.dataset.url = tailscale.pairingUrl || tailscale.url || "";
     tailscaleUrl.textContent = tailscale.url || localized("HTTPS URLを開く", "Open HTTPS URL");
     $("#refreshRemoteTailscaleButton").disabled = !enabled;
     $("#startRemoteTailscaleButton").disabled = !active || Boolean(tailscale.active);
@@ -1977,8 +1977,19 @@
     badge.textContent = active ? localized("接続受付中", "Available") : enabled ? localized("開始できません", "Unavailable") : localized("停止中", "Off");
     const qr = $("#remoteQrImage");
     qr.src = active ? remote.qrDataUrl || "" : "";
+    const securePairing = Boolean(active && remote.securePairing && remote.pairingTransport === "tailscale");
+    qr.alt = securePairing ? localized("Tailscale HTTPS接続用QRコード", "QR code for Tailscale HTTPS") : localized("スマートフォンLAN接続用QRコード", "QR code for phone LAN access");
     $("#remoteQrPlaceholder").textContent = remote.error || (active ? localized("QRコードを準備中…", "Preparing QR code…") : localized("接続を有効にしてください", "Enable phone access"));
     $("#remoteAccessUrl").textContent = remote.url || localized("接続先を準備中", "Preparing address");
+    $("#remotePairingTitle").textContent = securePairing ? localized("Tailscale HTTPSで接続", "Connect with Tailscale HTTPS") : localized("QRコードを読み取る", "Scan the QR code");
+    const pairingTransport = $("#remotePairingTransport");
+    pairingTransport.textContent = securePairing ? "TAILSCALE · HTTPS" : "LOCAL · LAN";
+    pairingTransport.classList.toggle("is-secure", securePairing);
+    const pairingRouteHint = $("#remotePairingRouteHint");
+    pairingRouteHint.textContent = securePairing
+      ? localized("このQRコードとコピーURLは、安全なTailscale HTTPSへ直接接続します。", "This QR code and copied URL connect directly over secure Tailscale HTTPS.")
+      : localized("Tailscale HTTPSを開始すると、QRコードとコピーURLも安全な接続先へ切り替わります。", "Start Tailscale HTTPS to switch the QR code and copied URL to the secure route.");
+    pairingRouteHint.classList.toggle("is-secure", securePairing);
     $("#remotePairingCode").textContent = remote.pairingCode || "--------";
     $("#copyRemoteUrlButton").disabled = !remote.pairingUrl;
     $("#regenerateRemotePairingButton").disabled = !active;

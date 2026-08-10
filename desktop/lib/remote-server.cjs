@@ -78,7 +78,7 @@ function securityHeaders(contentType = "application/json; charset=utf-8") {
     "Content-Type": contentType,
     "Cross-Origin-Opener-Policy": "same-origin",
     "Cross-Origin-Resource-Policy": "same-origin",
-    "Permissions-Policy": "camera=(), microphone=(self), geolocation=(), display-capture=()",
+    "Permissions-Policy": "camera=(), microphone=(self), geolocation=(), display-capture=(), screen-wake-lock=(self)",
     "Referrer-Policy": "no-referrer",
     "X-Content-Type-Options": "nosniff",
     "X-Frame-Options": "DENY",
@@ -444,6 +444,23 @@ class RemoteCompanionServer {
     if (request.method === "GET" && url.pathname === "/") return this.sendStatic(response, "index.html", "text/html; charset=utf-8");
     if (request.method === "GET" && url.pathname === "/remote.css") return this.sendStatic(response, "remote.css", "text/css; charset=utf-8");
     if (request.method === "GET" && url.pathname === "/remote.js") return this.sendStatic(response, "remote.js", "text/javascript; charset=utf-8");
+    if (request.method === "GET" && url.pathname === "/manifest.webmanifest") return this.sendStatic(response, "manifest.webmanifest", "application/manifest+json; charset=utf-8");
+    if (request.method === "GET" && url.pathname === "/service-worker.js") {
+      const body = fs.readFileSync(path.join(this.rootDir, "service-worker.js"));
+      response.writeHead(200, {
+        ...securityHeaders("text/javascript; charset=utf-8"),
+        "Service-Worker-Allowed": "/",
+        "Content-Security-Policy": "default-src 'none'",
+      });
+      response.end(body);
+      return;
+    }
+    if (request.method === "GET" && url.pathname === "/app-icon.png") {
+      const body = fs.readFileSync(path.resolve(this.rootDir, "..", "..", "app-icon.png"));
+      response.writeHead(200, { ...securityHeaders("image/png"), "Content-Security-Policy": "default-src 'none'" });
+      response.end(body);
+      return;
+    }
     if (request.method === "GET" && /^\/icons\/(?:voice|history|send|stop|settings|microphone)\.svg$/.test(url.pathname)) {
       const body = fs.readFileSync(path.resolve(this.rootDir, "..", "..", "assets", "ui", url.pathname.slice(1)));
       response.writeHead(200, { ...securityHeaders("image/svg+xml"), "Content-Security-Policy": "default-src 'none'" });
@@ -505,11 +522,15 @@ class RemoteCompanionServer {
       return;
     }
 
-    if (request.method === "POST" && ["/api/message", "/api/pet", "/api/interrupt", "/api/settings", "/api/live/start", "/api/live/stop", "/api/tts", "/api/tts/next", "/api/tts/cancel", "/api/disconnect"].includes(url.pathname)) {
+    if (request.method === "POST" && ["/api/message", "/api/pet", "/api/interrupt", "/api/settings", "/api/approval", "/api/secure-handoff", "/api/live/start", "/api/live/stop", "/api/tts", "/api/tts/next", "/api/tts/cancel", "/api/disconnect"].includes(url.pathname)) {
       const { tokenHash } = this.authenticate(request, { csrf: true });
       const body = await jsonBody(request);
       if (url.pathname === "/api/message") {
-        const result = await this.callbacks.sendMessage?.({ message: body.message, mode: body.mode });
+        const result = await this.callbacks.sendMessage?.({
+          message: body.message,
+          mode: body.mode,
+          secureActionsAllowed: this.isTrustedTailscaleRequest(request),
+        });
         return this.sendJson(response, 200, { ok: true, result });
       }
       if (url.pathname === "/api/pet") {
@@ -518,6 +539,17 @@ class RemoteCompanionServer {
       }
       if (url.pathname === "/api/interrupt") return this.sendJson(response, 200, await this.callbacks.interrupt?.());
       if (url.pathname === "/api/settings") return this.sendJson(response, 200, { state: await this.callbacks.setSettings?.(body) });
+      if (url.pathname === "/api/approval") {
+        if (!this.isTrustedTailscaleRequest(request)) {
+          throw Object.assign(new Error("Approval responses require a verified Tailscale HTTPS connection."), { statusCode: 403 });
+        }
+        return this.sendJson(response, 200, await this.callbacks.resolveApproval?.({ id: body.id, action: body.action }));
+      }
+      if (url.pathname === "/api/secure-handoff") {
+        const handoff = await this.callbacks.secureHandoff?.();
+        if (!handoff?.url) throw Object.assign(new Error("Secure microphone access is not available."), { statusCode: 409 });
+        return this.sendJson(response, 200, handoff);
+      }
       if (url.pathname === "/api/live/start") return this.sendJson(response, 200, await this.callbacks.startLive?.(body));
       if (url.pathname === "/api/live/stop") return this.sendJson(response, 200, await this.callbacks.stopLive?.());
       if (url.pathname === "/api/tts") return this.sendJson(response, 200, await this.callbacks.synthesizeTts?.(body.text));
