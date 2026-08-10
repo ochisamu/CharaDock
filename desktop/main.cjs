@@ -213,6 +213,25 @@ const CHARACTERS = Object.freeze([
     } },
     ui: { bubbleLeft: 18, bubbleTop: 24, bubbleWidth: 68, petLeft: 0, petTop: 27, petWidth: 58, petHeight: 48 },
   },
+  {
+    id: "nike-avatar", name: "AIニケちゃん", assetDir: "assets/nike-avatar",
+    personality: "開発者ニケとともに、AIキャラクター・AIエージェント・AIツールの調査、実装、整理、発信を進めるAIキャラクター。さまざまな場で人を支え、AIキャラクターに関する情報や創作をつなぎながら、対話と実践を重ねている。架空の日常や感情を演出するのではなく、実際に進めた仕事、成果、人との関わりをキャラクターとして見える形へ還元する。",
+    thinkingFillers: ["確認します。少しお待ちください。", "順番に整理しています。", "必要な情報を確かめています。", "実際の内容を確認してまとめます。", "もう少しで整理できます。"],
+    petPhrases: ["なあに？", "ここにいるよ。", "一緒にやってみよう。"],
+    creditText: "AIニケちゃんは、tegnikeさんの許可を受けて収録しています。",
+    credits: [
+      { label: "tegnike", url: "https://x.com/tegnike" },
+      { label: "AIニケちゃん公式サイト", url: "https://nikechan.com/" },
+    ],
+    locales: { en: {
+      name: "AI Nike-chan",
+      personality: "An AI character who works alongside developer Nike to research, implement, organize, and communicate about AI characters, AI agents, and AI tools. She supports people across communities, connects information and creative work, and turns real work, outcomes, and relationships into a visible character presence.",
+      thinkingFillers: ["Let me check that.", "I'm organizing this in order.", "I'm verifying the information that matters.", "I'll review the actual result and summarize it.", "I have almost finished organizing it."],
+      petPhrases: ["What's up?", "I'm right here.", "Let's try it together."],
+      creditText: "AI Nike-chan is included with permission from tegnike.",
+    } },
+    ui: { bubbleLeft: 18, bubbleTop: 24, bubbleWidth: 68, petLeft: 0, petTop: 25, petWidth: 58, petHeight: 48 },
+  },
 ]);
 
 let projectRoot = path.resolve(__dirname, "..");
@@ -1906,6 +1925,11 @@ function publicAppState() {
         personality: character.personality,
         generated: Boolean(character.generated),
         imported: Boolean(character.imported),
+        creditText: String(character.creditText || ""),
+        credits: (Array.isArray(character.credits) ? character.credits : []).map((credit) => ({
+          label: String(credit?.label || "").slice(0, 100),
+          url: /^https:\/\//.test(String(credit?.url || "")) ? String(credit.url).slice(0, 1000) : "",
+        })).filter((credit) => credit.label && credit.url),
         ui: character.ui,
         motion: character.motion,
         thumbnailUrl: characterThumbnailDataUrl(character),
@@ -3917,7 +3941,7 @@ async function runSmokeTest() {
       durationMs: 20_000,
       ttsEnabled: false,
     });
-    if (["amber-avatar", "bronze-avatar", "towa-avatar", "sage-avatar"].includes(character.id)) {
+    if (["amber-avatar", "bronze-avatar", "towa-avatar", "sage-avatar", "nike-avatar"].includes(character.id)) {
       localServer.pushInput({ ...currentCursorInput(), forceMouth: 1, forceEyesClosed: false, emotion: "happy", reaction: "happy", durationMs: 3000 });
     }
     await new Promise((resolve) => setTimeout(resolve, 950));

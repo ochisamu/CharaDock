@@ -27,7 +27,7 @@
 </p>
 
 <p align="center">
-  <img src="./docs/images/charadock-hero.webp" alt="Kohaku, Sepia, Towa, and Sage, the four characters included with CharaDock" width="960">
+  <img src="./docs/images/charadock-hero.webp" alt="Kohaku, Sepia, Towa, and Sage in CharaDock" width="960">
 </p>
 
 CharaDock is an unofficial derivative of [rotejin/PuruPuruPNGTuber](https://github.com/rotejin/PuruPuruPNGTuber). Its characters breathe, look around, speak with you, and—when asked—work with Codex inside a folder you choose. The input, history, and work controls appear only when needed; the character stays quietly at the edge of your desktop the rest of the time.
@@ -100,14 +100,16 @@ Long responses are divided at sentence or natural phrase boundaries. The next se
 
 ## Included characters
 
-Desktop builds contain only these four new characters.
+Desktop builds include five bundled characters.
 
-| Kohaku | Sepia | Towa | Sage |
-|:---:|:---:|:---:|:---:|
-| <img src="./docs/images/characters/amber-complete-v2.png" alt="Kohaku" width="190"> | <img src="./docs/images/characters/bronze-complete-v2.png" alt="Sepia" width="190"> | <img src="./docs/images/characters/towa-complete-v1.png" alt="Towa" width="190"> | <img src="./docs/images/characters/sage-complete-v1.png" alt="Sage" width="190"> |
-| Bright and candid; gives you a positive push. | Perceptive, composed, and dependable. | Quick-witted; enjoys discovering and trying things together. | Calm and thoughtful; brings structure to complex ideas. |
+| Kohaku | Sepia | Towa | Sage | AI Nike-chan |
+|:---:|:---:|:---:|:---:|:---:|
+| <img src="./docs/images/characters/amber-complete-v2.png" alt="Kohaku" width="160"> | <img src="./docs/images/characters/bronze-complete-v2.png" alt="Sepia" width="160"> | <img src="./docs/images/characters/towa-complete-v1.png" alt="Towa" width="160"> | <img src="./docs/images/characters/sage-complete-v1.png" alt="Sage" width="160"> | <img src="./docs/images/characters/nike-complete-v1.png" alt="AI Nike-chan" width="160"> |
+| Bright and candid; gives you a positive push. | Perceptive, composed, and dependable. | Quick-witted; enjoys discovering and trying things together. | Calm and thoughtful; brings structure to complex ideas. | Connects AI-character research, creation, and real-world practice. |
 
-Each character includes standard eye and mouth states plus happy, surprised, and gentle expression variants. The settings UI and companion controls adopt the selected character's accent color.
+Kohaku, Sepia, Towa, and Sage include standard eye and mouth states plus happy, surprised, and gentle expression variants. AI Nike-chan includes open/closed eye states and three mouth states from the authorized character asset set. The settings UI and companion controls adopt the selected character's accent color.
+
+AI Nike-chan is bundled with permission. Credit: [tegnike](https://x.com/tegnike) · [AI Nike-chan official site](https://nikechan.com/). The character assets are not licensed under Apache-2.0; see [the asset notice](./assets/nike-avatar/ASSET_NOTICE.md).
 
 ## Quick start
 
@@ -264,7 +266,8 @@ Only the MediaPipe runtime and models that cannot be restored by `npm install` a
 - Upstream project and changes: [NOTICE](./NOTICE), [MODIFICATIONS.md](./MODIFICATIONS.md)
 - Third-party dependencies: [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md)
 - Bundled Irodori reference voices: `hiro.wav` is recorded and authorized by ochisamu; `kohaku.wav` uses voice material from [あみたろの声素材工房 (Amitaro's Voice Material Workshop)](https://amitaro.net/) under its [current voice terms](https://amitaro.net/voice/voice_rule/)
-- Four new desktop characters and the CharaDock icon: [DISTRIBUTION_ASSET_LICENSE.md](./DISTRIBUTION_ASSET_LICENSE.md)
+- Four project-original desktop characters and the CharaDock icon: [DISTRIBUTION_ASSET_LICENSE.md](./DISTRIBUTION_ASSET_LICENSE.md)
+- AI Nike-chan: bundled with permission; credit [tegnike](https://x.com/tegnike) and the [official site](https://nikechan.com/). See [assets/nike-avatar/ASSET_NOTICE.md](./assets/nike-avatar/ASSET_NOTICE.md)
 - Upstream sample assets retained by the browser editor: [ASSET_LICENSE.md](./ASSET_LICENSE.md)
 
 Desktop distributions exclude the upstream legacy demo characters and legacy favicon. Upstream samples left in the source tree are retained only for browser-editor compatibility and validation; they are not covered by Apache-2.0.
@@ -272,6 +275,8 @@ Desktop distributions exclude the upstream legacy demo characters and legacy fav
 ### Bundled visual asset provenance
 
 The source illustrations and derived variants for Kohaku, Sepia, Towa, and Sage were created for this project with OpenAI `gpt-image-2`; they are not the upstream repository's legacy demo characters. The CharaDock icon was also created with OpenAI image generation and finalized locally as a multi-resolution app asset. Under the [OpenAI Terms of Use](https://openai.com/policies/terms-of-use/), as between the creator and OpenAI and to the extent permitted by law, the creator owns the generated Output. AI-generated Output may not be unique, and independently existing third-party rights are not waived or guaranteed by that provision. Distribution-specific usage conditions are recorded in [DISTRIBUTION_ASSET_LICENSE.md](./DISTRIBUTION_ASSET_LICENSE.md).
+
+AI Nike-chan is a separately authorized character and is not covered by the project-original asset statement above. Its bundled eye and mouth variants come from the character data supplied in the CharaDock profile and are included with permission from tegnike. No broader reuse license is granted.
 
 ## Contributing
 

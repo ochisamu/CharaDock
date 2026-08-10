@@ -16,6 +16,20 @@ images and favicon are intentionally excluded from the packaged desktop binary.
 Any upstream samples retained in the source tree for browser-editor compatibility
 remain governed by their separate asset terms in ASSET_LICENSE.md.
 
+### AIニケちゃん / AI Nike-chan
+
+- Character: AIニケちゃん / AI Nike-chan
+- Credit: tegnike
+- Creator link: https://x.com/tegnike
+- Official site: https://nikechan.com/
+- Terms: included as a bundled CharaDock character with permission; not licensed under Apache License 2.0
+
+The eye and mouth variants under `assets/nike-avatar` are included with
+permission for use as part of CharaDock. This permission does not grant a
+standalone extraction, redistribution, resale, model-training, or reuse
+license. See `assets/nike-avatar/ASSET_NOTICE.md` and
+`DISTRIBUTION_ASSET_LICENSE.md`.
+
 ### Electron
 
 - Project: Electron

@@ -448,12 +448,27 @@ class ProjectStaticTests(unittest.TestCase):
     def test_public_character_previews_include_hair_layers(self) -> None:
         readme = self.read_text("README.md")
         site_builder = self.read_text("scripts/build_site.mjs")
-        for name in ["amber-complete-v2.png", "bronze-complete-v2.png", "towa-complete-v1.png", "sage-complete-v1.png"]:
+        for name in ["amber-complete-v2.png", "bronze-complete-v2.png", "towa-complete-v1.png", "sage-complete-v1.png", "nike-complete-v1.png"]:
             relative = f"docs/images/characters/{name}"
             self.assertTrue((ROOT / relative).is_file(), relative)
             self.assertIn(relative, readme)
             self.assertIn(relative, site_builder)
         self.assertNotIn("assets/amber-avatar/eyes-open-mouth-closed.png\" alt=\"コハク", readme)
+
+    def test_ai_nike_is_bundled_with_visible_credit(self) -> None:
+        public_copy = "\n".join([
+            self.read_text("README.md"),
+            self.read_text("README.ja.md"),
+            self.read_text("site/index.html"),
+            self.read_text("site/ja.html"),
+            self.read_text("desktop/control.html"),
+            self.read_text("THIRD_PARTY_NOTICES.md"),
+            self.read_text("assets/nike-avatar/ASSET_NOTICE.md"),
+        ])
+        self.assertIn("AIニケちゃん", public_copy)
+        self.assertIn("https://x.com/tegnike", public_copy)
+        self.assertIn("https://nikechan.com/", public_copy)
+        self.assertIn('assets/nike-avatar/**/*', self.read_text("package.json"))
 
     def test_public_copy_calls_human_characters_companions(self) -> None:
         public_copy = "\n".join([

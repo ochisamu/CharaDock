@@ -1,0 +1,118 @@
+{
+  "app": "PuruPuru PNGTuber",
+  "type": "purupuru-pngtuber-settings",
+  "version": 2,
+  "avatarImageSize": {
+    "width": 1536,
+    "height": 1536
+  },
+  "state": {
+    "hairVisible": false,
+    "hairWarp": 0,
+    "hairSpring": 0,
+    "hairBundleStrength": 0,
+    "followSpeed": 20,
+    "rangeLeft": 42,
+    "rangeRight": 38,
+    "rangeUp": 42,
+    "rangeDown": 36,
+    "avatarSize": 108,
+    "breathStrength": 35,
+    "rollStrength": 15,
+    "pyokoStrength": 14,
+    "autoBlink": true,
+    "mouseFollowEnabled": true,
+    "idleMotionEnabled": true,
+    "micGain": 180,
+    "mouthHalf": 8,
+    "mouthFull": 22,
+    "mouthRelease": 18,
+    "mouthCrossfadeMs": 35
+  },
+  "faceCenterSetup": {
+    "version": 1,
+    "center": {
+      "x": 644,
+      "y": 649
+    }
+  },
+  "eyeSetup": {
+    "version": 2,
+    "centers": [
+      {
+        "x": 557,
+        "y": 639
+      },
+      {
+        "x": 731,
+        "y": 614
+      }
+    ],
+    "radius": {
+      "x": 47,
+      "y": 32
+    },
+    "rotationLeft": 0,
+    "rotationRight": 0
+  },
+  "faceDepthSetup": {
+    "version": 1,
+    "anchors": {
+      "leftEye": {
+        "x": 557,
+        "y": 639
+      },
+      "rightEye": {
+        "x": 731,
+        "y": 614
+      },
+      "nose": {
+        "x": 644,
+        "y": 703
+      },
+      "mouth": {
+        "x": 641,
+        "y": 756
+      },
+      "chin": {
+        "x": 651,
+        "y": 830
+      }
+    }
+  },
+  "neckPivotSetup": {
+    "version": 1,
+    "pivot": {
+      "x": 695,
+      "y": 922
+    }
+  },
+  "itemLayers": [],
+  "baselineSettings": {
+    "label": "AIニケちゃん initial setup",
+    "createdAt": "2026-08-09T17:30:11.022Z",
+    "state": {
+      "hairVisible": false,
+      "hairWarp": 0,
+      "hairSpring": 0,
+      "hairBundleStrength": 0,
+      "followSpeed": 20,
+      "rangeLeft": 42,
+      "rangeRight": 38,
+      "rangeUp": 42,
+      "rangeDown": 36,
+      "avatarSize": 108,
+      "breathStrength": 35,
+      "rollStrength": 15,
+      "pyokoStrength": 14,
+      "autoBlink": true,
+      "mouseFollowEnabled": true,
+      "idleMotionEnabled": true,
+      "micGain": 180,
+      "mouthHalf": 8,
+      "mouthFull": 22,
+      "mouthRelease": 18,
+      "mouthCrossfadeMs": 35
+    }
+  }
+}

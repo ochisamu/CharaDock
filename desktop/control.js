@@ -1421,6 +1421,21 @@
     for (const key of motionFields) {
       $(`#${key}Input`).value = character.motion?.[key] ?? (key === "avatarSize" ? 100 : 30);
     }
+    const credits = Array.isArray(character.credits) ? character.credits : [];
+    const creditCard = $("#characterCredit");
+    creditCard.hidden = !credits.length;
+    $("#characterCreditText").textContent = String(character.creditText || "");
+    const creditLinks = $("#characterCreditLinks");
+    creditLinks.replaceChildren();
+    for (const credit of credits) {
+      if (!/^https:\/\//.test(String(credit?.url || ""))) continue;
+      const link = document.createElement("a");
+      link.href = credit.url;
+      link.target = "_blank";
+      link.rel = "noreferrer";
+      link.textContent = credit.label;
+      creditLinks.appendChild(link);
+    }
     $("#removeCharacterButton").hidden = !character.generated;
     $("#removeCharacterButton").disabled = false;
     renderCharacterMemories();

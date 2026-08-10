@@ -28,7 +28,9 @@ test("control and mascot pages load the shared language runtime", () => {
 
 test("built-in characters provide localized English identities", () => {
   const main = fs.readFileSync(path.join(desktopRoot, "main.cjs"), "utf8");
-  for (const name of ["Kohaku", "Sepia", "Towa", "Sage"]) assert.match(main, new RegExp(`name: "${name}"`));
+  for (const name of ["Kohaku", "Sepia", "Towa", "Sage", "AI Nike-chan"]) assert.match(main, new RegExp(`name: "${name}"`));
+  assert.match(main, /https:\/\/x\.com\/tegnike/);
+  assert.match(main, /https:\/\/nikechan\.com\//);
   assert.match(main, /Respond naturally in English/);
   assert.match(main, /Before using tools, send one brief commentary acknowledgement that names the request-specific subject and action/);
 });

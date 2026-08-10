@@ -43,6 +43,7 @@
 :root[data-character="bronze-avatar"] { --accent: #dc9568; --accent-strong: #b8663d; --accent-ink: #25130c; }
 :root[data-character="towa-avatar"] { --accent: #33b5b3; --accent-strong: #168d91; --accent-ink: #071b1c; }
 :root[data-character="sage-avatar"] { --accent: #8cae9f; --accent-strong: #527969; --accent-ink: #0c1d18; }
+:root[data-character="nike-avatar"] { --accent: #a98cf5; --accent-strong: #7657d8; --accent-ink: #120a2b; }
 
 .ui-symbol {
   display: inline-block;
@@ -520,6 +521,13 @@ p { line-height: 1.65; }
 .character-voice-card .tts-settings { padding: 16px; }
 .profile-fields { display: grid; grid-template-columns: minmax(170px, .42fr) minmax(270px, 1fr); align-items: start; gap: 12px; }
 .profile-personality textarea { width: 100%; min-height: 94px; resize: vertical; }
+.character-credit { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 16px; padding: 13px 14px; background: color-mix(in srgb, var(--accent) 8%, var(--field)); border: 1px solid color-mix(in srgb, var(--accent) 24%, var(--line)); border-radius: 13px; }
+.character-credit[hidden] { display: none; }
+.character-credit h3 { margin: 0; font-size: 12px; }
+.character-credit p { margin: 4px 0 0; color: var(--muted); font-size: 10px; line-height: 1.55; }
+.character-credit-links { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 7px; }
+.character-credit-links a { padding: 6px 9px; color: color-mix(in srgb, var(--accent) 72%, white); background: var(--accent-soft); border: 1px solid var(--accent-line); border-radius: 999px; font-size: 9px; font-weight: 700; text-decoration: none; }
+.character-credit-links a:hover { background: color-mix(in srgb, var(--accent) 18%, var(--surface)); }
 .character-memory { display: grid; gap: 10px; padding: 14px; background: rgba(255, 255, 255, .025); border: 1px solid var(--line); border-radius: 13px; }
 .character-memory > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; }
 .character-memory h3 { margin: 0; font-size: 13px; }

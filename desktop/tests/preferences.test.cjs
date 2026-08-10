@@ -112,12 +112,18 @@ test("new installs enable onboarding and desktop positioning defaults", () => {
       "bronze-avatar": "supertonic-3",
       "towa-avatar": "irodori-webgpu",
       "sage-avatar": "supertonic-3",
+      "nike-avatar": "system",
     },
   );
   assert.equal(preferences.data.characterTtsProfiles["amber-avatar"].irodoriVoiceId, "builtin-kohaku");
   assert.equal(preferences.data.characterTtsProfiles["amber-avatar"].styleBertVits2ModelId, 0);
   assert.equal(preferences.data.characterTtsProfiles["towa-avatar"].irodoriVoiceId, "builtin-hiro");
-  for (const profile of Object.values(preferences.data.characterTtsProfiles)) {
+  for (const [id, profile] of Object.entries(preferences.data.characterTtsProfiles)) {
+    if (id === "nike-avatar") {
+      assert.equal(profile.irodoriVersion, "v4-small");
+      assert.equal(profile.irodoriPrecision, "int4");
+      continue;
+    }
     assert.equal(profile.irodoriVersion, "500m-v3");
     assert.equal(profile.irodoriPrecision, "fp16");
   }
@@ -300,6 +306,35 @@ test("preferences promote the former generated Towa to the bundled character", (
   assert.equal(preferences.data.characterTtsProfiles["towa-avatar"].provider, "kokoro");
   assert.equal(preferences.data.characterMemories["towa-avatar"][0].content, "工具が好き");
   assert.equal(Object.prototype.hasOwnProperty.call(preferences.data.characterProfiles, "user-avatar-ms5afs58"), false);
+});
+
+test("preferences promote the profile AI Nike character to the bundled character", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "charadock-prefs-"));
+  const file = path.join(directory, "preferences.json");
+  const legacyId = "user-avatar-ai-nike-smooth-v2";
+  fs.writeFileSync(file, JSON.stringify({
+    characterId: legacyId,
+    customCharacters: [
+      { id: legacyId, name: "AIニケちゃん Smooth", assetDir: "C:/generated/nike" },
+      { id: "user-avatar-other", name: "別キャラ", assetDir: "C:/generated/other" },
+    ],
+    characterProfiles: { [legacyId]: { name: "AIニケちゃん", personality: "実践を大切にする" } },
+    characterTtsProfiles: { [legacyId]: { provider: "sbv2-jp-extra", sbv2ModelId: "sbv2-nike", realtimeVoice: "maple", realtimeVoiceConversion: "beatrice-v2" } },
+    conversationHistories: { [legacyId]: [{ role: "user", text: "こんにちは" }] },
+    characterMemories: { [legacyId]: [{ id: "memory-nike", category: "preference", content: "実例を重視" }] },
+    characterWorkspaces: { [legacyId]: { activeProjectId: "home", projects: [] } },
+    workHistory: [{ id: "work-nike", request: "調査して", status: "completed", characterId: legacyId, characterName: "AIニケちゃん" }],
+  }));
+  const preferences = new Preferences(file);
+  assert.equal(preferences.data.characterId, "nike-avatar");
+  assert.deepEqual(preferences.data.customCharacters.map((character) => character.id), ["user-avatar-other"]);
+  assert.equal(preferences.data.characterProfiles["nike-avatar"].name, "AIニケちゃん");
+  assert.equal(preferences.data.characterTtsProfiles["nike-avatar"].provider, "sbv2-jp-extra");
+  assert.equal(preferences.data.characterTtsProfiles["nike-avatar"].sbv2ModelId, "sbv2-nike");
+  assert.equal(preferences.data.conversationHistories["nike-avatar"][0].text, "こんにちは");
+  assert.equal(preferences.data.characterMemories["nike-avatar"][0].content, "実例を重視");
+  assert.equal(preferences.data.workHistory[0].characterId, "nike-avatar");
+  assert.equal(Object.prototype.hasOwnProperty.call(preferences.data.characterProfiles, legacyId), false);
 });
 
 test("preferences persist and sanitize English pronunciation settings", () => {

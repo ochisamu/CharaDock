@@ -100,14 +100,16 @@ CharaDockは、[rotejin/PuruPuruPNGTuber](https://github.com/rotejin/PuruPuruPNG
 
 ## 収録キャラクター
 
-デスクトップ配布物には新規4キャラクターだけを収録します。
+デスクトップ配布物には5キャラクターを収録します。
 
-| コハク | セピア | トワ | セージ |
-|:---:|:---:|:---:|:---:|
-| <img src="./docs/images/characters/amber-complete-v2.png" alt="コハク" width="190"> | <img src="./docs/images/characters/bronze-complete-v2.png" alt="セピア" width="190"> | <img src="./docs/images/characters/towa-complete-v1.png" alt="トワ" width="190"> | <img src="./docs/images/characters/sage-complete-v1.png" alt="セージ" width="190"> |
-| 快活で素直。前向きに背中を押す。 | 余裕と洞察があり、頼れる。 | 機転が利き、発見を一緒に試す。 | 穏やかな知性派。複雑なことを整理する。 |
+| コハク | セピア | トワ | セージ | AIニケちゃん |
+|:---:|:---:|:---:|:---:|:---:|
+| <img src="./docs/images/characters/amber-complete-v2.png" alt="コハク" width="160"> | <img src="./docs/images/characters/bronze-complete-v2.png" alt="セピア" width="160"> | <img src="./docs/images/characters/towa-complete-v1.png" alt="トワ" width="160"> | <img src="./docs/images/characters/sage-complete-v1.png" alt="セージ" width="160"> | <img src="./docs/images/characters/nike-complete-v1.png" alt="AIニケちゃん" width="160"> |
+| 快活で素直。前向きに背中を押す。 | 余裕と洞察があり、頼れる。 | 機転が利き、発見を一緒に試す。 | 穏やかな知性派。複雑なことを整理する。 | AIキャラクターの調査・創作と実践をつなぐ。 |
 
-各キャラクターは通常の目・口差分に加え、嬉しい・驚き・やさしい表情差分を持ちます。選択キャラに合わせて設定画面とコンパニオンUIのアクセントも変化します。
+コハク、セピア、トワ、セージは通常の目・口差分に加え、嬉しい・驚き・やさしい表情差分を持ちます。AIニケちゃんは許諾済みキャラクター素材を元に、目の開閉と口3段階の差分を収録しています。選択キャラに合わせて設定画面とコンパニオンUIのアクセントも変化します。
+
+AIニケちゃんは許可を受けて収録しています。クレジット: [tegnike](https://x.com/tegnike) · [AIニケちゃん公式サイト](https://nikechan.com/)。キャラクター素材はApache-2.0の対象外です。詳細は[アセット通知](./assets/nike-avatar/ASSET_NOTICE.md)をご確認ください。
 
 ## クイックスタート
 
@@ -264,7 +266,8 @@ npm run site:build
 - 元プロジェクトと変更点: [NOTICE](./NOTICE)、[MODIFICATIONS.md](./MODIFICATIONS.md)
 - 第三者依存関係: [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md)
 - 同梱Irodori参照音声: `hiro.wav`はochisamu本人の録音・許諾音声、`kohaku.wav`は[あみたろの声素材工房](https://amitaro.net/)の音声素材を[現行の利用規約](https://amitaro.net/voice/voice_rule/)に基づいて使用
-- デスクトップ版の新規4キャラクターとCharaDockアイコン: [DISTRIBUTION_ASSET_LICENSE.md](./DISTRIBUTION_ASSET_LICENSE.md)
+- プロジェクトオリジナルのデスクトップ版4キャラクターとCharaDockアイコン: [DISTRIBUTION_ASSET_LICENSE.md](./DISTRIBUTION_ASSET_LICENSE.md)
+- AIニケちゃん: 許可を受けて収録。クレジットは[tegnike](https://x.com/tegnike)および[公式サイト](https://nikechan.com/)。詳細は[assets/nike-avatar/ASSET_NOTICE.md](./assets/nike-avatar/ASSET_NOTICE.md)
 - 元ブラウザー版に残る上流サンプル素材: [ASSET_LICENSE.md](./ASSET_LICENSE.md)
 
 デスクトップ配布物には上流の旧デモキャラクターと旧faviconを含めません。ソースツリーに残る上流サンプルは、ブラウザー編集画面の互換性・検証用であり、Apache-2.0の対象ではありません。
@@ -272,6 +275,8 @@ npm run site:build
 ### 組み込みビジュアル素材の来歴
 
 コハク、セピア、トワ、セージの元絵と生成差分は、このプロジェクトのためにOpenAI `gpt-image-2`で作成したもので、上流リポジトリの旧デモキャラクターではありません。CharaDockアイコンもOpenAIの画像生成で作成し、マルチ解像度のアプリアセットとしてローカルで仕上げています。[OpenAI利用規約](https://openai.com/policies/terms-of-use/)では、OpenAIと作成者との関係において、適用法で認められる範囲で作成者が生成Outputを所有するとされています。一方で、生成Outputは一意とは限らず、独立して存在する第三者の権利まで放棄・保証するものではありません。配布時の利用条件は[DISTRIBUTION_ASSET_LICENSE.md](./DISTRIBUTION_ASSET_LICENSE.md)に記録しています。
+
+AIニケちゃんは上記のプロジェクトオリジナル素材とは別の許諾キャラクターです。CharaDock profileに保存されていたキャラクターデータを元にした目・口差分を、tegnikeさんの許可を受けて収録しています。この許可から、素材単体の再利用に関する広いライセンスが付与されるものではありません。
 
 ## コントリビューション
 

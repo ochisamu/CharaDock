@@ -15,6 +15,7 @@ test("desktop distribution contains only approved character, voice, and interfac
     "assets/amber-avatar/**/*",
     "assets/bronze-avatar/**/*",
     "assets/fonts/**/*",
+    "assets/nike-avatar/**/*",
     "assets/reference-voices/**/*",
     "assets/sage-avatar/**/*",
     "assets/towa-avatar/**/*",
@@ -22,6 +23,10 @@ test("desktop distribution contains only approved character, voice, and interfac
   ]);
   assert.equal(files.some((entry) => entry.includes("demo-avatar")), false);
   assert.equal(files.includes("favicon.ico"), false);
+  const nikeNotice = fs.readFileSync(path.join(projectRoot, "assets", "nike-avatar", "ASSET_NOTICE.md"), "utf8");
+  assert.match(nikeNotice, /https:\/\/x\.com\/tegnike/);
+  assert.match(nikeNotice, /https:\/\/nikechan\.com\//);
+  assert.match(fs.readFileSync(path.join(projectRoot, "THIRD_PARTY_NOTICES.md"), "utf8"), /### AIニケちゃん \/ AI Nike-chan/);
 });
 
 test("interface symbols use individually licensed SVG assets", () => {
