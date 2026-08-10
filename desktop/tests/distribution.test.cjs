@@ -152,7 +152,9 @@ test("Beatrice integration packages only CharaDock's host helper", () => {
   assert.match(realtime, /new MediaStreamTrackProcessor\(\{ track \}\)/);
   assert.match(mascot, /new MediaStreamTrackProcessor\(\{ track \}\)/);
   assert.doesNotMatch(realtime, /createMediaStreamSource|createMediaElementSource/);
-  assert.doesNotMatch(mascot, /createMediaStreamSource\(stream\)|createMediaElementSource\(remoteAudio\)/);
+  const mascotBeatriceCapture = mascot.match(/const startRealtimeBeatriceCapture[\s\S]*?const startRealtimeBeatrice =/)?.[0] || "";
+  assert.doesNotMatch(mascotBeatriceCapture, /createMediaStreamSource\(stream\)|createMediaElementSource\(remoteAudio\)/);
+  assert.match(mascot, /startRealtimeOutputMeter\(stream\)/, "raw Live audio should be metered for lip sync through a silent sidechain");
   assert.doesNotMatch(realtime, /createObjectURL\(new Blob/);
   assert.doesNotMatch(mascot, /BEATRICE_WORKLET_SOURCE|createObjectURL\(new Blob/);
   const beatriceIpc = fs.readFileSync(path.join(projectRoot, "desktop", "main.cjs"), "utf8")
@@ -369,6 +371,8 @@ test("remote access exposes compact avatar dialogue, device controls, and Live r
   for (const id of ["bubbleExpandButton", "historySheet", "settingsSheet", "microphoneButton", "remoteLiveAudio", "characterSelect", "ttsProviderSelect", "realtimeVoiceSelect", "pcAudioToggle"]) assert.match(remoteHtml, new RegExp(`id="${id}"`));
   assert.match(remoteCss, /-webkit-line-clamp:\s*4/);
   assert.match(remoteCss, /@keyframes avatar-idle/);
+  assert.doesNotMatch(remoteHtml, /id="avatarFaceBlend"/);
+  assert.doesNotMatch(remoteCss, /\.avatar-motion\.is-speaking\s*\{[^}]*animation-duration/);
   assert.match(remoteCss, /\.history-sheet[^}]*height:\s*100dvh/);
   assert.match(remoteJs, /character\?\.motion/);
   assert.match(remoteJs, /\["delta", "realtime-caption"\]/);
@@ -376,7 +380,13 @@ test("remote access exposes compact avatar dialogue, device controls, and Live r
   assert.match(remoteJs, /getUserMedia/);
   assert.match(remoteJs, /waitForIceGatheringComplete\(peer\)/);
   assert.match(remoteJs, /charadock\.remote\.audio"\) !== "0"/);
-  assert.match(remoteJs, /gain\.gain\.value = audioEnabled \? 1 : 0/);
+  assert.match(remoteJs, /gain\.gain\.value = audioEnabled && !liveBeatriceActive \? 1 : 0/);
+  assert.match(remoteJs, /\/api\/live\/beatrice\/audio/);
+  assert.match(remoteJs, /\/api\/live\/beatrice\/stop/);
+  assert.match(remoteJs, /createThreeStageMouthTracker/);
+  assert.match(remoteJs, /getFloatTimeDomainData/);
+  assert.match(remoteJs, /dictationArmed/);
+  assert.match(remoteJs, /scheduleDictationResume/);
   assert.match(remoteHtml, /PCでも音を出す<\/strong><small>初期状態はOFF/);
   assert.match(remoteHtml, /この端末で回答音声を再生<\/strong><small>初期状態はON/);
 });

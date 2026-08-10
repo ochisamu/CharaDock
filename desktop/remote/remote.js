@@ -16,6 +16,8 @@
   let currentMouth = "closed";
   let currentEmotion = "";
   let currentFaceKey = "eyesOpenMouthClosed";
+  let avatarSpeakingReleaseTimer = 0;
+  const remoteMouthTracker = window.CharaDockAudioEnvelope.createThreeStageMouthTracker({ minimumHoldMs: 64 });
   let avatarAssets = new Map();
   let petRequestInFlight = false;
   let mobileSpeechToken = 0;
@@ -38,11 +40,30 @@
   let livePeer = null;
   let liveInputStream = null;
   let liveStarting = false;
+  let liveSessionId = "";
   let liveAudioContext = null;
   let liveAudioFrame = 0;
   let liveAudioSource = null;
   let liveAudioGain = null;
+  let liveBeatriceActive = false;
+  let liveBeatriceSessionId = "";
+  let liveBeatriceGeneration = 0;
+  let liveBeatriceProcessor = null;
+  let liveBeatriceSilence = null;
+  let liveBeatricePlaybackGain = null;
+  let liveBeatriceCaptureFrames = [];
+  let liveBeatriceCaptureSamples = 0;
+  let liveBeatriceCaptureOffset = 0;
+  let liveBeatriceUploadQueue = [];
+  let liveBeatriceUploading = false;
+  let liveBeatriceNextPlaybackTime = 0;
+  const liveBeatricePlaybackSources = new Set();
+  const liveBeatriceLevelTimers = new Set();
+  let liveBeatriceMouthCloseTimer = 0;
   let speechRecognition = null;
+  const cancelledRecognitions = new WeakSet();
+  let dictationArmed = false;
+  let dictationRestartTimer = 0;
 
   const text = (ja, en) => appState?.language === "en" ? en : ja;
   const artifactUrl = (runId, artifactPath) => `/api/artifact?runId=${encodeURIComponent(runId)}&path=${encodeURIComponent(artifactPath)}`;
@@ -267,9 +288,67 @@
 
   function showFace(key) {
     if (!appState?.character?.assetKeys?.includes(key)) key = "eyesOpenMouthClosed";
-    currentFaceKey = key;
     const source = avatarAssets.get(key);
-    if (source && $("#avatarFace").src !== source) $("#avatarFace").src = source;
+    const face = $("#avatarFace");
+    if (!source || (currentFaceKey === key && face.src === source)) return;
+    face.src = source;
+    currentFaceKey = key;
+  }
+
+  function setAvatarSpeaking(active, releaseMs = 220) {
+    if (active) {
+      clearTimeout(avatarSpeakingReleaseTimer);
+      avatarSpeakingReleaseTimer = 0;
+      $("#avatarMotion").classList.add("is-speaking");
+      return;
+    }
+    if (!releaseMs) {
+      clearTimeout(avatarSpeakingReleaseTimer);
+      avatarSpeakingReleaseTimer = 0;
+      $("#avatarMotion").classList.remove("is-speaking");
+      return;
+    }
+    if (avatarSpeakingReleaseTimer || !$("#avatarMotion").classList.contains("is-speaking")) return;
+    avatarSpeakingReleaseTimer = setTimeout(() => {
+      avatarSpeakingReleaseTimer = 0;
+      $("#avatarMotion").classList.remove("is-speaking");
+    }, releaseMs);
+  }
+
+  function updateRemoteMouth(rawRms, now = performance.now()) {
+    const next = remoteMouthTracker.sample(rawRms, now);
+    if (next.changed || currentMouth !== next.mouth) {
+      currentMouth = next.mouth;
+      showFace(faceKey(true));
+    }
+    setAvatarSpeaking(next.speaking);
+    return next;
+  }
+
+  function resetRemoteMouth({ keepSpeaking = false } = {}) {
+    remoteMouthTracker.reset();
+    currentMouth = "closed";
+    showFace(faceKey(true));
+    if (!keepSpeaking) setAvatarSpeaking(false, 0);
+  }
+
+  function analyserRms(analyser, samples) {
+    analyser.getFloatTimeDomainData(samples);
+    let sum = 0;
+    for (const sample of samples) sum += sample * sample;
+    return Math.sqrt(sum / Math.max(1, samples.length));
+  }
+
+  async function decodeAvatarAssets() {
+    await Promise.all([...avatarAssets.values()].map(async (source) => {
+      const image = new Image();
+      image.src = source;
+      try {
+        await image.decode();
+      } catch {
+        // The visible image remains the fallback if a browser cannot predecode.
+      }
+    }));
   }
 
   function scheduleBlink() {
@@ -321,6 +400,7 @@
       const response = await fetch(`/api/avatar/${encodeURIComponent(key)}?v=${encodeURIComponent(character.assetVersion || "1")}`, { cache: "force-cache" });
       if (response.ok) avatarAssets.set(key, URL.createObjectURL(await response.blob()));
     }));
+    await decodeAvatarAssets();
     $("#responseSpeaker").textContent = character.name;
     $("#avatarFace").alt = character.name;
     $("#avatarTapTarget").setAttribute("aria-label", text(`${character.name}に触れる`, `Tap ${character.name}`));
@@ -329,6 +409,7 @@
       image.hidden = !character.assetKeys.includes(key);
       if (!image.hidden) image.src = avatarAssets.get(key) || "";
     }
+    currentFaceKey = "";
     showFace(faceKey(true));
     syncAvatarMotion();
     scheduleBlink();
@@ -507,6 +588,7 @@
   function setBusy(value) {
     const wasBusy = busy;
     busy = Boolean(value);
+    if (busy && speechRecognition) stopDictation({ keepArmed: true });
     $("#sendButton").hidden = false;
     $("#sendButton").classList.toggle("is-follow-up", busy);
     $("#sendButton").setAttribute("aria-label", busy ? text("フォローアップを差し込む", "Queue follow-up") : text("送信", "Send"));
@@ -518,6 +600,7 @@
     syncRemoteSettings();
     syncWakeLock();
     if (wasBusy && !busy && pendingRemoteFollowUp) setTimeout(flushPendingRemoteFollowUp, 80);
+    if (wasBusy && !busy) scheduleDictationResume();
   }
 
   function closeRemoteLivePeer() {
@@ -530,17 +613,209 @@
     liveAudioFrame = 0;
     try { liveAudioSource?.disconnect(); } catch {}
     try { liveAudioGain?.disconnect(); } catch {}
+    stopLiveBeatricePipeline();
     liveAudioSource = null;
     liveAudioGain = null;
     liveAudioContext = null;
-    currentMouth = "closed";
-    showFace(faceKey(true));
-    $("#avatarMotion").classList.remove("is-speaking");
+    resetRemoteMouth();
     livePeer = null;
     liveInputStream = null;
     liveStarting = false;
+    liveSessionId = "";
     $("#microphoneButton").classList.remove("is-live");
     syncMicrophoneButton();
+  }
+
+  function floatSamplesBase64(samples) {
+    const bytes = new Uint8Array(samples.buffer, samples.byteOffset, samples.byteLength);
+    let binary = "";
+    for (let offset = 0; offset < bytes.length; offset += 0x4000) {
+      binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x4000));
+    }
+    return btoa(binary);
+  }
+
+  function base64FloatSamples(value) {
+    const binary = atob(String(value || ""));
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+    if (!bytes.length || bytes.byteLength % Float32Array.BYTES_PER_ELEMENT) throw new Error("Invalid converted audio data.");
+    return new Float32Array(bytes.buffer);
+  }
+
+  function stopLiveBeatricePipeline({ restoreRaw = false } = {}) {
+    liveBeatriceGeneration += 1;
+    liveBeatriceActive = false;
+    liveBeatriceSessionId = "";
+    if (liveBeatriceProcessor) liveBeatriceProcessor.onaudioprocess = null;
+    try { liveBeatriceProcessor?.disconnect(); } catch {}
+    try { liveBeatriceSilence?.disconnect(); } catch {}
+    try { liveBeatricePlaybackGain?.disconnect(); } catch {}
+    liveBeatriceProcessor = null;
+    liveBeatriceSilence = null;
+    liveBeatricePlaybackGain = null;
+    liveBeatriceCaptureFrames = [];
+    liveBeatriceCaptureSamples = 0;
+    liveBeatriceCaptureOffset = 0;
+    liveBeatriceUploadQueue = [];
+    liveBeatriceUploading = false;
+    liveBeatriceNextPlaybackTime = 0;
+    clearTimeout(liveBeatriceMouthCloseTimer);
+    liveBeatriceMouthCloseTimer = 0;
+    for (const timer of liveBeatriceLevelTimers) clearTimeout(timer);
+    liveBeatriceLevelTimers.clear();
+    for (const source of liveBeatricePlaybackSources) {
+      try { source.stop(); } catch {}
+      try { source.disconnect(); } catch {}
+    }
+    liveBeatricePlaybackSources.clear();
+    if (restoreRaw && liveAudioGain && liveAudioContext) {
+      liveAudioGain.gain.setTargetAtTime(audioEnabled ? 1 : 0, liveAudioContext.currentTime, .015);
+    }
+  }
+
+  function failLiveBeatrice(message, failedSessionId = liveBeatriceSessionId) {
+    if (!liveBeatriceActive) return;
+    stopLiveBeatricePipeline({ restoreRaw: true });
+    if (failedSessionId) {
+      request("/api/live/beatrice/stop", {
+        method: "POST",
+        body: JSON.stringify({ sessionId: failedSessionId }),
+      }).catch(() => {});
+    }
+    $("#composerHint").textContent = message || text("Beatrice 2を継続できないため元のLive音声へ戻しました", "Beatrice 2 stopped; using the original Live voice");
+  }
+
+  async function pumpLiveBeatriceUploads() {
+    if (liveBeatriceUploading || !liveBeatriceActive || !liveBeatriceSessionId) return;
+    const generation = liveBeatriceGeneration;
+    const sessionId = liveBeatriceSessionId;
+    liveBeatriceUploading = true;
+    try {
+      while (liveBeatriceActive
+        && generation === liveBeatriceGeneration
+        && sessionId === liveBeatriceSessionId
+        && liveBeatriceUploadQueue.length) {
+        const samples = liveBeatriceUploadQueue.shift();
+        await request("/api/live/beatrice/audio", {
+          method: "POST",
+          body: JSON.stringify({ audio: floatSamplesBase64(samples), sessionId }),
+        });
+      }
+    } catch (error) {
+      if (generation === liveBeatriceGeneration) {
+        failLiveBeatrice(text(`Beatrice 2の変換を継続できません: ${error.message}`, `Beatrice 2 conversion stopped: ${error.message}`));
+      }
+    } finally {
+      if (generation === liveBeatriceGeneration) liveBeatriceUploading = false;
+    }
+  }
+
+  function pushLiveBeatriceSamples(samples) {
+    if (!liveBeatriceActive || !samples.length) return;
+    liveBeatriceCaptureFrames.push(samples);
+    liveBeatriceCaptureSamples += samples.length;
+    const batchSamples = 480 * 8;
+    while (liveBeatriceCaptureSamples >= batchSamples) {
+      const batch = new Float32Array(batchSamples);
+      let written = 0;
+      while (written < batchSamples) {
+        const source = liveBeatriceCaptureFrames[0];
+        const count = Math.min(batchSamples - written, source.length - liveBeatriceCaptureOffset);
+        batch.set(source.subarray(liveBeatriceCaptureOffset, liveBeatriceCaptureOffset + count), written);
+        written += count;
+        liveBeatriceCaptureOffset += count;
+        liveBeatriceCaptureSamples -= count;
+        if (liveBeatriceCaptureOffset === source.length) {
+          liveBeatriceCaptureFrames.shift();
+          liveBeatriceCaptureOffset = 0;
+        }
+      }
+      liveBeatriceUploadQueue.push(batch);
+      if (liveBeatriceUploadQueue.length > 10) liveBeatriceUploadQueue.shift();
+    }
+    pumpLiveBeatriceUploads();
+  }
+
+  function captureLiveBeatrice(inputBuffer, contextSampleRate) {
+    const frames = inputBuffer.length;
+    const mono = new Float32Array(frames);
+    for (let channel = 0; channel < inputBuffer.numberOfChannels; channel += 1) {
+      const values = inputBuffer.getChannelData(channel);
+      for (let index = 0; index < frames; index += 1) mono[index] += values[index] / inputBuffer.numberOfChannels;
+    }
+    if (contextSampleRate === 48000) {
+      pushLiveBeatriceSamples(mono);
+      return;
+    }
+    const outputLength = Math.max(1, Math.round(mono.length * 48000 / contextSampleRate));
+    const resampled = new Float32Array(outputLength);
+    const scale = contextSampleRate / 48000;
+    for (let index = 0; index < outputLength; index += 1) {
+      const position = index * scale;
+      const left = Math.min(mono.length - 1, Math.floor(position));
+      const right = Math.min(mono.length - 1, left + 1);
+      const mix = position - left;
+      resampled[index] = mono[left] * (1 - mix) + mono[right] * mix;
+    }
+    pushLiveBeatriceSamples(resampled);
+  }
+
+  function startLiveBeatriceCapture(source, context) {
+    const processor = context.createScriptProcessor(1024, 1, 1);
+    const silence = context.createGain();
+    silence.gain.value = 0;
+    processor.onaudioprocess = (event) => captureLiveBeatrice(event.inputBuffer, context.sampleRate);
+    source.connect(processor);
+    processor.connect(silence);
+    silence.connect(context.destination);
+    liveBeatriceProcessor = processor;
+    liveBeatriceSilence = silence;
+    liveBeatricePlaybackGain = context.createGain();
+    liveBeatricePlaybackGain.gain.value = audioEnabled ? 1 : 0;
+    liveBeatricePlaybackGain.connect(context.destination);
+  }
+
+  function queueLiveBeatricePlayback(payload = {}) {
+    if (!liveBeatriceActive
+      || !liveAudioContext
+      || !liveBeatricePlaybackGain
+      || !liveBeatriceSessionId
+      || payload.sessionId !== liveBeatriceSessionId) return;
+    try {
+      const generation = liveBeatriceGeneration;
+      const samples = base64FloatSamples(payload.audio);
+      const context = liveAudioContext;
+      const buffer = context.createBuffer(1, samples.length, Number(payload.sampleRate) || 48000);
+      buffer.copyToChannel(samples, 0);
+      const source = context.createBufferSource();
+      source.buffer = buffer;
+      source.connect(liveBeatricePlaybackGain);
+      if (!liveBeatriceNextPlaybackTime || liveBeatriceNextPlaybackTime < context.currentTime + .025) {
+        liveBeatriceNextPlaybackTime = context.currentTime + .085;
+      }
+      const playbackTime = liveBeatriceNextPlaybackTime;
+      source.start(playbackTime);
+      liveBeatriceNextPlaybackTime += buffer.duration;
+      liveBeatricePlaybackSources.add(source);
+      source.onended = () => liveBeatricePlaybackSources.delete(source);
+      let sum = 0;
+      for (const sample of samples) sum += sample * sample;
+      const rms = Math.sqrt(sum / Math.max(1, samples.length));
+      const levelTimer = setTimeout(() => {
+        liveBeatriceLevelTimers.delete(levelTimer);
+        if (!liveBeatriceActive || generation !== liveBeatriceGeneration) return;
+        updateRemoteMouth(rms);
+        clearTimeout(liveBeatriceMouthCloseTimer);
+        liveBeatriceMouthCloseTimer = setTimeout(() => {
+          if (!liveBeatriceActive || generation !== liveBeatriceGeneration) return;
+          resetRemoteMouth();
+        }, buffer.duration * 1000 + 55);
+      }, Math.max(0, (playbackTime - context.currentTime) * 1000));
+      liveBeatriceLevelTimers.add(levelTimer);
+    } catch (error) {
+      failLiveBeatrice(text(`Beatrice 2の音声を再生できません: ${error.message}`, `Could not play Beatrice 2 audio: ${error.message}`));
+    }
   }
 
   async function followLiveAudio(stream) {
@@ -552,26 +827,28 @@
     const source = context.createMediaStreamSource(stream);
     const analyser = context.createAnalyser();
     const gain = context.createGain();
-    analyser.fftSize = 256;
+    analyser.fftSize = 1024;
+    analyser.smoothingTimeConstant = .1;
     source.connect(analyser);
     analyser.connect(gain);
     gain.connect(context.destination);
-    gain.gain.value = audioEnabled ? 1 : 0;
+    gain.gain.value = audioEnabled && !liveBeatriceActive ? 1 : 0;
     liveAudioContext = context;
     liveAudioSource = source;
     liveAudioGain = gain;
+    if (liveBeatriceActive) startLiveBeatriceCapture(source, context);
     await context.resume();
-    const samples = new Uint8Array(analyser.frequencyBinCount);
-    const animate = () => {
+    const samples = new Float32Array(analyser.fftSize);
+    const animate = (now) => {
       if (liveAudioContext !== context) return;
-      analyser.getByteFrequencyData(samples);
-      const level = samples.reduce((sum, value) => sum + value, 0) / Math.max(1, samples.length) / 255;
-      currentMouth = level > .16 ? "open" : level > .055 ? "half" : "closed";
-      showFace(faceKey(true));
-      $("#avatarMotion").classList.toggle("is-speaking", level > .025);
+      if (liveBeatriceActive) {
+        liveAudioFrame = requestAnimationFrame(animate);
+        return;
+      }
+      updateRemoteMouth(analyserRms(analyser, samples), now);
       liveAudioFrame = requestAnimationFrame(animate);
     };
-    animate();
+    liveAudioFrame = requestAnimationFrame(animate);
   }
 
   function syncMicrophoneButton() {
@@ -581,16 +858,20 @@
     const remoteOwnsLive = voice.liveConnected && voice.liveOwner === "remote";
     const pcOwnsLive = voice.liveConnected && voice.liveOwner !== "remote";
     const button = $("#microphoneButton");
-    button.disabled = busy || liveStarting || pcOwnsLive || (!liveMode && !microphoneAvailable() && !microphoneHandoffAvailable());
+    button.disabled = liveStarting || pcOwnsLive
+      || (!liveMode && !dictationArmed && busy)
+      || (!liveMode && !microphoneAvailable() && !microphoneHandoffAvailable());
     button.classList.toggle("is-live", Boolean(livePeer && remoteOwnsLive));
-    button.classList.toggle("is-listening", Boolean(speechRecognition));
+    button.classList.toggle("is-listening", Boolean(dictationArmed));
     button.title = liveMode
       ? remoteOwnsLive ? text("Liveを停止", "Stop Live") : pcOwnsLive ? text("PC側のLiveが使用中", "Live is active on the PC") : text("この端末でLiveを開始", "Start Live on this phone")
-      : microphoneAvailable()
-        ? text("音声で入力", "Dictate")
-        : microphoneHandoffAvailable()
-          ? text("HTTPSへ切り替えて音声入力", "Switch to HTTPS for voice input")
-          : text("音声入力にはHTTPS接続が必要", "Voice input requires HTTPS");
+      : dictationArmed
+        ? text("連続音声入力を停止", "Stop continuous dictation")
+        : microphoneAvailable()
+          ? text("連続音声入力を開始", "Start continuous dictation")
+          : microphoneHandoffAvailable()
+            ? text("HTTPSへ切り替えて音声入力", "Switch to HTTPS for voice input")
+            : text("音声入力にはHTTPS接続が必要", "Voice input requires HTTPS");
     button.setAttribute("aria-label", button.title);
   }
 
@@ -606,6 +887,10 @@
 
   async function startRemoteLive({ microphone = true } = {}) {
     if (livePeer || liveStarting) return true;
+    stopDictation();
+    stopMobileSpeech({ resumeDictation: false });
+    stopLiveBeatricePipeline();
+    liveBeatriceActive = appState?.voice?.realtimeConversion === "beatrice-v2";
     primeAudioOutput().catch(() => {});
     liveStarting = true;
     syncMicrophoneButton();
@@ -628,13 +913,13 @@
         audio.muted = true;
         followLiveAudio(stream).catch(() => setResponseText(text("音声を再生できませんでした。画面を一度タップして、もう一度Liveを開始してください。", "Audio could not start. Tap the screen and start Live again.")));
         event.track.addEventListener("ended", () => {
-          $("#avatarMotion").classList.remove("is-speaking");
-          currentMouth = "closed";
-          showFace(faceKey(true));
+          resetRemoteMouth();
         });
       });
       peer.addEventListener("connectionstatechange", () => {
         if (["failed", "disconnected", "closed"].includes(peer.connectionState) && livePeer === peer) {
+          const stoppedSessionId = liveSessionId;
+          if (stoppedSessionId) request("/api/live/stop", { method: "POST", body: JSON.stringify({ liveSessionId: stoppedSessionId }) }).catch(() => {});
           closeRemoteLivePeer();
           setConnection(false, text("Live再接続待ち", "Live disconnected"));
         }
@@ -643,7 +928,19 @@
       await peer.setLocalDescription(offer);
       await waitForIceGatheringComplete(peer);
       const localSdp = peer.localDescription?.sdp || offer.sdp;
-      await request("/api/live/start", { method: "POST", body: JSON.stringify({ sdp: localSdp, mode: currentMode }) });
+      const started = await request("/api/live/start", { method: "POST", body: JSON.stringify({ sdp: localSdp, mode: currentMode }) });
+      if (livePeer !== peer) {
+        if (started?.liveSessionId) request("/api/live/stop", { method: "POST", body: JSON.stringify({ liveSessionId: started.liveSessionId }) }).catch(() => {});
+        throw new Error(text("Live接続が中断されました。", "Live connection was interrupted."));
+      }
+      liveSessionId = String(started?.liveSessionId || "");
+      if (liveBeatriceActive && !started?.beatriceActive) {
+        failLiveBeatrice(started?.beatriceError || text("Beatrice 2を開始できないため元のLive音声を使います", "Beatrice 2 could not start; using the original Live voice"));
+      } else if (liveBeatriceActive) {
+        liveBeatriceSessionId = String(started?.beatriceSessionId || "");
+        if (!liveBeatriceSessionId) failLiveBeatrice(text("Beatrice 2の音声セッションを確認できないため元のLive音声を使います", "Beatrice 2 audio session is unavailable; using the original Live voice"));
+        else pumpLiveBeatriceUploads();
+      }
       return true;
     } catch (error) {
       if (livePeer === peer) closeRemoteLivePeer();
@@ -655,7 +952,10 @@
   }
 
   async function stopRemoteLive() {
-    try { await request("/api/live/stop", { method: "POST", body: "{}" }); }
+    const stoppedSessionId = liveSessionId;
+    try {
+      if (stoppedSessionId) await request("/api/live/stop", { method: "POST", body: JSON.stringify({ liveSessionId: stoppedSessionId }) });
+    }
     finally { closeRemoteLivePeer(); }
   }
 
@@ -805,7 +1105,7 @@
     $("#voiceRouteHint").textContent = responseMode === "live"
       ? voice.liveConnected
         ? voice.liveOwner === "remote"
-          ? text(`この端末でGPT-Liveへ接続中。音声と字幕をここで受け取ります。${voice.realtimeConversion === "beatrice-v2" ? "スマートフォン直結中はBeatrice 2を通さず、選択したGPT-Live音声を再生します。" : ""}`, `GPT-Live is connected on this phone, with audio and captions here.${voice.realtimeConversion === "beatrice-v2" ? " Direct phone sessions use the selected GPT-Live voice without Beatrice 2." : ""}`)
+          ? text(`この端末でGPT-Liveへ接続中。音声と字幕をここで受け取ります。${voice.realtimeConversion === "beatrice-v2" ? (voice.beatriceActive ? "回答音声はPCのBeatrice 2で変換して、この端末へ戻します。" : "Beatrice 2を利用できないため元のLive音声で再生します。") : ""}`, `GPT-Live is connected on this phone, with audio and captions here.${voice.realtimeConversion === "beatrice-v2" ? (voice.beatriceActive ? " Response audio is converted by Beatrice 2 on the PC and streamed back to this device." : " Beatrice 2 is unavailable, so the original Live voice is used.") : ""}`)
           : text("PC側のGPT-Liveが使用中です。スマートフォンへ切り替えるにはPCで一度停止してください。", "GPT-Live is active on the PC. Stop it there before switching to this phone.")
         : text("マイクボタンでこの端末からGPT-Liveを開始できます。未接続時のキャラタップは、設定済みの通常TTSで反応します。", "Use the microphone button to start GPT-Live on this phone. Character taps fall back to the configured standard TTS while disconnected.")
       : appState.mobileTtsAllowed
@@ -838,6 +1138,7 @@
 
   function applyState(nextState) {
     if (!nextState) return;
+    if (dictationArmed && nextState?.voice?.responseMode === "live") stopDictation();
     const changedCharacter = appState?.character?.id !== nextState.character?.id || appState?.character?.assetVersion !== nextState.character?.assetVersion;
     observeStateTransitions(nextState);
     appState = nextState;
@@ -886,6 +1187,11 @@
       setResponseText(error.message);
       closeRemoteLivePeer();
     }));
+    eventSource.addEventListener("beatrice-audio", (event) => queueLiveBeatricePlayback(JSON.parse(event.data)));
+    eventSource.addEventListener("beatrice-error", (event) => {
+      const payload = JSON.parse(event.data);
+      failLiveBeatrice(String(payload?.message || ""), String(payload?.sessionId || liveBeatriceSessionId));
+    });
     eventSource.onerror = () => {
       setConnection(false, text("再接続中", "Reconnecting"));
       refreshState().catch(() => showPairing(text("接続の有効期限が切れました。もう一度QRコードを読み取ってください。", "The connection expired. Scan the QR code again.")));
@@ -984,27 +1290,48 @@
     await sendRemoteText(message);
   }
 
-  function stopDictation() {
+  function stopDictation({ keepArmed = false } = {}) {
+    clearTimeout(dictationRestartTimer);
+    dictationRestartTimer = 0;
+    if (!keepArmed) dictationArmed = false;
     const recognition = speechRecognition;
     speechRecognition = null;
-    try { recognition?.stop(); } catch {}
+    if (recognition) cancelledRecognitions.add(recognition);
+    try { recognition?.abort(); } catch {}
     syncMicrophoneButton();
   }
 
-  function startDictation() {
+  function scheduleDictationResume(delay = 420) {
+    clearTimeout(dictationRestartTimer);
+    dictationRestartTimer = 0;
+    if (!dictationArmed || appState?.voice?.responseMode === "live" || document.visibilityState !== "visible") return;
+    dictationRestartTimer = setTimeout(() => {
+      dictationRestartTimer = 0;
+      if (!dictationArmed) return;
+      if (busy || mobileSpeechPending || activeAudioSource || speechRecognition) {
+        scheduleDictationResume(280);
+        return;
+      }
+      startDictation({ resumed: true });
+    }, Math.max(250, Number(delay) || 420));
+  }
+
+  function startDictation({ resumed = false } = {}) {
     if (!microphoneAvailable()) throw new Error(text("音声入力にはHTTPS接続が必要です。Tailscale Serveなどの安全なURLを利用してください。", "Voice input requires HTTPS. Use a secure URL such as Tailscale Serve."));
     const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!Recognition) throw new Error(text("このブラウザは音声文字起こしに対応していません。GPT-Liveを選ぶとマイク音声を直接送れます。", "This browser does not support speech dictation. Choose GPT-Live to send microphone audio directly."));
-    if (speechRecognition) {
-      stopDictation();
+    if (speechRecognition || busy || mobileSpeechPending || activeAudioSource) {
+      if (resumed) scheduleDictationResume();
       return;
     }
+    dictationArmed = true;
     const recognition = new Recognition();
     speechRecognition = recognition;
     recognition.lang = appState?.language === "en" ? "en-US" : "ja-JP";
     recognition.interimResults = true;
     recognition.continuous = false;
     let finalText = "";
+    let recognitionError = "";
     recognition.onresult = (event) => {
       let interim = "";
       for (let index = event.resultIndex; index < event.results.length; index += 1) {
@@ -1016,16 +1343,44 @@
       $("#composerHint").textContent = text("聞き取っています…", "Listening…");
     };
     recognition.onerror = (event) => {
-      if (event.error !== "no-speech") setResponseText(text(`音声入力を開始できませんでした: ${event.error}`, `Could not start dictation: ${event.error}`));
+      recognitionError = String(event.error || "");
+      if (["not-allowed", "service-not-allowed", "audio-capture"].includes(recognitionError)) {
+        dictationArmed = false;
+        setResponseText(text(`音声入力を継続できませんでした: ${recognitionError}`, `Continuous dictation could not continue: ${recognitionError}`));
+      } else if (!["no-speech", "aborted"].includes(recognitionError)) {
+        setResponseText(text(`音声入力を開始できませんでした: ${recognitionError}`, `Could not start dictation: ${recognitionError}`));
+      }
     };
     recognition.onend = () => {
       if (speechRecognition === recognition) speechRecognition = null;
       syncMicrophoneButton();
       setMode(currentMode);
+      if (cancelledRecognitions.has(recognition)) {
+        scheduleDictationResume();
+        return;
+      }
       if (finalText.trim() && !busy) $("#messageForm").requestSubmit();
+      else scheduleDictationResume(recognitionError === "no-speech" ? 650 : 420);
     };
-    recognition.start();
+    try {
+      recognition.start();
+    } catch (error) {
+      if (speechRecognition === recognition) speechRecognition = null;
+      if (resumed) {
+        if (/not.?allowed|permission|gesture|security/i.test(`${error?.name || ""} ${error?.message || ""}`)) {
+          dictationArmed = false;
+          setResponseText(text("ブラウザが音声入力の自動再開を許可しませんでした。もう一度マイクを押してください。", "The browser blocked automatic dictation restart. Tap the microphone again."));
+          syncMicrophoneButton();
+          return;
+        }
+        scheduleDictationResume(700);
+        return;
+      }
+      dictationArmed = false;
+      throw error;
+    }
     syncMicrophoneButton();
+    $("#composerHint").textContent = text("聞き取り中 · 回答後も自動で再開", "Listening · Restarts after each reply");
   }
 
   async function toggleMicrophone() {
@@ -1040,7 +1395,8 @@
         if (voice.liveConnected || livePeer) await stopRemoteLive();
         else await startRemoteLive({ microphone: true });
       } else {
-        startDictation();
+        if (dictationArmed) stopDictation();
+        else startDictation();
       }
     } catch (error) {
       setResponseText(error.message);
@@ -1057,6 +1413,10 @@
 
   function handleStream(payload) {
     if (!payload || typeof payload !== "object") return;
+    const audioRoute = payload.audioRoute === "live"
+      ? "live"
+      : payload.audioRoute === "mobile-tts" ? "mobile-tts" : "none";
+    if (audioRoute === "live") stopMobileSpeech();
     if (payload.phase === "start") {
       setBusy(true);
       setResponseText(text("考え中…", "Thinking…"));
@@ -1066,7 +1426,7 @@
     if (["activity", "announcement"].includes(payload.phase)) {
       const value = payload.displayText || payload.text;
       if (value) setResponseText(value);
-      if (payload.phase === "announcement") speak(value);
+      if (payload.phase === "announcement" && audioRoute === "mobile-tts") speak(value);
       return;
     }
     if (["delta", "realtime-caption"].includes(payload.phase)) {
@@ -1079,8 +1439,8 @@
       const value = payload.displayText || payload.text || text("完了したよ。", "Done.");
       setResponseText(value);
       renderArtifacts(payload.artifacts, payload.workRunId);
+      if (audioRoute === "mobile-tts") speak(value);
       setBusy(false);
-      if (!payload.realtimeOutput) speak(value);
       setTimeout(refreshState, 80);
       return;
     }
@@ -1103,7 +1463,10 @@
     localStorage.setItem("charadock.remote.audio", audioEnabled ? "1" : "0");
     if (!audioEnabled) stopMobileSpeech();
     if (liveAudioGain && liveAudioContext) {
-      liveAudioGain.gain.setValueAtTime(audioEnabled ? 1 : 0, liveAudioContext.currentTime);
+      liveAudioGain.gain.setValueAtTime(audioEnabled && !liveBeatriceActive ? 1 : 0, liveAudioContext.currentTime);
+    }
+    if (liveBeatricePlaybackGain && liveAudioContext) {
+      liveBeatricePlaybackGain.gain.setValueAtTime(audioEnabled ? 1 : 0, liveAudioContext.currentTime);
     }
     syncAudioButton();
     syncRemoteSettings();
@@ -1132,35 +1495,31 @@
     return new Promise((resolve) => {
       const source = audioContext.createBufferSource();
       const analyser = audioContext.createAnalyser();
-      analyser.fftSize = 256;
+      analyser.fftSize = 1024;
+      analyser.smoothingTimeConstant = .1;
       source.buffer = buffer;
       source.playbackRate.value = Number(playbackRate) || 1;
       source.connect(analyser);
       analyser.connect(audioContext.destination);
       activeAudioSource = source;
-      $("#avatarMotion").classList.add("is-speaking");
-      const samples = new Uint8Array(analyser.frequencyBinCount);
-      const animate = () => {
-        analyser.getByteFrequencyData(samples);
-        const level = samples.reduce((sum, value) => sum + value, 0) / Math.max(1, samples.length) / 255;
-        currentMouth = level > .18 ? "open" : level > .07 ? "half" : "closed";
-        showFace(faceKey(true));
+      setAvatarSpeaking(true);
+      const samples = new Float32Array(analyser.fftSize);
+      const animate = (now) => {
+        updateRemoteMouth(analyserRms(analyser, samples), now);
         mouthTimer = requestAnimationFrame(animate);
       };
-      animate();
+      mouthTimer = requestAnimationFrame(animate);
       source.onended = () => {
         cancelAnimationFrame(mouthTimer);
-        currentMouth = "closed";
-        showFace(faceKey(true));
+        resetRemoteMouth({ keepSpeaking: mobileSpeechPending });
         if (activeAudioSource === source) activeAudioSource = null;
-        $("#avatarMotion").classList.remove("is-speaking");
         resolve();
       };
       source.start();
     });
   }
 
-  function stopMobileSpeech() {
+  function stopMobileSpeech({ resumeDictation = true } = {}) {
     mobileSpeechToken += 1;
     mobileSpeechPending = false;
     if (activeMobileTtsStreamId) {
@@ -1170,13 +1529,14 @@
     try { activeAudioSource?.stop(); } catch {}
     activeAudioSource = null;
     cancelAnimationFrame(mouthTimer);
-    currentMouth = "closed";
-    showFace(faceKey(true));
-    $("#avatarMotion").classList.remove("is-speaking");
+    resetRemoteMouth();
+    if (resumeDictation) scheduleDictationResume();
   }
 
   async function speak(value) {
     if (!audioEnabled || !appState?.mobileTtsAllowed || !String(value || "").trim()) return;
+    if (speechRecognition) stopDictation({ keepArmed: true });
+    stopMobileSpeech({ resumeDictation: false });
     const token = ++mobileSpeechToken;
     mobileSpeechPending = true;
     try {
@@ -1201,13 +1561,13 @@
         activeMobileTtsStreamId = streamId;
       }
     } catch {
-      currentMouth = "closed";
-      showFace(faceKey(true));
-      $("#avatarMotion").classList.remove("is-speaking");
+      resetRemoteMouth();
     } finally {
       if (token === mobileSpeechToken) {
         mobileSpeechPending = false;
         activeMobileTtsStreamId = "";
+        resetRemoteMouth();
+        scheduleDictationResume();
       }
     }
   }
@@ -1353,7 +1713,10 @@
     event.target.style.height = `${Math.min(112, event.target.scrollHeight)}px`;
   });
   $("#characterSelect").addEventListener("change", (event) => saveRemoteClientSettings({ characterId: event.target.value }));
-  $("#responseModeSelect").addEventListener("change", (event) => saveRemoteClientSettings({ responseMode: event.target.value }));
+  $("#responseModeSelect").addEventListener("change", (event) => {
+    if (event.target.value === "live") stopDictation();
+    saveRemoteClientSettings({ responseMode: event.target.value });
+  });
   $("#ttsProviderSelect").addEventListener("change", (event) => saveRemoteClientSettings({ ttsProvider: event.target.value }));
   $("#realtimeVoiceSelect").addEventListener("change", (event) => saveRemoteClientSettings({ realtimeVoice: event.target.value }));
   $("#pcAudioToggle").addEventListener("change", (event) => saveRemoteClientSettings({ pcAudioEnabled: event.target.checked }));
@@ -1368,7 +1731,10 @@
     syncPwaSettings();
     setSettingsStatus(text("ホーム画面へ追加しました", "Installed on the Home Screen"), "success");
   });
-  document.addEventListener("visibilitychange", () => syncWakeLock());
+  document.addEventListener("visibilitychange", () => {
+    syncWakeLock();
+    if (document.visibilityState !== "visible") stopDictation();
+  });
   navigator.serviceWorker?.addEventListener("message", (event) => {
     if (event.data?.type !== "notification-open") return;
     if (String(event.data.tag || "").startsWith("work-")) {

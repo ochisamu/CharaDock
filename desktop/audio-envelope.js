@@ -49,5 +49,41 @@
     };
   }
 
-  return { createAdaptiveSpeechEnvelope };
+  function createThreeStageMouthTracker({ minimumHoldMs = 64 } = {}) {
+    const speechEnvelope = createAdaptiveSpeechEnvelope();
+    const holdMs = clamp(Number(minimumHoldMs) || 64, 24, 180);
+    let mouth = "closed";
+    let lastChangeAt = Number.NEGATIVE_INFINITY;
+
+    return {
+      sample(rawRms, now = 0) {
+        const level = speechEnvelope.sample(rawRms, now);
+        const visualLevel = clamp(level / 0.5, 0, 1);
+        let nextMouth = mouth;
+        // Separate opening and closing thresholds prevent rapid mouth chatter
+        // around a boundary while retaining a quick consonant attack.
+        if (mouth === "closed" && visualLevel >= 0.25) nextMouth = "half";
+        else if (mouth === "half" && visualLevel >= 0.74) nextMouth = "open";
+        else if (mouth === "half" && visualLevel <= 0.14) nextMouth = "closed";
+        else if (mouth === "open" && visualLevel <= 0.62) nextMouth = "half";
+        const timestamp = Number(now) || 0;
+        const changed = nextMouth !== mouth && timestamp - lastChangeAt >= holdMs;
+        if (changed) {
+          mouth = nextMouth;
+          lastChangeAt = timestamp;
+        }
+        return { level, mouth, changed, speaking: mouth !== "closed" || visualLevel > 0.08 };
+      },
+      reset() {
+        speechEnvelope.reset();
+        mouth = "closed";
+        lastChangeAt = Number.NEGATIVE_INFINITY;
+      },
+      state() {
+        return { ...speechEnvelope.state(), mouth, lastChangeAt };
+      },
+    };
+  }
+
+  return { createAdaptiveSpeechEnvelope, createThreeStageMouthTracker };
 });

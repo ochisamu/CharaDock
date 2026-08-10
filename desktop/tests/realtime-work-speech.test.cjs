@@ -64,7 +64,7 @@ test("a spoken follow-up cancels active progress before waiting for its new ackn
   assert.deepEqual(appended, ["古い作業の進捗だよ"]);
 
   assert.equal(coordinator.beginAcknowledgement(), true);
-  assert.equal(await oldProgress, false);
+  assert.equal(await oldProgress, true, "an already accepted Live route remains delivered even when interrupted");
   const newProgress = coordinator.enqueue("新しい依頼を確認しているよ", "progress");
   assert.deepEqual(coordinator.assistantTranscriptDone("新しい依頼を始めるね"), {
     kind: "ack", text: "新しい依頼を始めるね", injected: false,
@@ -73,4 +73,19 @@ test("a spoken follow-up cancels active progress before waiting for its new ackn
   assert.deepEqual(appended, ["古い作業の進捗だよ", "新しい依頼を確認しているよ"]);
   coordinator.assistantTranscriptDone("新しい依頼を確認しているよ");
   assert.equal(await newProgress, true);
+});
+
+test("accepted Live speech never falls back to TTS when its transcript is delayed", async () => {
+  const clock = [];
+  const coordinator = new RealtimeWorkSpeechCoordinator({
+    appendSpeech: async () => true,
+    transcriptTimeoutMs: 5000,
+    schedule: (callback) => { clock.push(callback); return callback; },
+    cancel: () => {},
+  });
+  const delivered = coordinator.enqueue("完了したよ", "completion");
+  await tick();
+  assert.equal(await delivered, true, "acceptance fixes the route to Live immediately");
+  clock.shift()?.();
+  coordinator.stop();
 });

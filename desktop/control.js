@@ -22,8 +22,16 @@
   let realtimeDataChannel = null;
   let realtimeRemoteAudio = null;
   let realtimeBeatriceConverter = null;
-  let remotePcAudioEnabled = false;
+  let realtimeMeterContext = null;
+  let realtimeMeterSource = null;
+  let realtimeMeterAnalyser = null;
+  let realtimeMeterSilence = null;
+  let realtimeMeterFrame = 0;
+  let realtimeMeterSamples = null;
+  let realtimeMeterLastSentAt = 0;
+  const realtimeSpeechEnvelope = window.CharaDockAudioEnvelope.createAdaptiveSpeechEnvelope();
   let realtimeStarting = false;
+  let realtimeStartGeneration = 0;
   let realtimeUserTranscript = "";
   let realtimeAssistantMessage = null;
   let realtimeAssistantText = "";
@@ -2412,6 +2420,7 @@
   }
 
   function closeRealtimeAudio() {
+    realtimeStartGeneration += 1;
     try { realtimeDataChannel?.close(); } catch {}
     try { realtimePeerConnection?.close(); } catch {}
     realtimeRemoteAudio?.pause();
@@ -2419,6 +2428,7 @@
     realtimeDataChannel = null;
     realtimePeerConnection = null;
     realtimeRemoteAudio = null;
+    stopRealtimeOutputMeter();
     realtimeBeatriceConverter?.stop().catch(() => {});
     realtimeBeatriceConverter = null;
     realtimeStarting = false;
@@ -2426,6 +2436,64 @@
     realtimeAssistantText = "";
     realtimeAssistantActive = false;
     $("#speechInputButton")?.setAttribute("aria-pressed", "false");
+  }
+
+  function reportRealtimeOutputRms(rawRms, now = performance.now()) {
+    if (!(Number(rawRms) > 0)) {
+      realtimeSpeechEnvelope.reset();
+      api.sendVoiceLevel(0).catch(() => {});
+      return;
+    }
+    const level = realtimeSpeechEnvelope.sample(rawRms, now);
+    if (now - realtimeMeterLastSentAt < 32) return;
+    realtimeMeterLastSentAt = now;
+    api.sendVoiceLevel(level).catch(() => {});
+  }
+
+  function stopRealtimeOutputMeter() {
+    cancelAnimationFrame(realtimeMeterFrame);
+    realtimeMeterFrame = 0;
+    try { realtimeMeterSource?.disconnect(); } catch {}
+    try { realtimeMeterAnalyser?.disconnect(); } catch {}
+    try { realtimeMeterSilence?.disconnect(); } catch {}
+    realtimeMeterSource = null;
+    realtimeMeterAnalyser = null;
+    realtimeMeterSilence = null;
+    realtimeMeterSamples = null;
+    realtimeMeterLastSentAt = 0;
+    const context = realtimeMeterContext;
+    realtimeMeterContext = null;
+    context?.close().catch(() => {});
+    reportRealtimeOutputRms(0);
+  }
+
+  async function startRealtimeOutputMeter(stream) {
+    stopRealtimeOutputMeter();
+    const context = new AudioContext({ latencyHint: "interactive" });
+    const source = context.createMediaStreamSource(stream);
+    const analyserNode = context.createAnalyser();
+    const silence = context.createGain();
+    analyserNode.fftSize = 1024;
+    analyserNode.smoothingTimeConstant = .1;
+    silence.gain.value = 0;
+    source.connect(analyserNode);
+    analyserNode.connect(silence);
+    silence.connect(context.destination);
+    realtimeMeterContext = context;
+    realtimeMeterSource = source;
+    realtimeMeterAnalyser = analyserNode;
+    realtimeMeterSilence = silence;
+    realtimeMeterSamples = new Float32Array(analyserNode.fftSize);
+    await context.resume();
+    const update = (now) => {
+      if (realtimeMeterContext !== context) return;
+      analyserNode.getFloatTimeDomainData(realtimeMeterSamples);
+      let sum = 0;
+      for (const sample of realtimeMeterSamples) sum += sample * sample;
+      reportRealtimeOutputRms(Math.sqrt(sum / realtimeMeterSamples.length), now);
+      realtimeMeterFrame = requestAnimationFrame(update);
+    };
+    realtimeMeterFrame = requestAnimationFrame(update);
   }
 
   async function stopCodexRealtimeVoice({ quiet = false } = {}) {
@@ -2445,58 +2513,72 @@
     realtimeRemoteAudio?.pause();
     realtimeRemoteAudio = new Audio();
     realtimeRemoteAudio.autoplay = true;
-    realtimeRemoteAudio.muted = !remotePcAudioEnabled;
+    realtimeRemoteAudio.muted = false;
     realtimeRemoteAudio.srcObject = stream;
     realtimeRemoteAudio.play().catch(() => {});
+    startRealtimeOutputMeter(stream).catch(() => reportRealtimeOutputRms(0));
   }
 
   async function startCodexRealtimeVoice() {
-    stopSpeechPlayback();
-    const stream = await ensureAudioStream();
-    const peer = new RTCPeerConnection();
-    realtimePeerConnection = peer;
+    const startGeneration = ++realtimeStartGeneration;
     realtimeStarting = true;
-    realtimeUserTranscript = "";
-    realtimeAssistantMessage = null;
-    realtimeAssistantText = "";
-    realtimeAssistantActive = false;
-    for (const track of stream.getAudioTracks()) peer.addTrack(track, stream);
-    peer.addEventListener("track", async (event) => {
-      const remoteStream = event.streams[0] || new MediaStream([event.track]);
-      if (state.realtimeVoiceConversion === "beatrice-v2") {
-        try {
-          const converter = new window.RealtimeBeatriceConverter(api, (error) => {
-            if (realtimeBeatriceConverter !== converter || !realtimePeerConnection) return;
-            setStatus($("#chatStatus"), `Beatrice 2の変換を継続できないため元の声へ戻しました: ${error.message}`, true);
+    stopSpeechPlayback();
+    try {
+      const stream = await ensureAudioStream();
+      if (startGeneration !== realtimeStartGeneration) throw new Error("Live connection was cancelled.");
+      const peer = new RTCPeerConnection();
+      realtimePeerConnection = peer;
+      realtimeUserTranscript = "";
+      realtimeAssistantMessage = null;
+      realtimeAssistantText = "";
+      realtimeAssistantActive = false;
+      for (const track of stream.getAudioTracks()) peer.addTrack(track, stream);
+      peer.addEventListener("track", async (event) => {
+        const remoteStream = event.streams[0] || new MediaStream([event.track]);
+        if (state.realtimeVoiceConversion === "beatrice-v2") {
+          try {
+            const converter = new window.RealtimeBeatriceConverter(api, (error) => {
+              if (realtimeBeatriceConverter !== converter || !realtimePeerConnection) return;
+              setStatus($("#chatStatus"), `Beatrice 2の変換を継続できないため元の声へ戻しました: ${error.message}`, true);
+              realtimeBeatriceConverter = null;
+              converter.stop().finally(() => { if (realtimePeerConnection) playRealtimeRemoteStream(remoteStream); });
+            }, reportRealtimeOutputRms);
+            realtimeBeatriceConverter = converter;
+            converter.setMuted(false);
+            await converter.start(remoteStream);
+            setStatus($("#chatStatus"), "Beatrice 2でRealtime音声を変換中です。");
+            return;
+          } catch (error) {
+            realtimeBeatriceConverter?.stop().catch(() => {});
             realtimeBeatriceConverter = null;
-            converter.stop().finally(() => { if (realtimePeerConnection) playRealtimeRemoteStream(remoteStream); });
-          });
-          realtimeBeatriceConverter = converter;
-          converter.setMuted(!remotePcAudioEnabled);
-          await converter.start(remoteStream);
-          setStatus($("#chatStatus"), "Beatrice 2でRealtime音声を変換中です。");
-          return;
-        } catch (error) {
-          realtimeBeatriceConverter?.stop().catch(() => {});
-          realtimeBeatriceConverter = null;
-          setStatus($("#chatStatus"), `Beatrice 2を開始できないため元の声で再生します: ${error.message}`, true);
+            setStatus($("#chatStatus"), `Beatrice 2を開始できないため元の声で再生します: ${error.message}`, true);
+          }
         }
+        playRealtimeRemoteStream(remoteStream);
+      });
+      realtimeDataChannel = peer.createDataChannel("oai-events");
+      peer.addEventListener("connectionstatechange", () => {
+        if (["failed", "disconnected"].includes(peer.connectionState)) {
+          setStatus($("#chatStatus"), "Codex Realtime音声接続が切れました。", true);
+          api.stopCodexRealtime().catch(() => {});
+          closeRealtimeAudio();
+        }
+      });
+      const offer = await peer.createOffer();
+      await peer.setLocalDescription(offer);
+      if (startGeneration !== realtimeStartGeneration) throw new Error("Live connection was cancelled.");
+      await api.startCodexRealtime({ sdp: peer.localDescription?.sdp || offer.sdp });
+      if (startGeneration !== realtimeStartGeneration) {
+        await api.stopCodexRealtime().catch(() => {});
+        throw new Error("Live connection was cancelled.");
       }
-      playRealtimeRemoteStream(remoteStream);
-    });
-    realtimeDataChannel = peer.createDataChannel("oai-events");
-    peer.addEventListener("connectionstatechange", () => {
-      if (["failed", "disconnected"].includes(peer.connectionState)) {
-        setStatus($("#chatStatus"), "Codex Realtime音声接続が切れました。", true);
-        closeRealtimeAudio();
-      }
-    });
-    const offer = await peer.createOffer();
-    await peer.setLocalDescription(offer);
-    await api.startCodexRealtime({ sdp: peer.localDescription?.sdp || offer.sdp });
-    realtimeStarting = false;
-    $("#speechInputButton")?.setAttribute("aria-pressed", "true");
-    setStatus($("#chatStatus"), "Codex Realtimeへ接続中…そのまま話してください。");
+      realtimeStarting = false;
+      $("#speechInputButton")?.setAttribute("aria-pressed", "true");
+      setStatus($("#chatStatus"), "Codex Realtimeへ接続中…そのまま話してください。");
+    } catch (error) {
+      if (startGeneration === realtimeStartGeneration) realtimeStarting = false;
+      throw error;
+    }
   }
 
   async function handleCodexRealtimeEvent(message = {}) {
@@ -2815,7 +2897,11 @@
     const attachments = chatAttachments.map((item) => ({ ...item }));
     const message = input.value.trim() || (attachments.length ? localized("添付したファイルを確認してください。", "Please review the attached files.") : "");
     if (!message) return;
-    if (attachments.length && realtimePeerConnection && !realtimeStarting) {
+    if (realtimeStarting) {
+      setStatus($("#chatStatus"), localized("Liveへの接続が完了してから送信してください。", "Wait for Live to finish connecting before sending."), true);
+      return;
+    }
+    if (attachments.length && realtimePeerConnection) {
       setStatus($("#chatStatus"), localized("Live音声を停止してからファイルを送信してください。", "Stop Live voice before sending files."), true);
       return;
     }
@@ -2830,7 +2916,7 @@
       return;
     }
     setChatHistoryView("conversation");
-    if (realtimePeerConnection && !realtimeStarting) {
+    if (realtimePeerConnection) {
       appendMessage("user", message);
       const liveWork = state?.interactionMode === "work";
       if (liveWork) {
@@ -2984,10 +3070,11 @@
       });
     });
     api.onRemotePcAudio?.((payload) => {
-      remotePcAudioEnabled = payload?.enabled !== false;
-      if (realtimeRemoteAudio) realtimeRemoteAudio.muted = !remotePcAudioEnabled;
-      realtimeBeatriceConverter?.setMuted(!remotePcAudioEnabled);
+      // This preference applies to phone-originated responses. A Live session
+      // created in this renderer is PC-owned and must remain audible here.
+      void payload;
     });
+    api.onStopNormalSpeech?.(() => stopSpeechPlayback());
     api.onCharacterGeneration?.((payload) => updateGeneratorProgress(payload));
     $("#remoteAccessToggle").addEventListener("change", saveRemoteSettings);
     ["#remoteAddressSelect", "#remotePortInput", "#remoteSessionSelect", "#remoteResponseModeSelect", "#remoteWorkToggle", "#remoteTtsToggle", "#remotePcAudioToggle", "#remoteTailscaleHttpsPortInput"].forEach((selector) => {

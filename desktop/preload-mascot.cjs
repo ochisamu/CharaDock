@@ -119,6 +119,13 @@ window.addEventListener("DOMContentLoaded", () => {
   let realtimeDataChannel = null;
   let realtimeSessionState = "idle";
   let realtimeRemoteAudio = null;
+  let realtimeMeterContext = null;
+  let realtimeMeterSource = null;
+  let realtimeMeterAnalyser = null;
+  let realtimeMeterSilence = null;
+  let realtimeMeterFrame = 0;
+  let realtimeMeterSamples = null;
+  let realtimeMeterLastSentAt = 0;
   let realtimeBeatriceContext = null;
   let realtimeBeatriceOutput = null;
   let realtimeBeatriceDecodeAudio = null;
@@ -133,6 +140,8 @@ window.addEventListener("DOMContentLoaded", () => {
   let realtimeBeatricePlaybackSamples = 0;
   let realtimeBeatriceNextPlaybackTime = 0;
   const realtimeBeatricePlaybackSources = new Set();
+  const realtimeBeatriceLevelTimers = new Set();
+  let realtimeBeatricePlaybackFlushTimer = 0;
   let realtimeStream;
   let recordedSpeechStream;
   let recordedSpeechRecorder;
@@ -1145,6 +1154,10 @@ window.addEventListener("DOMContentLoaded", () => {
     event.preventDefault();
     const message = input.value.trim();
     if (!message) return;
+    if (realtimeSessionState === "connecting") {
+      setStatus("Liveへの接続が完了してから送信してください", 5000);
+      return;
+    }
     clearAutoSendCountdown();
     input.value = "";
     resizeInput();
@@ -1621,6 +1634,10 @@ window.addEventListener("DOMContentLoaded", () => {
       try { playback.disconnect(); } catch {}
     }
     realtimeBeatricePlaybackSources.clear();
+    for (const timer of realtimeBeatriceLevelTimers) clearTimeout(timer);
+    realtimeBeatriceLevelTimers.clear();
+    clearTimeout(realtimeBeatricePlaybackFlushTimer);
+    realtimeBeatricePlaybackFlushTimer = 0;
     realtimeBeatricePlaybackFrames = [];
     realtimeBeatricePlaybackSamples = 0;
     realtimeBeatriceNextPlaybackTime = 0;
@@ -1628,7 +1645,68 @@ window.addEventListener("DOMContentLoaded", () => {
     realtimeBeatriceContext = null;
     realtimeBeatriceOutput = null;
     realtimeBeatriceDecodeAudio = null;
+    ipcRenderer.invoke("mascotInline:voice", 0).catch(() => {});
     await ipcRenderer.invoke("beatrice:stop").catch(() => {});
+  };
+
+  const reportRealtimeRms = (rawRms, now = performance.now()) => {
+    if (!(Number(rawRms) > 0)) {
+      ttsEnvelope = 0;
+      ttsDynamicPeak = .022;
+      ttsNoiseFloor = .0015;
+      ttsEnvelopeSampleAt = 0;
+      ipcRenderer.invoke("mascotInline:voice", 0).catch(() => {});
+      return;
+    }
+    if (now - realtimeMeterLastSentAt < 32) return;
+    realtimeMeterLastSentAt = now;
+    ipcRenderer.invoke("mascotInline:voice", adaptiveTtsLevel(rawRms, now)).catch(() => {});
+  };
+
+  const stopRealtimeOutputMeter = () => {
+    cancelAnimationFrame(realtimeMeterFrame);
+    realtimeMeterFrame = 0;
+    try { realtimeMeterSource?.disconnect(); } catch {}
+    try { realtimeMeterAnalyser?.disconnect(); } catch {}
+    try { realtimeMeterSilence?.disconnect(); } catch {}
+    realtimeMeterSource = null;
+    realtimeMeterAnalyser = null;
+    realtimeMeterSilence = null;
+    realtimeMeterSamples = null;
+    realtimeMeterLastSentAt = 0;
+    const context = realtimeMeterContext;
+    realtimeMeterContext = null;
+    context?.close().catch(() => {});
+    reportRealtimeRms(0);
+  };
+
+  const startRealtimeOutputMeter = async (stream) => {
+    stopRealtimeOutputMeter();
+    const context = new AudioContext({ latencyHint: "interactive" });
+    const source = context.createMediaStreamSource(stream);
+    const analyserNode = context.createAnalyser();
+    const silence = context.createGain();
+    analyserNode.fftSize = 1024;
+    analyserNode.smoothingTimeConstant = .1;
+    silence.gain.value = 0;
+    source.connect(analyserNode);
+    analyserNode.connect(silence);
+    silence.connect(context.destination);
+    realtimeMeterContext = context;
+    realtimeMeterSource = source;
+    realtimeMeterAnalyser = analyserNode;
+    realtimeMeterSilence = silence;
+    realtimeMeterSamples = new Float32Array(analyserNode.fftSize);
+    await context.resume();
+    const update = (now) => {
+      if (realtimeMeterContext !== context) return;
+      analyserNode.getFloatTimeDomainData(realtimeMeterSamples);
+      let sum = 0;
+      for (const sample of realtimeMeterSamples) sum += sample * sample;
+      reportRealtimeRms(Math.sqrt(sum / realtimeMeterSamples.length), now);
+      realtimeMeterFrame = requestAnimationFrame(update);
+    };
+    realtimeMeterFrame = requestAnimationFrame(update);
   };
 
   const playRealtimeRemoteStream = (stream) => {
@@ -1637,6 +1715,7 @@ window.addEventListener("DOMContentLoaded", () => {
     realtimeRemoteAudio.autoplay = true;
     realtimeRemoteAudio.srcObject = stream;
     realtimeRemoteAudio.play().catch(() => {});
+    startRealtimeOutputMeter(stream).catch(() => reportRealtimeRms(0));
   };
 
   const exactArrayBuffer = (value) => {
@@ -1647,17 +1726,10 @@ window.addEventListener("DOMContentLoaded", () => {
     return null;
   };
 
-  const queueRealtimeBeatricePlayback = (context, value) => {
-    const buffer = exactArrayBuffer(value);
-    if (!buffer || buffer.byteLength % Float32Array.BYTES_PER_ELEMENT) {
-      realtimeBeatriceErrorListener?.(null, "変換後の音声データ形式を処理できません。");
-      return;
-    }
-    const samples = new Float32Array(buffer);
-    if (!samples.length) return;
-    realtimeBeatricePlaybackFrames.push(samples);
-    realtimeBeatricePlaybackSamples += samples.length;
-    if (realtimeBeatricePlaybackSamples < 1920 || context.state === "closed") return;
+  const flushRealtimeBeatricePlayback = (context) => {
+    clearTimeout(realtimeBeatricePlaybackFlushTimer);
+    realtimeBeatricePlaybackFlushTimer = 0;
+    if (!realtimeBeatricePlaybackSamples || context.state === "closed") return;
     const combined = new Float32Array(realtimeBeatricePlaybackSamples);
     let offset = 0;
     for (const frame of realtimeBeatricePlaybackFrames) {
@@ -1674,10 +1746,37 @@ window.addEventListener("DOMContentLoaded", () => {
     if (!realtimeBeatriceNextPlaybackTime || realtimeBeatriceNextPlaybackTime < context.currentTime + .02) {
       realtimeBeatriceNextPlaybackTime = context.currentTime + .08;
     }
-    playback.start(realtimeBeatriceNextPlaybackTime);
+    const playbackTime = realtimeBeatriceNextPlaybackTime;
+    playback.start(playbackTime);
     realtimeBeatriceNextPlaybackTime += combined.length / 48000;
+    let sum = 0;
+    for (const sample of combined) sum += sample * sample;
+    const rms = Math.sqrt(sum / combined.length);
+    const levelTimer = setTimeout(() => {
+      realtimeBeatriceLevelTimers.delete(levelTimer);
+      reportRealtimeRms(rms, performance.now());
+    }, Math.max(0, (playbackTime - context.currentTime) * 1000));
+    realtimeBeatriceLevelTimers.add(levelTimer);
     realtimeBeatricePlaybackSources.add(playback);
-    playback.onended = () => realtimeBeatricePlaybackSources.delete(playback);
+    playback.onended = () => {
+      realtimeBeatricePlaybackSources.delete(playback);
+      if (!realtimeBeatricePlaybackSources.size && !realtimeBeatricePlaybackSamples) reportRealtimeRms(0);
+    };
+  };
+
+  const queueRealtimeBeatricePlayback = (context, value) => {
+    const buffer = exactArrayBuffer(value);
+    if (!buffer || buffer.byteLength % Float32Array.BYTES_PER_ELEMENT) {
+      realtimeBeatriceErrorListener?.(null, "変換後の音声データ形式を処理できません。");
+      return;
+    }
+    const samples = new Float32Array(buffer);
+    if (!samples.length) return;
+    realtimeBeatricePlaybackFrames.push(samples);
+    realtimeBeatricePlaybackSamples += samples.length;
+    clearTimeout(realtimeBeatricePlaybackFlushTimer);
+    if (realtimeBeatricePlaybackSamples >= 1920) flushRealtimeBeatricePlayback(context);
+    else realtimeBeatricePlaybackFlushTimer = setTimeout(() => flushRealtimeBeatricePlayback(context), 26);
   };
 
   const pushRealtimeBeatriceCapture = (samples) => {
@@ -1787,6 +1886,7 @@ window.addEventListener("DOMContentLoaded", () => {
     realtimePeer = null;
     realtimeDataChannel = null;
     realtimeRemoteAudio = null;
+    stopRealtimeOutputMeter();
     stopRealtimeBeatrice().catch(() => {});
     realtimeStream = null;
     realtimeSessionState = "idle";
@@ -1818,6 +1918,7 @@ window.addEventListener("DOMContentLoaded", () => {
     realtimePeer.addEventListener("connectionstatechange", () => {
       if (["failed", "disconnected"].includes(realtimePeer?.connectionState)) {
         setStatus("Codex Realtime音声接続が切れました", 5000);
+        ipcRenderer.invoke("mascotInline:realtimeStop").catch(() => {});
         closeRealtime();
       }
     });
@@ -1907,6 +2008,7 @@ window.addEventListener("DOMContentLoaded", () => {
   ipcRenderer.on("mascot:speech", (_event, payload) => {
     showSpeech(payload);
   });
+  ipcRenderer.on("audio:stopNormalSpeech", () => stopTtsPlayback());
   ipcRenderer.on("mascot:workHistory", (_event, payload) => {
     workHistoryState = payload && Array.isArray(payload.runs) ? payload : { activeWorkRunId: null, runs: [] };
     if (appState?.interactionMode === "work") renderWorkHistory(workHistoryState);

@@ -131,6 +131,11 @@ contextBridge.exposeInMainWorld("mascotDesktop", {
     ipcRenderer.on("remote:pcAudio", listener);
     return () => ipcRenderer.removeListener("remote:pcAudio", listener);
   },
+  onStopNormalSpeech: (callback) => {
+    const listener = () => callback();
+    ipcRenderer.on("audio:stopNormalSpeech", listener);
+    return () => ipcRenderer.removeListener("audio:stopNormalSpeech", listener);
+  },
   onBeatriceAudio: (callback) => {
     const listener = (_event, audio) => callback(audio);
     ipcRenderer.on("beatrice:audioOut", listener);

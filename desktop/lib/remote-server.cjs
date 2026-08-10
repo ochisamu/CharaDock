@@ -299,10 +299,66 @@ class RemoteCompanionServer {
   publish(type, payload) {
     const data = JSON.stringify(payload ?? null).replace(/[\u2028\u2029]/g, "");
     for (const client of this.eventClients) {
-      if (client.response.write(`event: ${String(type || "message").replace(/[^a-z0-9:_-]/gi, "")}\ndata: ${data}\n\n`)) continue;
+      this.writeEvent(client, `event: ${String(type || "message").replace(/[^a-z0-9:_-]/gi, "")}\ndata: ${data}\n\n`);
+    }
+  }
+
+  publishTo(tokenHash, type, payload) {
+    const target = String(tokenHash || "");
+    if (!target) return false;
+    const data = JSON.stringify(payload ?? null).replace(/[\u2028\u2029]/g, "");
+    let delivered = false;
+    for (const client of this.eventClients) {
+      if (client.tokenHash !== target) continue;
+      delivered = this.writeEvent(client, `event: ${String(type || "message").replace(/[^a-z0-9:_-]/gi, "")}\ndata: ${data}\n\n`) || delivered;
+    }
+    return delivered;
+  }
+
+  writeEvent(client, frame) {
+    if (!client || !this.eventClients.has(client)) return false;
+    const bytes = Buffer.byteLength(frame);
+    if (client.waitingForDrain) {
+      client.pendingFrames ||= [];
+      client.pendingBytes ||= 0;
+      // A stalled phone must not grow the desktop process without bound.
+      // Two MiB is several seconds of converted Live audio and leaves ample
+      // room for a short network hiccup.
+      if (client.pendingBytes + bytes > 2 * 1024 * 1024) {
+        client.response.end();
+        this.eventClients.delete(client);
+        return false;
+      }
+      client.pendingFrames.push(frame);
+      client.pendingBytes += bytes;
+      return true;
+    }
+    try {
+      if (client.response.write(frame)) return true;
+      // response.write(false) means the frame was accepted but Node's output
+      // buffer is full. Wait for drain instead of treating it as disconnect.
+      client.waitingForDrain = true;
+      this.armEventDrain(client);
+      return true;
+    } catch {
       client.response.end();
       this.eventClients.delete(client);
+      return false;
     }
+  }
+
+  armEventDrain(client) {
+    if (client.drainArmed || !client.response?.once) return;
+    client.drainArmed = true;
+    client.response.once("drain", () => {
+      client.drainArmed = false;
+      client.waitingForDrain = false;
+      while (this.eventClients.has(client) && client.pendingFrames?.length && !client.waitingForDrain) {
+        const frame = client.pendingFrames.shift();
+        client.pendingBytes = Math.max(0, (client.pendingBytes || 0) - Buffer.byteLength(frame));
+        this.writeEvent(client, frame);
+      }
+    });
   }
 
   clientAddress(request) {
@@ -438,12 +494,22 @@ class RemoteCompanionServer {
   }
 
   async handleRequest(request, response) {
-    this.enforceRateLimit(request, "all", 180);
     this.validateHost(request);
     const url = new URL(request.url, this.origin());
+    const liveAudioRequest = request.method === "POST" && url.pathname === "/api/live/beatrice/audio";
+    this.enforceRateLimit(request, liveAudioRequest ? "live-audio" : "all", liveAudioRequest ? 1200 : 180);
     if (request.method === "GET" && url.pathname === "/") return this.sendStatic(response, "index.html", "text/html; charset=utf-8");
     if (request.method === "GET" && url.pathname === "/remote.css") return this.sendStatic(response, "remote.css", "text/css; charset=utf-8");
     if (request.method === "GET" && url.pathname === "/remote.js") return this.sendStatic(response, "remote.js", "text/javascript; charset=utf-8");
+    if (request.method === "GET" && url.pathname === "/audio-envelope.js") {
+      const body = fs.readFileSync(path.resolve(this.rootDir, "..", "audio-envelope.js"));
+      response.writeHead(200, {
+        ...securityHeaders("text/javascript; charset=utf-8"),
+        "Content-Security-Policy": "default-src 'none'",
+      });
+      response.end(body);
+      return;
+    }
     if (request.method === "GET" && url.pathname === "/manifest.webmanifest") return this.sendStatic(response, "manifest.webmanifest", "application/manifest+json; charset=utf-8");
     if (request.method === "GET" && url.pathname === "/service-worker.js") {
       const body = fs.readFileSync(path.join(this.rootDir, "service-worker.js"));
@@ -522,7 +588,7 @@ class RemoteCompanionServer {
       return;
     }
 
-    if (request.method === "POST" && ["/api/message", "/api/pet", "/api/interrupt", "/api/settings", "/api/approval", "/api/secure-handoff", "/api/live/start", "/api/live/stop", "/api/tts", "/api/tts/next", "/api/tts/cancel", "/api/disconnect"].includes(url.pathname)) {
+    if (request.method === "POST" && ["/api/message", "/api/pet", "/api/interrupt", "/api/settings", "/api/approval", "/api/secure-handoff", "/api/live/start", "/api/live/stop", "/api/live/beatrice/audio", "/api/live/beatrice/stop", "/api/tts", "/api/tts/next", "/api/tts/cancel", "/api/disconnect"].includes(url.pathname)) {
       const { tokenHash } = this.authenticate(request, { csrf: true });
       const body = await jsonBody(request);
       if (url.pathname === "/api/message") {
@@ -550,8 +616,14 @@ class RemoteCompanionServer {
         if (!handoff?.url) throw Object.assign(new Error("Secure microphone access is not available."), { statusCode: 409 });
         return this.sendJson(response, 200, handoff);
       }
-      if (url.pathname === "/api/live/start") return this.sendJson(response, 200, await this.callbacks.startLive?.(body));
-      if (url.pathname === "/api/live/stop") return this.sendJson(response, 200, await this.callbacks.stopLive?.());
+      if (url.pathname === "/api/live/start") return this.sendJson(response, 200, await this.callbacks.startLive?.({ ...body, remoteTokenHash: tokenHash }));
+      if (url.pathname === "/api/live/stop") return this.sendJson(response, 200, await this.callbacks.stopLive?.({ liveSessionId: body.liveSessionId, remoteTokenHash: tokenHash }));
+      if (url.pathname === "/api/live/beatrice/audio") {
+        return this.sendJson(response, 200, await this.callbacks.processLiveBeatriceAudio?.({ audio: body.audio, sessionId: body.sessionId, remoteTokenHash: tokenHash }));
+      }
+      if (url.pathname === "/api/live/beatrice/stop") {
+        return this.sendJson(response, 200, await this.callbacks.stopLiveBeatrice?.({ sessionId: body.sessionId, remoteTokenHash: tokenHash }));
+      }
       if (url.pathname === "/api/tts") return this.sendJson(response, 200, await this.callbacks.synthesizeTts?.(body.text));
       if (url.pathname === "/api/tts/next") return this.sendJson(response, 200, await this.callbacks.nextTtsChunk?.(body.streamId));
       if (url.pathname === "/api/tts/cancel") return this.sendJson(response, 200, await this.callbacks.cancelTts?.(body.streamId));

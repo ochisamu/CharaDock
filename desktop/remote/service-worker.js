@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
-const SHELL_CACHE = "charadock-link-v0.1.4-3";
-const SHELL_ASSETS = ["/", "/remote.css", "/remote.js", "/manifest.webmanifest", "/app-icon.png"];
+const SHELL_CACHE = "charadock-link-v0.1.4-6";
+const SHELL_ASSETS = ["/", "/remote.css", "/audio-envelope.js", "/remote.js", "/manifest.webmanifest", "/app-icon.png"];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(caches.open(SHELL_CACHE).then((cache) => cache.addAll(SHELL_ASSETS)).then(() => self.skipWaiting()));

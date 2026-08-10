@@ -3,6 +3,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const { EventEmitter } = require("node:events");
 const test = require("node:test");
 const { RemoteCompanionServer, isPrivateIpv4, safeErrorMessage, sanitizedDeviceName } = require("../lib/remote-server.cjs");
 
@@ -10,6 +11,41 @@ test("private address validation never treats public or wildcard addresses as LA
   for (const address of ["10.2.3.4", "172.16.0.1", "172.31.255.254", "192.168.1.9", "169.254.2.1"]) assert.equal(isPrivateIpv4(address), true);
   for (const address of ["0.0.0.0", "8.8.8.8", "172.32.0.1", "127.0.0.1", "::1", "not-an-ip"]) assert.equal(isPrivateIpv4(address), false);
   assert.equal(isPrivateIpv4("127.0.0.1", { allowLoopback: true }), true);
+});
+
+test("private realtime audio events are delivered only to their paired owner", () => {
+  const server = new RemoteCompanionServer({ rootDir: __dirname, address: "192.168.1.8" });
+  const writes = { owner: [], other: [] };
+  server.eventClients.add({ tokenHash: "owner", response: { write: (value) => { writes.owner.push(value); return true; }, end() {} } });
+  server.eventClients.add({ tokenHash: "other", response: { write: (value) => { writes.other.push(value); return true; }, end() {} } });
+  assert.equal(server.publishTo("owner", "beatrice-audio", { audio: "AAAA" }), true);
+  assert.equal(writes.owner.length, 1);
+  assert.match(writes.owner[0], /event: beatrice-audio/);
+  assert.deepEqual(writes.other, []);
+});
+
+test("temporary SSE backpressure queues private audio without disconnecting its owner", () => {
+  const server = new RemoteCompanionServer({ rootDir: __dirname, address: "192.168.1.8" });
+  const response = new EventEmitter();
+  const writes = [];
+  let writable = false;
+  let ended = false;
+  response.write = (value) => { writes.push(value); return writable; };
+  response.end = () => { ended = true; };
+  const client = { tokenHash: "owner", response };
+  server.eventClients.add(client);
+
+  assert.equal(server.publishTo("owner", "beatrice-audio", { sequence: 1 }), true);
+  assert.equal(server.publishTo("owner", "beatrice-audio", { sequence: 2 }), true);
+  assert.equal(server.eventClients.has(client), true);
+  assert.equal(ended, false);
+  assert.equal(writes.length, 1, "the second frame waits for drain");
+
+  writable = true;
+  response.emit("drain");
+  assert.equal(writes.length, 2);
+  assert.match(writes[1], /\"sequence\":2/);
+  assert.equal(ended, false);
 });
 
 test("remote server requires pairing, same-origin CSRF, and strips token from the cookie session", async (context) => {
@@ -22,7 +58,9 @@ test("remote server requires pairing, same-origin CSRF, and strips token from th
   const pets = [];
   const approvals = [];
   const liveStarts = [];
-  let liveStops = 0;
+  const liveStops = [];
+  const beatriceAudio = [];
+  const beatriceStops = [];
   let secureHandoffs = 0;
   const server = new RemoteCompanionServer({
     rootDir,
@@ -37,7 +75,9 @@ test("remote server requires pairing, same-origin CSRF, and strips token from th
       resolveApproval: (payload) => { approvals.push(payload); return { ok: true }; },
       secureHandoff: () => { secureHandoffs += 1; return { url: "https://charadock.example.ts.net/#token=secure" }; },
       startLive: (payload) => { liveStarts.push(payload); return { accepted: true }; },
-      stopLive: () => { liveStops += 1; return { stopped: true }; },
+      stopLive: (payload) => { liveStops.push(payload); return { stopped: true }; },
+      processLiveBeatriceAudio: (payload) => { beatriceAudio.push(payload); return { accepted: true }; },
+      stopLiveBeatrice: (payload) => { beatriceStops.push(payload); return { stopped: true }; },
       interrupt: () => ({ interrupted: true }),
     },
   });
@@ -119,9 +159,19 @@ test("remote server requires pairing, same-origin CSRF, and strips token from th
 
   const liveHeaders = { "Content-Type": "application/json", Origin: origin, Cookie: cookie, "X-CharaDock-CSRF": payload.csrfToken };
   assert.equal((await fetch(`${origin}/api/live/start`, { method: "POST", headers: liveHeaders, body: JSON.stringify({ sdp: "v=0\r\n...", mode: "chat" }) })).status, 200);
-  assert.deepEqual(liveStarts, [{ sdp: "v=0\r\n...", mode: "chat" }]);
-  assert.equal((await fetch(`${origin}/api/live/stop`, { method: "POST", headers: liveHeaders, body: "{}" })).status, 200);
-  assert.equal(liveStops, 1);
+  assert.equal(liveStarts.length, 1);
+  assert.match(liveStarts[0].remoteTokenHash, /^[a-f0-9]{64}$/);
+  assert.deepEqual({ ...liveStarts[0], remoteTokenHash: "[token]" }, { sdp: "v=0\r\n...", mode: "chat", remoteTokenHash: "[token]" });
+  const audio = Buffer.alloc(480 * 4).toString("base64");
+  assert.equal((await fetch(`${origin}/api/live/beatrice/audio`, { method: "POST", headers: liveHeaders, body: JSON.stringify({ audio, sessionId: "beatrice-session" }) })).status, 200);
+  assert.equal(beatriceAudio.length, 1);
+  assert.equal(beatriceAudio[0].remoteTokenHash, liveStarts[0].remoteTokenHash);
+  assert.equal(beatriceAudio[0].audio, audio);
+  assert.equal(beatriceAudio[0].sessionId, "beatrice-session");
+  assert.equal((await fetch(`${origin}/api/live/beatrice/stop`, { method: "POST", headers: liveHeaders, body: JSON.stringify({ sessionId: "beatrice-session" }) })).status, 200);
+  assert.deepEqual(beatriceStops, [{ sessionId: "beatrice-session", remoteTokenHash: liveStarts[0].remoteTokenHash }]);
+  assert.equal((await fetch(`${origin}/api/live/stop`, { method: "POST", headers: liveHeaders, body: JSON.stringify({ liveSessionId: "live-session" }) })).status, 200);
+  assert.deepEqual(liveStops, [{ liveSessionId: "live-session", remoteTokenHash: liveStarts[0].remoteTokenHash }]);
 
   const handoff = await fetch(`${origin}/api/secure-handoff`, { method: "POST", headers: liveHeaders, body: "{}" });
   assert.equal(handoff.status, 200);
@@ -222,6 +272,10 @@ test("the packaged phone surface keeps camera disabled and permits microphone on
   const html = await page.text();
   for (const id of ["companionView", "avatarTapTarget", "avatarReactionShell", "avatarFace", "messageForm", "microphoneButton", "remoteLiveAudio", "interruptButton", "artifactList", "historySheet", "settingsSheet", "settingsStatus", "characterSelect", "responseModeSelect", "ttsModelSettings", "ttsModelFields", "bubbleExpandButton", "pairingCodeInput", "approvalCard", "approveApprovalButton", "workProgressCard", "workProgressSheet", "progressFollowUpForm", "installAppButton", "notificationToggle", "wakeLockToggle"]) assert.match(html, new RegExp(`id="${id}"`));
   assert.match(html, /rel="manifest" href="\/manifest\.webmanifest"/);
+  assert.match(html, /<script src="\/audio-envelope\.js"><\/script>[\s\S]*<script src="\/remote\.js"><\/script>/);
+  const envelopeScript = await fetch(`${server.origin()}/audio-envelope.js`);
+  assert.equal(envelopeScript.status, 200);
+  assert.match(await envelopeScript.text(), /createThreeStageMouthTracker/);
   const script = await fetch(`${server.origin()}/remote.js`).then((response) => response.text());
   assert.match(script, /request\("\/api\/pet"/);
   assert.match(script, /remote-touch-spark/);

@@ -2,7 +2,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const os = require("node:os");
-const { createHash } = require("node:crypto");
+const { createHash, randomBytes } = require("node:crypto");
 const QRCode = require("qrcode");
 const {
   app,
@@ -81,9 +81,12 @@ const {
   conciseWorkAnnouncement,
   workAcknowledgementFallback,
 } = require("./lib/work-voice-reporter.cjs");
+const { isSocialConversationTurn } = require("./lib/interaction-intent.cjs");
 const { RealtimeWorkSpeechCoordinator } = require("./lib/realtime-work-speech.cjs");
 const { BeatriceHostClient } = require("./lib/beatrice-host-client.cjs");
 const {
+  BEATRICE_BLOCK_SAMPLES,
+  BEATRICE_SAMPLE_RATE,
   beatriceStatus,
   describeBeatriceModel,
   findBeatriceInstallation,
@@ -286,6 +289,7 @@ let nextWorkRunId = 1;
 let activeWorkRunId = null;
 let activeRealtimeClient = null;
 let activeRealtimeTarget = "";
+let activeRealtimeStarting = false;
 let activeRealtimeTurnBuffer = null;
 let activeRealtimeInjectedSpeech = [];
 let activeRealtimeWorkDispatcher = null;
@@ -294,6 +298,13 @@ let lastRealtimePetSpeechAt = 0;
 let beatriceHostClient = null;
 let beatriceAudioOwner = null;
 let beatriceAudioStats = null;
+let beatriceHostGeneration = 0;
+let remoteBeatriceOutputFrames = [];
+let remoteBeatriceOutputSamples = 0;
+let remoteBeatriceOutputTimer = null;
+let remoteRealtimeSessionId = "";
+let remoteBeatriceSessionId = "";
+let remoteRealtimeStartReservation = "";
 let pendingScreenShare = null;
 let pendingBrowserUse = null;
 let pendingComputerUse = null;
@@ -1435,6 +1446,7 @@ function publicRemoteState() {
       realtimeVoice: characterTts.realtimeVoice,
       realtimeVoices: [...REALTIME_VOICES],
       realtimeConversion: characterTts.realtimeVoiceConversion,
+      beatriceActive: Boolean(typeof beatriceAudioOwner === "string" && beatriceHostClient?.ready && activeRealtimeTarget === "remote"),
       liveConnected: Boolean(currentRealtimeClient()),
       liveOwner: currentRealtimeClient() ? activeRealtimeTarget || "pc" : "",
       liveSupported: preferences.data.backend === "codex",
@@ -1532,28 +1544,78 @@ async function startRemoteRealtime(payload = {}) {
   if (mode === "work" && !(preferences.data.remoteWorkEnabled && preferences.data.backend === "codex" && validWorkDirectory())) {
     throw new Error(mainText("スマートフォンからのWorkが許可されていないか、作業先がありません。", "Phone Work is not allowed or no work folder is selected."));
   }
-  if (currentRealtimeClient()) {
+  if (activeRealtimeStarting || activeRealtimeTarget || currentRealtimeClient()) {
     throw new Error(activeRealtimeTarget === "remote"
       ? mainText("このスマートフォンのLiveを一度停止してから接続し直してください。", "Stop this phone's current Live session before reconnecting.")
       : mainText("PC側のLiveが使用中です。PCで停止してから開始してください。", "Live is currently owned by the PC. Stop it there first."));
   }
-  if (mode !== preferences.data.interactionMode) await setInteractionMode(mode);
+  const remoteTokenHash = String(payload.remoteTokenHash || "");
+  if (!remoteTokenHash) throw new Error("Remote device identity is unavailable.");
+  if (remoteRealtimeStartReservation) {
+    throw Object.assign(new Error("Another Live connection is already starting."), { statusCode: 409 });
+  }
+  const startReservation = randomBytes(18).toString("base64url");
+  remoteRealtimeStartReservation = startReservation;
+  try {
+    if (mode !== preferences.data.interactionMode) await setInteractionMode(mode);
+  } catch (error) {
+    if (remoteRealtimeStartReservation === startReservation) remoteRealtimeStartReservation = "";
+    throw error;
+  }
   remoteBusy = true;
   remoteLastDisplayText = mainText("Liveへ接続中…", "Connecting to Live…");
   publishRemoteState();
+  // No live client is active here (checked above), so an existing host can
+  // only be residue from an interrupted startup and must not be reused.
+  if (beatriceHostClient || beatriceAudioOwner) stopBeatriceHost();
+  const liveSessionId = randomBytes(18).toString("base64url");
+  remoteRealtimeSessionId = liveSessionId;
+  let beatriceActive = false;
+  let beatriceError = "";
   try {
+    if (characterTtsSettings().realtimeVoiceConversion === "beatrice-v2") {
+      try {
+        if (!remoteTokenHash) throw new Error("Remote device identity is unavailable.");
+        await startBeatriceHost(remoteTokenHash);
+        remoteBeatriceSessionId = randomBytes(18).toString("base64url");
+        beatriceActive = true;
+      } catch (error) {
+        beatriceError = remotePublicText(mainText(
+          `Beatrice 2を開始できないため元のLive音声で再生します: ${error.message}`,
+          `Beatrice 2 could not start, so the original Live voice will be used: ${error.message}`,
+        ), 500);
+        remoteServer?.publishTo(remoteTokenHash, "beatrice-error", { message: remotePublicText(beatriceError, 500) });
+      }
+    }
     const result = await startCodexRealtimeVoice({ sdp: payload.sdp }, "remote");
-    return { accepted: true, ...result };
+    return {
+      accepted: true,
+      ...result,
+      liveSessionId,
+      beatriceActive,
+      beatriceSessionId: beatriceActive ? remoteBeatriceSessionId : "",
+      beatriceError,
+    };
   } catch (error) {
+    if (beatriceAudioOwner === remoteTokenHash) stopBeatriceHost();
+    if (remoteRealtimeSessionId === liveSessionId) remoteRealtimeSessionId = "";
     remoteBusy = false;
     publishRemoteState();
     throw error;
+  } finally {
+    if (remoteRealtimeStartReservation === startReservation) remoteRealtimeStartReservation = "";
   }
 }
 
-async function stopRemoteRealtime() {
+async function stopRemoteRealtime(payload = {}) {
   if (!currentRealtimeClient()) return { stopped: false };
   if (activeRealtimeTarget !== "remote") throw new Error(mainText("PC側で開始したLiveはPCから停止してください。", "Stop a PC-owned Live session from the PC."));
+  if (!payload.liveSessionId || payload.liveSessionId !== remoteRealtimeSessionId) {
+    throw Object.assign(new Error("This Live session is no longer active."), { statusCode: 409 });
+  }
+  if (typeof beatriceAudioOwner === "string" && payload.remoteTokenHash && beatriceAudioOwner !== payload.remoteTokenHash) {
+    throw Object.assign(new Error("This device does not own the active Beatrice session."), { statusCode: 403 });
+  }
   return { stopped: await stopActiveRealtime() };
 }
 
@@ -1687,6 +1749,8 @@ function createRemoteServer(address, sessionMinutes = preferences.data.remoteSes
       pet: remoteCharacterPet,
       startLive: startRemoteRealtime,
       stopLive: stopRemoteRealtime,
+      processLiveBeatriceAudio: processRemoteBeatriceAudio,
+      stopLiveBeatrice: stopRemoteBeatrice,
       setSettings: applyRemoteClientSettings,
       resolveApproval: resolveRemoteApproval,
       secureHandoff: () => {
@@ -1703,7 +1767,12 @@ function createRemoteServer(address, sessionMinutes = preferences.data.remoteSes
       },
       nextTtsChunk: (streamId) => nextIrodoriTtsChunk(streamId, REMOTE_TTS_OWNER_ID),
       cancelTts: (streamId) => ({ cancelled: cancelIrodoriTtsStream(streamId, REMOTE_TTS_OWNER_ID) }),
-      onTrustedDevices: (devices) => preferences.patch({ remoteTrustedDevices: devices }),
+      onTrustedDevices: (devices) => {
+        preferences.patch({ remoteTrustedDevices: devices });
+        if (typeof beatriceAudioOwner === "string" && !devices.some((device) => device.tokenHash === beatriceAudioOwner)) {
+          stopActiveRealtime().catch((error) => diagnosticLog?.write("warn", "remote-beatrice-owner-revoked", error?.message || error));
+        }
+      },
       onStatus: () => {
         refreshRemotePairingQr().catch((error) => { remoteLastError = error.message; });
       },
@@ -1749,6 +1818,7 @@ async function applyRemoteConfiguration(patch = {}) {
     publishRemoteState();
     return broadcastAppState();
   }
+  if (activeRealtimeTarget === "remote") await stopActiveRealtime().catch(() => {});
   await remoteServer?.stop();
   remoteServer = null;
   remoteQrDataUrl = "";
@@ -4650,14 +4720,23 @@ async function stopActiveRealtime() {
   activeRealtimeWorkSpeech?.stop();
   activeRealtimeWorkSpeech = null;
   const client = currentRealtimeClient();
-  if (!client) return false;
-  const stopped = await client.stopRealtime();
-  activeRealtimeTurnBuffer?.clear();
-  activeRealtimeTurnBuffer = null;
-  activeRealtimeInjectedSpeech = [];
-  remoteBusy = false;
-  publishRemoteState();
-  return stopped;
+  let stopped = false;
+  try {
+    if (!client) return false;
+    stopped = await client.stopRealtime();
+    return stopped;
+  } finally {
+    // A failed stop request must not leave the native converter or an old
+    // audio owner alive. Keeping the route closed is safer than allowing a
+    // later normal-TTS turn to overlap it.
+    stopBeatriceHost();
+    remoteRealtimeSessionId = "";
+    activeRealtimeTurnBuffer?.clear();
+    activeRealtimeTurnBuffer = null;
+    activeRealtimeInjectedSpeech = [];
+    remoteBusy = false;
+    publishRemoteState();
+  }
 }
 
 async function appendActiveRealtimeText(text) {
@@ -4665,7 +4744,8 @@ async function appendActiveRealtimeText(text) {
   if (!client) return false;
   const normalized = normalizedText(text).slice(0, 1000);
   if (preferences.data.interactionMode === "work" && activeRealtimeWorkDispatcher) {
-    return Boolean(activeRealtimeWorkDispatcher.dispatch(normalized, "typed"));
+    const dispatched = Boolean(activeRealtimeWorkDispatcher.dispatch(normalized, "typed"));
+    if (dispatched) return true;
   }
   let appended = false;
   appended = await client.appendRealtimeText(normalized, "user");
@@ -4807,12 +4887,21 @@ async function startCodexRealtimeVoice(payload, target = "control") {
   // normal workspace-scoped worker so completion and artifacts are deterministic.
   const realtimeClient = codexClient;
   const previousRealtimeClient = currentRealtimeClient();
-  if (previousRealtimeClient && activeRealtimeTarget && activeRealtimeTarget !== target) {
-    throw new Error(activeRealtimeTarget === "remote"
+  if (activeRealtimeStarting
+    || activeRealtimeTarget
+    || previousRealtimeClient
+    || (remoteRealtimeStartReservation && target !== "remote")) {
+    throw new Error(activeRealtimeTarget === "remote" || remoteRealtimeStartReservation
       ? mainText("スマートフォン側でLiveを停止してからPCで開始してください。", "Stop Live on the phone before starting it on the PC.")
-      : mainText("PC側でLiveを停止してからスマートフォンで開始してください。", "Stop Live on the PC before starting it on the phone."));
+      : target === "remote"
+        ? mainText("PC側でLiveを停止してからスマートフォンで開始してください。", "Stop Live on the PC before starting it on the phone.")
+        : mainText("開始中または接続中のLiveを停止してから、もう一度開始してください。", "Stop the Live session that is starting or connected, then try again."));
   }
-  if (previousRealtimeClient && previousRealtimeClient !== realtimeClient) await previousRealtimeClient.stopRealtime().catch(() => {});
+  // Live and normal TTS are exclusive audio routes. Stop any speech still
+  // draining in either renderer before the WebRTC answer can become audible.
+  if (controlWindow && !controlWindow.isDestroyed()) controlWindow.webContents.send("audio:stopNormalSpeech");
+  if (mascotWindow && !mascotWindow.isDestroyed()) mascotWindow.webContents.send("audio:stopNormalSpeech");
+  activeRealtimeStarting = true;
   activeRealtimeClient = realtimeClient;
   activeRealtimeTarget = target;
   publishRemoteState();
@@ -4837,7 +4926,7 @@ async function startCodexRealtimeVoice(payload, target = "control") {
   };
   const dispatchRealtimeWork = (request, source = "voice", options = {}) => {
     const normalized = String(request || "").trim();
-    if (!workMode || !normalized) return false;
+    if (!workMode || !normalized || isSocialConversationTurn(normalized)) return false;
     const now = Date.now();
     if (source === "voice"
       && lastDispatchedWorkRequest.source === "typed"
@@ -4887,13 +4976,13 @@ async function startCodexRealtimeVoice(payload, target = "control") {
   };
   activeRealtimeWorkDispatcher = workMode ? realtimeWorkDispatcher : null;
   try {
-    return await realtimeClient.startRealtime({
+    const result = await realtimeClient.startRealtime({
       sdp,
       voice: characterTtsSettings().realtimeVoice,
       prompt: workMode
         ? `${personaInstructions()}\n\n${characterMemoryContext()}\n\n${mainText(
-          "あなたはWorkの音声フロントです。ユーザーの依頼内容に合わせ、30文字前後の自然な一文だけで着手を確認してください。言い換えや補足を重ねないでください。作業の実行、委譲、推測での完了報告はしないでください。進捗と検証済みの完了結果はアプリから別途与えられます。その場合は語句を足したり言い換えたりせず、与えられた一文をそのまま読み上げてください。",
-          "You are the voice frontend for Work. Acknowledge the user's specific request in exactly one natural sentence of roughly 12 words. Do not add a paraphrase or follow-up sentence. Do not execute or delegate the task, and never infer or claim completion. The app will separately provide progress and the verified final result. When it does, repeat that single sentence verbatim without adding or rephrasing any words.",
+          "あなたはWorkの音声フロントです。挨拶、感謝、謝罪、短い相槌だけなら、作業を始めるとは言わず自然な会話として短く返してください。実際の依頼なら内容に合わせ、30文字前後の自然な一文だけで着手を確認してください。言い換えや補足を重ねないでください。作業の実行、委譲、推測での完了報告はしないでください。進捗と検証済みの完了結果はアプリから別途与えられます。その場合は語句を足したり言い換えたりせず、与えられた一文をそのまま読み上げてください。",
+          "You are the voice frontend for Work. If the user only greets, thanks, apologizes, or gives a brief acknowledgement, reply naturally and never imply that work is starting. For an actual request, acknowledge its specific content in exactly one natural sentence of roughly 12 words. Do not add a paraphrase or follow-up sentence. Do not execute or delegate the task, and never infer or claim completion. The app will separately provide progress and the verified final result. When it does, repeat that single sentence verbatim without adding or rephrasing any words.",
         )}`
         : `${personaInstructions()}\n\n${characterMemoryContext()}\n\n${mainText("日本語の自然な短い音声会話として応答してください。", "Respond as a natural, concise spoken conversation in English.")}`,
       clientManagedHandoffs: workMode,
@@ -4963,7 +5052,10 @@ async function startCodexRealtimeVoice(payload, target = "control") {
             displayText: workMode ? latestWorkDisplayText(assistantTranscript.text) : assistantTranscript.text,
             final: true,
           });
-          localServer.pushInput({ ...currentCursorInput(), ...responseExpression(assistantTranscript.text) });
+          // Realtime playback owns the mouth through its measured audio
+          // envelope. Keep the semantic reaction, but never let a transcript
+          // event pin the mouth open or suppress normal blinking.
+          localServer.pushInput({ ...currentCursorInput(), ...speechExpression(assistantTranscript.text) });
           remoteLastDisplayText = remotePublicText(workMode ? latestWorkDisplayText(assistantTranscript.text) : assistantTranscript.text);
           remoteServer?.publish("stream", {
             phase: workMode ? "realtime-caption" : "done",
@@ -4992,7 +5084,13 @@ async function startCodexRealtimeVoice(payload, target = "control") {
       }
       if (method === "thread/realtime/transcript/done" && params.role === "user") {
         if (!assistantTranscript.active) assistantTranscript.text = "";
-        localServer.pushInput({ ...currentCursorInput(), ...messageExpression(params.text) });
+        const listeningReaction = messageExpression(params.text);
+        localServer.pushInput({
+          ...currentCursorInput(),
+          ...listeningReaction,
+          forceMouth: null,
+          forceEyesClosed: null,
+        });
         const request = String(params.text || "").trim();
         if (!workMode && request) {
           const completedTurn = realtimeTurnBuffer.addUser(request);
@@ -5008,9 +5106,11 @@ async function startCodexRealtimeVoice(payload, target = "control") {
         if (activeRealtimeWorkDispatcher === realtimeWorkDispatcher) activeRealtimeWorkDispatcher = null;
         if (activeRealtimeWorkSpeech === realtimeWorkSpeech) activeRealtimeWorkSpeech = null;
         realtimeWorkSpeech?.stop();
+        stopBeatriceHost();
         if (activeRealtimeClient === realtimeClient) {
           activeRealtimeClient = null;
           activeRealtimeTarget = "";
+          activeRealtimeStarting = false;
         }
         if (activeRealtimeTurnBuffer === realtimeTurnBuffer) activeRealtimeTurnBuffer = null;
         realtimeTurnBuffer.clear();
@@ -5026,6 +5126,8 @@ async function startCodexRealtimeVoice(payload, target = "control") {
       }
       },
     });
+    if (activeRealtimeClient === realtimeClient) activeRealtimeStarting = false;
+    return result;
   } catch (error) {
     if (activeRealtimeWorkDispatcher === realtimeWorkDispatcher) activeRealtimeWorkDispatcher = null;
     if (activeRealtimeWorkSpeech === realtimeWorkSpeech) activeRealtimeWorkSpeech = null;
@@ -5033,6 +5135,7 @@ async function startCodexRealtimeVoice(payload, target = "control") {
     if (activeRealtimeClient === realtimeClient) {
       activeRealtimeClient = null;
       activeRealtimeTarget = "";
+      activeRealtimeStarting = false;
     }
     if (activeRealtimeTurnBuffer === realtimeTurnBuffer) activeRealtimeTurnBuffer = null;
     realtimeTurnBuffer.clear();
@@ -5123,13 +5226,20 @@ function applyLoginItemSetting(enabled) {
 }
 
 function stopBeatriceHost() {
+  beatriceHostGeneration += 1;
   if (beatriceAudioStats?.inputFrames || beatriceAudioStats?.outputFrames) {
     diagnosticLog?.write("info", "beatrice-realtime-answer-stop", beatriceAudioStats);
   }
+  if (typeof beatriceAudioOwner === "string") flushRemoteBeatriceOutput();
+  clearTimeout(remoteBeatriceOutputTimer);
+  remoteBeatriceOutputTimer = null;
   beatriceHostClient?.stop();
   beatriceHostClient = null;
   beatriceAudioOwner = null;
   beatriceAudioStats = null;
+  remoteBeatriceOutputFrames = [];
+  remoteBeatriceOutputSamples = 0;
+  remoteBeatriceSessionId = "";
 }
 
 async function stopRealtimeForBeatriceSettingsChange() {
@@ -5151,8 +5261,59 @@ async function stopRealtimeForBeatriceSettingsChange() {
   return hadRealtime;
 }
 
-async function startBeatriceHost(webContents) {
+function deliverBeatriceAudio(audio) {
+  const owner = beatriceAudioOwner;
+  if (!owner) return;
+  if (typeof owner !== "string") {
+    if (!owner.isDestroyed()) owner.send("beatrice:audioOut", audio);
+    return;
+  }
+  const samples = new Float32Array(audio);
+  remoteBeatriceOutputFrames.push(samples);
+  remoteBeatriceOutputSamples += samples.length;
+  clearTimeout(remoteBeatriceOutputTimer);
+  remoteBeatriceOutputTimer = null;
+  if (remoteBeatriceOutputSamples >= BEATRICE_BLOCK_SAMPLES * 4) {
+    flushRemoteBeatriceOutput();
+  } else {
+    remoteBeatriceOutputTimer = setTimeout(flushRemoteBeatriceOutput, 26);
+    remoteBeatriceOutputTimer.unref?.();
+  }
+}
+
+function flushRemoteBeatriceOutput() {
+  clearTimeout(remoteBeatriceOutputTimer);
+  remoteBeatriceOutputTimer = null;
+  const owner = beatriceAudioOwner;
+  if (typeof owner !== "string" || !remoteBeatriceOutputSamples || !remoteBeatriceSessionId) return;
+  const combined = new Float32Array(remoteBeatriceOutputSamples);
+  let offset = 0;
+  for (const frame of remoteBeatriceOutputFrames) {
+    combined.set(frame, offset);
+    offset += frame.length;
+  }
+  remoteBeatriceOutputFrames = [];
+  remoteBeatriceOutputSamples = 0;
+  remoteServer?.publishTo(owner, "beatrice-audio", {
+    audio: Buffer.from(combined.buffer, combined.byteOffset, combined.byteLength).toString("base64"),
+    sampleRate: BEATRICE_SAMPLE_RATE,
+    sessionId: remoteBeatriceSessionId,
+  });
+}
+
+function deliverBeatriceError(error) {
+  const message = String(error?.message || error);
+  const owner = beatriceAudioOwner;
+  if (typeof owner === "string") remoteServer?.publishTo(owner, "beatrice-error", {
+    message: remotePublicText(message, 500),
+    sessionId: remoteBeatriceSessionId,
+  });
+  else if (owner && !owner.isDestroyed()) owner.send("beatrice:error", message);
+}
+
+async function startBeatriceHost(owner) {
   stopBeatriceHost();
+  const generation = beatriceHostGeneration;
   const status = activeBeatriceStatus();
   const settings = characterTtsSettings();
   if (!status.ready) throw new Error("Beatrice 2のVST3とモデルフォルダーを設定してください。");
@@ -5160,7 +5321,7 @@ async function startBeatriceHost(webContents) {
     modelId: settings.beatriceModelId,
     voiceId: status.selectedVoiceId,
   });
-  beatriceAudioOwner = webContents;
+  beatriceAudioOwner = owner;
   beatriceAudioStats = { inputFrames: 0, outputFrames: 0, inputPeak: 0, outputPeak: 0, flowLogged: false };
   const client = new BeatriceHostClient({
     executablePath: beatriceHostPath(),
@@ -5175,7 +5336,7 @@ async function startBeatriceHost(webContents) {
     pitchCorrection: settings.beatricePitchCorrection,
     pitchCorrectionType: settings.beatricePitchCorrectionType,
     onAudio: (audio) => {
-      if (!beatriceAudioOwner || beatriceAudioOwner.isDestroyed()) return;
+      if (!beatriceAudioOwner || generation !== beatriceHostGeneration) return;
       const samples = new Float32Array(audio);
       beatriceAudioStats.outputFrames += 1;
       for (const sample of samples) beatriceAudioStats.outputPeak = Math.max(beatriceAudioStats.outputPeak, Math.abs(sample));
@@ -5183,24 +5344,80 @@ async function startBeatriceHost(webContents) {
         beatriceAudioStats.flowLogged = true;
         diagnosticLog?.write("info", "beatrice-realtime-answer-flow", beatriceAudioStats);
       }
-      beatriceAudioOwner.send("beatrice:audioOut", audio);
+      deliverBeatriceAudio(audio);
     },
     onError: (error) => {
+      if (generation !== beatriceHostGeneration) return;
       diagnosticLog?.write("error", "beatrice-host", error?.message || error);
-      if (beatriceAudioOwner && !beatriceAudioOwner.isDestroyed()) {
-        beatriceAudioOwner.send("beatrice:error", String(error?.message || error));
-      }
+      deliverBeatriceError(error);
     },
   });
   try {
     await client.start();
+    if (generation !== beatriceHostGeneration || beatriceAudioOwner !== owner) {
+      client.stop();
+      throw new Error("Beatrice 2の起動は新しい音声セッションへ切り替えられました。");
+    }
   } catch (error) {
     diagnosticLog?.write("error", "beatrice-host-start", error?.message || error);
+    if (generation === beatriceHostGeneration) stopBeatriceHost();
+    else client.stop();
     throw error;
   }
   beatriceHostClient = client;
   diagnosticLog?.write("info", "beatrice-host-ready", { voiceId: status.selectedVoiceId });
   return publicBeatriceStatus();
+}
+
+function processRemoteBeatriceAudio(payload = {}) {
+  const owner = String(payload.remoteTokenHash || "");
+  if (!owner
+    || beatriceAudioOwner !== owner
+    || !payload.sessionId
+    || payload.sessionId !== remoteBeatriceSessionId
+    || activeRealtimeTarget !== "remote"
+    || !beatriceHostClient?.ready) {
+    throw Object.assign(new Error("Remote Beatrice session is not active."), { statusCode: 409 });
+  }
+  const encoded = String(payload.audio || "");
+  if (!encoded || encoded.length > 60_000 || !/^[A-Za-z0-9+/]+={0,2}$/.test(encoded)) {
+    throw Object.assign(new Error("Invalid Beatrice audio data."), { statusCode: 400 });
+  }
+  const bytes = Buffer.from(encoded, "base64");
+  const blockBytes = BEATRICE_BLOCK_SAMPLES * Float32Array.BYTES_PER_ELEMENT;
+  if (!bytes.length || bytes.length > blockBytes * 16 || bytes.length % blockBytes) {
+    throw Object.assign(new Error("Invalid Beatrice audio length."), { statusCode: 400 });
+  }
+  const exact = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+  const samples = new Float32Array(exact);
+  for (const sample of samples) {
+    if (!Number.isFinite(sample) || Math.abs(sample) > 8) throw Object.assign(new Error("Invalid Beatrice audio sample."), { statusCode: 400 });
+  }
+  let accepted = 0;
+  for (let offset = 0; offset < bytes.length; offset += blockBytes) {
+    const block = bytes.buffer.slice(bytes.byteOffset + offset, bytes.byteOffset + offset + blockBytes);
+    if (beatriceHostClient.push(block)) accepted += 1;
+  }
+  if (!accepted) throw Object.assign(new Error("Beatrice audio host is unavailable."), { statusCode: 409 });
+  if (beatriceAudioStats) {
+    beatriceAudioStats.inputFrames += accepted;
+    for (const sample of samples) beatriceAudioStats.inputPeak = Math.max(beatriceAudioStats.inputPeak, Math.abs(sample));
+  }
+  return { accepted: true, frames: accepted };
+}
+
+function stopRemoteBeatrice(payload = {}) {
+  const owner = String(payload.remoteTokenHash || "");
+  if (!owner
+    || beatriceAudioOwner !== owner
+    || !payload.sessionId
+    || payload.sessionId !== remoteBeatriceSessionId
+    || activeRealtimeTarget !== "remote") {
+    throw Object.assign(new Error("Remote Beatrice session is not active."), { statusCode: 409 });
+  }
+  stopBeatriceHost();
+  publishRemoteState();
+  return { stopped: true };
 }
 
 async function chooseBeatriceInstallation(parentWindow) {
@@ -7269,7 +7486,15 @@ async function sendChatMessage(message, {
   const text = String(message || "").trim().slice(0, 12_000);
   if (!text && !localAttachments.length) throw new Error("メッセージを入力してください。");
   const requestText = text || mainText("添付したファイルを確認してください。", "Please review the attached files.");
-  const workMode = preferences.data.interactionMode === "work";
+  if (!realtimeOutput && (activeRealtimeStarting || activeRealtimeTarget || currentRealtimeClient() || remoteRealtimeStartReservation)) {
+    throw new Error(mainText(
+      "Live接続中の入力はLiveへ送ってください。通常TTSとの同時実行はできません。",
+      "Send input through the active Live session. Standard TTS cannot run at the same time.",
+    ));
+  }
+  const selectedWorkMode = preferences.data.interactionMode === "work";
+  const conversationalWorkTurn = selectedWorkMode && !localAttachments.length && isSocialConversationTurn(requestText);
+  const workMode = selectedWorkMode && !conversationalWorkTurn;
   const context = workMode ? recentWorkContext() : recentConversationContext(conversationHistory);
   const memoryContext = characterMemoryContext();
   const imageInstructions = localImagePath
@@ -7297,6 +7522,12 @@ async function sendChatMessage(message, {
       displayText: remotePublicText(payload.displayText),
       message: remotePublicText(payload.message, 1000),
       workRunId: String(payload.workRunId || "").slice(0, 120),
+      realtimeOutput: Boolean(payload.realtimeOutput),
+      realtimeSpeechPending: Boolean(payload.realtimeSpeechPending),
+      deferDisplayToRealtime: Boolean(payload.deferDisplayToRealtime),
+      audioRoute: payload.realtimeOutput
+        ? "live"
+        : ["announcement", "done"].includes(payload.phase) ? "mobile-tts" : "none",
       artifacts: (Array.isArray(payload.artifacts) ? payload.artifacts : []).slice(0, 8).map((artifact) => ({
         path: String(artifact?.path || "").slice(0, 1000),
         name: String(artifact?.name || "").slice(0, 260),

@@ -112,9 +112,12 @@ class RealtimeWorkSpeechCoordinator {
       this.pump();
       return;
     }
+    // Audio routing is committed as soon as the Live service accepts the
+    // injected speech. Transcript events are useful for serialization and UI,
+    // but their absence must never start a second, normal-TTS fallback route.
+    this.settle(item, true);
     item.timeout = this.schedule(() => {
       if (this.active !== item) return;
-      this.settle(item, false);
       this.active = null;
       this.pump();
     }, this.transcriptTimeoutMs);

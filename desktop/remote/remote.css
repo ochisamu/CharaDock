@@ -73,7 +73,6 @@ button:focus-visible, textarea:focus-visible { outline: 3px solid rgba(76,111,25
 .avatar-reaction-shell.is-reacting-soft { animation: avatar-pet-soft 760ms cubic-bezier(.2,.78,.28,1); }
 .avatar-reaction-shell.is-reacting-surprised { animation: avatar-pet-surprised 520ms cubic-bezier(.16,.86,.26,1); }
 .avatar-motion { --breath-full: 1.018; --breath-half: 1.009; --sway-x: 8px; --sway-y: 6px; --body-roll: .65deg; --body-roll-negative: -.65deg; --hair-roll: 1deg; --hair-roll-negative: -1deg; transform-origin: 50% 88%; will-change: transform; animation: avatar-idle 6.2s ease-in-out infinite; }
-.avatar-motion.is-speaking { animation-duration: 3.2s; }
 .avatar-layer { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; user-select: none; pointer-events: none; }
 .back-hair { z-index: 1; transform-origin: 50% 38%; animation: hair-back 5.2s ease-in-out infinite; }
 .face { z-index: 2; }

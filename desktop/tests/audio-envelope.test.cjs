@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 const assert = require("node:assert/strict");
 const test = require("node:test");
-const { createAdaptiveSpeechEnvelope } = require("../audio-envelope.js");
+const { createAdaptiveSpeechEnvelope, createThreeStageMouthTracker } = require("../audio-envelope.js");
 
 test("adaptive speech envelope ignores silence and expands quiet speech", () => {
   const envelope = createAdaptiveSpeechEnvelope();
@@ -22,4 +22,25 @@ test("adaptive speech envelope attacks faster than it releases", () => {
   let released = firstRelease;
   for (let index = 0; index < 24; index += 1) released = envelope.sample(0, 50 + index * 16.667);
   assert.equal(released, 0);
+});
+
+test("three-stage mouth tracker uses hysteresis and a minimum hold", () => {
+  const tracker = createThreeStageMouthTracker({ minimumHoldMs: 64 });
+  let now = 100;
+  const first = tracker.sample(0.08, now);
+  assert.equal(first.mouth, "half");
+  assert.equal(first.changed, true);
+
+  const held = tracker.sample(0.08, now += 16);
+  assert.equal(held.mouth, "half");
+  assert.equal(held.changed, false);
+
+  let opened = held;
+  for (let index = 0; index < 5; index += 1) opened = tracker.sample(0.08, now += 16);
+  assert.equal(opened.mouth, "open");
+
+  let released = opened;
+  for (let index = 0; index < 40; index += 1) released = tracker.sample(0, now += 16);
+  assert.equal(released.mouth, "closed");
+  assert.equal(released.speaking, false);
 });
