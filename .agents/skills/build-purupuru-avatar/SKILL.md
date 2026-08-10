@@ -1,6 +1,6 @@
 ---
 name: build-purupuru-avatar
-description: Convert one user-supplied character illustration into a pixel-registered, independently quality-validated PuruPuru PNGTuber package with real eye/mouth differences, a separated movable front-hair layer, transparent backgrounds, inferred persona, and rig anchors. Use when the PuruPuru desktop app asks Codex app-server to add a high-quality character from a single image or repair a rejected generated avatar.
+description: Convert one user-supplied character illustration into a pixel-registered, independently quality-validated PuruPuru PNGTuber package with real eye/mouth differences, safe hair handling, transparent backgrounds, inferred persona, and rig anchors. Use when the PuruPuru desktop app asks Codex app-server to add a high-quality character from a single image or repair a rejected generated avatar.
 ---
 
 # Build a PuruPuru avatar
@@ -21,7 +21,7 @@ Read the attached image as the sole identity/style reference and read `request.j
 8. `hair-reference.png` (quality proof only; the app does not install it)
 9. `character.json`
 
-Keep all PNGs the same 512–4096 px canvas size and pixel registration. The six expression frames must contain the same character and outfit without the hair isolated into `front-hair.png`. `front-hair.png` must contain only movable front/side hair in its exact overlay position—never the face, body, accessory, costume, or whole source image.
+Keep all PNGs the same 512–4096 px canvas size and pixel registration. Prefer `hairMode: "layered"`: the six expression frames contain the same character and outfit without the hair isolated into `front-hair.png`, and `front-hair.png` contains only movable front/side hair in its exact overlay position—never the face, body, accessory, costume, or whole source image. When a clean separation cannot be proven after one strict repair attempt, use the documented `hairMode: "static"` fallback: retain the complete hair in all six expression frames and write a same-canvas transparent `front-hair.png`. Never install a torn or rectangular hair layer merely to provide hair motion.
 
 Use genuine alpha in final files. Image generation often paints a fake checkerboard instead of transparency, so request a perfectly flat `#00FF00` background for every generated working image. Never request or accept a checkerboard. The compose script converts green to alpha.
 
@@ -30,7 +30,7 @@ Use genuine alpha in final files. Image generation often paints a fake checkerbo
 Use `work/` for intermediate images. Do not create the six final frames by copying or renaming one file.
 
 1. Inspect the source and identify face, eye centers, mouth, chin, neck pivot, rigid costume, and hair that can move without exposing a hole.
-2. Establish one canonical composition at the source crop and angle. Preserve identity, skin tone, costume, accessories, palette, linework, and rendering style. Do not beautify, redesign, mirror, recrop, or change pose.
+2. Establish one canonical composition at the source angle. Preserve identity, skin tone, costume, accessories, palette, linework, and rendering style. Do not beautify, redesign, mirror, or change pose. Extend the canvas without scaling or reframing when needed so the intact silhouette has at least 2.5% transparent padding at the top and both sides. Record the alpha bounding box before generating expressions; a clipped head, ponytail, hair tip, shoulder, or rectangular edge is a failure. Transparent safety padding must not make the installed character look smaller: the desktop derives its initial display scale from this visible alpha bounding box.
 3. Use an identity-preserving image edit to create `work/canonical-full.png`: eyes open, natural closed mouth, flat `#00FF00`, with the complete original hair intact. This is a background-removal/normalization edit, not a redraw. Both eyes, face angle, head silhouette, crop, costume, text, jewelry, and every rigid accessory must remain at the source positions.
 4. Derive `work/canonical-base.png` as a second edit of `work/canonical-full.png`: remove only a conservative movable front-hair/bang/side-lock section and paint the hidden scalp/forehead. Do not alter any other pixel intentionally; retain the ponytail, rigid/back hair, hair tie, pins, ears, jewelry, face, body, and costume.
 5. Derive each of these as an identity-preserving edit of that same canonical base and same canvas:
@@ -48,7 +48,7 @@ node .agents/skills/build-purupuru-avatar/scripts/extract-hair-layer.cjs \
   --output work/front-hair-source.png
 ```
 
-If this command reports that too much changed, regenerate `canonical-base.png` as a stricter local edit. Do not weaken or bypass extraction.
+If this command reports that too much changed, regenerate `canonical-base.png` once as a stricter local edit. Do not weaken or bypass extraction. If the second attempt still exposes a rectangular forehead patch, long straight cut, double hair, or changed identity, switch to `hairMode: "static"`: use the intact `canonical-full.png` as the base and hair reference, create a fully transparent same-canvas `front-hair-source.png`, and keep all hair motion disabled. Static mode is a quality fallback, not permission to skip the first clean layered attempt.
 
 8. Assemble localized variants deterministically. This freezes every pixel outside the eye/mouth regions and combines the closed-eye state with all mouth states:
 
@@ -70,7 +70,7 @@ node .agents/skills/build-purupuru-avatar/scripts/compose-variants.cjs \
 node .agents/skills/build-purupuru-avatar/scripts/validate-output.cjs output --require-hair-reference
 ```
 
-It checks alpha/chroma background, unique hashes, visible character/hair coverage, localized eye/mouth differences, registration drift, metadata, rig geometry, lower-face contamination, and pixel reconstruction against the intact hair reference. It also writes `output/qa-preview.png`, a 3×2 sheet with the hair overlaid.
+It checks alpha/chroma background, transparent safe margins, unique hashes, visible character/hair coverage, localized eye/mouth differences, registration drift, metadata, rig geometry, lower-face contamination, long axis-aligned clipping seams, and pixel reconstruction against the intact hair reference. It also writes `output/qa-preview.png`, a 3×2 sheet with the hair overlaid.
 
 10. Inspect `output/qa-preview.png` with the image-viewing tool. Confirm all six complete characters are visible, hair meets the scalp, both source eyes and the original face angle remain visible, eyes close in the lower row, mouth progresses closed → half → open in both rows, and nothing jumps between cells.
 11. On any validator or visual failure, regenerate the defective working image and repeat assembly/validation. Do not bypass a failure by copying, renaming, editing hashes, weakening the validator, deleting hair, or claiming completion.
@@ -85,6 +85,7 @@ Write this exact structure:
   "name": "短い名前",
   "personality": "日本語の性格・話し方（1〜3文）",
   "petPhrases": ["短い反応1", "短い反応2", "短い反応3"],
+  "hairMode": "layered",
   "rig": {
     "faceCenter": [512, 430],
     "eyeCenters": [[430, 410], [590, 410]],
@@ -95,7 +96,7 @@ Write this exact structure:
 }
 ```
 
-Use integer output-canvas coordinates. Require exactly two eye centers and the vertical order eyes → mouth → chin → neck. Infer a short Japanese name only if `request.json` has no `requestedName`. If `requestedPersonality` is present, preserve it as the character personality and derive three matching pet phrases without changing its intent; infer a concise personality only when it is empty. Do not make claims about real identity, age, ethnicity, religion, health, or other sensitive traits.
+Use integer output-canvas coordinates. `hairMode` must be `layered` or the documented `static` fallback. Require exactly two eye centers and the vertical order eyes → mouth → chin → neck. Infer a short Japanese name only if `request.json` has no `requestedName`. If `requestedPersonality` is present, preserve it as the character personality and derive three matching pet phrases without changing its intent; infer a concise personality only when it is empty. Do not make claims about real identity, age, ethnicity, religion, health, or other sensitive traits.
 
 ## Completion gate
 
@@ -103,11 +104,11 @@ Reject and repair all of the following:
 
 - identical/copy-pasted expression files;
 - fake checkerboard, opaque scenery, rectangular matte, or green fringe;
-- empty body, empty hair, full-character hair layer, or hair covering the composite;
+- empty body, a full-character hair layer, or hair covering the composite; an empty `front-hair.png` is allowed only with explicit `hairMode: "static"` and complete hair in every expression frame;
 - costume/crop/pose drift or edits outside the eyes and mouth;
 - a face angle, eye count, hair silhouette, ponytail, hair pin, or accessory position that differs from the source;
 - unchanged half/open mouth or unchanged closed eyes;
-- seams, double hair, shifted/redrawn hair, exposed forehead holes, newly added text, or watermarks;
+- seams, long straight/rectangular cut boundaries, double hair, shifted/redrawn hair, exposed forehead holes, newly added text, or watermarks;
 - incorrect rig positions or a preview that does not show six complete states.
 
 Return only a compact JSON summary with `status`, `name`, `personality`, and `outputDirectory` after the validator exits successfully and the preview passes visual inspection.

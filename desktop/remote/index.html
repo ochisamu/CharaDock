@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#edf1f7" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+  <meta name="apple-mobile-web-app-title" content="CharaDock" />
+  <title>CharaDock Link</title>
+  <link rel="manifest" href="/manifest.webmanifest" />
+  <link rel="apple-touch-icon" href="/app-icon.png" />
+  <link rel="stylesheet" href="/remote.css" />
+</head>
+<body>
+  <main class="remote-shell">
+    <header class="topbar">
+      <div class="brand"><span class="brand-dot" aria-hidden="true"></span><span>CharaDock <strong>Link</strong></span></div>
+      <div id="connectionChip" class="connection-chip is-offline" role="status"><span></span><b>未接続</b></div>
+    </header>
+
+    <section id="pairingView" class="pairing-view" aria-labelledby="pairingTitle">
+      <div class="pairing-card">
+        <p class="eyebrow">PRIVATE LAN BETA</p>
+        <h1 id="pairingTitle">スマートフォンを接続</h1>
+        <p id="pairingMessage">CharaDockの設定画面にあるQRコードを読み取ってください。</p>
+        <form id="pairingCodeForm" class="pairing-code-form">
+          <label for="pairingCodeInput">ペアリングコード</label>
+          <div><input id="pairingCodeInput" type="text" inputmode="text" autocomplete="one-time-code" maxlength="12" placeholder="8桁のコード" /><button type="submit">接続</button></div>
+        </form>
+        <button id="retryPairButton" class="primary-button" type="button" hidden>もう一度接続</button>
+        <small>信頼できる自宅・社内Wi-Fiでのみ使用してください。マイクと画面撮影・ブラウザ・PC操作への承認は、Tailscale HTTPS接続時だけ利用できます。</small>
+      </div>
+    </section>
+
+    <section id="companionView" class="companion-view" hidden>
+      <section id="approvalCard" class="approval-card" aria-labelledby="approvalTitle" hidden>
+        <div class="approval-card-heading"><span id="approvalTypeIcon" aria-hidden="true">!</span><div><small id="approvalScope"></small><h2 id="approvalTitle">操作の確認</h2></div><time id="approvalCountdown"></time></div>
+        <p id="approvalQuestion" class="approval-question"></p>
+        <p id="approvalDetail" class="approval-detail"></p>
+        <p id="approvalSecurityHint" class="approval-security-hint"></p>
+        <div class="approval-actions"><button id="denyApprovalButton" type="button">拒否</button><button id="approveApprovalButton" type="button">今回だけ許可</button></div>
+      </section>
+      <section class="avatar-stage" aria-label="キャラクター">
+        <button id="avatarTapTarget" class="avatar-tap-target" type="button" aria-label="キャラクターに触れる">
+          <span id="avatarReactionShell" class="avatar-reaction-shell">
+            <span id="avatarMotion" class="avatar-motion">
+              <img id="avatarBackHair" class="avatar-layer back-hair" alt="" draggable="false" />
+              <img id="avatarFace" class="avatar-layer face" alt="キャラクター" draggable="false" />
+              <img id="avatarFrontHair" class="avatar-layer front-hair" alt="" draggable="false" />
+            </span>
+          </span>
+        </button>
+        <div id="responseBubble" class="response-bubble" role="status" aria-live="polite">
+          <small id="responseSpeaker">CharaDock</small>
+          <div class="response-text-row"><p id="responseText">スマートフォンから話しかけられるよ。</p><button id="bubbleExpandButton" class="bubble-expand-button" type="button" aria-label="全文と履歴を表示" hidden>全文</button></div>
+          <div id="activityIndicator" class="activity-indicator" hidden><i></i><i></i><i></i><span>処理中</span></div>
+          <div id="artifactList" class="artifact-list"></div>
+        </div>
+        <button id="workProgressCard" class="work-progress-card" type="button" aria-haspopup="dialog" hidden>
+          <span class="work-progress-state"><i></i><strong id="workProgressLabel">Work実行中</strong></span>
+          <span id="workProgressActivity" class="work-progress-activity"></span>
+          <time id="workProgressElapsed">0:00</time>
+        </button>
+      </section>
+
+      <section class="control-dock" aria-label="メッセージ操作">
+        <div class="mode-row">
+          <div class="mode-switch" role="radiogroup" aria-label="モード">
+            <button id="chatModeButton" class="is-active" type="button" role="radio" aria-checked="true">Chat</button>
+            <button id="workModeButton" type="button" role="radio" aria-checked="false">Work</button>
+          </div>
+          <button id="microphoneButton" class="round-button microphone-button" type="button" aria-label="音声入力またはLiveを開始" title="音声入力"><span class="remote-icon remote-icon-microphone" aria-hidden="true"></span></button>
+          <button id="audioButton" class="round-button" type="button" aria-label="スマートフォンで音声を再生" title="スマートフォンで音声を再生"><span class="remote-icon remote-icon-voice" aria-hidden="true"></span></button>
+          <button id="historyButton" class="round-button" type="button" aria-label="履歴を表示" title="履歴を表示"><span class="remote-icon remote-icon-history" aria-hidden="true"></span></button>
+          <button id="settingsButton" class="round-button" type="button" aria-label="リモート設定" title="リモート設定"><span class="remote-icon remote-icon-settings" aria-hidden="true"></span></button>
+        </div>
+        <form id="messageForm" class="composer">
+          <textarea id="messageInput" rows="1" maxlength="12000" placeholder="メッセージを入力" enterkeyhint="send"></textarea>
+          <button id="sendButton" class="send-button" type="submit" aria-label="送信"><span class="remote-icon remote-icon-send" aria-hidden="true"></span></button>
+          <button id="interruptButton" class="interrupt-button" type="button" aria-label="中断" hidden><span class="remote-icon remote-icon-stop" aria-hidden="true"></span></button>
+        </form>
+        <p id="composerHint" class="composer-hint">ローカルLAN内だけで接続</p>
+      </section>
+      <audio id="remoteLiveAudio" autoplay playsinline></audio>
+    </section>
+  </main>
+
+  <dialog id="historySheet" class="bottom-sheet history-sheet">
+    <header class="sheet-header"><div><p class="eyebrow">CONTINUITY</p><h2>会話とWork</h2></div><button id="closeHistoryButton" type="button" aria-label="閉じる">×</button></header>
+    <div class="history-scroll">
+      <section class="current-response-card"><small>現在のセリフ</small><p id="historyCurrentText"></p></section>
+      <div id="historyList" class="history-list"></div>
+      <button id="disconnectButton" class="danger-link" type="button">このスマートフォンの接続を解除</button>
+    </div>
+  </dialog>
+
+  <dialog id="workProgressSheet" class="bottom-sheet work-progress-sheet">
+    <header><div><p class="eyebrow">LIVE PROGRESS</p><h2 id="workProgressTitle">Workの進捗</h2></div><button id="closeWorkProgressButton" type="button" aria-label="閉じる">×</button></header>
+    <div class="work-progress-scroll">
+      <section class="work-request-card"><small>依頼</small><p id="workProgressRequest"></p></section>
+      <ol id="workProgressTimeline" class="work-progress-timeline"></ol>
+      <section id="workProgressResultCard" class="work-result-card" hidden><small>結果</small><p id="workProgressResult"></p></section>
+    </div>
+    <form id="progressFollowUpForm" class="progress-follow-up-form">
+      <input id="progressFollowUpInput" type="text" maxlength="12000" placeholder="追加の指示を差し込む" />
+      <button type="submit">差し込む</button>
+    </form>
+  </dialog>
+
+  <dialog id="settingsSheet" class="bottom-sheet settings-sheet">
+    <header><div><p class="eyebrow">REMOTE</p><h2>リモート設定</h2></div><button id="closeSettingsButton" type="button" aria-label="閉じる">×</button></header>
+    <div class="remote-settings-form">
+      <label class="settings-field"><span>キャラクター</span><select id="characterSelect"></select></label>
+      <label class="settings-field"><span>応答音声</span><select id="responseModeSelect"><option value="tts">通常TTS</option><option value="live">GPT-Live</option></select></label>
+      <label id="ttsProviderField" class="settings-field"><span id="ttsProviderLabel">TTS方式</span><select id="ttsProviderSelect"></select></label>
+      <section id="ttsModelSettings" class="remote-model-settings" aria-labelledby="ttsModelSettingsTitle" hidden>
+        <div class="remote-model-heading"><span id="ttsModelSettingsTitle">音声モデル</span><small>選択中のキャラクターに保存</small></div>
+        <div id="ttsModelFields" class="remote-model-fields"></div>
+        <p id="ttsModelHint" class="settings-hint"></p>
+      </section>
+      <label id="realtimeVoiceField" class="settings-field" hidden><span>GPT-Liveの声</span><select id="realtimeVoiceSelect"></select></label>
+      <label class="settings-toggle"><span><strong>PCでも音を出す</strong><small>初期状態はOFF。必要なときだけPC側でも同時再生します</small></span><input id="pcAudioToggle" type="checkbox" /></label>
+      <label class="settings-toggle"><span><strong>この端末で回答音声を再生</strong><small>初期状態はON。端末の音量を使い、ここでは任意にミュートできます</small></span><input id="phoneAudioToggle" type="checkbox" /></label>
+      <section class="remote-app-settings" aria-labelledby="remoteAppSettingsTitle">
+        <div class="remote-model-heading"><span id="remoteAppSettingsTitle">この端末のアプリ設定</span><small>端末内に保存</small></div>
+        <button id="installAppButton" class="install-app-button" type="button" hidden>ホーム画面に追加</button>
+        <p id="installAppHint" class="settings-hint"></p>
+        <label class="settings-toggle"><span><strong>完了・承認待ちを通知</strong><small>CharaDock Linkを開いている間、画面外でも通知します</small></span><input id="notificationToggle" type="checkbox" /></label>
+        <label class="settings-toggle"><span><strong>Work・Live中は画面を点灯</strong><small>HTTPS接続かつ画面表示中にスリープを防ぎます</small></span><input id="wakeLockToggle" type="checkbox" /></label>
+      </section>
+      <p id="voiceRouteHint" class="settings-hint"></p>
+      <p id="microphoneSecurityHint" class="settings-hint"></p>
+      <p id="settingsStatus" class="settings-save-status" role="status" aria-live="polite" hidden></p>
+    </div>
+  </dialog>
+
+  <dialog id="previewDialog" class="preview-dialog">
+    <header><strong id="previewTitle">成果物</strong><button id="closePreviewButton" type="button" aria-label="閉じる">×</button></header>
+    <div id="previewBody" class="preview-body"></div>
+  </dialog>
+
+  <script src="/audio-envelope.js"></script>
+  <script src="/remote.js"></script>
+</body>
+</html>

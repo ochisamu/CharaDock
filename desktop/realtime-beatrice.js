@@ -9,9 +9,10 @@
   };
 
   class RealtimeBeatriceConverter {
-    constructor(api, onError = () => {}) {
+    constructor(api, onError = () => {}, onLevel = () => {}) {
       this.api = api;
       this.onError = onError;
+      this.onLevel = onLevel;
       this.context = null;
       this.output = null;
       this.decodeAudio = null;
@@ -26,21 +27,15 @@
       this.playbackSamples = 0;
       this.nextPlaybackTime = 0;
       this.playbackSources = new Set();
+      this.levelTimers = new Set();
+      this.playbackFlushTimer = 0;
+      this.muted = false;
     }
 
-    queuePlayback(value) {
-      const buffer = exactArrayBuffer(value);
-      if (!buffer || buffer.byteLength % Float32Array.BYTES_PER_ELEMENT) {
-        this.onError(new Error("Beatrice 2の音声データ形式を処理できません。"));
-        return;
-      }
-      const samples = new Float32Array(buffer);
-      if (!samples.length) return;
-      this.playbackFrames.push(samples);
-      this.playbackSamples += samples.length;
-      // Schedule fewer, larger buffers to avoid one main-thread audio source
-      // per 10 ms native frame while retaining a short realtime jitter buffer.
-      if (this.playbackSamples < 1920) return;
+    flushPlayback() {
+      clearTimeout(this.playbackFlushTimer);
+      this.playbackFlushTimer = 0;
+      if (!this.playbackSamples) return;
       const context = this.context;
       if (!context || context.state === "closed") return;
       const combined = new Float32Array(this.playbackSamples);
@@ -59,10 +54,40 @@
       if (!this.nextPlaybackTime || this.nextPlaybackTime < context.currentTime + .02) {
         this.nextPlaybackTime = context.currentTime + .08;
       }
-      playback.start(this.nextPlaybackTime);
+      const playbackTime = this.nextPlaybackTime;
+      playback.start(playbackTime);
       this.nextPlaybackTime += combined.length / 48000;
+      let sum = 0;
+      for (const sample of combined) sum += sample * sample;
+      const rms = Math.sqrt(sum / combined.length);
+      const levelTimer = setTimeout(() => {
+        this.levelTimers.delete(levelTimer);
+        this.onLevel(rms, performance.now());
+      }, Math.max(0, (playbackTime - context.currentTime) * 1000));
+      this.levelTimers.add(levelTimer);
       this.playbackSources.add(playback);
-      playback.onended = () => this.playbackSources.delete(playback);
+      playback.onended = () => {
+        this.playbackSources.delete(playback);
+        if (!this.playbackSources.size && !this.playbackSamples) this.onLevel(0, performance.now());
+      };
+    }
+
+    queuePlayback(value) {
+      const buffer = exactArrayBuffer(value);
+      if (!buffer || buffer.byteLength % Float32Array.BYTES_PER_ELEMENT) {
+        this.onError(new Error("Beatrice 2の音声データ形式を処理できません。"));
+        return;
+      }
+      const samples = new Float32Array(buffer);
+      if (!samples.length) return;
+      this.playbackFrames.push(samples);
+      this.playbackSamples += samples.length;
+      // Schedule fewer, larger buffers to avoid one main-thread audio source
+      // per 10 ms native frame, but flush a short final group after an audio
+      // gap so sentence tails are not discarded.
+      clearTimeout(this.playbackFlushTimer);
+      if (this.playbackSamples >= 1920) this.flushPlayback();
+      else this.playbackFlushTimer = setTimeout(() => this.flushPlayback(), 26);
     }
 
     pushCaptureSamples(samples) {
@@ -144,6 +169,7 @@
       decodeAudio.srcObject = stream;
       this.context = context;
       this.output = output;
+      output.gain.value = this.muted ? 0 : 1;
       this.decodeAudio = decodeAudio;
       this.unsubscribeAudio = this.api.onBeatriceAudio((audio) => this.queuePlayback(audio));
       this.unsubscribeError = this.api.onBeatriceError((message) => this.onError(new Error(String(message))));
@@ -153,6 +179,11 @@
       const track = stream.getAudioTracks()[0];
       if (!track) throw new Error("Realtimeの回答音声トラックがありません。");
       this.startCapture(track);
+    }
+
+    setMuted(value) {
+      this.muted = Boolean(value);
+      if (this.output) this.output.gain.setTargetAtTime(this.muted ? 0 : 1, this.context?.currentTime || 0, .012);
     }
 
     async stop() {
@@ -175,6 +206,10 @@
         try { playback.disconnect(); } catch {}
       }
       this.playbackSources.clear();
+      for (const timer of this.levelTimers) clearTimeout(timer);
+      this.levelTimers.clear();
+      clearTimeout(this.playbackFlushTimer);
+      this.playbackFlushTimer = 0;
       this.playbackFrames = [];
       this.playbackSamples = 0;
       this.nextPlaybackTime = 0;
@@ -182,6 +217,7 @@
       this.context = null;
       this.output = null;
       this.decodeAudio = null;
+      this.onLevel(0, performance.now());
       await this.api.stopBeatrice?.().catch(() => {});
     }
   }

@@ -64,6 +64,16 @@ CharaDockは、[rotejin/PuruPuruPNGTuber](https://github.com/rotejin/PuruPuruPNG
 
 一時的な依頼、推測、外部サイトの内容、秘密情報、住所・連絡先・センシティブな属性は長期メモリへ保存しません。メモリはキャラクター間で共有されません。
 
+### CharaDock Link — リモートアクセス（実験的）
+
+設定から明示的に有効化すると、同じプライベートWi-Fiにあるスマートフォンなどへキャラ中心の画面を表示できます。短時間だけ有効なQRコードで端末ごとにペアリングすると、CharaDock側で解除するまでは再スキャンなしで再接続できます。文字によるChat、個別に許可したWork、経過時間付きの進捗タイムライン、現在の応答を安全に中断して送るフォローアップ、全画面履歴、成果物カードを利用できます。キャラクター、準備済みの通常TTS方式、方式ごとの音声モデルをリモート画面から切り替え、モデルはキャラクターごとに保存されます。PCとスマートフォンの再生も個別にON / OFFできます。GPT-Liveはスマートフォンから開始・停止でき、回答音声と字幕もスマートフォンへ直接届きます。HTTPSで開いた場合はスマートフォンのマイクをそのままLive入力に利用できます。スマートフォン直結LiveではBeatrice 2を経由せず、選択したGPT-Live音声を再生します。
+
+確認済みのTailscale HTTPS接続では、画面撮影、ブラウザ操作、前面のコンピューター操作を、期限付きの承認カードとしてスマートフォンへ表示して回答できます。同じ安全な経路からCharaDock Linkをホーム画面PWAとして追加し、Work・Live中の画面点灯や、Linkがバックグラウンドで動作している間の完了・承認待ち通知を任意で有効化できます。Tailscale Serveが有効な間は、ペアリングQRコードとコピーURLもローカルIPから確認済みのHTTPS接続先へ自動的に切り替わります。通常LANのHTTP接続から機密性の高い承認へ回答することはできません。
+
+ペアリングURLは最初の端末が使用するか10分経過すると無効になります。ペアリング済み端末の信頼情報はPCへ安全なハッシュとして保存され、短い操作セッションが切れても自動で再接続します。端末の信頼期限は180日で、PC側から端末ごとまたは一括でいつでも解除できます。Cookie削除、信頼期限切れ、解除後は再ペアリングが必要です。
+
+通常のローカルLAN経路はHTTPのままなので文字操作用です。ブラウザのマイクAPIにはHTTPSが必要なため、音声入力や外出先からの利用には、任意で[Tailscale Serve](https://tailscale.com/docs/features/tailscale-serve)を利用できます。設定画面からローカル待受ポートとTailscale HTTPSポートを選び、状態確認、開始、停止まで行えます。CharaDockは既存のServe設定を検出した場合は上書きせず、CharaDock自身が開始した設定だけを停止します。Tailscaleは必須ではなく、ルーターのポート開放や公開用のTailscale Funnelは使用しないでください。
+
 ### 声を選べる
 
 音声入力方式は設定で明示的に選びます。Codex Realtimeを自動起動したり、失敗時に別方式へ勝手に切り替えたりしません。
@@ -265,6 +275,7 @@ npm run site:build
 
 ## コントリビューション
 
+- [GitHub SponsorsでCharaDockの開発を支援](https://github.com/sponsors/ochisamu)
 - [Contributing](./.github/CONTRIBUTING.md)
 - [Security policy](./.github/SECURITY.md)
 - [Support](./.github/SUPPORT.md)

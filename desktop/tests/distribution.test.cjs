@@ -152,7 +152,9 @@ test("Beatrice integration packages only CharaDock's host helper", () => {
   assert.match(realtime, /new MediaStreamTrackProcessor\(\{ track \}\)/);
   assert.match(mascot, /new MediaStreamTrackProcessor\(\{ track \}\)/);
   assert.doesNotMatch(realtime, /createMediaStreamSource|createMediaElementSource/);
-  assert.doesNotMatch(mascot, /createMediaStreamSource\(stream\)|createMediaElementSource\(remoteAudio\)/);
+  const mascotBeatriceCapture = mascot.match(/const startRealtimeBeatriceCapture[\s\S]*?const startRealtimeBeatrice =/)?.[0] || "";
+  assert.doesNotMatch(mascotBeatriceCapture, /createMediaStreamSource\(stream\)|createMediaElementSource\(remoteAudio\)/);
+  assert.match(mascot, /startRealtimeOutputMeter\(stream\)/, "raw Live audio should be metered for lip sync through a silent sidechain");
   assert.doesNotMatch(realtime, /createObjectURL\(new Blob/);
   assert.doesNotMatch(mascot, /BEATRICE_WORKLET_SOURCE|createObjectURL\(new Blob/);
   const beatriceIpc = fs.readFileSync(path.join(projectRoot, "desktop", "main.cjs"), "utf8")
@@ -354,6 +356,39 @@ test("user-facing interaction modes are consistently named Chat and Work", () =>
   assert.match(control, /interactionModeBadge"\)\.textContent = state\.interactionMode === "work" \? "Work" : "Chat"/);
   assert.match(mascot, /desktopMascotModeButton[\s\S]*?>Chat<\/button>/);
   assert.match(mascot, /modeButton\.textContent = workMode \? "Work" : "Chat"/);
+});
+
+test("remote access exposes compact avatar dialogue, device controls, and Live routing", () => {
+  const controlHtml = fs.readFileSync(path.join(projectRoot, "desktop", "control.html"), "utf8");
+  const controlJs = fs.readFileSync(path.join(projectRoot, "desktop", "control.js"), "utf8");
+  const remoteHtml = fs.readFileSync(path.join(projectRoot, "desktop", "remote", "index.html"), "utf8");
+  const remoteCss = fs.readFileSync(path.join(projectRoot, "desktop", "remote", "remote.css"), "utf8");
+  const remoteJs = fs.readFileSync(path.join(projectRoot, "desktop", "remote", "remote.js"), "utf8");
+  assert.match(controlHtml, /data-page="remote"[\s\S]*ui-symbol-settings[\s\S]*リモート/);
+  for (const id of ["remoteDeviceList", "remotePcAudioToggle", "remoteResponseModeSelect", "remotePairingCode", "remotePairingTransport", "remotePairingRouteHint", "remotePortInput", "remoteTailscaleHttpsPortInput", "startRemoteTailscaleButton", "stopRemoteTailscaleButton"]) assert.match(controlHtml, new RegExp(`id="${id}"`));
+  assert.match(controlJs, /revokeRemoteSession\(device\.id\)/);
+  assert.match(controlJs, /startRemoteTailscale\(\)/);
+  for (const id of ["bubbleExpandButton", "historySheet", "settingsSheet", "microphoneButton", "remoteLiveAudio", "characterSelect", "ttsProviderSelect", "realtimeVoiceSelect", "pcAudioToggle"]) assert.match(remoteHtml, new RegExp(`id="${id}"`));
+  assert.match(remoteCss, /-webkit-line-clamp:\s*4/);
+  assert.match(remoteCss, /@keyframes avatar-idle/);
+  assert.doesNotMatch(remoteHtml, /id="avatarFaceBlend"/);
+  assert.doesNotMatch(remoteCss, /\.avatar-motion\.is-speaking\s*\{[^}]*animation-duration/);
+  assert.match(remoteCss, /\.history-sheet[^}]*height:\s*100dvh/);
+  assert.match(remoteJs, /character\?\.motion/);
+  assert.match(remoteJs, /\["delta", "realtime-caption"\]/);
+  assert.match(remoteJs, /\/api\/live\/start/);
+  assert.match(remoteJs, /getUserMedia/);
+  assert.match(remoteJs, /waitForIceGatheringComplete\(peer\)/);
+  assert.match(remoteJs, /charadock\.remote\.audio"\) !== "0"/);
+  assert.match(remoteJs, /gain\.gain\.value = audioEnabled && !liveBeatriceActive \? 1 : 0/);
+  assert.match(remoteJs, /\/api\/live\/beatrice\/audio/);
+  assert.match(remoteJs, /\/api\/live\/beatrice\/stop/);
+  assert.match(remoteJs, /createThreeStageMouthTracker/);
+  assert.match(remoteJs, /getFloatTimeDomainData/);
+  assert.match(remoteJs, /dictationArmed/);
+  assert.match(remoteJs, /scheduleDictationResume/);
+  assert.match(remoteHtml, /PCでも音を出す<\/strong><small>初期状態はOFF/);
+  assert.match(remoteHtml, /この端末で回答音声を再生<\/strong><small>初期状態はON/);
 });
 
 test("WSL can launch Windows Electron from a persistent isolated development mirror", () => {

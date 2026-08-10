@@ -1,0 +1,27 @@
+{
+  "id": "/",
+  "name": "CharaDock Link",
+  "short_name": "CharaDock",
+  "description": "Talk to and work with your CharaDock character from a paired device.",
+  "lang": "ja",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#edf1f7",
+  "theme_color": "#edf1f7",
+  "icons": [
+    {
+      "src": "/app-icon.png",
+      "sizes": "1024x1024",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/app-icon.png",
+      "sizes": "1024x1024",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ]
+}

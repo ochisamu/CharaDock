@@ -64,6 +64,16 @@ CharaDock is an unofficial derivative of [rotejin/PuruPuruPNGTuber](https://gith
 
 Temporary requests, guesses, content copied from external websites, secrets, contact details, addresses, and sensitive attributes are not stored as long-term memory. Memories are never shared between characters.
 
+### CharaDock Link — experimental remote access
+
+From Settings, you can explicitly enable an avatar-first remote view on the same private Wi-Fi. Pair each device with a short-lived QR code; an approved device then reconnects without rescanning until it is removed from CharaDock. You can send text to Chat or an opt-in Work mode, inspect a live activity timeline and elapsed time, queue a follow-up that safely interrupts the current turn, open full-screen history, and preview output cards. The phone can switch characters, ready standard-TTS providers, and provider-specific voice models saved for each character, with independent PC and phone playback. GPT-Live can be started and stopped on the phone, with response audio and synchronized captions delivered directly to that phone. When opened over HTTPS, the phone microphone can feed Live directly. A phone-direct Live session plays the selected GPT-Live voice without the PC-side Beatrice 2 conversion stage.
+
+Over a verified Tailscale HTTPS connection, screen-capture, browser-control, and foreground computer-control requests appear as expiring approval cards on the phone. The same secure route can install CharaDock Link as a Home Screen PWA, optionally keep the display awake during Work or Live, and show completion or approval-waiting notifications while Link remains active in the background. When Tailscale Serve is active, the pairing QR code and copied pairing URL automatically switch from the LAN address to the verified HTTPS address. Plain LAN HTTP deliberately cannot answer sensitive approval requests.
+
+The pairing URL expires after its first use or 10 minutes. Trusted-device records are stored on the PC as hashes, so a paired device reconnects automatically after its short active session expires. Device trust lasts for 180 days and can be revoked individually or globally at any time. Pair again after clearing the browser cookie, trust expiry, or revocation.
+
+The normal local-LAN route remains plain HTTP and is intended for text control. Browser microphone APIs require HTTPS, so voice input and remote access outside the LAN can optionally use [Tailscale Serve](https://tailscale.com/docs/features/tailscale-serve). Settings lets you choose both the local listening port and Tailscale HTTPS port, then inspect, start, and stop the route. CharaDock refuses to overwrite an existing Serve root and stops only a route it started. Tailscale is optional; do not forward the router port or use the public Tailscale Funnel mode.
+
 ### Choose how the character listens and speaks
 
 The input provider is always selected explicitly. CharaDock does not start Codex Realtime automatically or silently fall back to another provider after a failure.
@@ -265,6 +275,7 @@ The source illustrations and derived variants for Kohaku, Sepia, Towa, and Sage 
 
 ## Contributing
 
+- [Sponsor CharaDock development](https://github.com/sponsors/ochisamu)
 - [Contributing](./.github/CONTRIBUTING.md)
 - [Security policy](./.github/SECURITY.md)
 - [Support](./.github/SUPPORT.md)

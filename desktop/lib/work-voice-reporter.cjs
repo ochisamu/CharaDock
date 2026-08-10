@@ -74,7 +74,10 @@ function japaneseCommitment(value) {
   if (/(?:する|させる|進める|作る|直す|調べる|試す|探す|消す|話す|出す|撮る|まとめる|開く|読み込む|書く|読む|選ぶ|使う|見る|入れる|変える|組み込む|確認する|更新する|対応する|生成する|変換する|ビルドする|テストする|プレビューする)$/u.test(text)) {
     return `${text}ね。`;
   }
-  return `${text}から取りかかるね。`;
+  if (/[?？]$/u.test(String(value || "")) || /^(?:何|なに|どう|どこ|いつ|誰|だれ|なぜ|どうして)/u.test(text)) {
+    return "内容を確認して答えるね。";
+  }
+  return `${text}について進めるね。`;
 }
 
 function englishCommitment(value) {

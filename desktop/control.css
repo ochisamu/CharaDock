@@ -736,6 +736,64 @@ input[type="range"]:active::-webkit-slider-thumb { transform: scale(1.16); box-s
 .nested-settings { display: grid; gap: 12px; margin-top: -4px; padding: 13px; border: 1px solid var(--line); border-radius: 12px; background: color-mix(in srgb, var(--field) 74%, transparent); transition: opacity 140ms ease; }
 .nested-settings.is-disabled { opacity: .45; }
 .nested-settings .switch-row { min-height: 32px; }
+.remote-status-badge { align-self: center; padding: 6px 10px; color: var(--muted); background: var(--surface-soft); border: 1px solid var(--line); border-radius: 999px; font-size: 9px; font-weight: 750; }
+.remote-status-badge.is-active { color: var(--success); border-color: color-mix(in srgb, var(--success) 34%, var(--line)); background: color-mix(in srgb, var(--success) 9%, transparent); }
+.remote-access-card { gap: 0; overflow: hidden; padding: 0; }
+.remote-master-switch { min-height: 76px; padding: 18px 20px; }
+.remote-enabled-settings { display: grid; gap: 18px; padding: 0 20px 20px; border-top: 1px solid var(--line); }
+.remote-enabled-settings[hidden] { display: none; }
+.remote-pairing-layout { display: grid; grid-template-columns: 190px minmax(0, 1fr); gap: 22px; align-items: center; padding-top: 20px; }
+.remote-qr-panel { position: relative; display: grid; place-items: center; width: 190px; aspect-ratio: 1; overflow: hidden; background: #fff; border-radius: 18px; box-shadow: 0 12px 34px rgba(0,0,0,.2); }
+.remote-qr-panel img { display: block; width: 100%; height: 100%; padding: 8px; object-fit: contain; }
+.remote-qr-panel img:not([src]), .remote-qr-panel img[src=""] { display: none; }
+.remote-qr-panel span { padding: 24px; color: #666; font-size: 10px; text-align: center; }
+.remote-qr-panel:has(img[src]:not([src=""])) span { display: none; }
+.remote-pairing-kicker { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 3px; }
+.remote-pairing-kicker .eyebrow { margin: 0; }
+.remote-route-badge { flex: 0 0 auto; padding: 4px 7px; color: var(--text-tertiary); background: var(--field); border: 1px solid var(--line); border-radius: 999px; font-size: 8px; font-weight: 800; letter-spacing: .035em; }
+.remote-route-badge.is-secure { color: var(--success); border-color: color-mix(in srgb, var(--success) 34%, var(--line)); background: color-mix(in srgb, var(--success) 9%, transparent); }
+.remote-pairing-copy h2 { margin: 0 0 8px; font-size: 19px; letter-spacing: -.02em; }
+.remote-pairing-copy > p:not(.eyebrow) { max-width: 580px; margin: 0 0 14px; color: var(--muted); font-size: 10px; line-height: 1.65; }
+.remote-pairing-copy .remote-firewall-hint { margin-top: 9px; font-size: 9px; }
+.remote-url-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
+.remote-url-row code { display: block; min-width: 0; padding: 10px 12px; overflow: hidden; color: var(--text-secondary); background: var(--field); border: 1px solid var(--line); border-radius: 10px; font: 10px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; text-overflow: ellipsis; white-space: nowrap; }
+.remote-route-hint { min-height: 1.5em; margin: 7px 0 0; color: var(--text-tertiary); font-size: 9px; font-weight: 600; line-height: 1.5; }
+.remote-route-hint.is-secure { color: var(--success); }
+.remote-pairing-code { display: grid; grid-template-columns: auto 1fr; align-items: baseline; gap: 4px 12px; margin-top: 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 11px; background: var(--field); }
+.remote-pairing-code span { color: var(--text-secondary); font-size: 9px; font-weight: 700; }
+.remote-pairing-code strong { font: 750 17px/1.2 ui-monospace, SFMono-Regular, Consolas, monospace; letter-spacing: .1em; }
+.remote-pairing-code small { grid-column: 1 / -1; color: var(--text-tertiary); font-size: 9px; }
+.remote-options { grid-template-columns: repeat(2, minmax(0, 1fr)); padding: 16px; background: var(--field); border: 1px solid var(--line); border-radius: 14px; }
+.remote-options > label:not(.switch-row), .remote-tailscale-note > label { display: grid; gap: 6px; color: var(--text-secondary); font-size: 10px; font-weight: 680; }
+.remote-options input[type="number"] { width: 100%; min-height: 35px; border: 1px solid var(--line); border-radius: 9px; padding: 0 10px; color: var(--text); background: var(--surface); }
+.remote-options .switch-row { min-height: 52px; }
+.remote-tailscale-note { grid-column: 1 / -1; padding: 13px 14px; border: 1px solid color-mix(in srgb, var(--accent) 24%, var(--line)); border-radius: 12px; background: color-mix(in srgb, var(--accent) 6%, var(--surface)); }
+.remote-tailscale-note strong { font-size: 11px; }
+.remote-tailscale-note p { margin: 5px 0 0; color: var(--text-secondary); font-size: 9px; line-height: 1.6; }
+.remote-tailscale-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.remote-tailscale-note > label { margin-top: 11px; }
+.remote-tailscale-note > code { display: block; margin-top: 10px; padding: 8px 10px; overflow-x: auto; border-radius: 8px; color: var(--text-secondary); background: var(--field); font: 9px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; user-select: all; white-space: nowrap; }
+.remote-tailscale-note > a { display: inline-block; margin-top: 10px; color: var(--accent); font-size: 10px; font-weight: 700; }
+.remote-tailscale-actions { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 11px; }
+.remote-tailscale-actions .button { min-height: 31px; padding: 0 11px; font-size: 9px; }
+.remote-device-section { display: grid; gap: 12px; padding: 16px; border: 1px solid var(--line); border-radius: 14px; background: color-mix(in srgb, var(--surface-soft) 72%, transparent); }
+.remote-device-section .section-row { align-items: center; }
+.remote-device-section .section-row small { display: block; margin-top: 3px; color: var(--muted); font-size: 9px; font-weight: 500; }
+.remote-device-list { display: grid; gap: 8px; }
+.remote-device-empty { margin: 0; padding: 15px; color: var(--muted); border: 1px dashed var(--line); border-radius: 11px; text-align: center; font-size: 10px; }
+.remote-device-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 12px 13px; border: 1px solid var(--line); border-radius: 12px; background: var(--field); }
+.remote-device-copy { min-width: 0; }
+.remote-device-title { display: flex; align-items: center; gap: 7px; }
+.remote-device-title i { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
+.remote-device-title i.is-connected { background: var(--success); box-shadow: 0 0 0 4px color-mix(in srgb, var(--success) 14%, transparent); }
+.remote-device-copy strong { display: block; overflow: hidden; color: var(--text-secondary); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.remote-device-copy small { display: block; margin-top: 4px; color: var(--muted); font-size: 9px; }
+.remote-device-remove { min-height: 30px; padding: 0 10px; border: 1px solid color-mix(in srgb, var(--danger) 32%, var(--line)); border-radius: 9px; color: var(--danger); background: transparent; font-size: 9px; font-weight: 700; }
+.remote-actions { display: flex; justify-content: flex-end; gap: 9px; }
+.remote-security-note { display: flex; gap: 13px; margin-top: 14px; padding: 15px 17px; color: var(--muted); background: color-mix(in srgb, var(--accent) 5%, var(--surface)); border: 1px solid var(--line); border-radius: 15px; }
+.remote-security-note > .ui-symbol { width: 23px; height: 23px; color: var(--accent); }
+.remote-security-note strong { color: var(--text-secondary); font-size: 11px; }
+.remote-security-note p { margin: 4px 0 0; font-size: 9px; line-height: 1.65; }
 .tts-settings, .tts-provider-settings { display: grid; gap: 11px; }
 .tts-settings { padding: 13px; background: var(--field); border: 1px solid var(--line); border-radius: 13px; }
 .tts-provider-settings[hidden] { display: none; }
@@ -951,6 +1009,9 @@ input[type="range"]:active::-webkit-slider-thumb { transform: scale(1.16); box-s
   .beatrice-character-footer { align-items: flex-start; flex-direction: column; }
   .page-section-nav { display: flex; width: 100%; }
   .web-preview-launch-controls { grid-template-columns: 1fr; }
+  .remote-pairing-layout { grid-template-columns: 1fr; }
+  .remote-qr-panel { width: min(210px, 100%); justify-self: center; }
+  .remote-options { grid-template-columns: 1fr; }
 }
 
 @media (prefers-color-scheme: light) {

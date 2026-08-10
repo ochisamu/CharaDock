@@ -52,6 +52,8 @@ test("work acknowledgements are content-aware", () => {
     "名古屋の天気ダッシュボードを作るね。",
   );
   assert.notEqual(nagoya, osaka);
+  assert.equal(workAcknowledgementFallback("これって何？"), "内容を確認して答えるね。");
+  assert.doesNotMatch(workAcknowledgementFallback("ありがとう"), /取りかか/);
 });
 
 test("work announcements never speak links, paths, or code fences", () => {

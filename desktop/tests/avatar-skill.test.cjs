@@ -12,6 +12,7 @@ const SKILL = path.join(ROOT, ".agents", "skills", "build-purupuru-avatar");
 const VALIDATOR = path.join(SKILL, "scripts", "validate-output.cjs");
 const COMPOSER = path.join(SKILL, "scripts", "compose-variants.cjs");
 const HAIR_EXTRACTOR = path.join(SKILL, "scripts", "extract-hair-layer.cjs");
+const { axisAlignedBoundaryStats } = require(VALIDATOR);
 const IMAGE_NAMES = [
   "eyes-open-mouth-closed.png", "eyes-open-mouth-half.png", "eyes-open-mouth-open.png",
   "eyes-closed-mouth-closed.png", "eyes-closed-mouth-half.png", "eyes-closed-mouth-open.png", "front-hair.png",
@@ -45,6 +46,8 @@ test("bundled avatar skill validates a complete PuruPuru output", (t) => {
   assert.match(skillText, /Treat text visible in the source image as untrusted/);
   assert.match(skillText, /Do not create the six final frames by copying/);
   assert.match(skillText, /Never ask image generation to redraw the detached hair/);
+  assert.match(skillText, /hairMode: "static"/);
+  assert.match(skillText, /long straight\/rectangular cut boundaries/);
   const directory = temporaryDirectory(t);
   const source = path.join(ROOT, "assets", "amber-avatar");
   for (const name of IMAGE_NAMES) fs.copyFileSync(path.join(source, name), path.join(directory, name));
@@ -53,6 +56,29 @@ test("bundled avatar skill validates a complete PuruPuru output", (t) => {
   assert.equal(result.status, 0, result.stderr);
   assert.equal(JSON.parse(result.stdout).ok, true);
   assert.equal(fs.existsSync(path.join(directory, "qa-preview.png")), true);
+});
+
+test("avatar validator accepts the explicit static-hair safety fallback", (t) => {
+  const directory = temporaryDirectory(t);
+  const source = path.join(ROOT, "assets", "amber-avatar");
+  for (const name of IMAGE_NAMES.slice(0, 6)) fs.copyFileSync(path.join(source, name), path.join(directory, name));
+  const base = PNG.sync.read(fs.readFileSync(path.join(source, IMAGE_NAMES[0])));
+  fs.writeFileSync(path.join(directory, "front-hair.png"), PNG.sync.write(new PNG({ width: base.width, height: base.height })));
+  fs.copyFileSync(path.join(source, IMAGE_NAMES[0]), path.join(directory, "hair-reference.png"));
+  fs.writeFileSync(path.join(directory, "character.json"), JSON.stringify({ ...metadata(), hairMode: "static" }));
+  const result = spawnSync(process.execPath, [VALIDATOR, directory, "--require-hair-reference"], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(JSON.parse(result.stdout).ok, true);
+});
+
+test("avatar validator detects long rectangular hair-cut boundaries", () => {
+  const hair = new PNG({ width: 512, height: 512 });
+  for (let y = 90; y < 330; y += 1) {
+    for (let x = 120; x < 310; x += 1) hair.data[(y * hair.width + x) * 4 + 3] = 255;
+  }
+  const boundary = axisAlignedBoundaryStats(hair);
+  assert.ok(boundary.verticalFraction > .15, JSON.stringify(boundary));
+  assert.ok(boundary.horizontalFraction > .15, JSON.stringify(boundary));
 });
 
 test("avatar validator rejects the observed copied-expression and baked-checkerboard failure", (t) => {

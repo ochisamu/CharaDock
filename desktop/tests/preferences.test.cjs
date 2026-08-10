@@ -87,6 +87,17 @@ test("new installs enable onboarding and desktop positioning defaults", () => {
   assert.equal(state.voiceAutoSend, true);
   assert.equal(state.voiceAutoSendCountdown, true);
   assert.equal(state.voiceAutoSendDelayMs, 1500);
+  assert.equal(state.remoteAccessEnabled, false);
+  assert.equal(state.remoteBindAddress, "");
+  assert.equal(state.remoteWorkEnabled, true);
+  assert.equal(state.remoteTtsEnabled, true);
+  assert.equal(state.remotePcAudioEnabled, false);
+  assert.equal(state.remoteResponseMode, "tts");
+  assert.equal(state.remotePort, 41317);
+  assert.equal(state.remoteSessionMinutes, 60);
+  assert.equal(state.remoteTailscaleHttpsPort, 443);
+  assert.equal(state.remoteTailscaleManaged, false);
+  assert.equal(state.remoteTrustedDevices, undefined);
   assert.equal(state.codexChatModel, "");
   assert.equal(state.codexChatReasoningEffort, "");
   assert.equal(state.codexWorkModel, "");
@@ -104,6 +115,7 @@ test("new installs enable onboarding and desktop positioning defaults", () => {
     },
   );
   assert.equal(preferences.data.characterTtsProfiles["amber-avatar"].irodoriVoiceId, "builtin-kohaku");
+  assert.equal(preferences.data.characterTtsProfiles["amber-avatar"].styleBertVits2ModelId, 0);
   assert.equal(preferences.data.characterTtsProfiles["towa-avatar"].irodoriVoiceId, "builtin-hiro");
   for (const profile of Object.values(preferences.data.characterTtsProfiles)) {
     assert.equal(profile.irodoriVersion, "500m-v3");
@@ -170,6 +182,30 @@ test("preferences persist only supported interface languages", () => {
   assert.equal(new Preferences(file).publicState().language, "en");
   fs.writeFileSync(file, JSON.stringify({ language: "fr" }));
   assert.equal(new Preferences(file).publicState().language, "ja");
+});
+
+test("remote ports and trusted-device records are bounded without exposing credentials", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "charadock-prefs-remote-"));
+  const file = path.join(directory, "preferences.json");
+  fs.writeFileSync(file, JSON.stringify({
+    remotePort: 80,
+    remoteTailscaleHttpsPort: 70000,
+    remoteTrustedDevices: [{
+      id: "device_1234567890",
+      tokenHash: "a".repeat(64),
+      csrf: "csrf_123456789012345678901234",
+      name: "My phone",
+      address: "192.168.1.4",
+      pairedAt: Date.now() - 1000,
+      lastSeenAt: Date.now(),
+      expiresAt: Date.now() + 60_000,
+    }],
+  }));
+  const preferences = new Preferences(file);
+  assert.equal(preferences.data.remotePort, 1024);
+  assert.equal(preferences.data.remoteTailscaleHttpsPort, 65535);
+  assert.equal(preferences.data.remoteTrustedDevices.length, 1);
+  assert.equal(preferences.publicState().remoteTrustedDevices, undefined);
 });
 
 test("preferences store a separate realtime voice for each character", () => {
