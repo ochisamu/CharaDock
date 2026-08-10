@@ -275,6 +275,7 @@ npm run site:build
 
 ## コントリビューション
 
+- [GitHub SponsorsでCharaDockの開発を支援](https://github.com/sponsors/ochisamu)
 - [Contributing](./.github/CONTRIBUTING.md)
 - [Security policy](./.github/SECURITY.md)
 - [Support](./.github/SUPPORT.md)

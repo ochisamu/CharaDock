@@ -2,6 +2,15 @@
 
 For now, support is best-effort while the project is prepared for public release.
 
+If CharaDock is useful to you, you can [support ongoing development through GitHub Sponsors](https://github.com/sponsors/ochisamu).
+
+Available sponsorship options:
+
+- **$2/month** — Thanks / 開発応援
+- **$5/month** — CharaDock Supporter
+- **$10/month** — Development Sponsor
+- **One-time $5 / $10 / $25**
+
 ## Before asking for help
 
 Check:

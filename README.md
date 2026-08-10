@@ -275,6 +275,7 @@ The source illustrations and derived variants for Kohaku, Sepia, Towa, and Sage 
 
 ## Contributing
 
+- [Sponsor CharaDock development](https://github.com/sponsors/ochisamu)
 - [Contributing](./.github/CONTRIBUTING.md)
 - [Security policy](./.github/SECURITY.md)
 - [Support](./.github/SUPPORT.md)
