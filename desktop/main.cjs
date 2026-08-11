@@ -299,6 +299,7 @@ let workSlmRuntimeState = "idle";
 let workSlmProgress = null;
 let workSlmActiveDevice = "";
 let workSlmPrewarmTimer;
+let workSlmPrewarmGeneration = 0;
 let nextWorkSlmRequestId = 1;
 const pendingWorkSlmRequests = new Map();
 let controlWindow;
@@ -3054,7 +3055,10 @@ function createControlWindow() {
     syncMascotAlwaysOnTop();
     stopCursorFollow();
   });
-  controlWindow.on("hide", syncMascotAlwaysOnTop);
+  controlWindow.on("hide", () => {
+    syncMascotAlwaysOnTop();
+    if (!quitting) scheduleWorkSlmPrewarm(3_000);
+  });
   controlWindow.on("close", (event) => {
     if (!quitting) {
       event.preventDefault();
@@ -3124,9 +3128,15 @@ function scheduleBoundsSave(key, window) {
 }
 
 function showControlWindow() {
+  cancelWorkSlmPrewarm({ releaseGpu: true });
   if (!controlWindow || controlWindow.isDestroyed()) createControlWindow();
+  if (controlWindow.isMinimized()) controlWindow.restore();
+  if (!isBoundsVisible(controlWindow.getBounds())) {
+    controlWindow.setBounds(normalizedControlBounds(preferences.data.controlBounds));
+  }
   controlWindow.show();
   syncMascotAlwaysOnTop();
+  controlWindow.moveTop();
   controlWindow.focus();
 }
 
@@ -3394,6 +3404,28 @@ async function runWorkSlmModelSmokeTest(runtimePath, selection = "all") {
 async function runSmokeTest() {
   await Promise.all([waitForPageLoad(controlWindow), waitForPageLoad(mascotWindow)]);
   await new Promise((resolve) => setTimeout(resolve, 1800));
+  controlWindow.hide();
+  await mascotWindow.webContents.executeJavaScript("document.querySelector('#desktopMascotSettingsButton').click()");
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  if (!controlWindow.isVisible()) throw new Error("mascot settings button did not open the settings window");
+  controlWindow.minimize();
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  await mascotWindow.webContents.executeJavaScript("document.querySelector('#desktopMascotSettingsButton').click()");
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  if (!controlWindow.isVisible() || controlWindow.isMinimized()) {
+    throw new Error("mascot settings button did not restore the minimized settings window");
+  }
+  if (preferences.data.workSlmEnabled && workSlmInstalled()) {
+    controlWindow.hide();
+    scheduleWorkSlmPrewarm(0);
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    if (workSlmRuntimeState !== "loading") throw new Error("Work SLM prewarm did not enter its loading state");
+    await mascotWindow.webContents.executeJavaScript("document.querySelector('#desktopMascotSettingsButton').click()");
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    if (!controlWindow.isVisible() || workSlmRuntimeState !== "idle") {
+      throw new Error("settings did not interrupt Work SLM prewarm and open immediately");
+    }
+  }
   if (normalizeSpeechPronunciation("Hello world") !== "ハロー ワールド") {
     throw new Error("CMUdict pronunciation fallback check failed");
   }
@@ -4889,20 +4921,42 @@ async function rewriteWorkAnnouncementWithSlm({ kind, text, request }) {
   return parseWorkSlmOutput(JSON.stringify({ text: result.text, emotion: result.emotion }), { sourceText: text, request, kind });
 }
 
-function scheduleWorkSlmPrewarm(delayMs = 2500) {
+function cancelWorkSlmPrewarm({ releaseGpu = false } = {}) {
   clearTimeout(workSlmPrewarmTimer);
+  workSlmPrewarmTimer = null;
+  workSlmPrewarmGeneration += 1;
+  if (!releaseGpu || workSlmRuntimeState !== "loading") return;
+  destroyWorkSlmWindow(new Error("設定画面を優先するためWork SLMの先読みを中断しました。"));
+  workSlmProgress = null;
+  broadcastAppState();
+}
+
+function scheduleWorkSlmPrewarm(delayMs = 15_000) {
+  cancelWorkSlmPrewarm();
   if (!preferences.data.workSlmEnabled || !workSlmInstalled()) return;
+  const generation = workSlmPrewarmGeneration;
   workSlmPrewarmTimer = setTimeout(() => {
+    workSlmPrewarmTimer = null;
+    if (generation !== workSlmPrewarmGeneration) return;
+    if (controlWindow && !controlWindow.isDestroyed() && controlWindow.isVisible()) {
+      scheduleWorkSlmPrewarm(5_000);
+      return;
+    }
     workSlmRuntimeState = "loading";
     broadcastAppState();
     ensureWorkSlmRuntime()
       .then((runtimePath) => requestWorkSlm("prepare", { runtimePath }, { timeoutMs: 180_000, allowDownload: false }))
       .then((result) => {
+        if (generation !== workSlmPrewarmGeneration) return;
         workSlmRuntimeState = "ready";
         workSlmActiveDevice = String(result.device || "webgpu");
       })
-      .catch(() => { workSlmRuntimeState = "error"; })
-      .finally(() => broadcastAppState());
+      .catch(() => {
+        if (generation === workSlmPrewarmGeneration) workSlmRuntimeState = "error";
+      })
+      .finally(() => {
+        if (generation === workSlmPrewarmGeneration) broadcastAppState();
+      });
   }, delayMs);
 }
 
