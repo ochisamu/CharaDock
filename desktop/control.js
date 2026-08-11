@@ -2054,10 +2054,14 @@
 
   function syncWorkSlmUi() {
     const status = state.workSlm || {};
+    const selected = status.model || status.models?.find((model) => model.id === status.modelId) || {};
+    const modelSelect = $("#workSlmModelSelect");
+    modelSelect.value = status.modelId || "onnx-community/Qwen3.5-0.8B-ONNX-OPT";
     const toggle = $("#workSlmToggle");
     toggle.checked = Boolean(status.enabled);
     toggle.disabled = !status.installed;
     const busy = ["downloading", "loading"].includes(status.runtimeState);
+    modelSelect.disabled = busy;
     $("#prepareWorkSlmButton").disabled = busy;
     $("#prepareWorkSlmButton").textContent = status.installed
       ? localized("モデルを再確認", "Verify model")
@@ -2071,19 +2075,24 @@
       : busy ? localized("準備中", "Preparing")
         : status.installed ? localized("準備済み", "Installed") : localized("未準備", "Not installed");
     const progress = status.progress;
+    const modelName = selected.shortLabel || status.modelLabel || localized("選択したモデル", "the selected model");
+    const approximateMb = Math.max(1, Math.round((Number(selected.approximateBytes) || 800_000_000) / 1_000_000));
+    const licenseNote = selected.licenseNotice
+      ? localized(` ${selected.licenseName}: ${selected.licenseNotice}`, ` ${selected.licenseName}: commercial use is subject to an annual-revenue threshold of USD 10 million; review the model license for details.`)
+      : "";
     let message = localized(
-      "約800MBのモデルは明示的に準備するまでダウンロードしません。最終回答とGPT-Liveには適用されません。",
-      "The approximately 800 MB model is downloaded only when you prepare it. Final answers and GPT-Live are unchanged.",
-    );
+      `約${approximateMb}MBの${modelName}は明示的に準備するまでダウンロードしません。最終回答とGPT-Liveには適用されません。`,
+      `The approximately ${approximateMb} MB ${modelName} is downloaded only when you prepare it. Final answers and GPT-Live are unchanged.`,
+    ) + licenseNote;
     if (status.webgpuAvailable === false) {
       message = localized("この環境ではWebGPUを利用できません。現在の進捗文へ自動的に戻ります。", "WebGPU is unavailable here. CharaDock will automatically keep the current progress messages.");
     } else if (busy && progress) {
       const percent = Number(progress.progress) > 0 ? ` ${Math.round(progress.progress)}%` : "";
-      message = localized(`Qwen2.5 0.5Bを端末内へ準備しています…${percent}`, `Preparing Qwen2.5 0.5B on this device…${percent}`);
+      message = localized(`${modelName}を端末内へ準備しています…${percent}`, `Preparing ${modelName} on this device…${percent}`);
     } else if (status.runtimeState === "error") {
       message = localized("SLMを開始できませんでした。Workでは現在の進捗文を使います。", "The SLM could not start. Work will keep using the current progress messages.");
     } else if (status.installed) {
-      message = localized("Qwen2.5 0.5Bを端末内で実行します。遅延・失敗時は現在の進捗文へ戻ります。", "Qwen2.5 0.5B runs locally. Slow or failed generations fall back to the current progress messages.");
+      message = localized(`${modelName}を端末内で実行します。遅延・失敗時は現在の進捗文へ戻ります。`, `${modelName} runs locally. Slow or failed generations fall back to the current progress messages.`);
     }
     $("#workSlmStatus").textContent = message;
   }
@@ -2287,6 +2296,7 @@
       codexWorkModel: $("#codexWorkModelInput").value.trim(),
       codexWorkReasoningEffort: $("#codexWorkReasoningEffortSelect").value,
       workSlmEnabled: $("#workSlmToggle").checked,
+      workSlmModelId: $("#workSlmModelSelect").value,
       alwaysOnTop: $("#alwaysOnTopToggle").checked,
       mascotPointerMode: $('input[name="mascotPointerMode"]:checked')?.value || "interactive",
       mouseFollow: $("#mouseFollowToggle").checked,
@@ -3808,8 +3818,17 @@
     $("#workSlmToggle").addEventListener("change", () => {
       saveSettings().catch((error) => setStatus($("#connectionStatus"), error.message, true));
     });
+    $("#workSlmModelSelect").addEventListener("change", () => {
+      saveSettings().catch((error) => setStatus($("#connectionStatus"), error.message, true));
+    });
     $("#prepareWorkSlmButton").addEventListener("click", async () => {
       const button = $("#prepareWorkSlmButton");
+      const selectedId = $("#workSlmModelSelect").value;
+      const selected = state.workSlm?.models?.find((model) => model.id === selectedId) || state.workSlm?.model || {};
+      if (selected.licenseNotice && !window.confirm(localized(
+        `${selected.shortLabel}は${selected.licenseName}で提供されます。${selected.licenseNotice}\n\nライセンスを確認してダウンロードしますか？`,
+        `${selected.shortLabel} is provided under the ${selected.licenseName}. Commercial use is subject to an annual-revenue threshold of USD 10 million; review the model license for details.\n\nReview the license and download this model?`,
+      ))) return;
       button.disabled = true;
       try {
         state.workSlm = { ...(state.workSlm || {}), runtimeState: "downloading" };
@@ -3826,14 +3845,15 @@
       }
     });
     $("#removeWorkSlmButton").addEventListener("click", async () => {
-      if (!window.confirm(localized("Work用のローカルSLMモデルを削除しますか？", "Remove the local Work SLM model?"))) return;
+      if (!window.confirm(localized("ダウンロード済みのWork用SLMモデルをすべて削除しますか？", "Remove all downloaded Work SLM models?"))) return;
       $("#workSlmToggle").checked = false;
       await saveSettings();
       state.workSlm = await api.removeWorkSlm();
       syncWorkSlmUi();
     });
     $("#openWorkSlmModelButton").addEventListener("click", () => {
-      api.openExternalUrl("https://huggingface.co/onnx-community/Qwen2.5-0.5B-Instruct").catch((error) => setStatus($("#connectionStatus"), error.message, true));
+      const url = state.workSlm?.model?.sourceUrl || "https://huggingface.co/onnx-community/Qwen3.5-0.8B-ONNX-OPT";
+      api.openExternalUrl(url).catch((error) => setStatus($("#connectionStatus"), error.message, true));
     });
     ["#styleBertVits2UrlInput", "#styleBertVits2ModelIdInput", "#styleBertVits2SpeedInput", "#sbv2ModelSelect", "#sbv2StyleSelect", "#sbv2StyleWeightInput", "#sbv2SpeedInput", "#sbv2DeviceSelect", "#piperPlusSpeedInput", "#supertonicVoiceSelect", "#supertonicSpeedInput", "#supertonicStepsInput", "#kokoroVoiceSelect", "#kokoroSpeedInput", "#kokoroDeviceSelect", "#irodoriSpeedInput", "#irodoriSamplingModeSelect", "#irodoriStepsInput", "#irodoriSeedInput", "#irodoriCaptionInput", "#irodoriAutoEmotionToggle", "#irodoriEmotionStrengthSelect", "#englishPronunciationDictionaryInput"]
       .forEach((selector) => $(selector).addEventListener("change", () => {

@@ -40,14 +40,24 @@ license. See `assets/nike-avatar/ASSET_NOTICE.md` and
 The packaged Electron runtime also supplies `LICENSE.electron.txt` and
 `LICENSES.chromium.html` alongside the executable.
 
-### Transformers.js and Qwen2.5 0.5B Instruct (optional Work SLM PoC)
+### Transformers.js and optional Work SLM models
 
 - Runtime: Transformers.js 4.2.0
 - Source: https://github.com/huggingface/transformers.js
 - License: Apache License 2.0
+- Optional model: onnx-community/Qwen3.5-0.8B-ONNX-OPT
+- Model source: https://huggingface.co/onnx-community/Qwen3.5-0.8B-ONNX-OPT
 - Optional model: onnx-community/Qwen2.5-0.5B-Instruct
 - Model source: https://huggingface.co/onnx-community/Qwen2.5-0.5B-Instruct
-- Model license: Apache License 2.0
+- Qwen model licenses: Apache License 2.0
+- Optional model: LiquidAI/LFM2.5-1.2B-JP-202606-ONNX
+- Model source: https://huggingface.co/LiquidAI/LFM2.5-1.2B-JP-202606-ONNX
+- Model license: LFM Open License v1.0
+- License source: https://huggingface.co/LiquidAI/LFM2.5-1.2B-JP-202606-ONNX/blob/main/LICENSE
+
+Commercial use under the LFM Open License is subject to its annual-revenue
+threshold of USD 10 million. Users must review that license before using the
+optional LFM model.
 
 Neither Transformers.js nor the model weights are redistributed with
 CharaDock. A pinned, SHA-256-verified browser runtime and the model files are

@@ -2,8 +2,10 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const {
-  WORK_SLM_MODEL_ID,
+  DEFAULT_WORK_SLM_MODEL_ID,
+  WORK_SLM_MODELS,
   generatedTextFromPipeline,
+  normalizeWorkSlmModelId,
   parseWorkSlmOutput,
   workSlmExpression,
   workSlmMessages,
@@ -22,7 +24,16 @@ test("Work SLM prompt limits the model to grounded spoken progress", () => {
   assert.match(messages[0].content, /JSONオブジェクト一つだけ/);
   assert.match(messages[0].content, /完了.*捏造しません/);
   assert.match(messages[1].content, /README\.mdの構成を確認しています/);
-  assert.equal(WORK_SLM_MODEL_ID, "onnx-community/Qwen2.5-0.5B-Instruct");
+  assert.equal(DEFAULT_WORK_SLM_MODEL_ID, "onnx-community/Qwen3.5-0.8B-ONNX-OPT");
+});
+
+test("Work SLM keeps Qwen and Japanese LFM models as bounded selectable models", () => {
+  assert.deepEqual(WORK_SLM_MODELS.map((model) => model.family), ["qwen3.5", "lfm2.5-jp", "qwen2.5"]);
+  assert.equal(normalizeWorkSlmModelId("LiquidAI/LFM2.5-1.2B-JP-202606-ONNX"), "LiquidAI/LFM2.5-1.2B-JP-202606-ONNX");
+  assert.equal(WORK_SLM_MODELS[1].dtype, "q4f16");
+  assert.match(WORK_SLM_MODELS[1].licenseNotice, /1,000万/);
+  assert.equal(normalizeWorkSlmModelId("onnx-community/Qwen2.5-0.5B-Instruct"), "onnx-community/Qwen2.5-0.5B-Instruct");
+  assert.equal(normalizeWorkSlmModelId("untrusted/model"), DEFAULT_WORK_SLM_MODEL_ID);
 });
 
 test("Work SLM output parser accepts chat pipeline output", () => {

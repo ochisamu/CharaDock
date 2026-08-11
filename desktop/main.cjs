@@ -84,11 +84,12 @@ const {
 } = require("./lib/work-voice-reporter.cjs");
 const { isSocialConversationTurn } = require("./lib/interaction-intent.cjs");
 const {
-  WORK_SLM_MODEL_ID,
-  WORK_SLM_MODEL_LABEL,
+  WORK_SLM_MODELS,
   WORK_SLM_RUNTIME,
+  normalizeWorkSlmModelId,
   parseWorkSlmOutput,
   workSlmExpression,
+  workSlmModel,
 } = require("./lib/work-slm.cjs");
 const { RealtimeWorkSpeechCoordinator } = require("./lib/realtime-work-speech.cjs");
 const { BeatriceHostClient } = require("./lib/beatrice-host-client.cjs");
@@ -3367,12 +3368,14 @@ async function runSmokeTest() {
   const ttsDownloadUiReady = await controlWindow.webContents.executeJavaScript(`[
     'piperPlusModelDownloadButton', 'supertonicModelDownloadButton', 'kokoroModelDownloadButton', 'irodoriModelDownloadButton', 'irodoriV3ModelDownloadButton',
     'piperPlusModelDownloadProgress', 'supertonicModelDownloadProgress', 'kokoroModelDownloadProgress', 'irodoriModelDownloadProgress', 'irodoriV3ModelDownloadProgress',
-    'irodoriVersionSelect', 'irodoriPrecisionSelect'
+    'irodoriVersionSelect', 'irodoriPrecisionSelect', 'workSlmModelSelect', 'prepareWorkSlmButton', 'removeWorkSlmButton'
   ].every((id) => Boolean(document.getElementById(id)))`);
   if (!ttsDownloadUiReady) throw new Error("TTS model download controls check failed");
   const workSlmRuntimePath = await ensureWorkSlmRuntime();
   const workSlmProbe = await requestWorkSlm("probe", { runtimePath: workSlmRuntimePath }, { timeoutMs: 30_000, allowDownload: false });
-  if (!workSlmProbe.probed) throw new Error("Work SLM browser runtime or persistent cache check failed");
+  if (!workSlmProbe.probed || !workSlmProbe.qwen35Supported || !workSlmProbe.lfm25Supported) {
+    throw new Error("Work SLM browser runtime, selectable model support, or persistent cache check failed");
+  }
   for (const provider of ["piper-plus", "supertonic-3", "kokoro", "irodori-webgpu", "irodori-webgpu-int4", "irodori-500m-v3"]) {
     const model = embeddedTtsModels.status(provider);
     const expectedSupported = provider !== "piper-plus" || process.platform === "win32";
@@ -4644,9 +4647,13 @@ async function ensureWorkSlmRuntime() {
 }
 
 function workSlmInstalled() {
+  const selectedModelId = normalizeWorkSlmModelId(preferences.data.workSlmModelId);
   try {
     const marker = JSON.parse(fs.readFileSync(workSlmMarkerPath(), "utf8"));
-    return marker?.modelId === WORK_SLM_MODEL_ID
+    const installedModels = Array.isArray(marker?.models)
+      ? marker.models.map((entry) => String(entry?.id || entry))
+      : marker?.modelId ? [String(marker.modelId)] : [];
+    return installedModels.includes(selectedModelId)
       && marker?.runtimeVersion === WORK_SLM_RUNTIME.version
       && validWorkSlmRuntimeSource();
   } catch {
@@ -4654,13 +4661,29 @@ function workSlmInstalled() {
   }
 }
 
+function installedWorkSlmModelIds() {
+  try {
+    const marker = JSON.parse(fs.readFileSync(workSlmMarkerPath(), "utf8"));
+    const ids = Array.isArray(marker?.models)
+      ? marker.models.map((entry) => String(entry?.id || entry))
+      : marker?.modelId ? [String(marker.modelId)] : [];
+    return [...new Set(ids.filter((id) => WORK_SLM_MODELS.some((model) => model.id === id)))];
+  } catch {
+    return [];
+  }
+}
+
 function publicWorkSlmStatus() {
+  const selected = workSlmModel(preferences.data.workSlmModelId);
   return {
     enabled: preferences.data.workSlmEnabled === true,
     installed: workSlmInstalled(),
     hasRuntime: validWorkSlmRuntimeSource(),
-    modelId: WORK_SLM_MODEL_ID,
-    modelLabel: WORK_SLM_MODEL_LABEL,
+    modelId: selected.id,
+    modelLabel: selected.label,
+    model: { ...selected },
+    models: WORK_SLM_MODELS.map((model) => ({ ...model })),
+    installedModelIds: installedWorkSlmModelIds(),
     runtimeState: workSlmRuntimeState,
     progress: workSlmProgress,
     webgpuAvailable: workSlmWebGpuAvailable,
@@ -4731,6 +4754,7 @@ async function requestWorkSlm(action, payload = {}, { timeoutMs = 2200, allowDow
     action,
     cacheDirectory: workSlmMetadataDirectory(),
     runtimePath: action === "clear" ? "" : (payload.runtimePath || workSlmRuntimeModulePath()),
+    modelId: normalizeWorkSlmModelId(payload.modelId || preferences.data.workSlmModelId),
     allowDownload,
     ...payload,
   });
@@ -4738,14 +4762,20 @@ async function requestWorkSlm(action, payload = {}, { timeoutMs = 2200, allowDow
 }
 
 async function prepareWorkSlm() {
+  const selected = workSlmModel(preferences.data.workSlmModelId);
   workSlmRuntimeState = "downloading";
   workSlmProgress = null;
   broadcastAppState();
   try {
     const runtimePath = await ensureWorkSlmRuntime();
-    const result = await requestWorkSlm("prepare", { runtimePath }, { timeoutMs: 20 * 60_000, allowDownload: true });
+    const result = await requestWorkSlm("prepare", { runtimePath, modelId: selected.id }, { timeoutMs: 20 * 60_000, allowDownload: true });
     fs.mkdirSync(workSlmMetadataDirectory(), { recursive: true });
-    fs.writeFileSync(workSlmMarkerPath(), `${JSON.stringify({ modelId: WORK_SLM_MODEL_ID, runtimeVersion: WORK_SLM_RUNTIME.version, dtype: "q4", preparedAt: new Date().toISOString() }, null, 2)}\n`);
+    const installed = installedWorkSlmModelIds().filter((id) => id !== selected.id);
+    const preparedAt = new Date().toISOString();
+    fs.writeFileSync(workSlmMarkerPath(), `${JSON.stringify({
+      runtimeVersion: WORK_SLM_RUNTIME.version,
+      models: [...installed.map((id) => ({ id })), { id: selected.id, dtype: selected.dtype || "q4", preparedAt }],
+    }, null, 2)}\n`);
     workSlmRuntimeState = "ready";
     workSlmActiveDevice = String(result.device || "webgpu");
     return publicWorkSlmStatus();
@@ -4774,6 +4804,7 @@ async function rewriteWorkAnnouncementWithSlm({ kind, text, request }) {
   const character = activeCharacter();
   const result = await requestWorkSlm("rewrite", {
     runtimePath,
+    modelId: normalizeWorkSlmModelId(preferences.data.workSlmModelId),
     language: interfaceLanguage(),
     kind,
     request,
@@ -6133,6 +6164,7 @@ function registerIpc() {
     const previousUpdateChecksEnabled = preferences.data.updateChecksEnabled !== false;
     const previousUpdateChannel = preferences.data.updateChannel === "beta" ? "beta" : "stable";
     const previousWorkSlmEnabled = preferences.data.workSlmEnabled === true;
+    const previousWorkSlmModelId = normalizeWorkSlmModelId(preferences.data.workSlmModelId);
     const requestedDisplayId = String(patch?.preferredDisplayId || "");
     const displayId = screen.getAllDisplays().some((display) => String(display.id) === requestedDisplayId) ? requestedDisplayId : "";
     const ttsProvider = ["system", "style-bert-vits2", "piper-plus", "supertonic-3", "irodori-webgpu", "kokoro", "sbv2-jp-extra"].includes(patch?.ttsProvider) ? patch.ttsProvider : "system";
@@ -6222,6 +6254,7 @@ function registerIpc() {
       codexWorkModel: String(patch?.codexWorkModel ?? preferences.data.codexWorkModel).trim().slice(0, 120),
       codexWorkReasoningEffort,
       workSlmEnabled: patch?.workSlmEnabled === true,
+      workSlmModelId: normalizeWorkSlmModelId(patch?.workSlmModelId ?? preferences.data.workSlmModelId),
       alwaysOnTop: Boolean(patch?.alwaysOnTop),
       clickThrough: mascotPointerMode === "click-through",
       mascotPointerMode,
@@ -6276,8 +6309,14 @@ function registerIpc() {
       preferredDisplayId: displayId,
     };
     preferences.patch(allowed);
-    if (!allowed.workSlmEnabled && previousWorkSlmEnabled) destroyWorkSlmWindow();
-    else if (allowed.workSlmEnabled) scheduleWorkSlmPrewarm(250);
+    if (allowed.workSlmEnabled && !workSlmInstalled()) {
+      allowed.workSlmEnabled = false;
+      preferences.patch({ workSlmEnabled: false });
+    }
+    if ((!allowed.workSlmEnabled && previousWorkSlmEnabled) || allowed.workSlmModelId !== previousWorkSlmModelId) {
+      destroyWorkSlmWindow();
+    }
+    if (allowed.workSlmEnabled) scheduleWorkSlmPrewarm(250);
     if (allowed.updateChannel !== previousUpdateChannel) appUpdateStatus = null;
     if (allowed.updateChecksEnabled && (!previousUpdateChecksEnabled || allowed.updateChannel !== previousUpdateChannel)) scheduleAppUpdateCheck();
     if (!allowed.updateChecksEnabled) clearTimeout(appUpdateCheckTimer);

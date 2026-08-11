@@ -1,8 +1,46 @@
 // SPDX-License-Identifier: Apache-2.0
 const { sanitizeSpeechText } = require("./speech-stream.cjs");
 
-const WORK_SLM_MODEL_ID = "onnx-community/Qwen2.5-0.5B-Instruct";
-const WORK_SLM_MODEL_LABEL = "Qwen2.5 0.5B Instruct · WebGPU (PoC)";
+const WORK_SLM_MODELS = Object.freeze([
+  Object.freeze({
+    id: "onnx-community/Qwen3.5-0.8B-ONNX-OPT",
+    family: "qwen3.5",
+    label: "Qwen 3.5 0.8B Q4 · WebGPU",
+    shortLabel: "Qwen 3.5 0.8B",
+    sourceUrl: "https://huggingface.co/onnx-community/Qwen3.5-0.8B-ONNX-OPT",
+    approximateBytes: 750_000_000,
+    dtype: "q4",
+    licenseName: "Apache-2.0",
+    recommended: true,
+  }),
+  Object.freeze({
+    id: "LiquidAI/LFM2.5-1.2B-JP-202606-ONNX",
+    family: "lfm2.5-jp",
+    label: "LFM2.5 1.2B JP Q4F16 · WebGPU",
+    shortLabel: "LFM2.5 1.2B JP",
+    sourceUrl: "https://huggingface.co/LiquidAI/LFM2.5-1.2B-JP-202606-ONNX",
+    licenseUrl: "https://huggingface.co/LiquidAI/LFM2.5-1.2B-JP-202606-ONNX/blob/main/LICENSE",
+    approximateBytes: 744_000_000,
+    dtype: "q4f16",
+    licenseName: "LFM Open License v1.0",
+    licenseNotice: "法人の商用利用には年間売上1,000万米ドルのしきい値があります。詳細はモデルライセンスを確認してください。",
+    japaneseSpecialized: true,
+    experimental: true,
+    recommended: false,
+  }),
+  Object.freeze({
+    id: "onnx-community/Qwen2.5-0.5B-Instruct",
+    family: "qwen2.5",
+    label: "Qwen 2.5 0.5B Q4 · WebGPU",
+    shortLabel: "Qwen 2.5 0.5B",
+    sourceUrl: "https://huggingface.co/onnx-community/Qwen2.5-0.5B-Instruct",
+    approximateBytes: 800_000_000,
+    dtype: "q4",
+    licenseName: "Apache-2.0",
+    recommended: false,
+  }),
+]);
+const DEFAULT_WORK_SLM_MODEL_ID = WORK_SLM_MODELS[0].id;
 const WORK_SLM_RUNTIME = Object.freeze({
   version: "4.2.0",
   name: "transformers.web.js",
@@ -14,6 +52,16 @@ const WORK_SLM_EMOTIONS = Object.freeze(["neutral", "thinking", "happy", "soft",
 
 function bounded(value, maxLength) {
   return String(value || "").replace(/\s+/g, " ").trim().slice(0, maxLength);
+}
+
+function normalizeWorkSlmModelId(value) {
+  const id = String(value || "");
+  return WORK_SLM_MODELS.some((model) => model.id === id) ? id : DEFAULT_WORK_SLM_MODEL_ID;
+}
+
+function workSlmModel(value) {
+  const id = normalizeWorkSlmModelId(value);
+  return WORK_SLM_MODELS.find((model) => model.id === id) || WORK_SLM_MODELS[0];
 }
 
 function workSlmMessages({ language = "ja", request, sourceText, kind, characterName, personality }) {
@@ -84,11 +132,13 @@ function workSlmExpression(emotion, text) {
 
 module.exports = {
   WORK_SLM_EMOTIONS,
-  WORK_SLM_MODEL_ID,
-  WORK_SLM_MODEL_LABEL,
+  DEFAULT_WORK_SLM_MODEL_ID,
+  WORK_SLM_MODELS,
   WORK_SLM_RUNTIME,
   generatedTextFromPipeline,
   parseWorkSlmOutput,
+  normalizeWorkSlmModelId,
   workSlmExpression,
+  workSlmModel,
   workSlmMessages,
 };
