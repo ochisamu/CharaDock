@@ -534,8 +534,8 @@ function scheduleAppUpdateCheck() {
 
 function workModeInstructions() {
   return `${WORK_MODE_INSTRUCTION_BASE}\n${mainText(
-    "ツールを使う前に、依頼固有の対象と行うことを含む短い着手確認をcommentaryとして一度伝えてください。「内容を確認しているよ」「作業を始めるね」のような汎用文は禁止です。長い作業では、実際に到達した意味のある節目だけを、対象と現在の処理が分かる短いcommentaryで伝えてください。コマンド、URL、ファイルパス、内部推論は含めないでください。Character Home、継続記録、メモリ管理など内部の継続処理は、ユーザーから明示的に聞かれない限りcommentaryや最終報告へ含めないでください。最後に検証済みの結果を簡潔に報告してください。",
-    "Before using tools, send one brief commentary acknowledgement that names the request-specific subject and action. Generic lines such as 'I'm checking the content' or 'I'm getting started' are not allowed. For longer work, report only meaningful milestones, briefly naming the subject and the actual current action. Do not include commands, URLs, file paths, or internal reasoning. Never mention internal Character Home, continuity-record, or memory-maintenance steps in commentary or the final report unless the user explicitly asks about them. End with a concise, verified result.",
+    "ツールを使う前に、依頼固有の対象と行うことを含む短い着手確認をcommentaryとして一度伝えてください。このcommentaryは画面表示され、通常TTSではキャラクターがほぼそのまま読み上げます。箇条書きやラベルではなく、キャラクターらしい自然な一文にしてください。「内容を確認しているよ」「作業を始めるね」のような汎用文は禁止です。長い作業では、実際に到達した意味のある節目だけを、対象と現在の処理が分かる自然な一文のcommentaryで伝えてください。コマンド、URL、ファイルパス、内部推論は含めないでください。Character Home、継続記録、メモリ管理など内部の継続処理は、ユーザーから明示的に聞かれない限りcommentaryや最終報告へ含めないでください。最後に検証済みの結果を簡潔に報告してください。",
+    "Before using tools, send one brief commentary acknowledgement that names the request-specific subject and action. This commentary is shown in the interface and is spoken nearly verbatim by standard TTS, so write one natural sentence in the selected character's voice rather than a label or list. Generic lines such as 'I'm checking the content' or 'I'm getting started' are not allowed. For longer work, report only meaningful milestones as natural sentences that briefly name the subject and actual current action. Do not include commands, URLs, file paths, or internal reasoning. Never mention internal Character Home, continuity-record, or memory-maintenance steps in commentary or the final report unless the user explicitly asks about them. End with a concise, verified result.",
   )}${characterHomeWorkInstructions()}`;
 }
 
@@ -5629,9 +5629,12 @@ function registerIpc() {
     showControlWindow();
     return true;
   });
-  ipcMain.handle("mascotInline:chat", async (event, message) => {
+  ipcMain.handle("mascotInline:chat", async (event, payload) => {
     assertTrustedSender(event, "mascot");
-    return handleMascotConversation(message);
+    const message = typeof payload === "object" && payload ? payload.message : payload;
+    const attachments = normalizeLocalAttachments(typeof payload === "object" && payload ? payload.attachmentPaths : []);
+    if (attachments.length && preferences.data.backend !== "codex") throw new Error("ファイル添付はCodex app-server接続時に利用できます。");
+    return handleMascotConversation(message, { localAttachments: attachments });
   });
   ipcMain.handle("mascotInline:approveScreenShare", async (event, requestId) => {
     assertTrustedSender(event, "mascot");
@@ -7435,7 +7438,11 @@ async function resolveRemoteApproval(payload = {}) {
 
 async function handleMascotConversation(message, deliveryOptions = {}) {
   const text = String(message || "").trim().slice(0, 12_000);
-  if (!text) throw new Error("メッセージを入力してください。");
+  const hasAttachments = Array.isArray(deliveryOptions.localAttachments) && deliveryOptions.localAttachments.length > 0;
+  if (!text && !hasAttachments) throw new Error("メッセージを入力してください。");
+  // Attachments follow the same direct Codex route as the settings composer.
+  // Do not reinterpret their accompanying text as a screen/browser permission command.
+  if (hasAttachments) return sendChatMessage(text, deliveryOptions);
   if (preferences.data.backend !== "codex") {
     revokeBrowserAuthorization({ closeWindow: true });
     revokeComputerAuthorization();
@@ -7596,6 +7603,8 @@ async function sendChatMessage(message, {
     onAnnouncement: announceWork,
     request: requestText,
     language: interfaceLanguage(),
+    preferNaturalCommentary: !realtimeOutput,
+    maxLength: realtimeOutput ? 48 : 72,
   }) : null;
   const workAcknowledgement = workMode
     ? workAcknowledgementFallback(requestText, interfaceLanguage())
@@ -7604,7 +7613,7 @@ async function sendChatMessage(message, {
     // Normal TTS should prefer the worker's request-aware commentary over a
     // deterministic fallback. Realtime already supplies its own natural
     // acknowledgement, so keep its existing timing unchanged.
-    workVoiceReporter.scheduleFallback(workAcknowledgement, realtimeOutput ? 600 : 2800);
+    workVoiceReporter.scheduleFallback(workAcknowledgement, realtimeOutput ? 600 : 6000);
   }
   let thinkingFillerTimer = null;
   if (!workMode && preferences.data.ttsEnabled && !suppressPcAudio && mascotWindow?.isVisible()) {

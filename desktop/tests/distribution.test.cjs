@@ -267,7 +267,12 @@ test("conversation and work surfaces expose history, folder access, interruption
   assert.match(control, /pendingChatFollowUp = \{ message, attachments \}/);
   assert.match(control, /bindFileDropZone\(\$\("#chatForm"\)/);
   assert.match(control, /appendWorkArtifactActions/);
-  assert.match(mascot, /pendingFollowUpMessage = message/);
+  assert.match(mascot, /pendingFollowUp = \{ message, attachments \}/);
+  assert.match(mascot, /webUtils\.getPathForFile\(file\)/);
+  assert.match(mascot, /id="desktopMascotAttachmentList"/);
+  assert.match(mascot, /fileDrop\.id = "desktopMascotFileDrop"/);
+  assert.match(mascot, /attachmentPaths: attachments\.map/);
+  assert.match(main, /mascotInline:chat[\s\S]{0,500}normalizeLocalAttachments/);
   assert.match(mascot, /mascotInline:previewWorkArtifact/);
   assert.match(mascot, /responseSpeaking[\s\S]*stopTtsPlayback\(\)/);
   assert.match(main, /mascotInline:openWorkDirectory/);
@@ -343,6 +348,7 @@ test("mascot Japanese text uses a stable Windows font stack and notices clear th
   const mascot = fs.readFileSync(path.join(projectRoot, "desktop", "preload-mascot.cjs"), "utf8");
   const styles = fs.readFileSync(path.join(projectRoot, "desktop", "mascot-overlay.css"), "utf8");
   assert.match(mascot, /normalizeDisplayText[\s\S]*normalize\("NFC"\)/);
+  assert.match(mascot, /E0100[\s\S]*E01EF/);
   assert.match(mascot, /--mascot-composer-height/);
   assert.match(mascot, /hint\.setAttribute\("role", errorTone \? "alert" : "status"\)/);
   assert.match(styles, /--pet-font-ui: "CharaDock Noto Sans JP", "Noto Sans JP", "Yu Gothic UI"/);

@@ -8,6 +8,7 @@ const {
   conciseWorkAnnouncement,
   hasWorkSpeechTechnicalDetail,
   isMeaningfulWorkProgress,
+  naturalizeWorkCommentary,
   workAcknowledgementFallback,
 } = require("../lib/work-voice-reporter.cjs");
 
@@ -83,6 +84,43 @@ test("a technical worker acknowledgement falls back to a safe request-aware mess
     workAcknowledgementFallback("名古屋の天気ダッシュボードを、artifacts/demo の index.html に作ってください。"),
     "名古屋の天気ダッシュボードを作るね。",
   );
+});
+
+test("normal TTS preserves natural Codex commentary while removing technical paths", () => {
+  assert.equal(
+    naturalizeWorkCommentary("名古屋の天気ダッシュボードを artifacts/demo/index.html に作り始めるね。"),
+    "名古屋の天気ダッシュボードを作り始めるね。",
+  );
+  assert.equal(
+    naturalizeWorkCommentary("README.mdを確認して、英語版の構成を整えているよ。"),
+    "READMEを確認して、英語版の構成を整えているよ。",
+  );
+  assert.equal(
+    naturalizeWorkCommentary("テスト結果を C:\\Users\\name\\secret.txt で確認して、表示崩れを直しているよ。"),
+    "テスト結果を確認して、表示崩れを直しているよ。",
+  );
+
+  const clock = fakeClock();
+  const announcements = [];
+  const reporter = new WorkVoiceReporter({
+    request: "名古屋の天気ダッシュボードを作って",
+    preferNaturalCommentary: true,
+    maxLength: 72,
+    onAnnouncement: (entry) => announcements.push({ ...entry, at: clock.now() }),
+    now: clock.now,
+    schedule: clock.schedule,
+    cancel: clock.cancel,
+  });
+  reporter.scheduleFallback("名古屋の天気ダッシュボードを作るね。", 6000);
+  clock.advance(4000);
+  assert.deepEqual(announcements, []);
+  reporter.commentary("名古屋の天気ダッシュボードを artifacts/demo/index.html に作り始めるね。");
+  clock.advance(3000);
+  assert.deepEqual(announcements, [{
+    kind: "ack",
+    text: "名古屋の天気ダッシュボードを作り始めるね。",
+    at: 4000,
+  }]);
 });
 
 test("progress speech keeps concrete milestones and drops context-management chatter", () => {

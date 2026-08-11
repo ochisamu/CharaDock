@@ -11,6 +11,23 @@ function conciseWorkAnnouncement(value, maxLength = 96) {
   return text.slice(0, Math.max(1, length)).trim();
 }
 
+function naturalizeWorkCommentary(value, maxLength = 96) {
+  // Keep the worker's own user-facing sentence, but remove technical tokens
+  // that should never be spoken. Preserve safe bare file names such as
+  // "README" while full paths continue to be removed by sanitizeSpeechText.
+  const prepared = String(value || "")
+    .normalize("NFKC")
+    .replace(/\b([A-Za-z0-9_-]{2,})\.(?:html?|css|js|cjs|mjs|ts|tsx|jsx|json|ya?ml|toml|ini|png|jpe?g|webp|wav|mp3|md|pdf)\b/giu, "$1");
+  return conciseWorkAnnouncement(prepared, maxLength)
+    .replace(/\s+/g, " ")
+    .replace(/を\s+(?:に|へ|で)\s*(?=(?:作|保存|出力|生成|追加|配置|書|まとめ|確認|更新|反映|実装|修正|直|調べ|検証|テスト))/gu, "を")
+    .replace(/(^|[、。！？!?]\s*)まず\s+の(?=\S)/gu, "$1まず")
+    .replace(/(^|[、。！？!?]\s*)の(?=\S)/gu, "$1")
+    .replace(/^[をにへで]\s*/u, "")
+    .replace(/\s+([、。！？!?])/gu, "$1")
+    .trim();
+}
+
 function hasWorkSpeechTechnicalDetail(value) {
   const text = String(value || "");
   return /(?:https?|ftp):\/\//iu.test(text)
@@ -253,6 +270,7 @@ class WorkVoiceReporter {
     maxLength = 48,
     request = "",
     language = "ja",
+    preferNaturalCommentary = false,
   } = {}) {
     this.onAnnouncement = typeof onAnnouncement === "function" ? onAnnouncement : () => {};
     this.now = now;
@@ -263,6 +281,7 @@ class WorkVoiceReporter {
     this.maxLength = Math.max(32, Math.min(80, Number(maxLength) || 48));
     this.request = String(request || "");
     this.language = language === "en" ? "en" : "ja";
+    this.preferNaturalCommentary = Boolean(preferNaturalCommentary);
     this.startedAt = this.now();
     this.lastAnnouncementAt = alreadyAcknowledged ? this.startedAt : 0;
     this.lastText = "";
@@ -336,6 +355,9 @@ class WorkVoiceReporter {
     const sourceText = String(value || "");
     const technicalDetail = hasWorkSpeechTechnicalDetail(sourceText);
     const rawText = conciseWorkAnnouncement(sourceText, this.maxLength);
+    const naturalText = this.preferNaturalCommentary
+      ? naturalizeWorkCommentary(sourceText, this.maxLength)
+      : rawText;
     if (this.finished || !rawText) return;
     if (!this.seenFirstCommentary) {
       this.seenFirstCommentary = true;
@@ -343,11 +365,21 @@ class WorkVoiceReporter {
       if (this.fallbackTimer) this.cancel(this.fallbackTimer);
       this.fallbackTimer = null;
       this.acknowledged = true;
-      const text = technicalDetail || isGenericWorkUpdate(rawText) || isIncompleteWorkAnnouncement(rawText)
+      const usableNaturalText = naturalText
+        && !isGenericWorkUpdate(naturalText)
+        && !isIncompleteWorkAnnouncement(naturalText);
+      const text = (this.preferNaturalCommentary ? !usableNaturalText : technicalDetail || !usableNaturalText)
         ? workAcknowledgementFallback(this.request, this.language)
-        : rawText;
+        : naturalText;
       this.emit("ack", text);
       this.schedulePendingProgress();
+      return;
+    }
+    if (this.preferNaturalCommentary
+      && naturalText
+      && !isGenericWorkUpdate(naturalText)
+      && !isIncompleteWorkAnnouncement(naturalText)) {
+      this.queueProgress(naturalText, 2);
       return;
     }
     if (technicalDetail) {
@@ -380,6 +412,7 @@ module.exports = {
   WorkVoiceReporter,
   cleanWorkRequest,
   conciseWorkAnnouncement,
+  naturalizeWorkCommentary,
   contextualizeWorkProgress,
   hasWorkSpeechTechnicalDetail,
   isMeaningfulWorkProgress,

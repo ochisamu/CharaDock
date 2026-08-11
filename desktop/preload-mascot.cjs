@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-const { ipcRenderer } = require("electron");
+const { ipcRenderer, webUtils } = require("electron");
 // Sandboxed Electron preload scripts can only require Electron and a small set
 // of built-ins, so keep this renderer-safe projection aligned with vad-profile.cjs.
 const VAD_PROFILES = Object.freeze({
@@ -59,10 +59,13 @@ window.addEventListener("DOMContentLoaded", () => {
       <button type="button" data-countdown-action="cancel">取消</button>
     </div>
     <form id="desktopMascotComposer">
+      <div id="desktopMascotAttachmentList" aria-label="添付ファイル" hidden></div>
       <button id="desktopMascotModeButton" type="button" aria-label="ChatとWorkを切り替える">Chat</button>
       <button id="desktopMascotWorkTarget" type="button" aria-label="作業先フォルダーを変更する"></button>
       <button id="desktopMascotWorkOpenButton" type="button" aria-label="作業先フォルダーを開く" title="作業先フォルダーを開く"><span class="ui-symbol ui-symbol-folder-open" aria-hidden="true"></span></button>
       <button id="desktopMascotWorkHistoryButton" type="button" aria-label="履歴を開く" aria-expanded="false" title="履歴を開く"><span class="ui-symbol ui-symbol-history" aria-hidden="true"></span></button>
+      <button id="desktopMascotAttachButton" type="button" aria-label="ファイルを添付" title="ファイルを添付"><span class="ui-symbol ui-symbol-attach" aria-hidden="true"></span></button>
+      <input id="desktopMascotFileInput" type="file" multiple hidden>
       <button id="desktopMascotMicButton" type="button" aria-label="音声入力" aria-pressed="false" title="音声入力"><span class="ui-symbol ui-symbol-microphone" aria-hidden="true"></span></button>
       <textarea id="desktopMascotInput" rows="1" maxlength="6000" aria-label="メッセージ" placeholder="短く話しかける…"></textarea>
       <button id="desktopMascotSendButton" type="submit" aria-label="送信" title="送信"><span class="ui-symbol ui-symbol-send" aria-hidden="true"></span></button>
@@ -89,11 +92,21 @@ window.addEventListener("DOMContentLoaded", () => {
   petZone.setAttribute("aria-label", "キャラクターに触れる");
   petZone.title = "ドラッグで移動・クリックで触れる";
   document.body.appendChild(petZone);
+  const fileDrop = document.createElement("div");
+  fileDrop.id = "desktopMascotFileDrop";
+  fileDrop.setAttribute("role", "status");
+  fileDrop.setAttribute("aria-live", "polite");
+  fileDrop.setAttribute("aria-hidden", "true");
+  fileDrop.innerHTML = `<span class="ui-symbol ui-symbol-attach" aria-hidden="true"></span><strong>キャラに渡す</strong><small>Drop to character</small>`;
+  document.body.appendChild(fileDrop);
   const form = dock.querySelector("#desktopMascotComposer");
   const input = dock.querySelector("#desktopMascotInput");
   const sendButton = dock.querySelector("#desktopMascotSendButton");
   const stopButton = dock.querySelector("#desktopMascotStopButton");
   const micButton = dock.querySelector("#desktopMascotMicButton");
+  const attachButton = dock.querySelector("#desktopMascotAttachButton");
+  const fileInput = dock.querySelector("#desktopMascotFileInput");
+  const attachmentList = dock.querySelector("#desktopMascotAttachmentList");
   const modeButton = dock.querySelector("#desktopMascotModeButton");
   const workTarget = dock.querySelector("#desktopMascotWorkTarget");
   const workOpenButton = dock.querySelector("#desktopMascotWorkOpenButton");
@@ -112,7 +125,9 @@ window.addEventListener("DOMContentLoaded", () => {
   let autoCloseTimer;
   let temporaryInteractionHold = false;
   let sending = false;
-  let pendingFollowUpMessage = "";
+  let pendingFollowUp = null;
+  let mascotAttachments = [];
+  let fileDragDepth = 0;
   let speechRecognition;
   let appState;
   let realtimePeer = null;
@@ -212,7 +227,13 @@ window.addEventListener("DOMContentLoaded", () => {
   let detachedRealtimeWorkBusy = false;
   let detachedRealtimeWorkRunId = "";
 
-  const normalizeDisplayText = (value) => String(value ?? "").normalize("NFC");
+  const normalizeDisplayText = (value) => String(value ?? "")
+    .normalize("NFC")
+    // Realtime transcripts can occasionally include an unsupported CJK
+    // ideographic variation selector after an otherwise normal kanji. The
+    // bundled Noto Sans JP contains the base glyph (for example 隠), while the
+    // orphan selector is rendered as a tofu box on Windows.
+    .replace(/[\u{E0100}-\u{E01EF}]/gu, "");
 
   const applyInterfaceLanguage = (language) => {
     document.documentElement.dataset.uiLanguage = language === "en" ? "en" : "ja";
@@ -387,6 +408,76 @@ window.addEventListener("DOMContentLoaded", () => {
       const composerHeight = Math.ceil(form.getBoundingClientRect().height);
       if (composerHeight > 0) dock.style.setProperty("--mascot-composer-height", `${composerHeight}px`);
     });
+  };
+
+  const uiText = (japanese, english) => appState?.language === "en" ? english : japanese;
+  const renderMascotAttachments = () => {
+    attachmentList.replaceChildren();
+    attachmentList.hidden = mascotAttachments.length === 0;
+    form.classList.toggle("has-attachments", mascotAttachments.length > 0);
+    attachButton.classList.toggle("has-attachments", mascotAttachments.length > 0);
+    attachButton.setAttribute("aria-label", mascotAttachments.length
+      ? uiText(`添付ファイル ${mascotAttachments.length}件`, `${mascotAttachments.length} attached files`)
+      : uiText("ファイルを添付", "Attach files"));
+    attachButton.title = attachButton.getAttribute("aria-label");
+    for (const attachment of mascotAttachments) {
+      const chip = document.createElement("span");
+      chip.className = "desktop-mascot-attachment";
+      chip.title = attachment.name;
+      const icon = document.createElement("span");
+      icon.className = "ui-symbol ui-symbol-document";
+      icon.setAttribute("aria-hidden", "true");
+      const name = document.createElement("span");
+      name.textContent = attachment.name;
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.dataset.attachmentPath = attachment.path;
+      remove.setAttribute("aria-label", uiText(`${attachment.name}を外す`, `Remove ${attachment.name}`));
+      remove.title = remove.getAttribute("aria-label");
+      remove.innerHTML = `<span class="ui-symbol ui-symbol-close" aria-hidden="true"></span>`;
+      chip.append(icon, name, remove);
+      attachmentList.appendChild(chip);
+    }
+    resizeInput();
+  };
+  const mergeMascotAttachments = (attachments = []) => {
+    const existing = new Set(mascotAttachments.map((item) => item.path.toLocaleLowerCase()));
+    let skipped = 0;
+    for (const attachment of attachments) {
+      const path = String(attachment?.path || "");
+      if (!path || existing.has(path.toLocaleLowerCase())) continue;
+      if (mascotAttachments.length >= 8) { skipped += 1; continue; }
+      mascotAttachments.push({
+        path,
+        name: String(attachment?.name || path.split(/[\\/]/u).at(-1) || uiText("ファイル", "File")).slice(0, 260),
+        size: Math.max(0, Number(attachment?.size) || 0),
+      });
+      existing.add(path.toLocaleLowerCase());
+    }
+    renderMascotAttachments();
+    if (skipped) setStatus(uiText("添付は最大8件です", "You can attach up to 8 files"), 5000);
+  };
+  const addMascotFiles = (files) => {
+    const candidates = [];
+    let rejectedForSize = 0;
+    for (const file of Array.from(files || [])) {
+      let path = "";
+      try { path = webUtils.getPathForFile(file); } catch {}
+      if (!path) continue;
+      if (Number(file.size) > 100 * 1024 * 1024) { rejectedForSize += 1; continue; }
+      candidates.push({ path, name: file.name, size: file.size });
+    }
+    mergeMascotAttachments(candidates);
+    setOpen(true, { focus: true, temporaryInteraction: true });
+    if (rejectedForSize) {
+      setStatus(uiText("100MBを超えるファイルは添付できません", "Files larger than 100 MB cannot be attached"), 6000);
+    } else if (candidates.length) {
+      setStatus(uiText(`${candidates.length}件をキャラに渡しました。依頼を入力してください`, `${candidates.length} file(s) handed to the character. Add your request`), 5500);
+    }
+  };
+  const setFileDragActive = (active) => {
+    document.body.classList.toggle("is-file-dragging", Boolean(active));
+    fileDrop.setAttribute("aria-hidden", String(!active));
   };
 
   const updateVoiceContext = () => {
@@ -570,6 +661,43 @@ window.addEventListener("DOMContentLoaded", () => {
     if (open) resizeInput();
     if (open && focus) input.focus({ preventScroll: true });
   };
+  attachmentList.addEventListener("click", (event) => {
+    const remove = event.target.closest("button[data-attachment-path]");
+    if (!remove) return;
+    mascotAttachments = mascotAttachments.filter((item) => item.path !== remove.dataset.attachmentPath);
+    renderMascotAttachments();
+    input.focus({ preventScroll: true });
+  });
+  attachButton.addEventListener("click", () => fileInput.click());
+  fileInput.addEventListener("change", () => {
+    addMascotFiles(fileInput.files);
+    fileInput.value = "";
+  });
+  document.addEventListener("dragenter", (event) => {
+    if (!Array.from(event.dataTransfer?.types || []).includes("Files")) return;
+    event.preventDefault();
+    fileDragDepth += 1;
+    setFileDragActive(true);
+  });
+  document.addEventListener("dragover", (event) => {
+    if (!Array.from(event.dataTransfer?.types || []).includes("Files")) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+    setFileDragActive(true);
+  });
+  document.addEventListener("dragleave", (event) => {
+    if (!fileDragDepth) return;
+    event.preventDefault();
+    fileDragDepth = Math.max(0, fileDragDepth - 1);
+    if (!fileDragDepth) setFileDragActive(false);
+  });
+  document.addEventListener("drop", (event) => {
+    if (!event.dataTransfer?.files?.length && !fileDragDepth) return;
+    event.preventDefault();
+    fileDragDepth = 0;
+    setFileDragActive(false);
+    addMascotFiles(event.dataTransfer?.files);
+  });
   const scheduleBubbleHide = (duration = bubbleHideDuration) => {
     clearTimeout(hideTimer);
     if (bubblePersistent) return;
@@ -1088,7 +1216,7 @@ window.addEventListener("DOMContentLoaded", () => {
       setStatus("自動送信を取り消しました。内容を編集できます", 4200);
     }
   });
-  const sendMascotMessage = async (message) => {
+  const sendMascotMessage = async (message, attachments = []) => {
     setSendingControls(true);
     const useActiveRealtime = Boolean(realtimePeer);
     let streamOwnsBusyState = false;
@@ -1102,7 +1230,10 @@ window.addEventListener("DOMContentLoaded", () => {
         setStatus("Liveへ文字を送信しました", 5000);
         return;
       }
-      const result = await ipcRenderer.invoke("mascotInline:chat", message);
+      const result = await ipcRenderer.invoke("mascotInline:chat", {
+        message,
+        attachmentPaths: attachments.map((item) => item.path),
+      });
       if (["screen", "browser", "computer"].includes(result.permissionRequest?.type)) {
         showPermission(result);
         setStatus("「いいよ」「やめて」と話しても選べます", 9000);
@@ -1121,6 +1252,7 @@ window.addEventListener("DOMContentLoaded", () => {
           : result.mode === "work" ? `${result.workDirectoryName || "選択フォルダー"}で作業完了` : result.provider === "codex" ? "Codexから返答" : "OpenAIから返答");
       }
     } catch (error) {
+      if (attachments.length) mergeMascotAttachments(attachments);
       const interrupted = /interrupt|cancel|abort|中断/i.test(String(error.message || ""));
       const interruptedText = appState?.interactionMode === "work"
         ? "作業を中断しました。履歴から内容を確認できます。"
@@ -1131,9 +1263,9 @@ window.addEventListener("DOMContentLoaded", () => {
       if (!streamOwnsBusyState) {
         setSendingControls(false);
         input.focus();
-        const followUp = pendingFollowUpMessage;
-        pendingFollowUpMessage = "";
-        if (followUp) queueMicrotask(() => sendMascotMessage(followUp));
+        const followUp = pendingFollowUp;
+        pendingFollowUp = null;
+        if (followUp) queueMicrotask(() => sendMascotMessage(followUp.message, followUp.attachments));
       }
     }
   };
@@ -1145,24 +1277,33 @@ window.addEventListener("DOMContentLoaded", () => {
     detachedRealtimeWorkRunId = "";
     setSendingControls(false);
     input.focus();
-    const followUp = pendingFollowUpMessage;
-    pendingFollowUpMessage = "";
-    if (followUp) queueMicrotask(() => sendMascotMessage(followUp));
+    const followUp = pendingFollowUp;
+    pendingFollowUp = null;
+    if (followUp) queueMicrotask(() => sendMascotMessage(followUp.message, followUp.attachments));
   };
 
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
-    const message = input.value.trim();
+    const attachments = mascotAttachments.slice();
+    const message = input.value.trim() || (attachments.length
+      ? uiText("添付したファイルを確認してください。", "Please review the attached files.")
+      : "");
     if (!message) return;
     if (realtimeSessionState === "connecting") {
       setStatus("Liveへの接続が完了してから送信してください", 5000);
       return;
     }
+    if (realtimePeer && attachments.length) {
+      setStatus(uiText("ファイル添付はLiveを停止してから送信してください", "Stop Live before sending file attachments"), 6000);
+      return;
+    }
     clearAutoSendCountdown();
     input.value = "";
+    mascotAttachments = [];
+    renderMascotAttachments();
     resizeInput();
     if (sending) {
-      pendingFollowUpMessage = message;
+      pendingFollowUp = { message, attachments };
       stopTtsPlayback();
       stopButton.disabled = true;
       setStatus("差し込みを受け付けました。現在の応答を止めています…", 30_000);
@@ -1174,12 +1315,12 @@ window.addEventListener("DOMContentLoaded", () => {
       }
       return;
     }
-    await sendMascotMessage(message);
+    await sendMascotMessage(message, attachments);
   });
 
   stopButton.addEventListener("click", async () => {
     if (!sending || stopButton.disabled) return;
-    pendingFollowUpMessage = "";
+    pendingFollowUp = null;
     stopTtsPlayback();
     stopButton.disabled = true;
     setStatus("中断しています…", 30_000);
