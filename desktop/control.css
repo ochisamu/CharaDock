@@ -744,6 +744,12 @@ input[type="range"]:active::-webkit-slider-thumb { transform: scale(1.16); box-s
 .nested-settings { display: grid; gap: 12px; margin-top: -4px; padding: 13px; border: 1px solid var(--line); border-radius: 12px; background: color-mix(in srgb, var(--field) 74%, transparent); transition: opacity 140ms ease; }
 .nested-settings.is-disabled { opacity: .45; }
 .nested-settings .switch-row { min-height: 32px; }
+.work-slm-settings { margin-top: 3px; }
+.work-slm-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.work-slm-heading > div { display: grid; gap: 3px; }
+.work-slm-heading small { color: var(--text-tertiary); font-size: 9px; font-weight: 700; letter-spacing: .025em; }
+.work-slm-actions { grid-template-columns: repeat(3, minmax(0, auto)); justify-content: start; }
+.work-slm-actions .button { min-height: 31px; padding: 5px 10px; font-size: 9px; }
 .remote-status-badge { align-self: center; padding: 6px 10px; color: var(--muted); background: var(--surface-soft); border: 1px solid var(--line); border-radius: 999px; font-size: 9px; font-weight: 750; }
 .remote-status-badge.is-active { color: var(--success); border-color: color-mix(in srgb, var(--success) 34%, var(--line)); background: color-mix(in srgb, var(--success) 9%, transparent); }
 .remote-access-card { gap: 0; overflow: hidden; padding: 0; }

@@ -28,6 +28,7 @@ const DEFAULTS = Object.freeze({
   codexChatReasoningEffort: "",
   codexWorkModel: "",
   codexWorkReasoningEffort: "",
+  workSlmEnabled: false,
   alwaysOnTop: true,
   clickThrough: false,
   mascotPointerMode: "interactive",
@@ -289,6 +290,7 @@ class Preferences {
         if (!Object.prototype.hasOwnProperty.call(parsed, "codexWorkModel")) this.data.codexWorkModel = parsed.codexModel;
       }
       if (!["ja", "en"].includes(this.data.language)) this.data.language = "ja";
+      if (typeof this.data.workSlmEnabled !== "boolean") this.data.workSlmEnabled = false;
       if (!["manual", "vad"].includes(this.data.voiceActivationMode)) this.data.voiceActivationMode = "vad";
       if (!["low", "normal", "high"].includes(this.data.vadSensitivity)) this.data.vadSensitivity = "normal";
       if (!Object.prototype.hasOwnProperty.call(parsed, "mascotPointerMode")) {

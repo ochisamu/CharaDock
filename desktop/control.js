@@ -2052,6 +2052,42 @@
     }
   }
 
+  function syncWorkSlmUi() {
+    const status = state.workSlm || {};
+    const toggle = $("#workSlmToggle");
+    toggle.checked = Boolean(status.enabled);
+    toggle.disabled = !status.installed;
+    const busy = ["downloading", "loading"].includes(status.runtimeState);
+    $("#prepareWorkSlmButton").disabled = busy;
+    $("#prepareWorkSlmButton").textContent = status.installed
+      ? localized("モデルを再確認", "Verify model")
+      : busy ? localized("準備中…", "Preparing…") : localized("モデルを準備", "Prepare model");
+    $("#removeWorkSlmButton").disabled = !status.installed && !status.hasRuntime && status.runtimeState !== "error" && !busy;
+    const badge = $("#workSlmStatusBadge");
+    badge.classList.toggle("is-ready", Boolean(status.installed) && status.runtimeState !== "error");
+    badge.classList.toggle("is-warning", status.runtimeState === "error" || status.webgpuAvailable === false);
+    badge.textContent = status.runtimeState === "ready"
+      ? localized("使用可能", "Ready")
+      : busy ? localized("準備中", "Preparing")
+        : status.installed ? localized("準備済み", "Installed") : localized("未準備", "Not installed");
+    const progress = status.progress;
+    let message = localized(
+      "約800MBのモデルは明示的に準備するまでダウンロードしません。最終回答とGPT-Liveには適用されません。",
+      "The approximately 800 MB model is downloaded only when you prepare it. Final answers and GPT-Live are unchanged.",
+    );
+    if (status.webgpuAvailable === false) {
+      message = localized("この環境ではWebGPUを利用できません。現在の進捗文へ自動的に戻ります。", "WebGPU is unavailable here. CharaDock will automatically keep the current progress messages.");
+    } else if (busy && progress) {
+      const percent = Number(progress.progress) > 0 ? ` ${Math.round(progress.progress)}%` : "";
+      message = localized(`Qwen2.5 0.5Bを端末内へ準備しています…${percent}`, `Preparing Qwen2.5 0.5B on this device…${percent}`);
+    } else if (status.runtimeState === "error") {
+      message = localized("SLMを開始できませんでした。Workでは現在の進捗文を使います。", "The SLM could not start. Work will keep using the current progress messages.");
+    } else if (status.installed) {
+      message = localized("Qwen2.5 0.5Bを端末内で実行します。遅延・失敗時は現在の進捗文へ戻ります。", "Qwen2.5 0.5B runs locally. Slow or failed generations fall back to the current progress messages.");
+    }
+    $("#workSlmStatus").textContent = message;
+  }
+
   function syncUi() {
     i18n?.setLanguage(state.language || "ja");
     document.documentElement.dataset.character = state.characterId || "amber-avatar";
@@ -2087,6 +2123,7 @@
     $("#codexChatReasoningEffortSelect").value = state.codexChatReasoningEffort || "";
     setCodexModelOptions($("#codexWorkModelInput"), state.codexWorkModel || state.codexModel || "");
     $("#codexWorkReasoningEffortSelect").value = state.codexWorkReasoningEffort || "";
+    syncWorkSlmUi();
     $("#languageSelect").value = state.language || "ja";
     $("#alwaysOnTopToggle").checked = Boolean(state.alwaysOnTop);
     const pointerMode = state.mascotPointerMode || (state.clickThrough ? "click-through" : "interactive");
@@ -2249,6 +2286,7 @@
       codexChatReasoningEffort: $("#codexChatReasoningEffortSelect").value,
       codexWorkModel: $("#codexWorkModelInput").value.trim(),
       codexWorkReasoningEffort: $("#codexWorkReasoningEffortSelect").value,
+      workSlmEnabled: $("#workSlmToggle").checked,
       alwaysOnTop: $("#alwaysOnTopToggle").checked,
       mascotPointerMode: $('input[name="mascotPointerMode"]:checked')?.value || "interactive",
       mouseFollow: $("#mouseFollowToggle").checked,
@@ -3766,6 +3804,36 @@
       if (!window.confirm(localized(`${label}を削除しますか？`, `Delete ${label}?`))) return;
       state.sherpaModel = await api.removeSherpaModel($("#sherpaModelSelect").value);
       syncSherpaModelUi(state.sherpaModel);
+    });
+    $("#workSlmToggle").addEventListener("change", () => {
+      saveSettings().catch((error) => setStatus($("#connectionStatus"), error.message, true));
+    });
+    $("#prepareWorkSlmButton").addEventListener("click", async () => {
+      const button = $("#prepareWorkSlmButton");
+      button.disabled = true;
+      try {
+        state.workSlm = { ...(state.workSlm || {}), runtimeState: "downloading" };
+        syncWorkSlmUi();
+        state.workSlm = await api.prepareWorkSlm();
+        if (!$("#workSlmToggle").checked) $("#workSlmToggle").checked = true;
+        await saveSettings();
+      } catch (error) {
+        state = await api.getState().catch(() => state);
+        syncUi();
+        setStatus($("#connectionStatus"), error.message, true);
+      } finally {
+        button.disabled = false;
+      }
+    });
+    $("#removeWorkSlmButton").addEventListener("click", async () => {
+      if (!window.confirm(localized("Work用のローカルSLMモデルを削除しますか？", "Remove the local Work SLM model?"))) return;
+      $("#workSlmToggle").checked = false;
+      await saveSettings();
+      state.workSlm = await api.removeWorkSlm();
+      syncWorkSlmUi();
+    });
+    $("#openWorkSlmModelButton").addEventListener("click", () => {
+      api.openExternalUrl("https://huggingface.co/onnx-community/Qwen2.5-0.5B-Instruct").catch((error) => setStatus($("#connectionStatus"), error.message, true));
     });
     ["#styleBertVits2UrlInput", "#styleBertVits2ModelIdInput", "#styleBertVits2SpeedInput", "#sbv2ModelSelect", "#sbv2StyleSelect", "#sbv2StyleWeightInput", "#sbv2SpeedInput", "#sbv2DeviceSelect", "#piperPlusSpeedInput", "#supertonicVoiceSelect", "#supertonicSpeedInput", "#supertonicStepsInput", "#kokoroVoiceSelect", "#kokoroSpeedInput", "#kokoroDeviceSelect", "#irodoriSpeedInput", "#irodoriSamplingModeSelect", "#irodoriStepsInput", "#irodoriSeedInput", "#irodoriCaptionInput", "#irodoriAutoEmotionToggle", "#irodoriEmotionStrengthSelect", "#englishPronunciationDictionaryInput"]
       .forEach((selector) => $(selector).addEventListener("change", () => {

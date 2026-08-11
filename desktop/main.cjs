@@ -2,6 +2,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const os = require("node:os");
+const { pathToFileURL } = require("node:url");
 const { createHash, randomBytes } = require("node:crypto");
 const QRCode = require("qrcode");
 const {
@@ -82,6 +83,13 @@ const {
   workAcknowledgementFallback,
 } = require("./lib/work-voice-reporter.cjs");
 const { isSocialConversationTurn } = require("./lib/interaction-intent.cjs");
+const {
+  WORK_SLM_MODEL_ID,
+  WORK_SLM_MODEL_LABEL,
+  WORK_SLM_RUNTIME,
+  parseWorkSlmOutput,
+  workSlmExpression,
+} = require("./lib/work-slm.cjs");
 const { RealtimeWorkSpeechCoordinator } = require("./lib/realtime-work-speech.cjs");
 const { BeatriceHostClient } = require("./lib/beatrice-host-client.cjs");
 const {
@@ -113,7 +121,7 @@ const { IRODORI_CHUNK_LENGTH, IRODORI_CHUNK_OVERFLOW, irodoriModelStatus, splitI
 const { dynamicIrodoriCaption, normalizeIrodoriEmotionStrength } = require("./lib/irodori-caption.cjs");
 const { IrodoriVoiceLibrary } = require("./lib/irodori-voices.cjs");
 const { KOKORO_VOICES, kokoroModelStatus, normalizeKokoroVoice } = require("./lib/kokoro-webgpu.cjs");
-const { EmbeddedTtsModels } = require("./lib/tts-model-download.cjs");
+const { downloadVerifiedFile, EmbeddedTtsModels } = require("./lib/tts-model-download.cjs");
 const { ttsSetupGuidance } = require("./lib/tts-readiness.cjs");
 const { MAX_MODEL_BYTES: MAX_SBV2_MODEL_BYTES, Sbv2ModelLibrary } = require("./lib/sbv2-models.cjs");
 const { Sbv2WorkerClient } = require("./lib/sbv2-worker-client.cjs");
@@ -281,6 +289,16 @@ let resolveKokoroReady;
 let kokoroWebGpuAvailable = null;
 let nextKokoroRequestId = 1;
 const pendingKokoroRequests = new Map();
+let workSlmWindow;
+let workSlmReadyPromise;
+let resolveWorkSlmReady;
+let workSlmWebGpuAvailable = null;
+let workSlmRuntimeState = "idle";
+let workSlmProgress = null;
+let workSlmActiveDevice = "";
+let workSlmPrewarmTimer;
+let nextWorkSlmRequestId = 1;
+const pendingWorkSlmRequests = new Map();
 let controlWindow;
 let mascotWindow;
 let artifactPreviewWindow;
@@ -1874,6 +1892,7 @@ function publicAppState() {
     ...preferences.publicState(),
     remote: remoteServerStatus(),
     appUpdate: publicAppUpdateStatus(),
+    workSlm: publicWorkSlmStatus(),
     ttsProvider: characterTts.provider,
     styleBertVits2ModelId: characterTts.styleBertVits2ModelId,
     realtimeVoice: characterTts.realtimeVoice,
@@ -3351,6 +3370,9 @@ async function runSmokeTest() {
     'irodoriVersionSelect', 'irodoriPrecisionSelect'
   ].every((id) => Boolean(document.getElementById(id)))`);
   if (!ttsDownloadUiReady) throw new Error("TTS model download controls check failed");
+  const workSlmRuntimePath = await ensureWorkSlmRuntime();
+  const workSlmProbe = await requestWorkSlm("probe", { runtimePath: workSlmRuntimePath }, { timeoutMs: 30_000, allowDownload: false });
+  if (!workSlmProbe.probed) throw new Error("Work SLM browser runtime or persistent cache check failed");
   for (const provider of ["piper-plus", "supertonic-3", "kokoro", "irodori-webgpu", "irodori-webgpu-int4", "irodori-500m-v3"]) {
     const model = embeddedTtsModels.status(provider);
     const expectedSupported = provider !== "piper-plus" || process.platform === "win32";
@@ -4558,6 +4580,227 @@ function destroyKokoroWindow(error = new Error("Kokoro TTSを終了しました�
   if (window && !window.isDestroyed()) window.destroy();
 }
 
+function workSlmMetadataDirectory() {
+  return path.join(app.getPath("userData"), "models", "work-slm");
+}
+
+function workSlmMarkerPath() {
+  return path.join(workSlmMetadataDirectory(), "ready.json");
+}
+
+function workSlmRuntimeSourcePath() {
+  return path.join(workSlmMetadataDirectory(), WORK_SLM_RUNTIME.name);
+}
+
+function workSlmRuntimeModulePath() {
+  return path.join(workSlmMetadataDirectory(), "transformers.web.mjs");
+}
+
+function validWorkSlmRuntimeSource() {
+  try {
+    const source = fs.readFileSync(workSlmRuntimeSourcePath());
+    return source.length === WORK_SLM_RUNTIME.bytes
+      && createHash("sha256").update(source).digest("hex") === WORK_SLM_RUNTIME.sha256;
+  } catch {
+    return false;
+  }
+}
+
+async function ensureWorkSlmRuntime() {
+  fs.mkdirSync(workSlmMetadataDirectory(), { recursive: true });
+  if (!validWorkSlmRuntimeSource()) {
+    fs.rmSync(workSlmRuntimeSourcePath(), { force: true });
+    let received = 0;
+    await downloadVerifiedFile({
+      fetchImpl: globalThis.fetch,
+      file: WORK_SLM_RUNTIME,
+      destination: workSlmRuntimeSourcePath(),
+      onChunk: (size) => {
+        received += size;
+        workSlmProgress = {
+          status: "downloading-runtime",
+          file: WORK_SLM_RUNTIME.name,
+          progress: Math.min(100, received / WORK_SLM_RUNTIME.bytes * 100),
+          loaded: received,
+          total: WORK_SLM_RUNTIME.bytes,
+        };
+        broadcastAppState();
+      },
+    });
+  }
+  const webgpuEntry = require.resolve("onnxruntime-web/webgpu");
+  const webgpuModule = path.join(path.dirname(webgpuEntry), "ort.webgpu.min.mjs");
+  const commonEntry = require.resolve("onnxruntime-common");
+  const commonModule = path.resolve(path.dirname(commonEntry), "..", "esm", "index.js");
+  if (!fs.existsSync(webgpuModule) || !fs.existsSync(commonModule)) throw new Error("Work SLMのWebGPUランタイムが見つかりません。");
+  const transformed = fs.readFileSync(workSlmRuntimeSourcePath(), "utf8")
+    .replace('from "onnxruntime-web/webgpu"', `from ${JSON.stringify(pathToFileURL(webgpuModule).href)}`)
+    .replace('from "onnxruntime-common"', `from ${JSON.stringify(pathToFileURL(commonModule).href)}`);
+  if (transformed.includes('from "onnxruntime-web/webgpu"') || transformed.includes('from "onnxruntime-common"')) {
+    throw new Error("Work SLMランタイムを安全に準備できませんでした。");
+  }
+  fs.writeFileSync(workSlmRuntimeModulePath(), transformed, { mode: 0o600 });
+  return workSlmRuntimeModulePath();
+}
+
+function workSlmInstalled() {
+  try {
+    const marker = JSON.parse(fs.readFileSync(workSlmMarkerPath(), "utf8"));
+    return marker?.modelId === WORK_SLM_MODEL_ID
+      && marker?.runtimeVersion === WORK_SLM_RUNTIME.version
+      && validWorkSlmRuntimeSource();
+  } catch {
+    return false;
+  }
+}
+
+function publicWorkSlmStatus() {
+  return {
+    enabled: preferences.data.workSlmEnabled === true,
+    installed: workSlmInstalled(),
+    hasRuntime: validWorkSlmRuntimeSource(),
+    modelId: WORK_SLM_MODEL_ID,
+    modelLabel: WORK_SLM_MODEL_LABEL,
+    runtimeState: workSlmRuntimeState,
+    progress: workSlmProgress,
+    webgpuAvailable: workSlmWebGpuAvailable,
+    activeDevice: workSlmActiveDevice,
+  };
+}
+
+function destroyWorkSlmWindow(error = new Error("Work SLMを終了しました。")) {
+  const window = workSlmWindow;
+  workSlmWindow = null;
+  workSlmReadyPromise = null;
+  resolveWorkSlmReady = null;
+  workSlmRuntimeState = "idle";
+  workSlmActiveDevice = "";
+  for (const pending of pendingWorkSlmRequests.values()) {
+    clearTimeout(pending.timer);
+    pending.reject(error);
+  }
+  pendingWorkSlmRequests.clear();
+  if (window && !window.isDestroyed()) window.destroy();
+}
+
+async function ensureWorkSlmWindow() {
+  if (workSlmWindow && !workSlmWindow.isDestroyed() && workSlmReadyPromise) {
+    await workSlmReadyPromise;
+    return workSlmWindow;
+  }
+  workSlmReadyPromise = new Promise((resolve) => { resolveWorkSlmReady = resolve; });
+  workSlmWindow = new BrowserWindow({
+    title: "CharaDock Work SLM",
+    show: false,
+    width: 320,
+    height: 240,
+    webPreferences: {
+      preload: path.join(__dirname, "preload-work-slm.cjs"),
+      nodeIntegration: false,
+      contextIsolation: true,
+      sandbox: false,
+      backgroundThrottling: false,
+    },
+  });
+  workSlmWindow.setMenuBarVisibility(false);
+  workSlmWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+  workSlmWindow.webContents.on("will-navigate", (event) => event.preventDefault());
+  workSlmWindow.webContents.on("render-process-gone", (_event, details) => {
+    destroyWorkSlmWindow(new Error(`Work SLMが停止しました（${details.reason}）。`));
+  });
+  await workSlmWindow.loadFile(path.join(__dirname, "work-slm.html"));
+  await Promise.race([
+    workSlmReadyPromise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error("Work SLMの起動が時間切れになりました。")), 15_000)),
+  ]);
+  return workSlmWindow;
+}
+
+async function requestWorkSlm(action, payload = {}, { timeoutMs = 2200, allowDownload = false } = {}) {
+  const window = await ensureWorkSlmWindow();
+  const requestId = `work-slm-${Date.now()}-${nextWorkSlmRequestId++}`;
+  const result = new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      pendingWorkSlmRequests.delete(requestId);
+      reject(new Error("Work SLMの応答が時間切れになりました。"));
+    }, timeoutMs);
+    pendingWorkSlmRequests.set(requestId, { resolve, reject, timer });
+  });
+  window.webContents.send("workSlm:request", {
+    requestId,
+    action,
+    cacheDirectory: workSlmMetadataDirectory(),
+    runtimePath: action === "clear" ? "" : (payload.runtimePath || workSlmRuntimeModulePath()),
+    allowDownload,
+    ...payload,
+  });
+  return result;
+}
+
+async function prepareWorkSlm() {
+  workSlmRuntimeState = "downloading";
+  workSlmProgress = null;
+  broadcastAppState();
+  try {
+    const runtimePath = await ensureWorkSlmRuntime();
+    const result = await requestWorkSlm("prepare", { runtimePath }, { timeoutMs: 20 * 60_000, allowDownload: true });
+    fs.mkdirSync(workSlmMetadataDirectory(), { recursive: true });
+    fs.writeFileSync(workSlmMarkerPath(), `${JSON.stringify({ modelId: WORK_SLM_MODEL_ID, runtimeVersion: WORK_SLM_RUNTIME.version, dtype: "q4", preparedAt: new Date().toISOString() }, null, 2)}\n`);
+    workSlmRuntimeState = "ready";
+    workSlmActiveDevice = String(result.device || "webgpu");
+    return publicWorkSlmStatus();
+  } catch (error) {
+    workSlmRuntimeState = "error";
+    throw error;
+  } finally {
+    broadcastAppState();
+  }
+}
+
+async function removeWorkSlm() {
+  await requestWorkSlm("clear", {}, { timeoutMs: 15_000 }).catch(() => {});
+  destroyWorkSlmWindow();
+  fs.rmSync(workSlmMetadataDirectory(), { recursive: true, force: true });
+  workSlmProgress = null;
+  broadcastAppState();
+  return publicWorkSlmStatus();
+}
+
+async function rewriteWorkAnnouncementWithSlm({ kind, text, request }) {
+  if (!preferences.data.workSlmEnabled || !workSlmInstalled() || workSlmRuntimeState === "error") return null;
+  const runtimePath = workSlmWindow && !workSlmWindow.isDestroyed()
+    ? workSlmRuntimeModulePath()
+    : await ensureWorkSlmRuntime();
+  const character = activeCharacter();
+  const result = await requestWorkSlm("rewrite", {
+    runtimePath,
+    language: interfaceLanguage(),
+    kind,
+    request,
+    sourceText: text,
+    characterName: character.name,
+    personality: character.personality,
+  }, { timeoutMs: 2200, allowDownload: false });
+  return parseWorkSlmOutput(JSON.stringify({ text: result.text, emotion: result.emotion }), { sourceText: text, kind });
+}
+
+function scheduleWorkSlmPrewarm(delayMs = 2500) {
+  clearTimeout(workSlmPrewarmTimer);
+  if (!preferences.data.workSlmEnabled || !workSlmInstalled()) return;
+  workSlmPrewarmTimer = setTimeout(() => {
+    workSlmRuntimeState = "loading";
+    broadcastAppState();
+    ensureWorkSlmRuntime()
+      .then((runtimePath) => requestWorkSlm("prepare", { runtimePath }, { timeoutMs: 180_000, allowDownload: false }))
+      .then((result) => {
+        workSlmRuntimeState = "ready";
+        workSlmActiveDevice = String(result.device || "webgpu");
+      })
+      .catch(() => { workSlmRuntimeState = "error"; })
+      .finally(() => broadcastAppState());
+  }, delayMs);
+}
+
 async function ensureKokoroWindow() {
   if (kokoroWindow && !kokoroWindow.isDestroyed() && kokoroReadyPromise) {
     await kokoroReadyPromise;
@@ -5559,6 +5802,43 @@ function registerIpc() {
     resolveKokoroReady = null;
     controlWindow?.webContents.send("app:stateChanged", publicAppState());
   });
+  ipcMain.on("workSlm:ready", (event, payload = {}) => {
+    if (event.sender !== workSlmWindow?.webContents) return;
+    workSlmWebGpuAvailable = Boolean(payload.webgpuAvailable);
+    resolveWorkSlmReady?.(true);
+    resolveWorkSlmReady = null;
+    broadcastAppState();
+  });
+  ipcMain.on("workSlm:progress", (event, payload = {}) => {
+    if (event.sender !== workSlmWindow?.webContents) return;
+    workSlmProgress = {
+      status: String(payload.status || ""),
+      file: path.basename(String(payload.file || "")),
+      progress: Math.max(0, Math.min(100, Number(payload.progress) || 0)),
+      loaded: Math.max(0, Number(payload.loaded) || 0),
+      total: Math.max(0, Number(payload.total) || 0),
+    };
+    if (["ready", "done"].includes(workSlmProgress.status)) workSlmRuntimeState = "loading";
+    broadcastAppState();
+  });
+  ipcMain.on("workSlm:result", (event, payload = {}) => {
+    if (event.sender !== workSlmWindow?.webContents) return;
+    const requestId = String(payload.requestId || "");
+    const pending = pendingWorkSlmRequests.get(requestId);
+    if (!pending) return;
+    pendingWorkSlmRequests.delete(requestId);
+    clearTimeout(pending.timer);
+    if (payload.error) {
+      workSlmRuntimeState = "error";
+      pending.reject(new Error(String(payload.error)));
+      broadcastAppState();
+    }
+    else {
+      workSlmRuntimeState = "ready";
+      workSlmActiveDevice = String(payload.device || workSlmActiveDevice || "webgpu");
+      pending.resolve(payload);
+    }
+  });
   ipcMain.on("kokoro:result", (event, payload = {}) => {
     if (event.sender !== kokoroWindow?.webContents) return;
     const requestId = String(payload.requestId || "");
@@ -5835,6 +6115,14 @@ function registerIpc() {
     assertTrustedSender(event);
     return normalizeRealtimeVoiceList(await codexClient.listRealtimeVoices());
   });
+  ipcMain.handle("workSlm:prepare", async (event) => {
+    assertTrustedSender(event);
+    return prepareWorkSlm();
+  });
+  ipcMain.handle("workSlm:remove", async (event) => {
+    assertTrustedSender(event);
+    return removeWorkSlm();
+  });
   ipcMain.handle("settings:save", async (event, patch) => {
     assertTrustedSender(event);
     const previousBackend = preferences.data.backend;
@@ -5844,6 +6132,7 @@ function registerIpc() {
     const previousDisplayId = String(preferences.data.preferredDisplayId || "");
     const previousUpdateChecksEnabled = preferences.data.updateChecksEnabled !== false;
     const previousUpdateChannel = preferences.data.updateChannel === "beta" ? "beta" : "stable";
+    const previousWorkSlmEnabled = preferences.data.workSlmEnabled === true;
     const requestedDisplayId = String(patch?.preferredDisplayId || "");
     const displayId = screen.getAllDisplays().some((display) => String(display.id) === requestedDisplayId) ? requestedDisplayId : "";
     const ttsProvider = ["system", "style-bert-vits2", "piper-plus", "supertonic-3", "irodori-webgpu", "kokoro", "sbv2-jp-extra"].includes(patch?.ttsProvider) ? patch.ttsProvider : "system";
@@ -5932,6 +6221,7 @@ function registerIpc() {
       codexChatReasoningEffort,
       codexWorkModel: String(patch?.codexWorkModel ?? preferences.data.codexWorkModel).trim().slice(0, 120),
       codexWorkReasoningEffort,
+      workSlmEnabled: patch?.workSlmEnabled === true,
       alwaysOnTop: Boolean(patch?.alwaysOnTop),
       clickThrough: mascotPointerMode === "click-through",
       mascotPointerMode,
@@ -5986,6 +6276,8 @@ function registerIpc() {
       preferredDisplayId: displayId,
     };
     preferences.patch(allowed);
+    if (!allowed.workSlmEnabled && previousWorkSlmEnabled) destroyWorkSlmWindow();
+    else if (allowed.workSlmEnabled) scheduleWorkSlmPrewarm(250);
     if (allowed.updateChannel !== previousUpdateChannel) appUpdateStatus = null;
     if (allowed.updateChecksEnabled && (!previousUpdateChecksEnabled || allowed.updateChannel !== previousUpdateChannel)) scheduleAppUpdateCheck();
     if (!allowed.updateChecksEnabled) clearTimeout(appUpdateCheckTimer);
@@ -6671,6 +6963,16 @@ function expressiveSpeechSegments(segments) {
     spokenText: configuredSpeechText(text),
     expression: speechExpression(text),
   })).filter((segment) => segment.text);
+}
+
+function expressiveWorkAnnouncementSegment(text, emotion = "") {
+  const normalized = String(text || "").trim();
+  if (!normalized) return [];
+  return [{
+    text: normalized,
+    spokenText: configuredSpeechText(normalized),
+    expression: emotion ? workSlmExpression(emotion, normalized) : speechExpression(normalized),
+  }];
 }
 
 function currentScreenShareRequest() {
@@ -7583,19 +7885,35 @@ async function sendChatMessage(message, {
     speechLanguage: preferences.data.speechLanguage || "ja-JP",
     workRunId: workRun?.id || "",
   });
-  const announceWork = ({ kind, text: announcement }) => {
-    if (!workMode || !announcement) return;
-    if (realtimeOutput) {
-      appendRealtimeOutputSpeech(announcement, kind).catch(() => false);
-      return;
-    }
+  let workAnnouncementsOpen = true;
+  let workAnnouncementQueue = Promise.resolve();
+  const publishWorkAnnouncement = ({ kind, text: announcement, emotion = "" }) => {
+    if (!workAnnouncementsOpen || !announcement) return;
     sendStream({
       phase: "announcement",
       mode: "work",
       kind,
       text: announcement,
       displayText: announcement,
-      speechSegments: streamTtsEnabled ? expressiveSpeechSegments([announcement]) : [],
+      speechSegments: streamTtsEnabled ? expressiveWorkAnnouncementSegment(announcement, emotion) : [],
+      generatedBySlm: Boolean(emotion),
+    });
+  };
+  const announceWork = ({ kind, text: announcement }) => {
+    if (!workMode || !announcement) return;
+    if (realtimeOutput) {
+      appendRealtimeOutputSpeech(announcement, kind).catch(() => false);
+      return;
+    }
+    if (!preferences.data.workSlmEnabled || !workSlmInstalled()) {
+      publishWorkAnnouncement({ kind, text: announcement });
+      return;
+    }
+    workAnnouncementQueue = workAnnouncementQueue.then(async () => {
+      if (!workAnnouncementsOpen) return;
+      const rewritten = await rewriteWorkAnnouncementWithSlm({ kind, text: announcement, request: requestText }).catch(() => null);
+      if (!workAnnouncementsOpen) return;
+      publishWorkAnnouncement({ kind, text: rewritten?.text || announcement, emotion: rewritten?.emotion || "" });
     });
   };
   const workVoiceReporter = workMode ? new WorkVoiceReporter({
@@ -7829,6 +8147,8 @@ async function sendChatMessage(message, {
       });
     }
     result = { ...result, text: cleanAssistantText(result.text) };
+    await workAnnouncementQueue.catch(() => {});
+    workAnnouncementsOpen = false;
     workVoiceReporter?.complete();
     const artifacts = workMode
       ? discoverWorkArtifacts(validWorkDirectory(), {
@@ -7885,6 +8205,7 @@ async function sendChatMessage(message, {
     if (!workMode) rememberConversationTurn(requestText, result.text);
     return { ...result, displayText, artifacts, workRunId: workRun?.id || "", streamed: true };
   } catch (error) {
+    workAnnouncementsOpen = false;
     workVoiceReporter?.complete();
     if (workRun) {
       const interrupted = workRun.status === "stopping" || /interrupt|cancel|中断/i.test(String(error.message || ""));
@@ -8172,6 +8493,7 @@ async function boot() {
   registerShortcuts();
   startCursorLoop();
   scheduleIrodoriPrewarm();
+  scheduleWorkSlmPrewarm();
   scheduleAppUpdateCheck();
   const syncDisplays = () => {
     if (!controlWindow || controlWindow.isDestroyed()) return;
@@ -8204,6 +8526,7 @@ app.on("window-all-closed", () => {});
 app.on("activate", showControlWindow);
 app.on("before-quit", () => {
   clearTimeout(appUpdateCheckTimer);
+  clearTimeout(workSlmPrewarmTimer);
   diagnosticLog?.write("info", "app-stop");
   quitting = true;
   clearInterval(cursorTimer);
@@ -8222,6 +8545,7 @@ app.on("before-quit", () => {
   if (artifactPreviewWindow && !artifactPreviewWindow.isDestroyed()) artifactPreviewWindow.destroy();
   destroyIrodoriWindow();
   destroyKokoroWindow();
+  destroyWorkSlmWindow();
   sbv2Worker?.stop();
   remoteServer?.stop().catch(() => {});
   localServer?.stop();

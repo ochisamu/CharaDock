@@ -40,6 +40,21 @@ license. See `assets/nike-avatar/ASSET_NOTICE.md` and
 The packaged Electron runtime also supplies `LICENSE.electron.txt` and
 `LICENSES.chromium.html` alongside the executable.
 
+### Transformers.js and Qwen2.5 0.5B Instruct (optional Work SLM PoC)
+
+- Runtime: Transformers.js 4.2.0
+- Source: https://github.com/huggingface/transformers.js
+- License: Apache License 2.0
+- Optional model: onnx-community/Qwen2.5-0.5B-Instruct
+- Model source: https://huggingface.co/onnx-community/Qwen2.5-0.5B-Instruct
+- Model license: Apache License 2.0
+
+Neither Transformers.js nor the model weights are redistributed with
+CharaDock. A pinned, SHA-256-verified browser runtime and the model files are
+downloaded only after the user explicitly selects “Prepare model”. The
+experimental SLM rewrites brief Work progress announcements and does not
+replace Codex reasoning or final answers.
+
 ### Steinberg VST 3 SDK (Beatrice 2 host helper)
 
 - Project: VST 3 Plug-in SDK

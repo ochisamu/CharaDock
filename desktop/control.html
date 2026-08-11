@@ -341,6 +341,19 @@
               </select></label>
             </div>
             <p class="hint">深くするほど応答に時間がかかる場合があります。利用できる値はモデルによって異なります。</p>
+            <div class="nested-settings work-slm-settings">
+              <div class="work-slm-heading">
+                <div><strong>ローカルSLMでWork進捗を自然化</strong><small>PoC · 通常TTSのみ</small></div>
+                <span id="workSlmStatusBadge" class="setup-state-badge">未準備</span>
+              </div>
+              <label class="switch-row"><span><strong>SLMで進捗文を生成</strong><small>Qwen2.5 0.5Bが端末内で発話文と感情候補を生成します</small></span><input id="workSlmToggle" type="checkbox" /><i></i></label>
+              <p id="workSlmStatus" class="hint">約800MBのモデルは明示的に準備するまでダウンロードしません。最終回答とGPT-Liveには適用されません。</p>
+              <div class="stack-actions work-slm-actions">
+                <button id="prepareWorkSlmButton" class="button button-secondary" type="button">モデルを準備</button>
+                <button id="removeWorkSlmButton" class="button button-quiet" type="button">モデルを削除</button>
+                <button id="openWorkSlmModelButton" class="button button-quiet" type="button">モデル情報</button>
+              </div>
+            </div>
             <div class="stack-actions">
               <button id="codexLoginButton" class="button button-secondary" type="button">ChatGPTでログイン</button>
               <p id="codexAccountState" class="hint">アカウント状態を確認しています…</p>
