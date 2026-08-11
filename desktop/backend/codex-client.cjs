@@ -41,6 +41,10 @@ function permissionProfileForSandbox(sandbox) {
   return "";
 }
 
+function isBenignCodexStderr(value) {
+  return /failed to load models cache:\s*missing field [`'“”]?base_instructions/i.test(String(value || ""));
+}
+
 function appServerArgs(webSearchMode = "", sandbox = "") {
   const args = ["app-server", "--stdio", "--enable", "realtime_conversation"];
   if (WEB_SEARCH_MODES.has(webSearchMode)) args.push("-c", `web_search=${JSON.stringify(webSearchMode)}`);
@@ -197,7 +201,7 @@ class CodexAppServerClient {
     child.on("error", (error) => this.handleExit(null, error.message));
     child.stderr.on("data", (chunk) => {
       const text = String(chunk || "").trim();
-      if (text) console.warn("codex app-server:", text);
+      if (text && !isBenignCodexStderr(text)) console.warn("codex app-server:", text);
     });
     child.once("exit", (code, signal) => this.handleExit(code, signal));
     this.readline = readline.createInterface({ input: child.stdout });
@@ -633,6 +637,7 @@ module.exports = {
   isOfficialComputerUseSkill,
   normalizeSkillName,
   appServerArgs,
+  isBenignCodexStderr,
   permissionProfileForSandbox,
   workspaceSandboxPolicy,
 };

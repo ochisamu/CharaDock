@@ -6,11 +6,17 @@ const {
   CODEX_MASCOT_INSTRUCTIONS,
   CodexAppServerClient,
   appServerArgs,
+  isBenignCodexStderr,
   isOfficialComputerUseSkill,
   normalizeSkillName,
   permissionProfileForSandbox,
   workspaceSandboxPolicy,
 } = require("../backend/codex-client.cjs");
+
+test("Codex client suppresses only the known non-fatal models cache warning", () => {
+  assert.equal(isBenignCodexStderr("failed to load models cache: missing field `base_instructions` at line 94"), true);
+  assert.equal(isBenignCodexStderr("authentication failed"), false);
+});
 
 test("Codex work client can explicitly enable live web search", () => {
   assert.deepEqual(appServerArgs("live"), [

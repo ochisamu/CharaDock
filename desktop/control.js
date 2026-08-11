@@ -2063,9 +2063,13 @@
     const busy = ["downloading", "loading"].includes(status.runtimeState);
     modelSelect.disabled = busy;
     $("#prepareWorkSlmButton").disabled = busy;
-    $("#prepareWorkSlmButton").textContent = status.installed
-      ? localized("モデルを再確認", "Verify model")
-      : busy ? localized("準備中…", "Preparing…") : localized("モデルを準備", "Prepare model");
+    $("#prepareWorkSlmButton").textContent = busy
+      ? localized("準備中…", "Preparing…")
+      : status.installed && status.runtimeState === "ready"
+        ? localized("モデルを再確認", "Verify model")
+        : status.installed
+          ? localized("モデルを起動", "Start model")
+          : localized("モデルを準備", "Prepare model");
     $("#removeWorkSlmButton").disabled = !status.installed && !status.hasRuntime && status.runtimeState !== "error" && !busy;
     const badge = $("#workSlmStatusBadge");
     badge.classList.toggle("is-ready", Boolean(status.installed) && status.runtimeState !== "error");
@@ -2091,8 +2095,10 @@
       message = localized(`${modelName}を端末内へ準備しています…${percent}`, `Preparing ${modelName} on this device…${percent}`);
     } else if (status.runtimeState === "error") {
       message = localized("SLMを開始できませんでした。Workでは現在の進捗文を使います。", "The SLM could not start. Work will keep using the current progress messages.");
-    } else if (status.installed) {
+    } else if (status.installed && status.runtimeState === "ready") {
       message = localized(`${modelName}を端末内で実行します。遅延・失敗時は現在の進捗文へ戻ります。`, `${modelName} runs locally. Slow or failed generations fall back to the current progress messages.`);
+    } else if (status.installed) {
+      message = localized(`${modelName}は準備済みです。「モデルを起動」を押すか、設定画面を閉じるとバックグラウンドで起動します。Ready後は作業開始と進捗の両方に使います。`, `${modelName} is installed. Press Start model, or close Settings to start it in the background. Once ready, it is used for both Work acknowledgements and progress.`);
     }
     $("#workSlmStatus").textContent = message;
   }

@@ -11,6 +11,7 @@ const {
   workSlmAnchors,
   workSlmExpression,
   workSlmMessages,
+  naturalizeGeneratedWorkJapanese,
 } = require("../lib/work-slm.cjs");
 
 test("Work SLM prompt limits the model to grounded spoken progress", () => {
@@ -30,6 +31,35 @@ test("Work SLM prompt limits the model to grounded spoken progress", () => {
   assert.match(messages[1].content, /README\.mdの構成を確認しています/);
   assert.match(messages[1].content, /根拠語.*README\.md/);
   assert.equal(DEFAULT_WORK_SLM_MODEL_ID, "onnx-community/Qwen3.5-0.8B-ONNX-OPT");
+});
+
+test("Work SLM gives acknowledgements a natural start-specific instruction", () => {
+  const messages = workSlmMessages({
+    language: "ja",
+    kind: "ack",
+    request: "READMEを公開向けに整えて",
+    sourceText: "READMEの公開準備を始めます",
+    characterName: "コハク",
+    personality: "明るく簡潔",
+  });
+  assert.match(messages[0].content, /着手時の返事/);
+  assert.match(messages[0].content, /まず〜から進めるね/);
+  assert.doesNotMatch(messages[0].content, /必ず「〜しているよ」/);
+});
+
+test("Work SLM repairs small-model Japanese acknowledgement artifacts", () => {
+  assert.equal(
+    naturalizeGeneratedWorkJapanese("READMEを公開準備で始めましょうね", "ack"),
+    "READMEの公開準備から始めるね。",
+  );
+  assert.equal(
+    parseWorkSlmOutput('{"text":"READMEを公開準備で始めましょうね","emotion":"happy"}', {
+      sourceText: "READMEの公開準備を始めます",
+      request: "READMEを公開向けに整えて",
+      kind: "ack",
+    }).text,
+    "READMEの公開準備から始めるね。",
+  );
 });
 
 test("Work SLM keeps Qwen and Japanese LFM models as bounded selectable models", () => {

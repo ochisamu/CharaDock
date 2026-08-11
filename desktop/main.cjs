@@ -299,7 +299,6 @@ let workSlmRuntimeState = "idle";
 let workSlmProgress = null;
 let workSlmActiveDevice = "";
 let workSlmPrewarmTimer;
-let workSlmPrewarmGeneration = 0;
 let nextWorkSlmRequestId = 1;
 const pendingWorkSlmRequests = new Map();
 let controlWindow;
@@ -307,6 +306,7 @@ let mascotWindow;
 let artifactPreviewWindow;
 let activeArtifactPreviewTarget = null;
 let tray;
+let trayMenu;
 let appUpdateStatus = null;
 let appUpdateCheckPromise = null;
 let appUpdateCheckTimer = null;
@@ -3057,7 +3057,7 @@ function createControlWindow() {
   });
   controlWindow.on("hide", () => {
     syncMascotAlwaysOnTop();
-    if (!quitting) scheduleWorkSlmPrewarm(3_000);
+    if (!quitting) scheduleWorkSlmPrewarm(1_000);
   });
   controlWindow.on("close", (event) => {
     if (!quitting) {
@@ -3128,7 +3128,6 @@ function scheduleBoundsSave(key, window) {
 }
 
 function showControlWindow() {
-  cancelWorkSlmPrewarm({ releaseGpu: true });
   if (!controlWindow || controlWindow.isDestroyed()) createControlWindow();
   if (controlWindow.isMinimized()) controlWindow.restore();
   if (!isBoundsVisible(controlWindow.getBounds())) {
@@ -3136,8 +3135,19 @@ function showControlWindow() {
   }
   controlWindow.show();
   syncMascotAlwaysOnTop();
+  // A show/focus request initiated from a transparent renderer can be denied
+  // foreground activation by Windows. Briefly raising the settings window
+  // makes the result visible without keeping it above other applications.
+  if (process.platform === "win32") controlWindow.setAlwaysOnTop(true, "floating");
   controlWindow.moveTop();
   controlWindow.focus();
+  if (process.platform === "win32") {
+    setTimeout(() => {
+      if (!controlWindow || controlWindow.isDestroyed()) return;
+      controlWindow.setAlwaysOnTop(false);
+      if (controlWindow.isVisible()) controlWindow.focus();
+    }, 900);
+  }
 }
 
 function toggleMascotVisibility() {
@@ -3232,13 +3242,19 @@ function createTray() {
   const icon = source.resize({ width: 32, height: 32, quality: "best" });
   tray = new Tray(icon);
   tray.setToolTip("CharaDock");
+  tray.on("click", showControlWindow);
   tray.on("double-click", showControlWindow);
+  if (process.platform === "win32") {
+    tray.on("right-click", () => {
+      if (trayMenu) tray.popUpContextMenu(trayMenu);
+    });
+  }
   rebuildTrayMenu();
 }
 
 function rebuildTrayMenu() {
   if (!tray) return;
-  tray.setContextMenu(Menu.buildFromTemplate([
+  trayMenu = Menu.buildFromTemplate([
     { label: mainText("キャラクターから話す", "Talk from character"), click: openMascotChat },
     { label: mainText("設定とチャットを開く", "Open settings and chat"), click: showControlWindow },
     { label: mascotWindow?.isVisible() ? mainText("キャラクターを隠す", "Hide character") : mainText("キャラクターを表示", "Show character"), click: toggleMascotVisibility },
@@ -3258,7 +3274,10 @@ function rebuildTrayMenu() {
     { label: mainText("位置をリセット", "Reset position"), click: resetMascotPosition },
     { type: "separator" },
     { label: mainText("終了", "Quit"), click: () => { quitting = true; app.quit(); } },
-  ]));
+  ]);
+  // Electron's implicit Windows tray menu can stop appearing after the app's
+  // GPU process is reset. Use the explicit right-click handler above instead.
+  tray.setContextMenu(process.platform === "win32" ? null : trayMenu);
 }
 
 function registerShortcuts() {
@@ -3380,20 +3399,27 @@ async function runWorkSlmModelSmokeTest(runtimePath, selection = "all") {
       await new Promise((resolve) => setTimeout(resolve, 300));
       const startedAt = Date.now();
       await prepareWorkSlm();
-      const result = await requestWorkSlm("rewrite", {
-        runtimePath,
-        modelId: model.id,
-        language: "ja",
-        kind: "progress",
-        request: "READMEを公開向けに整えて",
-        sourceText: "READMEの構成と説明を確認しています",
-        characterName: "コハク",
-        personality: "明るく親しみやすく、簡潔に話す",
-      }, { timeoutMs: 120_000, allowDownload: false });
-      if (!String(result?.text || "").trim() || !WORK_SLM_EMOTIONS.includes(result?.emotion)) {
-        throw new Error(`Work SLM generation check failed: ${model.id}`);
+      for (const announcement of [
+        { kind: "ack", sourceText: "READMEの公開準備を始めます" },
+        { kind: "progress", sourceText: "READMEの構成と説明を確認しています" },
+      ]) {
+        const generationStartedAt = Date.now();
+        const result = await requestWorkSlm("rewrite", {
+          runtimePath,
+          modelId: model.id,
+          language: "ja",
+          kind: announcement.kind,
+          request: "READMEを公開向けに整えて",
+          sourceText: announcement.sourceText,
+          characterName: "コハク",
+          personality: "明るく親しみやすく、簡潔に話す",
+        }, { timeoutMs: 120_000, allowDownload: false });
+        if (!String(result?.text || "").trim() || !WORK_SLM_EMOTIONS.includes(result?.emotion)) {
+          throw new Error(`Work SLM ${announcement.kind} generation check failed: ${model.id}`);
+        }
+        console.log(`work-slm-smoke: ${announcement.kind} ok (${model.shortLabel}, ${Date.now() - generationStartedAt}ms): ${result.text}`);
       }
-      console.log(`work-slm-smoke: ok (${model.shortLabel}, ${Date.now() - startedAt}ms): ${result.text}`);
+      console.log(`work-slm-smoke: model ok (${model.shortLabel}, ${Date.now() - startedAt}ms total)`);
     }
   } finally {
     destroyWorkSlmWindow();
@@ -3415,16 +3441,10 @@ async function runSmokeTest() {
   if (!controlWindow.isVisible() || controlWindow.isMinimized()) {
     throw new Error("mascot settings button did not restore the minimized settings window");
   }
-  if (preferences.data.workSlmEnabled && workSlmInstalled()) {
-    controlWindow.hide();
-    scheduleWorkSlmPrewarm(0);
-    await new Promise((resolve) => setTimeout(resolve, 500));
-    if (workSlmRuntimeState !== "loading") throw new Error("Work SLM prewarm did not enter its loading state");
-    await mascotWindow.webContents.executeJavaScript("document.querySelector('#desktopMascotSettingsButton').click()");
-    await new Promise((resolve) => setTimeout(resolve, 300));
-    if (!controlWindow.isVisible() || workSlmRuntimeState !== "idle") {
-      throw new Error("settings did not interrupt Work SLM prewarm and open immediately");
-    }
+  if (process.platform === "win32") {
+    tray.emit("right-click", {}, screen.getCursorScreenPoint());
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    tray.closeContextMenu();
   }
   if (normalizeSpeechPronunciation("Hello world") !== "ハロー ワールド") {
     throw new Error("CMUdict pronunciation fallback check failed");
@@ -3701,6 +3721,12 @@ async function runSmokeTest() {
   const latestWorkTextVisible = await mascotWindow.webContents.executeJavaScript("document.querySelector('#desktopMascotBubbleText').textContent === '最新の進捗。'");
   if (!latestWorkTextVisible) throw new Error("work stream did not show only its latest sanitized message");
   mascotWindow.webContents.send("mascot:stream", { phase: "done", mode: "work", text: "作業の全文。完了", displayText: "完了" });
+  const previousSmokeWorkHistory = workHistory.map((run) => ({
+    ...run,
+    activities: [...(run.activities || [])],
+    artifacts: (run.artifacts || []).map((artifact) => ({ ...artifact })),
+  }));
+  const previousSmokeActiveWorkRunId = activeWorkRunId;
   const smokeHistoryRun = beginWorkRun("READMEの表記を確認して、必要な修正を行う");
   updateWorkRun(smokeHistoryRun, { activity: "ファイルを確認中…" });
   updateWorkRun(smokeHistoryRun, { activity: "ファイルを更新中…" });
@@ -3730,8 +3756,9 @@ async function runSmokeTest() {
     return !document.querySelector('#desktopMascotWorkPanel').classList.contains('is-open');
   })()`);
   if (!workHistoryClosedOutside) throw new Error("work history panel did not auto-close after an outside interaction");
-  workHistory.length = 0;
-  activeWorkRunId = null;
+  workHistory = previousSmokeWorkHistory;
+  activeWorkRunId = previousSmokeActiveWorkRunId;
+  persistWorkHistory();
   broadcastWorkHistory();
   const previousInteractionMode = preferences.data.interactionMode;
   preferences.patch({ interactionMode: "work" });
@@ -4903,7 +4930,7 @@ async function removeWorkSlm() {
 }
 
 async function rewriteWorkAnnouncementWithSlm({ kind, text, request }) {
-  if (!preferences.data.workSlmEnabled || !workSlmInstalled() || workSlmRuntimeState === "error") return null;
+  if (!preferences.data.workSlmEnabled || !workSlmInstalled() || workSlmRuntimeState !== "ready") return null;
   const runtimePath = workSlmWindow && !workSlmWindow.isDestroyed()
     ? workSlmRuntimeModulePath()
     : await ensureWorkSlmRuntime();
@@ -4921,43 +4948,26 @@ async function rewriteWorkAnnouncementWithSlm({ kind, text, request }) {
   return parseWorkSlmOutput(JSON.stringify({ text: result.text, emotion: result.emotion }), { sourceText: text, request, kind });
 }
 
-function cancelWorkSlmPrewarm({ releaseGpu = false } = {}) {
+function scheduleWorkSlmPrewarm(delayMs = 8_000) {
   clearTimeout(workSlmPrewarmTimer);
-  workSlmPrewarmTimer = null;
-  workSlmPrewarmGeneration += 1;
-  if (!releaseGpu || workSlmRuntimeState !== "loading") return;
-  destroyWorkSlmWindow(new Error("設定画面を優先するためWork SLMの先読みを中断しました。"));
-  workSlmProgress = null;
-  broadcastAppState();
-}
-
-function scheduleWorkSlmPrewarm(delayMs = 15_000) {
-  cancelWorkSlmPrewarm();
   if (!preferences.data.workSlmEnabled || !workSlmInstalled()) return;
-  const generation = workSlmPrewarmGeneration;
+  if (["downloading", "loading", "ready"].includes(workSlmRuntimeState)) return;
   workSlmPrewarmTimer = setTimeout(() => {
     workSlmPrewarmTimer = null;
-    if (generation !== workSlmPrewarmGeneration) return;
-    if (controlWindow && !controlWindow.isDestroyed() && controlWindow.isVisible()) {
-      scheduleWorkSlmPrewarm(5_000);
-      return;
-    }
+    // Model initialization can use the shared Electron GPU process heavily.
+    // Keep settings fully interactive; closing the window schedules this again.
+    if (controlWindow && !controlWindow.isDestroyed() && controlWindow.isVisible()) return;
     workSlmRuntimeState = "loading";
     broadcastAppState();
     ensureWorkSlmRuntime()
-      .then((runtimePath) => requestWorkSlm("prepare", { runtimePath }, { timeoutMs: 180_000, allowDownload: false }))
+      .then((runtimePath) => requestWorkSlm("prepare", { runtimePath }, { timeoutMs: 5 * 60_000, allowDownload: false }))
       .then((result) => {
-        if (generation !== workSlmPrewarmGeneration) return;
         workSlmRuntimeState = "ready";
         workSlmActiveDevice = String(result.device || "webgpu");
       })
-      .catch(() => {
-        if (generation === workSlmPrewarmGeneration) workSlmRuntimeState = "error";
-      })
-      .finally(() => {
-        if (generation === workSlmPrewarmGeneration) broadcastAppState();
-      });
-  }, delayMs);
+      .catch(() => { workSlmRuntimeState = "error"; })
+      .finally(() => broadcastAppState());
+  }, Math.max(0, Number(delayMs) || 0));
 }
 
 async function ensureKokoroWindow() {
@@ -6446,7 +6456,7 @@ function registerIpc() {
     if ((!allowed.workSlmEnabled && previousWorkSlmEnabled) || allowed.workSlmModelId !== previousWorkSlmModelId) {
       destroyWorkSlmWindow();
     }
-    if (allowed.workSlmEnabled) scheduleWorkSlmPrewarm(250);
+    if (allowed.workSlmEnabled && (!controlWindow || !controlWindow.isVisible())) scheduleWorkSlmPrewarm(500);
     if (allowed.updateChannel !== previousUpdateChannel) appUpdateStatus = null;
     if (allowed.updateChecksEnabled && (!previousUpdateChecksEnabled || allowed.updateChannel !== previousUpdateChannel)) scheduleAppUpdateCheck();
     if (!allowed.updateChecksEnabled) clearTimeout(appUpdateCheckTimer);

@@ -72,18 +72,24 @@ function workSlmAnchors(...values) {
 
 function workSlmMessages({ language = "ja", request, sourceText, kind, characterName, personality }) {
   const english = language === "en";
+  const acknowledgement = kind === "ack";
   const system = english
     ? [
-      "You rewrite one desktop companion Work progress announcement.",
+      `You rewrite one desktop companion Work ${acknowledgement ? "start acknowledgement" : "progress announcement"}.`,
       "Return exactly one JSON object and nothing else. It must have a text string and an emotion chosen from neutral, thinking, happy, soft, concerned, or excited.",
-      "Write one natural spoken sentence, 4 to 18 words. This is an in-progress update: use present-progressive wording and never use completed or past-tense wording.",
+      acknowledgement
+        ? "Write one natural spoken sentence, 4 to 18 words. Say specifically what you are about to begin, using wording such as 'I'll start with...' or 'Let me first...'."
+        : "Write one natural spoken sentence, 4 to 18 words. This is an in-progress update: use present-progressive wording.",
+      "Never use completed or past-tense wording.",
       "Stay faithful to the supplied activity; never invent completion, results, files, URLs, commands, or technical details.",
       "Do not quote the request, ask a question, or tell the user to do the work. Avoid generic stock phrases. Match the character gently without roleplay narration.",
     ].join(" ")
     : [
-      "デスクトップキャラクターがWorkの進捗を一度だけ伝える発話へ書き換えてください。",
+      `デスクトップキャラクターがWorkの${acknowledgement ? "着手内容" : "進捗"}を一度だけ伝える発話へ書き換えてください。`,
       "出力はJSONオブジェクト一つだけです。textには発話を入れ、emotionはneutral、thinking、happy、soft、concerned、excitedのどれかにします。",
-      "これは作業途中の報告です。自然な話し言葉の一文を12〜60文字で書き、必ず「〜しているよ」「〜を確認中だよ」のような進行形にします。",
+      acknowledgement
+        ? "これは着手時の返事です。自然な話し言葉の一文を12〜60文字で書き、「まず〜から進めるね」「〜を見ていくね」のように、何から始めるかを具体的に伝えます。助詞が不自然な文や、依頼文をそのまま末尾へつないだ文は禁止です。"
+        : "これは作業途中の報告です。自然な話し言葉の一文を12〜60文字で書き、必ず「〜しているよ」「〜を確認中だよ」のような進行形にします。",
       "「〜しました」「〜できました」などの完了形や過去形は禁止です。与えられた作業状況だけに忠実にし、完了、結果、ファイル、URL、コマンド、技術詳細を捏造しません。",
       "依頼を復唱せず、疑問文や利用者への依頼にせず、定型句を避け、キャラクターらしさは控えめに反映します。",
     ].join("");
@@ -117,6 +123,18 @@ function prefilledWorkSlmJson(raw) {
   return JSON.stringify({ text: bounded(text, 90), emotion });
 }
 
+function naturalizeGeneratedWorkJapanese(value, kind = "") {
+  let text = String(value || "");
+  if (kind === "ack") {
+    text = text
+      .replace(/^(.{1,36}?)を(.{1,28}?)で(?=始め)/u, "$1の$2から")
+      .replace(/始めましょう(?:ね|か)?[。]?$/u, "始めるね。")
+      .replace(/進めましょう(?:ね|か)?[。]?$/u, "進めるね。")
+      .replace(/確認しましょう(?:ね|か)?[。]?$/u, "確認していくね。");
+  }
+  return text;
+}
+
 function parseWorkSlmOutput(raw, { sourceText = "", request = "", kind = "" } = {}) {
   const text = generatedTextFromPipeline(raw).trim();
   const match = text.match(/\{[\s\S]*?\}/);
@@ -127,7 +145,7 @@ function parseWorkSlmOutput(raw, { sourceText = "", request = "", kind = "" } = 
   } catch {
     throw new Error("SLM output JSON was malformed.");
   }
-  let announcement = bounded(sanitizeSpeechText(parsed?.text), 90);
+  let announcement = bounded(naturalizeGeneratedWorkJapanese(sanitizeSpeechText(parsed?.text), kind), 90);
   if (announcement.length < 4) throw new Error("SLM announcement was too short.");
   const completionAllowed = /完了|完成|終わ|done|complete|finish/i.test(`${sourceText} ${kind}`);
   const prematureCompletion = /完了|完成|終わった|できた|整理しました|更新しました|修正しました|作成しました|用意しました|まとめました|揃った|done|complete|finished/i;
@@ -140,7 +158,7 @@ function parseWorkSlmOutput(raw, { sourceText = "", request = "", kind = "" } = 
   if (!completionAllowed && prematureCompletion.test(announcement)) {
     throw new Error("SLM announcement claimed completion too early.");
   }
-  if (/^(依頼|お願い|質問)[:：]|[?？]$|いただけますか|してください|お願いします/.test(announcement)) {
+  if (/^(依頼|お願い|質問)[:：]|[?？]$|いただけますか|してください|お願いします|ましょう/.test(announcement)) {
     throw new Error("SLM announcement asked the user to act.");
   }
   const anchors = workSlmAnchors(sourceText, request);
@@ -172,6 +190,7 @@ module.exports = {
   WORK_SLM_MODELS,
   WORK_SLM_RUNTIME,
   generatedTextFromPipeline,
+  naturalizeGeneratedWorkJapanese,
   parseWorkSlmOutput,
   normalizeWorkSlmModelId,
   workSlmExpression,
