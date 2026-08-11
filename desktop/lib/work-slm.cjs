@@ -8,7 +8,7 @@ const WORK_SLM_MODELS = Object.freeze([
     label: "Qwen 3.5 0.8B Q4 · WebGPU",
     shortLabel: "Qwen 3.5 0.8B",
     sourceUrl: "https://huggingface.co/onnx-community/Qwen3.5-0.8B-ONNX-OPT",
-    approximateBytes: 750_000_000,
+    approximateBytes: 850_000_000,
     dtype: "q4",
     licenseName: "Apache-2.0",
     recommended: true,
@@ -31,11 +31,11 @@ const WORK_SLM_MODELS = Object.freeze([
   Object.freeze({
     id: "onnx-community/Qwen2.5-0.5B-Instruct",
     family: "qwen2.5",
-    label: "Qwen 2.5 0.5B Q4 · WebGPU",
+    label: "Qwen 2.5 0.5B Q8 · WebGPU",
     shortLabel: "Qwen 2.5 0.5B",
     sourceUrl: "https://huggingface.co/onnx-community/Qwen2.5-0.5B-Instruct",
-    approximateBytes: 800_000_000,
-    dtype: "q4",
+    approximateBytes: 530_000_000,
+    dtype: "q8",
     licenseName: "Apache-2.0",
     recommended: false,
   }),
@@ -64,24 +64,33 @@ function workSlmModel(value) {
   return WORK_SLM_MODELS.find((model) => model.id === id) || WORK_SLM_MODELS[0];
 }
 
+function workSlmAnchors(...values) {
+  const ignored = new Set(["現在", "作業", "進捗", "状況", "内容", "確認"]);
+  const candidates = values.flatMap((value) => String(value || "").match(/[A-Za-z][A-Za-z0-9._-]{1,}|[ァ-ヶー]{3,}|[一-龯々]{2,}/g) || []);
+  return [...new Set(candidates.filter((value) => !ignored.has(value)))].slice(0, 6);
+}
+
 function workSlmMessages({ language = "ja", request, sourceText, kind, characterName, personality }) {
   const english = language === "en";
   const system = english
     ? [
       "You rewrite one desktop companion Work progress announcement.",
-      "Return exactly one JSON object and nothing else: {\"text\":\"...\",\"emotion\":\"neutral|thinking|happy|soft|concerned|excited\"}.",
-      "Write one natural spoken sentence, 4 to 18 words. Stay faithful to the supplied activity; never invent completion, results, files, URLs, commands, or technical details.",
-      "Do not quote the request. Avoid generic stock phrases. Match the character gently without roleplay narration.",
+      "Return exactly one JSON object and nothing else. It must have a text string and an emotion chosen from neutral, thinking, happy, soft, concerned, or excited.",
+      "Write one natural spoken sentence, 4 to 18 words. This is an in-progress update: use present-progressive wording and never use completed or past-tense wording.",
+      "Stay faithful to the supplied activity; never invent completion, results, files, URLs, commands, or technical details.",
+      "Do not quote the request, ask a question, or tell the user to do the work. Avoid generic stock phrases. Match the character gently without roleplay narration.",
     ].join(" ")
     : [
       "デスクトップキャラクターがWorkの進捗を一度だけ伝える発話へ書き換えてください。",
-      "出力は次のJSONオブジェクト一つだけです: {\"text\":\"...\",\"emotion\":\"neutral|thinking|happy|soft|concerned|excited\"}。",
-      "自然な話し言葉の一文を12〜60文字で書きます。与えられた作業状況だけに忠実にし、完了、結果、ファイル、URL、コマンド、技術詳細を捏造しません。",
-      "依頼を復唱せず、定型句を避け、キャラクターらしさは控えめに反映します。",
+      "出力はJSONオブジェクト一つだけです。textには発話を入れ、emotionはneutral、thinking、happy、soft、concerned、excitedのどれかにします。",
+      "これは作業途中の報告です。自然な話し言葉の一文を12〜60文字で書き、必ず「〜しているよ」「〜を確認中だよ」のような進行形にします。",
+      "「〜しました」「〜できました」などの完了形や過去形は禁止です。与えられた作業状況だけに忠実にし、完了、結果、ファイル、URL、コマンド、技術詳細を捏造しません。",
+      "依頼を復唱せず、疑問文や利用者への依頼にせず、定型句を避け、キャラクターらしさは控えめに反映します。",
     ].join("");
+  const anchors = workSlmAnchors(sourceText, request);
   const user = english
-    ? `Kind: ${bounded(kind, 32)}\nRequest: ${bounded(request, 500)}\nCurrent activity: ${bounded(sourceText, 400)}\nCharacter: ${bounded(characterName, 80)}\nPersonality: ${bounded(personality, 600)}`
-    : `種類: ${bounded(kind, 32)}\n依頼: ${bounded(request, 500)}\n現在の作業状況: ${bounded(sourceText, 400)}\nキャラクター: ${bounded(characterName, 80)}\n性格と話し方: ${bounded(personality, 600)}`;
+    ? `Kind: ${bounded(kind, 32)}\nRequest: ${bounded(request, 500)}\nCurrent activity: ${bounded(sourceText, 400)}\nThe sentence must contain at least one of these exact grounding terms: ${anchors.join(", ") || "(none)"}\nCharacter: ${bounded(characterName, 80)}\nPersonality: ${bounded(personality, 600)}`
+    : `種類: ${bounded(kind, 32)}\n依頼: ${bounded(request, 500)}\n現在の作業状況: ${bounded(sourceText, 400)}\n発話には次の根拠語を最低1つそのまま含める: ${anchors.join("、") || "指定なし"}\nキャラクター: ${bounded(characterName, 80)}\n性格と話し方: ${bounded(personality, 600)}`;
   return [{ role: "system", content: system }, { role: "user", content: user }];
 }
 
@@ -95,7 +104,20 @@ function generatedTextFromPipeline(output) {
   return String(generated || "");
 }
 
-function parseWorkSlmOutput(raw, { sourceText = "", kind = "" } = {}) {
+function prefilledWorkSlmJson(raw) {
+  const continuation = String(raw || "").trimStart();
+  const quoted = continuation.match(/^((?:\\.|[^"\\])*)"/);
+  let text = quoted?.[1] || continuation.split(/[\r\n}]/, 1)[0] || "";
+  try {
+    if (quoted) text = JSON.parse(`"${quoted[1]}"`);
+  } catch {
+    text = quoted[1].replace(/\\"/g, '"').replace(/\\n/g, " ");
+  }
+  const emotion = WORK_SLM_EMOTIONS.find((candidate) => new RegExp(`emotion["']?\\s*[:：]\\s*["']?${candidate}`, "i").test(continuation)) || "neutral";
+  return JSON.stringify({ text: bounded(text, 90), emotion });
+}
+
+function parseWorkSlmOutput(raw, { sourceText = "", request = "", kind = "" } = {}) {
   const text = generatedTextFromPipeline(raw).trim();
   const match = text.match(/\{[\s\S]*?\}/);
   if (!match) throw new Error("SLM output did not contain JSON.");
@@ -105,11 +127,25 @@ function parseWorkSlmOutput(raw, { sourceText = "", kind = "" } = {}) {
   } catch {
     throw new Error("SLM output JSON was malformed.");
   }
-  const announcement = bounded(sanitizeSpeechText(parsed?.text), 90);
+  let announcement = bounded(sanitizeSpeechText(parsed?.text), 90);
   if (announcement.length < 4) throw new Error("SLM announcement was too short.");
   const completionAllowed = /完了|完成|終わ|done|complete|finish/i.test(`${sourceText} ${kind}`);
-  if (!completionAllowed && /完了|完成|終わった|できた|done|complete|finished/i.test(announcement)) {
+  const prematureCompletion = /完了|完成|終わった|できた|整理しました|更新しました|修正しました|作成しました|用意しました|まとめました|揃った|done|complete|finished/i;
+  if (!completionAllowed && prematureCompletion.test(announcement)) {
+    const safeSentences = (announcement.match(/[^。！？!?]+[。！？!?]?/g) || [])
+      .map((sentence) => sentence.trim())
+      .filter((sentence) => sentence && !prematureCompletion.test(sentence));
+    if (safeSentences.length > 0) announcement = bounded(safeSentences[0], 90);
+  }
+  if (!completionAllowed && prematureCompletion.test(announcement)) {
     throw new Error("SLM announcement claimed completion too early.");
+  }
+  if (/^(依頼|お願い|質問)[:：]|[?？]$|いただけますか|してください|お願いします/.test(announcement)) {
+    throw new Error("SLM announcement asked the user to act.");
+  }
+  const anchors = workSlmAnchors(sourceText, request);
+  if (anchors.length > 0 && !anchors.some((anchor) => announcement.includes(anchor))) {
+    throw new Error("SLM announcement was not grounded in the current activity.");
   }
   const emotion = WORK_SLM_EMOTIONS.includes(parsed?.emotion) ? parsed.emotion : "neutral";
   return { text: announcement, emotion };
@@ -141,4 +177,6 @@ module.exports = {
   workSlmExpression,
   workSlmModel,
   workSlmMessages,
+  workSlmAnchors,
+  prefilledWorkSlmJson,
 };

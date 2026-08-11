@@ -5,11 +5,14 @@ set -euo pipefail
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 use_shared_profile=0
 smoke_test=0
+smoke_work_slm=""
 
 for argument in "$@"; do
   case "$argument" in
     --shared-profile) use_shared_profile=1 ;;
     --smoke-test) smoke_test=1 ;;
+    --smoke-work-slm) smoke_test=1; smoke_work_slm="all" ;;
+    --smoke-work-slm=*) smoke_test=1; smoke_work_slm="${argument#*=}" ;;
     *) echo "Unknown option: $argument" >&2; exit 2 ;;
   esac
 done
@@ -69,4 +72,6 @@ else
   echo "Starting Windows Electron with the persistent CharaDockDev profile."
 fi
 if [[ "$smoke_test" -eq 1 ]]; then launcher_arguments+=(--smoke-test); fi
+if [[ "$smoke_work_slm" == "all" ]]; then launcher_arguments+=(--smoke-work-slm); fi
+if [[ -n "$smoke_work_slm" && "$smoke_work_slm" != "all" ]]; then launcher_arguments+=("--smoke-work-slm-$smoke_work_slm"); fi
 (cd /mnt/c && cmd.exe /d /c "$launcher_windows" "${launcher_arguments[@]}")

@@ -84,6 +84,7 @@ const {
 } = require("./lib/work-voice-reporter.cjs");
 const { isSocialConversationTurn } = require("./lib/interaction-intent.cjs");
 const {
+  WORK_SLM_EMOTIONS,
   WORK_SLM_MODELS,
   WORK_SLM_RUNTIME,
   normalizeWorkSlmModelId,
@@ -3344,6 +3345,52 @@ function waitForNextPageLoad(window, timeoutMs = 10_000) {
   });
 }
 
+function selectedWorkSlmSmokeModels(selection) {
+  const aliases = {
+    qwen35: "qwen3.5",
+    lfm: "lfm2.5-jp",
+    qwen25: "qwen2.5",
+  };
+  if (!selection || selection === "all") return WORK_SLM_MODELS;
+  const family = aliases[selection];
+  const model = WORK_SLM_MODELS.find((candidate) => candidate.family === family);
+  if (!model) throw new Error(`Unknown Work SLM smoke selection: ${selection}`);
+  return [model];
+}
+
+async function runWorkSlmModelSmokeTest(runtimePath, selection = "all") {
+  const previous = {
+    enabled: preferences.data.workSlmEnabled === true,
+    modelId: normalizeWorkSlmModelId(preferences.data.workSlmModelId),
+  };
+  try {
+    for (const model of selectedWorkSlmSmokeModels(selection)) {
+      destroyWorkSlmWindow();
+      preferences.patch({ workSlmEnabled: false, workSlmModelId: model.id });
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      const startedAt = Date.now();
+      await prepareWorkSlm();
+      const result = await requestWorkSlm("rewrite", {
+        runtimePath,
+        modelId: model.id,
+        language: "ja",
+        kind: "progress",
+        request: "READMEを公開向けに整えて",
+        sourceText: "READMEの構成と説明を確認しています",
+        characterName: "コハク",
+        personality: "明るく親しみやすく、簡潔に話す",
+      }, { timeoutMs: 120_000, allowDownload: false });
+      if (!String(result?.text || "").trim() || !WORK_SLM_EMOTIONS.includes(result?.emotion)) {
+        throw new Error(`Work SLM generation check failed: ${model.id}`);
+      }
+      console.log(`work-slm-smoke: ok (${model.shortLabel}, ${Date.now() - startedAt}ms): ${result.text}`);
+    }
+  } finally {
+    destroyWorkSlmWindow();
+    preferences.patch({ workSlmEnabled: previous.enabled, workSlmModelId: previous.modelId });
+  }
+}
+
 async function runSmokeTest() {
   await Promise.all([waitForPageLoad(controlWindow), waitForPageLoad(mascotWindow)]);
   await new Promise((resolve) => setTimeout(resolve, 1800));
@@ -3375,6 +3422,11 @@ async function runSmokeTest() {
   const workSlmProbe = await requestWorkSlm("probe", { runtimePath: workSlmRuntimePath }, { timeoutMs: 30_000, allowDownload: false });
   if (!workSlmProbe.probed || !workSlmProbe.qwen35Supported || !workSlmProbe.lfm25Supported) {
     throw new Error("Work SLM browser runtime, selectable model support, or persistent cache check failed");
+  }
+  const workSlmSmokeArgument = process.argv.find((argument) => argument.startsWith("--smoke-work-slm"));
+  if (workSlmSmokeArgument) {
+    const selection = workSlmSmokeArgument.replace(/^--smoke-work-slm-?/, "") || "all";
+    await runWorkSlmModelSmokeTest(workSlmRuntimePath, selection);
   }
   for (const provider of ["piper-plus", "supertonic-3", "kokoro", "irodori-webgpu", "irodori-webgpu-int4", "irodori-500m-v3"]) {
     const model = embeddedTtsModels.status(provider);
@@ -4637,9 +4689,18 @@ async function ensureWorkSlmRuntime() {
   const commonModule = path.resolve(path.dirname(commonEntry), "..", "esm", "index.js");
   if (!fs.existsSync(webgpuModule) || !fs.existsSync(commonModule)) throw new Error("Work SLMのWebGPUランタイムが見つかりません。");
   const transformed = fs.readFileSync(workSlmRuntimeSourcePath(), "utf8")
+    // The browser bundle detects Electron's preload `process` object as Node and
+    // selects its intentionally empty onnxruntime-node shim. This hidden window
+    // must use the browser/WebGPU backend instead.
+    .replace(
+      'var IS_NODE_ENV = IS_PROCESS_AVAILABLE && process?.release?.name === "node" && !IS_DENO_WEB_RUNTIME;',
+      "var IS_NODE_ENV = false;",
+    )
     .replace('from "onnxruntime-web/webgpu"', `from ${JSON.stringify(pathToFileURL(webgpuModule).href)}`)
     .replace('from "onnxruntime-common"', `from ${JSON.stringify(pathToFileURL(commonModule).href)}`);
-  if (transformed.includes('from "onnxruntime-web/webgpu"') || transformed.includes('from "onnxruntime-common"')) {
+  if (transformed.includes('var IS_NODE_ENV = IS_PROCESS_AVAILABLE && process?.release?.name === "node"')
+    || transformed.includes('from "onnxruntime-web/webgpu"')
+    || transformed.includes('from "onnxruntime-common"')) {
     throw new Error("Work SLMランタイムを安全に準備できませんでした。");
   }
   fs.writeFileSync(workSlmRuntimeModulePath(), transformed, { mode: 0o600 });
@@ -4647,13 +4708,11 @@ async function ensureWorkSlmRuntime() {
 }
 
 function workSlmInstalled() {
-  const selectedModelId = normalizeWorkSlmModelId(preferences.data.workSlmModelId);
+  const selected = workSlmModel(preferences.data.workSlmModelId);
   try {
     const marker = JSON.parse(fs.readFileSync(workSlmMarkerPath(), "utf8"));
-    const installedModels = Array.isArray(marker?.models)
-      ? marker.models.map((entry) => String(entry?.id || entry))
-      : marker?.modelId ? [String(marker.modelId)] : [];
-    return installedModels.includes(selectedModelId)
+    const installed = installedWorkSlmModels().find((entry) => entry.id === selected.id);
+    return installed?.dtype === selected.dtype
       && marker?.runtimeVersion === WORK_SLM_RUNTIME.version
       && validWorkSlmRuntimeSource();
   } catch {
@@ -4661,16 +4720,31 @@ function workSlmInstalled() {
   }
 }
 
-function installedWorkSlmModelIds() {
+function installedWorkSlmModels() {
   try {
     const marker = JSON.parse(fs.readFileSync(workSlmMarkerPath(), "utf8"));
-    const ids = Array.isArray(marker?.models)
-      ? marker.models.map((entry) => String(entry?.id || entry))
-      : marker?.modelId ? [String(marker.modelId)] : [];
-    return [...new Set(ids.filter((id) => WORK_SLM_MODELS.some((model) => model.id === id)))];
+    const values = Array.isArray(marker?.models)
+      ? marker.models
+      : marker?.modelId ? [{ id: marker.modelId }] : [];
+    const byId = new Map();
+    for (const value of values) {
+      const entry = typeof value === "string" ? { id: value } : value;
+      const id = String(entry?.id || "");
+      if (!WORK_SLM_MODELS.some((model) => model.id === id)) continue;
+      byId.set(id, {
+        id,
+        dtype: String(entry?.dtype || ""),
+        ...(entry?.preparedAt ? { preparedAt: String(entry.preparedAt) } : {}),
+      });
+    }
+    return [...byId.values()];
   } catch {
     return [];
   }
+}
+
+function installedWorkSlmModelIds() {
+  return installedWorkSlmModels().map((entry) => entry.id);
 }
 
 function publicWorkSlmStatus() {
@@ -4770,11 +4844,11 @@ async function prepareWorkSlm() {
     const runtimePath = await ensureWorkSlmRuntime();
     const result = await requestWorkSlm("prepare", { runtimePath, modelId: selected.id }, { timeoutMs: 20 * 60_000, allowDownload: true });
     fs.mkdirSync(workSlmMetadataDirectory(), { recursive: true });
-    const installed = installedWorkSlmModelIds().filter((id) => id !== selected.id);
+    const installed = installedWorkSlmModels().filter((entry) => entry.id !== selected.id);
     const preparedAt = new Date().toISOString();
     fs.writeFileSync(workSlmMarkerPath(), `${JSON.stringify({
       runtimeVersion: WORK_SLM_RUNTIME.version,
-      models: [...installed.map((id) => ({ id })), { id: selected.id, dtype: selected.dtype || "q4", preparedAt }],
+      models: [...installed, { id: selected.id, dtype: selected.dtype || "q4", preparedAt }],
     }, null, 2)}\n`);
     workSlmRuntimeState = "ready";
     workSlmActiveDevice = String(result.device || "webgpu");
@@ -4812,7 +4886,7 @@ async function rewriteWorkAnnouncementWithSlm({ kind, text, request }) {
     characterName: character.name,
     personality: character.personality,
   }, { timeoutMs: 2200, allowDownload: false });
-  return parseWorkSlmOutput(JSON.stringify({ text: result.text, emotion: result.emotion }), { sourceText: text, kind });
+  return parseWorkSlmOutput(JSON.stringify({ text: result.text, emotion: result.emotion }), { sourceText: text, request, kind });
 }
 
 function scheduleWorkSlmPrewarm(delayMs = 2500) {
@@ -5860,7 +5934,9 @@ function registerIpc() {
     pendingWorkSlmRequests.delete(requestId);
     clearTimeout(pending.timer);
     if (payload.error) {
-      workSlmRuntimeState = "error";
+      console.error("Work SLM renderer error:", payload.errorStack || payload.error,
+        payload.diagnosticOutput ? `\nModel output: ${String(payload.diagnosticOutput).slice(0, 2_000)}` : "");
+      workSlmRuntimeState = payload.errorKind === "output-validation" ? "ready" : "error";
       pending.reject(new Error(String(payload.error)));
       broadcastAppState();
     }

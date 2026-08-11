@@ -2081,8 +2081,8 @@
       ? localized(` ${selected.licenseName}: ${selected.licenseNotice}`, ` ${selected.licenseName}: commercial use is subject to an annual-revenue threshold of USD 10 million; review the model license for details.`)
       : "";
     let message = localized(
-      `約${approximateMb}MBの${modelName}は明示的に準備するまでダウンロードしません。最終回答とGPT-Liveには適用されません。`,
-      `The approximately ${approximateMb} MB ${modelName} is downloaded only when you prepare it. Final answers and GPT-Live are unchanged.`,
+      `約${approximateMb}MBの${modelName}は明示的に準備するまでダウンロードしません。初回のWebGPU最適化には数分かかる場合があります。最終回答とGPT-Liveには適用されません。`,
+      `The approximately ${approximateMb} MB ${modelName} is downloaded only when you prepare it. Initial WebGPU optimization can take several minutes. Final answers and GPT-Live are unchanged.`,
     ) + licenseNote;
     if (status.webgpuAvailable === false) {
       message = localized("この環境ではWebGPUを利用できません。現在の進捗文へ自動的に戻ります。", "WebGPU is unavailable here. CharaDock will automatically keep the current progress messages.");

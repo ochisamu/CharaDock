@@ -1,15 +1,19 @@
 // SPDX-License-Identifier: Apache-2.0
 const path = require("node:path");
+const fs = require("node:fs");
 const { pathToFileURL } = require("node:url");
 const { ipcRenderer } = require("electron");
 const {
+  generatedTextFromPipeline,
   parseWorkSlmOutput,
+  prefilledWorkSlmJson,
   workSlmModel,
   workSlmMessages,
 } = require("./lib/work-slm.cjs");
 
 let enginePromise = null;
 let engine = null;
+let lastGeneratedOutput = "";
 
 function transformersWebUrl(runtimePath) {
   const resolved = path.resolve(String(runtimePath || ""));
@@ -30,6 +34,20 @@ async function disposeEngine() {
   else await current?.model?.dispose?.();
 }
 
+function configureOnnxRuntime(runtime) {
+  let ortDist = path.dirname(require.resolve("onnxruntime-web/webgpu"));
+  ortDist = ortDist.replace(`${path.sep}app.asar${path.sep}`, `${path.sep}app.asar.unpacked${path.sep}`);
+  const wasmModule = path.join(ortDist, "ort-wasm-simd-threaded.asyncify.mjs");
+  const wasmBinary = path.join(ortDist, "ort-wasm-simd-threaded.asyncify.wasm");
+  runtime.env.useWasmCache = false;
+  runtime.env.backends.onnx.wasm.numThreads = 1;
+  runtime.env.backends.onnx.wasm.wasmPaths = {
+    mjs: pathToFileURL(wasmModule).href,
+    wasm: pathToFileURL(wasmBinary).href,
+  };
+  runtime.env.backends.onnx.wasm.wasmBinary = new Uint8Array(fs.readFileSync(wasmBinary));
+}
+
 async function loadEngine({ cacheDirectory, runtimePath, modelId, allowDownload = false } = {}) {
   const selected = workSlmModel(modelId);
   if (engine?.modelId === selected.id) return engine;
@@ -39,6 +57,7 @@ async function loadEngine({ cacheDirectory, runtimePath, modelId, allowDownload 
     if (!await webGpuAvailable()) throw new Error("WebGPU is unavailable.");
     const runtime = await import(transformersWebUrl(runtimePath));
     const { env } = runtime;
+    configureOnnxRuntime(runtime);
     env.cacheKey = "charadock-work-slm-v1";
     env.cacheDir = String(cacheDirectory || "");
     env.allowRemoteModels = Boolean(allowDownload);
@@ -54,7 +73,7 @@ async function loadEngine({ cacheDirectory, runtimePath, modelId, allowDownload 
         device: "webgpu",
         dtype: {
           embed_tokens: "q4",
-          vision_encoder: "q4",
+          vision_encoder: "fp16",
           decoder_model_merged: "q4",
         },
         progress_callback,
@@ -79,14 +98,25 @@ async function loadEngine({ cacheDirectory, runtimePath, modelId, allowDownload 
 async function generateAnnouncement(loaded, messages) {
   if (loaded.kind === "pipeline") {
     const lfm = loaded.family === "lfm2.5-jp";
-    return loaded.generator(messages, {
-      max_new_tokens: 96,
-      do_sample: true,
-      temperature: lfm ? 0.1 : 0.55,
-      ...(lfm ? { top_k: 50 } : { top_p: 0.85 }),
+    const qwen25 = loaded.family === "qwen2.5";
+    const tokenizer = loaded.generator.tokenizer;
+    const prompt = tokenizer.apply_chat_template(messages, {
+      tokenize: false,
+      add_generation_prompt: true,
+    }) + '{"text":"';
+    const inputs = tokenizer(prompt, { add_special_tokens: false });
+    const outputs = await loaded.generator.model.generate({
+      ...inputs,
+      max_new_tokens: 72,
+      do_sample: !qwen25,
+      ...(!qwen25 ? { temperature: lfm ? 0.1 : 0.55 } : {}),
+      ...(lfm ? { top_k: 50 } : qwen25 ? {} : { top_p: 0.85 }),
       repetition_penalty: lfm ? 1.05 : 1.08,
-      return_full_text: false,
     });
+    const promptLength = inputs.input_ids.dims.at(-1);
+    const generated = outputs.slice(null, [promptLength, null]);
+    const continuation = tokenizer.batch_decode(generated, { skip_special_tokens: true })[0];
+    return prefilledWorkSlmJson(continuation);
   }
   const prompt = loaded.processor.apply_chat_template(messages, {
     add_generation_prompt: true,
@@ -97,10 +127,7 @@ async function generateAnnouncement(loaded, messages) {
   const outputs = await loaded.model.generate({
     ...inputs,
     max_new_tokens: 96,
-    do_sample: true,
-    temperature: 0.7,
-    top_p: 0.8,
-    top_k: 20,
+    do_sample: false,
     repetition_penalty: 1,
   });
   const promptLength = inputs.input_ids.dims.at(-1);
@@ -137,14 +164,33 @@ ipcRenderer.on("workSlm:request", async (_event, payload = {}) => {
     }
     const messages = workSlmMessages(payload);
     const output = await generateAnnouncement(loaded, messages);
+    lastGeneratedOutput = generatedTextFromPipeline(output).slice(0, 2_000);
+    let parsed;
+    try {
+      parsed = parseWorkSlmOutput(output, payload);
+    } catch (error) {
+      ipcRenderer.send("workSlm:result", {
+        requestId,
+        error: String(error?.message || error),
+        errorKind: "output-validation",
+        errorStack: String(error?.stack || "").slice(0, 12_000),
+        diagnosticOutput: lastGeneratedOutput,
+      });
+      return;
+    }
     ipcRenderer.send("workSlm:result", {
       requestId,
-      ...parseWorkSlmOutput(output, payload),
+      ...parsed,
       modelId: loaded.modelId,
       device: "webgpu",
     });
   } catch (error) {
-    ipcRenderer.send("workSlm:result", { requestId, error: String(error?.message || error) });
+    ipcRenderer.send("workSlm:result", {
+      requestId,
+      error: String(error?.message || error),
+      errorStack: String(error?.stack || "").slice(0, 12_000),
+      diagnosticOutput: lastGeneratedOutput,
+    });
   }
 });
 
