@@ -2062,13 +2062,15 @@
     toggle.disabled = !status.installed;
     const busy = ["downloading", "loading"].includes(status.runtimeState);
     modelSelect.disabled = busy;
-    $("#prepareWorkSlmButton").disabled = busy;
+    $("#prepareWorkSlmButton").disabled = busy || status.runtimeState === "ready";
     $("#prepareWorkSlmButton").textContent = busy
-      ? localized("準備中…", "Preparing…")
+      ? localized(status.installed ? "起動中…" : "準備中…", status.installed ? "Starting…" : "Preparing…")
       : status.installed && status.runtimeState === "ready"
-        ? localized("モデルを再確認", "Verify model")
+        ? localized("自動起動済み", "Started automatically")
+        : status.runtimeState === "error"
+          ? localized("起動を再試行", "Retry startup")
         : status.installed
-          ? localized("モデルを起動", "Start model")
+          ? localized("今すぐ起動", "Start now")
           : localized("モデルを準備", "Prepare model");
     $("#removeWorkSlmButton").disabled = !status.installed && !status.hasRuntime && status.runtimeState !== "error" && !busy;
     const badge = $("#workSlmStatusBadge");
@@ -2096,9 +2098,9 @@
     } else if (status.runtimeState === "error") {
       message = localized("SLMを開始できませんでした。Workでは現在の進捗文を使います。", "The SLM could not start. Work will keep using the current progress messages.");
     } else if (status.installed && status.runtimeState === "ready") {
-      message = localized(`${modelName}を端末内で実行します。遅延・失敗時は現在の進捗文へ戻ります。`, `${modelName} runs locally. Slow or failed generations fall back to the current progress messages.`);
+      message = localized(`${modelName}を別プロセスで実行中です。次回以降もアプリ起動後に自動で開始します。遅延・失敗時は現在の進捗文へ戻ります。`, `${modelName} is running in a separate process and starts automatically after future launches. Slow or failed generations fall back to the current progress messages.`);
     } else if (status.installed) {
-      message = localized(`${modelName}は準備済みです。「モデルを起動」を押すか、設定画面を閉じるとバックグラウンドで起動します。Ready後は作業開始と進捗の両方に使います。`, `${modelName} is installed. Press Start model, or close Settings to start it in the background. Once ready, it is used for both Work acknowledgements and progress.`);
+      message = localized(`${modelName}は準備済みです。アプリ起動後に別プロセスで自動起動します。Ready後は作業開始と進捗の両方に使います。`, `${modelName} is installed and starts automatically in a separate process after launch. Once ready, it is used for both Work acknowledgements and progress.`);
     }
     $("#workSlmStatus").textContent = message;
   }
@@ -3831,7 +3833,8 @@
       const button = $("#prepareWorkSlmButton");
       const selectedId = $("#workSlmModelSelect").value;
       const selected = state.workSlm?.models?.find((model) => model.id === selectedId) || state.workSlm?.model || {};
-      if (selected.licenseNotice && !window.confirm(localized(
+      const alreadyInstalled = state.workSlm?.installedModelIds?.includes(selectedId);
+      if (!alreadyInstalled && selected.licenseNotice && !window.confirm(localized(
         `${selected.shortLabel}は${selected.licenseName}で提供されます。${selected.licenseNotice}\n\nライセンスを確認してダウンロードしますか？`,
         `${selected.shortLabel} is provided under the ${selected.licenseName}. Commercial use is subject to an annual-revenue threshold of USD 10 million; review the model license for details.\n\nReview the license and download this model?`,
       ))) return;

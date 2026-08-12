@@ -3,6 +3,7 @@ const path = require("node:path");
 const fs = require("node:fs");
 const { pathToFileURL } = require("node:url");
 const { ipcRenderer } = require("electron");
+const { WorkSlmFileCache } = require("./lib/work-slm-file-cache.cjs");
 const {
   generatedTextFromPipeline,
   parseWorkSlmOutput,
@@ -60,6 +61,9 @@ async function loadEngine({ cacheDirectory, runtimePath, modelId, allowDownload 
     configureOnnxRuntime(runtime);
     env.cacheKey = "charadock-work-slm-v1";
     env.cacheDir = String(cacheDirectory || "");
+    env.useBrowserCache = false;
+    env.useCustomCache = true;
+    env.customCache = new WorkSlmFileCache(cacheDirectory);
     env.allowRemoteModels = Boolean(allowDownload);
     env.allowLocalModels = true;
     const progress_callback = (progress) => ipcRenderer.send("workSlm:progress", { ...progress, modelId: selected.id });
@@ -140,16 +144,17 @@ ipcRenderer.on("workSlm:request", async (_event, payload = {}) => {
   try {
     if (payload.action === "clear") {
       await disposeEngine();
-      await globalThis.caches?.delete?.("charadock-work-slm-v1");
+      fs.rmSync(path.join(path.resolve(String(payload.cacheDirectory || "")), "files"), { recursive: true, force: true });
       ipcRenderer.send("workSlm:result", { requestId, cleared: true });
       return;
     }
     if (payload.action === "probe") {
       const runtime = await import(transformersWebUrl(payload.runtimePath));
-      const cache = await globalThis.caches?.open?.("charadock-work-slm-v1");
+      const cacheDirectory = path.resolve(String(payload.cacheDirectory || ""));
+      fs.mkdirSync(cacheDirectory, { recursive: true });
       ipcRenderer.send("workSlm:result", {
         requestId,
-        probed: typeof runtime.pipeline === "function" && Boolean(cache),
+        probed: typeof runtime.pipeline === "function" && fs.statSync(cacheDirectory).isDirectory(),
         qwen35Supported: typeof runtime.AutoProcessor?.from_pretrained === "function"
           && typeof runtime.Qwen3_5ForConditionalGeneration?.from_pretrained === "function",
         lfm25Supported: typeof runtime.Lfm2ForCausalLM?.from_pretrained === "function",

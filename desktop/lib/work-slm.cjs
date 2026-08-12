@@ -127,10 +127,16 @@ function naturalizeGeneratedWorkJapanese(value, kind = "") {
   let text = String(value || "");
   if (kind === "ack") {
     text = text
+      .replace(/([^\s、。]{1,40})を公開準備で(?:整理|確認|作業)して/u, "$1の公開準備を進めて")
       .replace(/^(.{1,36}?)を(.{1,28}?)で(?=始め)/u, "$1の$2から")
       .replace(/始めましょう(?:ね|か)?[。]?$/u, "始めるね。")
       .replace(/進めましょう(?:ね|か)?[。]?$/u, "進めるね。")
       .replace(/確認しましょう(?:ね|か)?[。]?$/u, "確認していくね。");
+  }
+  if (kind === "progress") {
+    text = text
+      .replace(/確認しました(?:よ|ね)?(?:[。！？]|$)/gu, "確認しているよ。")
+      .replace(/(整理|更新|修正|作成|準備|検証|調査|検索|実装)しました(?:よ|ね)?[。]?$/u, "$1しているよ。");
   }
   return text;
 }

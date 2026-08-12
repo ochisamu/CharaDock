@@ -53,12 +53,27 @@ test("Work SLM repairs small-model Japanese acknowledgement artifacts", () => {
     "READMEの公開準備から始めるね。",
   );
   assert.equal(
+    naturalizeGeneratedWorkJapanese("まずはREADMEを公開準備で整理して、公開向けに整えるね", "ack"),
+    "まずはREADMEの公開準備を進めて、公開向けに整えるね",
+  );
+  assert.equal(
     parseWorkSlmOutput('{"text":"READMEを公開準備で始めましょうね","emotion":"happy"}', {
       sourceText: "READMEの公開準備を始めます",
       request: "READMEを公開向けに整えて",
       kind: "ack",
     }).text,
     "READMEの公開準備から始めるね。",
+  );
+});
+
+test("Work SLM keeps small-model progress in the present progressive", () => {
+  assert.equal(
+    naturalizeGeneratedWorkJapanese("READMEの構成と説明を確認しました。", "progress"),
+    "READMEの構成と説明を確認しているよ。",
+  );
+  assert.equal(
+    naturalizeGeneratedWorkJapanese("READMEの構成と説明を確認しました。公開向けに整理しているよ。", "progress"),
+    "READMEの構成と説明を確認しているよ。公開向けに整理しているよ。",
   );
 });
 
@@ -101,10 +116,10 @@ test("Work SLM extracts concrete grounding terms and rejects unrelated chatter",
     '{"text":"今日はとても良い天気だね。","emotion":"neutral"}',
     { sourceText: "READMEの構成を確認しています", request: "READMEを整えて", kind: "progress" },
   ), /not grounded/);
-  assert.throws(() => parseWorkSlmOutput(
+  assert.deepEqual(parseWorkSlmOutput(
     '{"text":"READMEを公開向けに整理しました。","emotion":"happy"}',
     { sourceText: "READMEの構成を確認しています", request: "READMEを整えて", kind: "progress" },
-  ), /completion too early/);
+  ), { text: "READMEを公開向けに整理しているよ。", emotion: "happy" });
   assert.deepEqual(parseWorkSlmOutput(
     '{"text":"READMEを公開向けに整理しましたよ。構成と説明を確認中だよ。","emotion":"happy"}',
     { sourceText: "READMEの構成と説明を確認しています", request: "READMEを整えて", kind: "progress" },
