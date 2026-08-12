@@ -41,14 +41,15 @@ test("Realtime sessions start only from voice input, accept typed turns, and kee
   assert.match(main, /const realtimeClient = codexClient/);
   assert.match(main, /clientManagedHandoffs: workMode/);
   assert.match(main, /delegationAckFiller: workMode \? false/);
-  assert.match(main, /sendChatMessage\(normalized, \{ realtimeOutput: true, workAcknowledged: source === "voice" \}\)/);
-  assert.match(main, /interactionMode === "work" && activeRealtimeWorkDispatcher[\s\S]*dispatch\(normalized, "typed"\)/);
+  assert.match(main, /sendChatMessage\(normalized, \{[\s\S]{0,300}realtimeOutput: true,[\s\S]{0,200}workAcknowledged: source === "voice"/);
+  assert.match(main, /interactionMode === "work" && activeRealtimeWorkDispatcher[\s\S]*dispatch\(normalized, "typed", \{/);
   assert.match(main, /appendRealtimeText\(normalized, "user"\)/);
   assert.match(main, /sandbox: "workspace-write"/);
   assert.match(main, /await stopActiveRealtime\(\)\.catch/);
   assert.match(preload, /audio:realtimeStart/);
   assert.match(main, /if \(!assistantTranscript\.active\) assistantTranscript\.text = ""/);
   assert.match(main, /new RealtimeTurnBuffer\(\)/);
+  assert.match(main, /currentSharedContinuityContext\(1_000\)/);
   assert.match(main, /realtimeTurnBuffer\.addAssistant\(assistantTranscript\.text\)/);
   assert.match(main, /realtimeTurnBuffer\.addUser\(request\)/);
   assert.match(main, /await appendRealtimeReactionSpeech\(spokenText\)/);

@@ -341,6 +341,8 @@ test("Realtime acknowledgement suppresses the first worker commentary but keeps 
   const reporter = new WorkVoiceReporter({
     request: "READMEを英語化して",
     alreadyAcknowledged: true,
+    preferNaturalCommentary: true,
+    maxLength: 64,
     onAnnouncement: (entry) => announcements.push({ ...entry, at: clock.now() }),
     now: clock.now,
     schedule: clock.schedule,
@@ -349,9 +351,10 @@ test("Realtime acknowledgement suppresses the first worker commentary but keeps 
     progressIntervalMs: 5000,
   });
   reporter.commentary("READMEの英語化に取りかかるね。");
+  reporter.commentary("見出しの構成を保ちながら、公開向けの英語表現を整えているよ。");
   reporter.activity("ファイルを更新しているよ。");
   clock.advance(5000);
   assert.deepEqual(announcements.map(({ kind, text }) => ({ kind, text })), [
-    { kind: "progress", text: "READMEの英語版を仕上げているよ。" },
+    { kind: "progress", text: "見出しの構成を保ちながら、公開向けの英語表現を整えているよ。" },
   ]);
 });

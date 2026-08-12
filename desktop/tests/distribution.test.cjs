@@ -294,6 +294,12 @@ test("avatar output buttons open a sandboxed companion preview without covering 
   assert.match(main, /assertTrustedSender\(event, "preview"\)/);
   assert.match(previewPreload, /artifactPreview:getCurrent/);
   assert.match(previewPreload, /artifactPreview:openArtifact/);
+  assert.match(previewPreload, /artifactPreview:revise/);
+  assert.match(previewHtml, /id="revisionForm"/);
+  assert.match(previewHtml, /Workの音声入力/);
+  assert.match(previewRenderer, /api\.revise\(instruction\)/);
+  assert.match(main, /function artifactWorkContext\(target, explicit = false\)/);
+  assert.match(main, /ipcMain\.handle\("artifactPreview:revise"/);
   assert.match(previewHtml, /Content-Security-Policy/);
   assert.match(previewHtml, /vendor\/markdown-it\/14\.3\.0\/markdown-it\.min\.js/);
   assert.match(previewHtml, /vendor\/dompurify\/3\.4\.13\/purify\.min\.js/);

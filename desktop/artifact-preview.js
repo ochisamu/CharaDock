@@ -9,6 +9,12 @@
   const openButton = document.querySelector("#openButton");
   const openButtonLabel = document.querySelector("#openButtonLabel");
   const closeButton = document.querySelector("#closeButton");
+  const revisionForm = document.querySelector("#revisionForm");
+  const revisionInput = document.querySelector("#revisionInput");
+  const revisionSendButton = document.querySelector("#revisionSendButton");
+  const revisionTitle = document.querySelector("#revisionTitle");
+  const revisionHint = document.querySelector("#revisionHint");
+  const revisionState = document.querySelector("#revisionState");
   let current = null;
   let statusTimer = null;
 
@@ -199,6 +205,10 @@
     pathLabel.textContent = preview.path || "";
     openButtonLabel.textContent = preview.type === "web-project" && preview.server?.status === "running" ? t("ブラウザーで開く", "Open in browser") : t("外部で開く", "Open externally");
     closeButton.setAttribute("aria-label", t("閉じる", "Close"));
+    revisionTitle.textContent = t("この成果物を続けて修正", "Keep refining this output");
+    revisionHint.textContent = t("ここに入力するか、Workの音声入力で話しかけてください。", "Type here, or speak through Work voice input.");
+    revisionInput.placeholder = t("例: タイトルを大きくして、配色をもう少し落ち着かせて", "For example: Make the title larger and use calmer colors");
+    revisionSendButton.textContent = t("修正する", "Revise");
     body.replaceChildren();
     let node;
     if (preview.type === "web-project") node = webProject(preview);
@@ -231,12 +241,59 @@
     finally { openButton.disabled = false; }
   });
   closeButton.addEventListener("click", () => api.close());
-  window.addEventListener("keydown", (event) => { if (event.key === "Escape") api.close(); });
+  revisionInput.addEventListener("input", () => {
+    revisionInput.style.height = "auto";
+    revisionInput.style.height = `${Math.min(94, Math.max(38, revisionInput.scrollHeight))}px`;
+  });
+  revisionInput.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      revisionForm.requestSubmit();
+    }
+  });
+  revisionForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const instruction = revisionInput.value.trim();
+    if (!instruction) return;
+    revisionInput.disabled = true;
+    revisionSendButton.disabled = true;
+    revisionState.dataset.status = "running";
+    revisionState.textContent = t("キャラクターへ修正を依頼しています…", "Sending the revision to your character…");
+    try {
+      const result = await api.revise(instruction);
+      revisionInput.value = "";
+      revisionInput.style.height = "38px";
+      if (result?.queued && revisionState.dataset.status !== "running") {
+        revisionState.dataset.status = "queued";
+        revisionState.textContent = t("Liveへ送りました。作業の完了後にプレビューを更新します。", "Sent through Live. The preview will refresh when work finishes.");
+      }
+    } catch (error) {
+      showError(error);
+      revisionState.dataset.status = "error";
+      revisionState.textContent = String(error?.message || error);
+    } finally {
+      if (revisionState.dataset.status !== "running") {
+        revisionInput.disabled = false;
+        revisionSendButton.disabled = false;
+        revisionInput.focus();
+      }
+    }
+  });
+  window.addEventListener("keydown", (event) => { if (event.key === "Escape" && document.activeElement !== revisionInput) api.close(); });
   api.onShow(render);
   api.onWebPreview(async (state) => {
     if (!current?.preview?.project || state.projectId !== current.preview.project.id) return;
     current.preview.server = state;
     render(current);
+  });
+  api.onRevisionState((state) => {
+    const value = String(state?.status || "");
+    revisionState.dataset.status = value;
+    revisionState.textContent = String(state?.message || "");
+    const running = value === "running";
+    revisionInput.disabled = running;
+    revisionSendButton.disabled = running;
+    if (value === "completed") revisionInput.focus();
   });
   api.getCurrent().then((payload) => { if (payload) render(payload); }).catch(showError);
 })();
