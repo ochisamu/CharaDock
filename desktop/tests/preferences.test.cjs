@@ -49,6 +49,9 @@ test("new installs enable onboarding and desktop positioning defaults", () => {
   assert.equal(state.interactionMode, "chat");
   assert.equal(state.continuationStartupSpeechEnabled, true);
   assert.equal(state.continuationSummaries, undefined);
+  assert.equal(state.remoteStartupGreetingEnabled, true);
+  assert.equal(state.managedSkills, undefined);
+  assert.equal(state.skillAssignments, undefined);
   assert.equal(state.ttsProvider, "system");
   assert.equal(state.realtimeVoice, "cove");
   assert.equal(state.styleBertVits2Url, "http://localhost:5000");
@@ -177,6 +180,33 @@ test("preferences migrate the former continuation toggle to startup speech", () 
   const preferences = new Preferences(file);
   assert.equal(preferences.data.continuationStartupSpeechEnabled, false);
   assert.equal(preferences.publicState().continuationStartupSpeechEnabled, false);
+  fs.rmSync(directory, { recursive: true, force: true });
+});
+
+test("preferences retain bounded skill metadata and assignments without exposing storage paths", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "charadock-prefs-skills-"));
+  const file = path.join(directory, "preferences.json");
+  fs.writeFileSync(file, JSON.stringify({
+    managedSkills: [{
+      id: "1234567890abcdef12345678",
+      name: "docs",
+      description: "Documentation workflow",
+      repository: "openai/skills",
+      sourceUrl: "https://github.com/openai/skills/tree/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/skills/.curated/docs",
+      commitSha: "a".repeat(40),
+      skillPath: "skills/.curated/docs",
+      sourceKind: "openai-curated",
+      trusted: true,
+      license: "LICENSE",
+      directoryName: "docs-12345678",
+    }],
+    skillAssignments: { all: [], characters: { "amber-avatar": ["1234567890abcdef12345678", "missing"] } },
+  }));
+  const preferences = new Preferences(file);
+  assert.equal(preferences.data.managedSkills.length, 1);
+  assert.deepEqual(preferences.data.skillAssignments.characters["amber-avatar"], ["1234567890abcdef12345678"]);
+  assert.equal(preferences.publicState().managedSkills, undefined);
+  assert.equal(preferences.publicState().skillAssignments, undefined);
   fs.rmSync(directory, { recursive: true, force: true });
 });
 

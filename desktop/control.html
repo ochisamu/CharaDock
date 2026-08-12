@@ -28,6 +28,7 @@
         <button class="nav-tab is-active" type="button" data-page="chat"><span class="ui-symbol ui-symbol-chat" aria-hidden="true"></span>Chat</button>
         <button class="nav-tab" type="button" data-page="remote"><span class="ui-symbol ui-symbol-settings" aria-hidden="true"></span>リモート</button>
         <button class="nav-tab" type="button" data-page="character"><span class="ui-symbol ui-symbol-character" aria-hidden="true"></span>キャラクター</button>
+        <button class="nav-tab" type="button" data-page="skills"><span class="ui-symbol ui-symbol-sparkle" aria-hidden="true"></span>Skills</button>
         <button class="nav-tab" type="button" data-page="voice"><span class="ui-symbol ui-symbol-voice" aria-hidden="true"></span>音声</button>
         <p class="nav-section-label">システム</p>
         <button class="nav-tab" type="button" data-page="connection"><span class="ui-symbol ui-symbol-connection" aria-hidden="true"></span>AI接続</button>
@@ -130,6 +131,7 @@
               <label>リモートの応答音声<select id="remoteResponseModeSelect"><option value="tts">通常TTS</option><option value="live">GPT-Live（スマートフォンで開始）</option></select></label>
               <label class="switch-row"><span><strong>スマートフォンでWorkを許可</strong><small>現在の作業先と、このキャラのホーム内で作業できます</small></span><input id="remoteWorkToggle" type="checkbox" /><i></i></label>
               <label class="switch-row"><span><strong>スマートフォンでキャラ音声を再生</strong><small>通常TTSの設定済み音声をスマートフォン側でも生成します</small></span><input id="remoteTtsToggle" type="checkbox" /><i></i></label>
+              <label class="switch-row"><span><strong>リモートを開いたときに声をかける</strong><small>作業の続きがある場合だけ、端末ごとに一度話します。Live選択時は接続後の声を使います</small></span><input id="remoteStartupGreetingToggle" type="checkbox" /><i></i></label>
               <label class="switch-row"><span><strong>PCでも回答音声を再生</strong><small>OFFにするとリモートから送った通常TTSをPCでは鳴らしません</small></span><input id="remotePcAudioToggle" type="checkbox" /><i></i></label>
               <section class="remote-tailscale-note" aria-labelledby="remoteTailscaleTitle">
                 <div class="remote-tailscale-heading"><strong id="remoteTailscaleTitle">Tailscale HTTPS（任意）</strong><span id="remoteTailscaleBadge" class="setup-state-badge">未確認</span></div>
@@ -297,6 +299,36 @@
           <div><span class="card-icon">◌</span><div><h2>動きと反応</h2><p>自動まばたき、呼吸、髪揺れ、アプリ上のマウス追従、音量リップシンクを利用します。</p></div></div>
           <label class="switch-row"><span><strong>マウスを目で追う</strong><small>カーソルがキャラクター上にある間だけ追従</small></span><input id="mouseFollowToggle" type="checkbox" /><i></i></label>
         </div>
+      </section>
+
+      <section class="page" data-page-panel="skills">
+        <header class="page-header"><div><p class="eyebrow">Capabilities</p><h1>Skills</h1></div><span id="skillCountBadge" class="setup-state-badge">0個</span></header>
+        <p class="page-lead">Workで使う手順や専門知識を端末へ保存し、全キャラまたはキャラごとに割り当てます。Skillは実行前にCodex自身が内容を読みます。</p>
+        <section id="skillAssignmentCard" class="card settings-card skill-assignment-card">
+          <header class="skill-section-heading"><div><p class="eyebrow">Assigned Skills</p><h2>このキャラに持たせる</h2><p>保存済みSkillをどのキャラクターで使うかだけを、ここで切り替えます。</p></div>
+            <label>割り当て先<select id="skillAssignmentTargetSelect"></select></label>
+          </header>
+          <div id="installedSkillList" class="installed-skill-list"></div>
+          <p id="skillAssignmentStatus" class="inline-status" role="status">まだSkillはありません。</p>
+        </section>
+        <section id="skillLibraryCard" class="card settings-card skill-library-card">
+          <header class="skill-section-heading"><div><p class="eyebrow">Skill Library</p><h2>信頼できる配布元から追加</h2><p>OpenAI公式の curated Skills を一覧から選べます。固定コミットを確認してから端末内へ保存します。</p></div><span class="skill-trust-badge is-trusted">OpenAI</span></header>
+          <div class="skill-source-row">
+            <select id="trustedSkillSelect" aria-label="OpenAI curated Skills"><option value="">一覧を読み込んでください</option></select>
+            <button id="loadTrustedSkillsButton" class="button button-secondary" type="button">公式一覧を読み込む</button>
+          </div>
+          <details class="skill-url-details">
+            <summary><span>GitHub URLから追加</span><small>配布元を自分で信頼できる場合のみ</small></summary>
+            <p>公開GitHubのSkillフォルダー、またはSKILL.mdのURLに対応します。インストール時にスクリプトは実行しません。</p>
+            <input id="skillSourceUrlInput" type="url" maxlength="2000" placeholder="https://github.com/owner/repo/tree/main/path/to/skill" />
+          </details>
+          <div class="skill-inspect-actions"><p id="skillLibraryStatus" class="inline-status" role="status">追加前に内容と配布元を確認します。</p><button id="inspectSkillButton" class="button button-primary" type="button">内容を確認</button></div>
+          <article id="skillInspectionPreview" class="skill-inspection-preview" hidden>
+            <div><span id="skillInspectionTrust" class="skill-trust-badge">GitHub</span><strong id="skillInspectionName"></strong><p id="skillInspectionDescription"></p><small id="skillInspectionMeta"></small></div>
+            <button id="installSkillButton" class="button button-primary" type="button">このSkillを追加</button>
+          </article>
+        </section>
+        <aside class="skill-security-note"><span class="ui-symbol ui-symbol-support" aria-hidden="true"></span><p><strong>Skillはアプリの機能拡張です。</strong> 任意URLでは説明と配布元を確認してください。割り当ては利用範囲の整理であり、悪意あるSkillに対する安全境界ではありません。</p></aside>
       </section>
 
       <section class="page" data-page-panel="voice">

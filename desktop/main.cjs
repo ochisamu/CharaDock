@@ -91,6 +91,15 @@ const { normalizeMascotPointerMode, shouldAutoHideMascot } = require("./lib/masc
 const { localAttachmentInstructions, normalizeLocalAttachments } = require("./lib/local-attachments.cjs");
 const { RealtimeTurnBuffer, normalizedText } = require("./lib/realtime-turn-buffer.cjs");
 const {
+  assignedSkillIds,
+  installResolvedSkill,
+  installedDirectory,
+  listOpenAiCuratedSkills,
+  normalizeManagedSkills,
+  normalizeSkillAssignments,
+  resolveSkillSource,
+} = require("./lib/skill-library.cjs");
+const {
   WorkVoiceReporter,
   conciseWorkAnnouncement,
   workAcknowledgementFallback,
@@ -356,6 +365,9 @@ let mascotCaptureProtectionDepth = 0;
 const TOOL_AUTHORIZATION_TTL_MS = 5 * 60_000;
 let workHistory = [];
 const startupContinuationAttempts = new Set();
+const startupContinuationMessages = new Map();
+const remoteStartupGreetingAttempts = new Set();
+const pendingRemoteLiveGreetings = new Map();
 const characterThumbnailCache = new Map();
 const characterMotionCache = new Map();
 const lastPetPhraseIndex = new Map();
@@ -1229,6 +1241,7 @@ function remoteServerStatus() {
     workEnabled: Boolean(preferences?.data?.remoteWorkEnabled),
     ttsEnabled: preferences?.data?.remoteTtsEnabled !== false,
     pcAudioEnabled: preferences?.data?.remotePcAudioEnabled !== false,
+    startupGreetingEnabled: preferences?.data?.remoteStartupGreetingEnabled !== false,
     responseMode: preferences?.data?.remoteResponseMode === "live" ? "live" : "tts",
     availableAddresses: privateLanAddresses(),
     qrDataUrl: status.active ? remoteQrDataUrl : "",
@@ -1494,7 +1507,29 @@ function publicRemoteApproval() {
   return null;
 }
 
-function publicRemoteState() {
+function remoteStartupGreeting(context = {}) {
+  const tokenHash = String(context?.tokenHash || "");
+  if (!tokenHash
+    || preferences.data.remoteStartupGreetingEnabled === false
+    || preferences.data.continuationStartupSpeechEnabled === false
+    || !preferences.data.onboardingComplete) return null;
+  const character = activeCharacter();
+  const scope = currentContinuationScope(character.id);
+  const attemptKey = `${tokenHash}:${character.id}:${scope.key}`;
+  if (remoteStartupGreetingAttempts.has(attemptKey)) return null;
+  remoteStartupGreetingAttempts.add(attemptKey);
+  const summary = continuationSummary(preferences.data.continuationSummaries, character.id, scope.key);
+  if (!continuationEligibility(summary).eligible) return null;
+  const message = startupContinuationMessages.get(`${character.id}:${scope.key}:${summary.updatedAt || ""}`)
+    || continuationFallbackMessage(summary, interfaceLanguage());
+  if (!message) return null;
+  const id = createHash("sha256").update(`${appSessionStartedAt}:${attemptKey}:${message}`).digest("hex").slice(0, 20);
+  const route = preferences.data.remoteResponseMode === "live" ? "live" : "mobile-tts";
+  if (route === "live") pendingRemoteLiveGreetings.set(tokenHash, { id, text: message });
+  return { id, text: remotePublicText(message, 500), route };
+}
+
+function publicRemoteState(context = {}) {
   const character = activeCharacter();
   const characterTts = characterTtsSettings();
   const workDirectory = validWorkDirectory();
@@ -1551,6 +1586,7 @@ function publicRemoteState() {
     })),
     workHistory: { activeWorkRunId, runs },
     approval: publicRemoteApproval(),
+    startupGreeting: remoteStartupGreeting(context),
   };
 }
 
@@ -1677,7 +1713,7 @@ async function startRemoteRealtime(payload = {}) {
         remoteServer?.publishTo(remoteTokenHash, "beatrice-error", { message: remotePublicText(beatriceError, 500) });
       }
     }
-    const result = await startCodexRealtimeVoice({ sdp: payload.sdp }, "remote");
+    const result = await startCodexRealtimeVoice({ sdp: payload.sdp, remoteTokenHash }, "remote");
     return {
       accepted: true,
       ...result,
@@ -1810,6 +1846,7 @@ async function applyRemoteClientSettings(patch = {}) {
   preferences.patch({
     remoteResponseMode: responseMode,
     remotePcAudioEnabled: typeof patch.pcAudioEnabled === "boolean" ? patch.pcAudioEnabled : preferences.data.remotePcAudioEnabled !== false,
+    remoteStartupGreetingEnabled: typeof patch.startupGreetingEnabled === "boolean" ? patch.startupGreetingEnabled : preferences.data.remoteStartupGreetingEnabled !== false,
     realtimeVoice,
     characterTtsProfiles: updatedCharacterTtsProfiles(preferences.data.characterId, { realtimeVoice }),
   });
@@ -1933,6 +1970,42 @@ async function applyRemoteConfiguration(patch = {}) {
   return broadcastAppState();
 }
 
+function managedSkillRoot() {
+  return path.join(app.getPath("userData"), "skills");
+}
+
+function normalizedSkillPreferences() {
+  const skills = normalizeManagedSkills(preferences.data.managedSkills);
+  const assignments = normalizeSkillAssignments(preferences.data.skillAssignments, skills.map((skill) => skill.id));
+  return { skills, assignments };
+}
+
+function publicSkillState() {
+  const { skills, assignments } = normalizedSkillPreferences();
+  const activeIds = new Set(assignedSkillIds(assignments, preferences.data.characterId));
+  return {
+    installed: skills.map(({ directoryName: _directoryName, ...skill }) => ({ ...skill, active: activeIds.has(skill.id) })),
+    assignments,
+    activeCharacterId: preferences.data.characterId,
+    activeIds: [...activeIds],
+  };
+}
+
+function activeCharacterSkillItems(characterId = preferences.data.characterId) {
+  const { skills, assignments } = normalizedSkillPreferences();
+  const activeIds = new Set(assignedSkillIds(assignments, characterId));
+  return skills.flatMap((skill) => {
+    if (!activeIds.has(skill.id)) return [];
+    const directory = installedDirectory(managedSkillRoot(), skill);
+    try {
+      if (!fs.statSync(path.join(directory, "SKILL.md")).isFile()) return [];
+    } catch {
+      return [];
+    }
+    return [{ name: skill.name, path: directory }];
+  });
+}
+
 function publicAppState() {
   const workDirectory = validWorkDirectory();
   const characterTts = characterTtsSettings();
@@ -1985,6 +2058,7 @@ function publicAppState() {
     workHistory: { activeWorkRunId, runs: publicWorkHistory() },
     memories: characterMemories(),
     continuation: publicContinuationState(),
+    skills: publicSkillState(),
     characterWorkspace: publicCharacterWorkspace(),
     webPreview: webPreviewRuntime?.publicState() || { status: "idle", logs: [] },
     hasWorkDirectory: Boolean(workDirectory),
@@ -2740,6 +2814,7 @@ function ensureWorkClient() {
     "ユーザーへ見せる短い進捗説明と完了報告には、この性格と話し方を自然に反映してください。",
     "ただし、作業の判断、事実、コード、コマンド、安全性、検証内容はキャラクター演出で変えないでください。",
   ].join("\n"));
+  workCodexClient.setTurnStartSkillItems(activeCharacterSkillItems(character.id));
   return workCodexClient;
 }
 
@@ -4838,6 +4913,7 @@ async function maybeOfferStartupContinuation({ allowInSmoke = false, skipGenerat
     || currentRealtimeClient()
     || codexClient?.hasActiveTurn?.()) return false;
   rememberAssistantAnnouncement(message);
+  startupContinuationMessages.set(`${attemptKey}:${summary.updatedAt || ""}`, message);
   showMascotSpeech(message, { durationMs: 16_000, ttsEnabled, persistent: true });
   diagnosticLog?.write("info", "startup-continuation-offered", { scopeType: scope.type, reason: eligibility.reason, source });
   return true;
@@ -5539,9 +5615,17 @@ async function startCodexRealtimeVoice(payload, target = "control") {
       const method = String(message?.method || "");
       const params = message?.params || {};
       if (method === "thread/realtime/started" && target === "remote") {
+        const remoteTokenHash = String(payload?.remoteTokenHash || "");
+        const startupGreeting = pendingRemoteLiveGreetings.get(remoteTokenHash);
+        if (startupGreeting) pendingRemoteLiveGreetings.delete(remoteTokenHash);
         remoteBusy = false;
-        remoteLastDisplayText = mainText("つながったよ。そのまま話してね。", "Connected. Go ahead and speak.");
+        remoteLastDisplayText = startupGreeting?.text || mainText("つながったよ。そのまま話してね。", "Connected. Go ahead and speak.");
         publishRemoteState();
+        if (startupGreeting?.text) {
+          queueMicrotask(() => appendRealtimeOutputSpeechDirect(startupGreeting.text, "startup").catch((error) => {
+            diagnosticLog?.write("warn", "remote-live-startup-greeting-failed", error?.message || String(error));
+          }));
+        }
       }
       if (method === "thread/realtime/transcript/delta" && params.role === "assistant") {
         const delta = String(params.delta || "");
@@ -6940,6 +7024,100 @@ function registerIpc() {
     codexClient?.reset();
     openAIClient?.reset();
     resetWorkClient();
+    return broadcastAppState();
+  });
+  ipcMain.handle("skills:listTrusted", async (event) => {
+    assertTrustedSender(event);
+    return listOpenAiCuratedSkills();
+  });
+  ipcMain.handle("skills:inspect", async (event, sourceUrl) => {
+    assertTrustedSender(event);
+    const resolved = await resolveSkillSource(String(sourceUrl || "").slice(0, 2000));
+    return {
+      id: resolved.id,
+      name: resolved.name,
+      description: resolved.description,
+      repository: resolved.repository,
+      sourceUrl: resolved.sourceUrl,
+      commitSha: resolved.commitSha,
+      sourceKind: resolved.sourceKind,
+      trusted: resolved.trusted,
+      license: resolved.license,
+      fileCount: resolved.files.length,
+      totalBytes: resolved.totalBytes,
+    };
+  });
+  ipcMain.handle("skills:install", async (event, input = {}) => {
+    assertTrustedSender(event);
+    if (activeWorkRunId || currentRealtimeClient() || activeRealtimeStarting || workCodexClient?.hasActiveTurn?.()) {
+      throw new Error(mainText("応答や作業が終わってからSkillを追加してください。", "Wait for the current response or work to finish before adding a skill."));
+    }
+    const sourceUrl = typeof input === "string" ? input : input.sourceUrl;
+    const resolved = await resolveSkillSource(String(sourceUrl || "").slice(0, 2000));
+    const expectedCommitSha = String(input?.expectedCommitSha || "");
+    const expectedId = String(input?.expectedId || "");
+    if ((expectedCommitSha && resolved.commitSha !== expectedCommitSha) || (expectedId && resolved.id !== expectedId)) {
+      throw new Error(mainText("確認後に配布元が更新されました。もう一度内容を確認してください。", "The source changed after inspection. Inspect it again before installing."));
+    }
+    const previous = normalizeManagedSkills(preferences.data.managedSkills).find((skill) => skill.id === resolved.id);
+    const record = await installResolvedSkill(resolved, managedSkillRoot());
+    if (previous) {
+      const oldDirectory = installedDirectory(managedSkillRoot(), previous);
+      const newDirectory = installedDirectory(managedSkillRoot(), record);
+      if (oldDirectory !== newDirectory && oldDirectory.startsWith(`${managedSkillRoot()}${path.sep}`)) {
+        await fs.promises.rm(oldDirectory, { recursive: true, force: true }).catch(() => {});
+      }
+    }
+    const managedSkills = normalizeManagedSkills([
+      ...preferences.data.managedSkills.filter((skill) => skill?.id !== record.id),
+      record,
+    ]);
+    const skillAssignments = normalizeSkillAssignments(preferences.data.skillAssignments, managedSkills.map((skill) => skill.id));
+    preferences.patch({ managedSkills, skillAssignments });
+    resetWorkClient();
+    diagnosticLog?.write("info", "skill-installed", { name: record.name, repository: record.repository, trusted: record.trusted });
+    return broadcastAppState();
+  });
+  ipcMain.handle("skills:setAssignment", (event, payload = {}) => {
+    assertTrustedSender(event);
+    if (activeWorkRunId || currentRealtimeClient() || activeRealtimeStarting || workCodexClient?.hasActiveTurn?.()) {
+      throw new Error(mainText("応答や作業が終わってからSkillの割り当てを変更してください。", "Wait for the current response or work to finish before changing skill assignments."));
+    }
+    const { skills, assignments } = normalizedSkillPreferences();
+    const skillId = String(payload.skillId || "");
+    if (!skills.some((skill) => skill.id === skillId)) throw new Error(mainText("Skillが見つかりません。", "Skill not found."));
+    const scope = payload.scope === "all" ? "all" : "character";
+    const enabled = Boolean(payload.enabled);
+    const next = { all: [...assignments.all], characters: { ...assignments.characters } };
+    const update = (items) => enabled ? [...new Set([...items, skillId])] : items.filter((id) => id !== skillId);
+    if (scope === "all") next.all = update(next.all);
+    else {
+      const characterId = String(payload.characterId || preferences.data.characterId);
+      if (!allCharacters().some((character) => character.id === characterId)) throw new Error(mainText("キャラクターが見つかりません。", "Character not found."));
+      const assigned = update(next.characters[characterId] || []);
+      if (assigned.length) next.characters[characterId] = assigned;
+      else delete next.characters[characterId];
+    }
+    preferences.patch({ skillAssignments: normalizeSkillAssignments(next, skills.map((skill) => skill.id)) });
+    resetWorkClient();
+    return broadcastAppState();
+  });
+  ipcMain.handle("skills:remove", async (event, skillId) => {
+    assertTrustedSender(event);
+    if (activeWorkRunId || currentRealtimeClient() || activeRealtimeStarting || workCodexClient?.hasActiveTurn?.()) {
+      throw new Error(mainText("応答や作業が終わってからSkillを削除してください。", "Wait for the current response or work to finish before removing a skill."));
+    }
+    const { skills } = normalizedSkillPreferences();
+    const record = skills.find((skill) => skill.id === String(skillId || ""));
+    if (!record) return publicAppState();
+    const directory = installedDirectory(managedSkillRoot(), record);
+    if (!directory.startsWith(`${managedSkillRoot()}${path.sep}`)) throw new Error("Skillの保存先が不正です。");
+    await fs.promises.rm(directory, { recursive: true, force: true });
+    const managedSkills = skills.filter((skill) => skill.id !== record.id);
+    const skillAssignments = normalizeSkillAssignments(preferences.data.skillAssignments, managedSkills.map((skill) => skill.id));
+    preferences.patch({ managedSkills, skillAssignments });
+    resetWorkClient();
+    diagnosticLog?.write("info", "skill-removed", { name: record.name, repository: record.repository });
     return broadcastAppState();
   });
   ipcMain.handle("character:configure", async (event, payload) => {
@@ -8354,6 +8532,7 @@ async function sendChatMessage(message, {
         onDynamicToolCall: (params) => handleBrowserToolCall(browserSession, params),
       });
       browserCodexClient.setPersona(personaInstructions());
+      if (workMode) browserCodexClient.setTurnStartSkillItems(activeCharacterSkillItems());
       result = await browserCodexClient.sendMessage(codexText, {
         onDelta,
         onEvent: (message) => {

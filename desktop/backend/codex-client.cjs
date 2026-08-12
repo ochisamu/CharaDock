@@ -150,8 +150,15 @@ class CodexAppServerClient {
   }
 
   setTurnStartSkillItems(skillItems) {
-    this.turnStartSkillItems = Array.isArray(skillItems) ? skillItems : [];
-    this.threadId = null;
+    const next = (Array.isArray(skillItems) ? skillItems : []).flatMap((skill) => {
+      const name = String(skill?.name || "").trim();
+      const skillPath = String(skill?.path || "").trim();
+      return name && skillPath ? [{ name, path: skillPath }] : [];
+    });
+    const previousSignature = JSON.stringify(this.turnStartSkillItems || []);
+    const nextSignature = JSON.stringify(next);
+    this.turnStartSkillItems = next;
+    if (previousSignature !== nextSignature) this.threadId = null;
   }
 
   async listSkills({ forceReload = false } = {}) {
@@ -552,7 +559,7 @@ class CodexAppServerClient {
       const input = [{ type: "text", text: String(message || "").trim() }];
       for (const skill of this.turnStartSkillItems) {
         if (skill && typeof skill === "object" && String(skill.name || "").trim()) {
-          input.push({ type: "skill", name: String(skill.name), path: String(skill.path || "") });
+          input.push({ type: "skill", name: String(skill.name), path: String(this.pathMapper(skill.path || "")) });
         }
       }
       const images = [...new Set([localImagePath, ...(Array.isArray(localImagePaths) ? localImagePaths : [])].filter(Boolean).map(String))];

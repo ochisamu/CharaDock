@@ -64,6 +64,8 @@
   const cancelledRecognitions = new WeakSet();
   let dictationArmed = false;
   let dictationRestartTimer = 0;
+  let seenStartupGreetingId = "";
+  let pendingStartupGreeting = null;
 
   const text = (ja, en) => appState?.language === "en" ? en : ja;
   const artifactUrl = (runId, artifactPath) => `/api/artifact?runId=${encodeURIComponent(runId)}&path=${encodeURIComponent(artifactPath)}`;
@@ -1151,6 +1153,17 @@
     if (changedCharacter) syncAvatar().catch(() => {});
     else syncAvatarMotion();
     if (appState.lastDisplayText) setResponseText(appState.lastDisplayText);
+    const startupGreeting = appState.startupGreeting;
+    if (startupGreeting?.id && startupGreeting.id !== seenStartupGreetingId) {
+      seenStartupGreetingId = startupGreeting.id;
+      setResponseText(startupGreeting.text);
+      if (startupGreeting.route === "mobile-tts") {
+        pendingStartupGreeting = { id: startupGreeting.id, text: startupGreeting.text };
+        setTimeout(() => attemptStartupGreeting(), 120);
+      } else if (startupGreeting.route === "live") {
+        $("#composerHint").textContent = text("Liveを開始すると、この声で話しかけます", "Start Live to hear this greeting in the selected voice");
+      }
+    }
     const activeRun = appState.workHistory?.activeWorkRunId;
     setBusy(Boolean(activeRun || appState.busy));
     setConnection(true);
@@ -1534,14 +1547,16 @@
   }
 
   async function speak(value) {
-    if (!audioEnabled || !appState?.mobileTtsAllowed || !String(value || "").trim()) return;
+    if (!audioEnabled || !appState?.mobileTtsAllowed || !String(value || "").trim()) return false;
     if (speechRecognition) stopDictation({ keepArmed: true });
     stopMobileSpeech({ resumeDictation: false });
     const token = ++mobileSpeechToken;
     mobileSpeechPending = true;
+    let completed = false;
     try {
       audioContext ||= new AudioContext();
       await audioContext.resume();
+      if (audioContext.state !== "running") throw new Error("Audio output is waiting for a user gesture.");
       const result = await request("/api/tts", { method: "POST", body: JSON.stringify({ text: String(value).slice(0, 4000) }) });
       if (token !== mobileSpeechToken) return;
       activeMobileTtsStreamId = result?.streamId || "";
@@ -1560,6 +1575,7 @@
         if (next?.done) streamId = "";
         activeMobileTtsStreamId = streamId;
       }
+      completed = true;
     } catch {
       resetRemoteMouth();
     } finally {
@@ -1570,6 +1586,15 @@
         scheduleDictationResume();
       }
     }
+    return completed;
+  }
+
+  async function attemptStartupGreeting() {
+    const greeting = pendingStartupGreeting;
+    if (!greeting || !audioEnabled || appState?.voice?.responseMode === "live") return false;
+    const played = await speak(greeting.text);
+    if (played && pendingStartupGreeting?.id === greeting.id) pendingStartupGreeting = null;
+    return played;
   }
 
   async function tapCharacter(event) {
@@ -1734,6 +1759,12 @@
   document.addEventListener("visibilitychange", () => {
     syncWakeLock();
     if (document.visibilityState !== "visible") stopDictation();
+  });
+  document.addEventListener("pointerdown", () => {
+    if (pendingStartupGreeting) primeAudioOutput().catch(() => {});
+  }, { capture: true });
+  document.addEventListener("click", () => {
+    if (pendingStartupGreeting) attemptStartupGreeting().catch(() => {});
   });
   navigator.serviceWorker?.addEventListener("message", (event) => {
     if (event.data?.type !== "notification-open") return;

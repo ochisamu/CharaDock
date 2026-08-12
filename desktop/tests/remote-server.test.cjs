@@ -61,6 +61,7 @@ test("remote server requires pairing, same-origin CSRF, and strips token from th
   const liveStops = [];
   const beatriceAudio = [];
   const beatriceStops = [];
+  const stateContexts = [];
   let secureHandoffs = 0;
   const server = new RemoteCompanionServer({
     rootDir,
@@ -68,7 +69,7 @@ test("remote server requires pairing, same-origin CSRF, and strips token from th
     port: 0,
     allowLoopbackForTests: true,
     callbacks: {
-      getState: () => ({ character: { name: "Kohaku" }, conversationHistory: [] }),
+      getState: (stateContext) => { stateContexts.push(stateContext); return { character: { name: "Kohaku" }, conversationHistory: [] }; },
       sendMessage: (payload) => { messages.push(payload); return { ok: true }; },
       pet: (payload) => { pets.push(payload); return { text: "Hello!", emotion: "happy" }; },
       setSettings: (payload) => { settings.push(payload); return { character: { name: "Towa" } }; },
@@ -101,6 +102,9 @@ test("remote server requires pairing, same-origin CSRF, and strips token from th
   assert.equal(cookie.includes(server.pairingToken), false);
   assert.equal(server.status().devices[0].name, "My iPhone");
   assert.equal(server.status().devices[0].address, "127.0.0.1");
+  assert.match(stateContexts[0].tokenHash, /^[a-f0-9]{64}$/);
+  assert.equal(stateContexts[0].deviceId, server.status().devices[0].id);
+  assert.equal(stateContexts[0].initial, true);
 
   const missingCsrf = await fetch(`${origin}/api/message`, {
     method: "POST", headers: { "Content-Type": "application/json", Origin: origin, Cookie: cookie }, body: JSON.stringify({ message: "hello" }),

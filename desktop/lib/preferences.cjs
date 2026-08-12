@@ -8,6 +8,7 @@ const { normalizeIrodoriEmotionStrength } = require("./irodori-caption.cjs");
 const { describeBeatriceModel } = require("./beatrice-v2.cjs");
 const { normalizeCharacterWorkspaces } = require("./character-home.cjs");
 const { normalizeContinuationSummaries } = require("./continuation-summary.cjs");
+const { normalizeManagedSkills, normalizeSkillAssignments } = require("./skill-library.cjs");
 
 const DEFAULT_IRODORI_VOICES = Object.freeze(BUNDLED_IRODORI_VOICES.map(({ sourceFileName: _sourceFileName, ...voice }) => Object.freeze({ ...voice })));
 const DEFAULT_CHARACTER_TTS_PROFILES = Object.freeze({
@@ -102,6 +103,7 @@ const DEFAULTS = Object.freeze({
   remoteSessionMinutes: 60,
   remoteTailscaleHttpsPort: 443,
   remoteTailscaleManaged: false,
+  remoteStartupGreetingEnabled: true,
   remoteTrustedDevices: [],
   onboardingComplete: false,
   positionLocked: false,
@@ -110,6 +112,8 @@ const DEFAULTS = Object.freeze({
   interactionMode: "chat",
   continuationStartupSpeechEnabled: true,
   continuationSummaries: {},
+  managedSkills: [],
+  skillAssignments: { all: [], characters: {} },
   workDirectory: "",
   characterProfiles: {},
   customCharacters: [],
@@ -506,6 +510,8 @@ class Preferences {
       this.data.characterWorkspaces = normalizeCharacterWorkspaces(this.data.characterWorkspaces);
       if (typeof this.data.continuationStartupSpeechEnabled !== "boolean") this.data.continuationStartupSpeechEnabled = true;
       this.data.continuationSummaries = normalizeContinuationSummaries(this.data.continuationSummaries);
+      this.data.managedSkills = normalizeManagedSkills(this.data.managedSkills);
+      this.data.skillAssignments = normalizeSkillAssignments(this.data.skillAssignments, this.data.managedSkills.map((skill) => skill.id));
       this.data.webPreviewRuntimes = this.data.webPreviewRuntimes && typeof this.data.webPreviewRuntimes === "object" && !Array.isArray(this.data.webPreviewRuntimes)
         ? Object.fromEntries(Object.entries(this.data.webPreviewRuntimes).slice(0, 100).flatMap(([projectId, runtime]) =>
           /^web-[a-f0-9]{18}$/.test(String(projectId)) && ["auto", "windows", "wsl"].includes(runtime) ? [[projectId, runtime]] : []))
@@ -531,7 +537,7 @@ class Preferences {
   publicState() {
     const state = {};
     for (const key of PUBLIC_KEYS) {
-      if (!["customCharacters", "workDirectory", "piperPlusExecutablePath", "piperPlusModelPath", "supertonicModelDirectory", "irodoriModelDirectory", "irodoriV4ModelDirectory", "irodoriV4Int4ModelDirectory", "irodoriReferenceAudioPath", "irodoriVoices", "kokoroModelDirectory", "sbv2Models", "beatriceVstPath", "beatriceModelPath", "beatriceModels", "characterTtsProfiles", "conversationHistories", "characterMemories", "characterWorkspaces", "continuationSummaries", "webPreviewRuntimes", "workHistory", "remoteTrustedDevices"].includes(key)) state[key] = this.data[key];
+      if (!["customCharacters", "workDirectory", "piperPlusExecutablePath", "piperPlusModelPath", "supertonicModelDirectory", "irodoriModelDirectory", "irodoriV4ModelDirectory", "irodoriV4Int4ModelDirectory", "irodoriReferenceAudioPath", "irodoriVoices", "kokoroModelDirectory", "sbv2Models", "beatriceVstPath", "beatriceModelPath", "beatriceModels", "characterTtsProfiles", "conversationHistories", "characterMemories", "characterWorkspaces", "continuationSummaries", "managedSkills", "skillAssignments", "webPreviewRuntimes", "workHistory", "remoteTrustedDevices"].includes(key)) state[key] = this.data[key];
     }
     state.hasWorkDirectory = Boolean(this.data.workDirectory);
     state.workDirectoryName = this.data.workDirectory ? path.basename(this.data.workDirectory) : "";

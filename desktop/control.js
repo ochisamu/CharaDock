@@ -52,6 +52,8 @@
   let streamingMessage = null;
   let renderedConversationCharacterId = "";
   let renderedContinuationSignature = "";
+  let inspectedSkill = null;
+  let trustedSkillsLoaded = false;
   let chatBusy = false;
   let pendingChatFollowUp = null;
   let chatAttachments = [];
@@ -94,6 +96,8 @@
     { page: "character", target: "#characterContinuation", ja: "キャラクター継続モード", en: "Character Continuation", detailJa: "前回の目的と次の一手を確認・編集", detailEn: "Review and edit the previous goal and next step", keywords: "continuation resume summary 継続 再開 前回 次の一手", popular: true },
     { page: "character", target: "#motionEditorTitle", ja: "キャラクターの動き", en: "Character motion", detailJa: "サイズ、追従、呼吸、髪揺れ", detailEn: "Size, tracking, breathing, and hair motion", keywords: "motion animation lip sync hair blink マウス リップシンク", popular: true },
     { page: "character", target: "#characterAddTitle", ja: "キャラクターを追加", en: "Add a character", detailJa: ".purupuruまたは画像から作成", detailEn: "Import .purupuru or create from an image", keywords: "import image generator purupuru 画像 追加" },
+    { page: "skills", target: "#skillAssignmentCard", ja: "キャラクターのSkills", en: "Character skills", detailJa: "全キャラまたはキャラごとにSkillを割り当てる", detailEn: "Assign skills globally or per character", keywords: "skill capabilities workflow 得意 能力 割り当て", popular: true },
+    { page: "skills", target: "#skillLibraryCard", ja: "Skillを追加", en: "Add a skill", detailJa: "OpenAI公式一覧またはGitHub URLから追加", detailEn: "Add from OpenAI or a GitHub URL", keywords: "skill install github url openai curated 追加", popular: true },
     { page: "voice", target: "#voiceInputCard", ja: "音声入力", en: "Voice input", detailJa: "認識方式、VAD、自動送信", detailEn: "Recognition, VAD, and auto-send", keywords: "microphone stt sherpa vad realtime マイク 音声認識", popular: true },
     { page: "voice", target: "#characterVoiceCard", ja: "キャラクターの声", en: "Character voice", detailJa: "Liveまたは通常TTSの声を選ぶ", detailEn: "Choose a Live or standard TTS voice", keywords: "tts live realtime speaker voice 読み上げ", popular: true },
     { page: "voice", target: "#realtimeVoiceSettings", ja: "Realtimeの声", en: "Realtime voice", detailJa: "GPT-Liveの声と声変換", detailEn: "GPT-Live voice and conversion", keywords: "codex live openai beatrice" },
@@ -639,6 +643,7 @@
       chat: ["Chat", "Chat"],
       remote: ["リモート", "Remote"],
       character: ["キャラクター", "Character"],
+      skills: ["Skills", "Skills"],
       voice: ["音声", "Voice"],
       connection: ["AI接続", "AI Connection"],
       desktop: ["デスクトップ", "Desktop"],
@@ -1513,6 +1518,141 @@
     setStatus($("#characterProfileStatus"), `${character.name}の設定`);
   }
 
+  function skillAssignmentTarget() {
+    const value = String($("#skillAssignmentTargetSelect")?.value || "");
+    return value === "all" ? { scope: "all", characterId: "" } : { scope: "character", characterId: value || state.characterId };
+  }
+
+  function renderSkills() {
+    const skillState = state.skills || { installed: [], assignments: { all: [], characters: {} } };
+    const installed = Array.isArray(skillState.installed) ? skillState.installed : [];
+    const assignments = skillState.assignments || { all: [], characters: {} };
+    const targetSelect = $("#skillAssignmentTargetSelect");
+    const previousTarget = targetSelect.value || state.characterId;
+    targetSelect.replaceChildren(new Option(localized("全キャラクター", "All characters"), "all"));
+    for (const character of state.characters || []) targetSelect.appendChild(new Option(character.name, character.id));
+    targetSelect.value = [...targetSelect.options].some((option) => option.value === previousTarget) ? previousTarget : state.characterId;
+    const target = skillAssignmentTarget();
+    const allAssigned = new Set(assignments.all || []);
+    const characterAssigned = new Set(assignments.characters?.[target.characterId] || []);
+    const list = $("#installedSkillList");
+    list.replaceChildren();
+    $("#skillCountBadge").textContent = localized(`${installed.length}個`, `${installed.length} installed`);
+    if (!installed.length) {
+      const empty = document.createElement("p");
+      empty.className = "installed-skill-empty";
+      empty.textContent = localized("下のライブラリから最初のSkillを追加できます。", "Add your first skill from the library below.");
+      list.appendChild(empty);
+      setStatus($("#skillAssignmentStatus"), localized("Skillを追加すると、ここで利用キャラを選べます。", "After adding a skill, choose who can use it here."));
+      return;
+    }
+    for (const skill of installed) {
+      const inherited = target.scope === "character" && allAssigned.has(skill.id);
+      const assigned = target.scope === "all" ? allAssigned.has(skill.id) : inherited || characterAssigned.has(skill.id);
+      const article = document.createElement("article");
+      article.className = "installed-skill-item";
+      const content = document.createElement("div");
+      const title = document.createElement("strong");
+      title.textContent = skill.name;
+      const description = document.createElement("p");
+      description.textContent = skill.description;
+      const meta = document.createElement("small");
+      meta.textContent = `${skill.trusted ? localized("OpenAI公式", "OpenAI") : skill.repository} · ${skill.license || localized("ライセンス未確認", "License unverified")}`;
+      content.append(title, description, meta);
+      const controls = document.createElement("div");
+      controls.className = "installed-skill-controls";
+      const label = document.createElement("label");
+      label.className = "switch-row";
+      const labelText = document.createElement("span");
+      const strong = document.createElement("strong");
+      strong.textContent = inherited ? localized("全キャラで使用中", "Enabled for all") : localized("使用する", "Use");
+      labelText.appendChild(strong);
+      const toggle = document.createElement("input");
+      toggle.type = "checkbox";
+      toggle.checked = assigned;
+      toggle.disabled = inherited;
+      const switchVisual = document.createElement("i");
+      label.append(labelText, toggle, switchVisual);
+      toggle.addEventListener("change", async () => {
+        toggle.disabled = true;
+        try {
+          state = await api.setSkillAssignment({ skillId: skill.id, scope: target.scope, characterId: target.characterId, enabled: toggle.checked });
+          renderSkills();
+        } catch (error) {
+          toggle.checked = !toggle.checked;
+          toggle.disabled = false;
+          setStatus($("#skillAssignmentStatus"), error.message, true);
+        }
+      });
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "button button-quiet";
+      remove.textContent = localized("削除", "Remove");
+      remove.addEventListener("click", async () => {
+        if (!window.confirm(localized(`「${skill.name}」を端末から削除しますか？全キャラの割り当ても解除されます。`, `Remove “${skill.name}” from this device? It will be unassigned from every character.`))) return;
+        remove.disabled = true;
+        try { state = await api.removeSkill(skill.id); renderSkills(); }
+        catch (error) { remove.disabled = false; setStatus($("#skillAssignmentStatus"), error.message, true); }
+      });
+      controls.append(label, remove);
+      article.append(content, controls);
+      list.appendChild(article);
+    }
+    const targetName = target.scope === "all" ? localized("全キャラクター", "all characters") : state.characters.find((character) => character.id === target.characterId)?.name || localized("このキャラ", "this character");
+    setStatus($("#skillAssignmentStatus"), localized(`${targetName}のWorkで使うSkillを選択しています。`, `Choose skills used by ${targetName} in Work.`));
+  }
+
+  function clearSkillInspection() {
+    inspectedSkill = null;
+    $("#skillInspectionPreview").hidden = true;
+  }
+
+  async function inspectSelectedSkill() {
+    const sourceUrl = $("#skillSourceUrlInput").value.trim() || $("#trustedSkillSelect").value;
+    if (!sourceUrl) {
+      setStatus($("#skillLibraryStatus"), localized("公式一覧から選ぶか、GitHub URLを入力してください。", "Choose from the official list or enter a GitHub URL."), true);
+      return;
+    }
+    const button = $("#inspectSkillButton");
+    button.disabled = true;
+    clearSkillInspection();
+    setStatus($("#skillLibraryStatus"), localized("配布元とSKILL.mdを確認しています…", "Inspecting the source and SKILL.md…"));
+    try {
+      inspectedSkill = await api.inspectSkill(sourceUrl);
+      inspectedSkill.requestedUrl = sourceUrl;
+      $("#skillInspectionName").textContent = inspectedSkill.name;
+      $("#skillInspectionDescription").textContent = inspectedSkill.description;
+      $("#skillInspectionMeta").textContent = `${inspectedSkill.repository} · ${inspectedSkill.fileCount} files · ${(inspectedSkill.totalBytes / 1024).toFixed(1)} KB · ${inspectedSkill.license}`;
+      const trust = $("#skillInspectionTrust");
+      trust.textContent = inspectedSkill.trusted ? localized("OpenAI公式", "OpenAI") : localized("GitHub・要確認", "GitHub · Review");
+      trust.classList.toggle("is-trusted", Boolean(inspectedSkill.trusted));
+      $("#skillInspectionPreview").hidden = false;
+      setStatus($("#skillLibraryStatus"), localized("固定コミットまで確認しました。説明と配布元を確認して追加してください。", "Pinned to a commit. Review the description and source before adding."));
+    } catch (error) {
+      setStatus($("#skillLibraryStatus"), error.message, true);
+    } finally {
+      button.disabled = false;
+    }
+  }
+
+  async function loadTrustedSkills() {
+    const button = $("#loadTrustedSkillsButton");
+    button.disabled = true;
+    setStatus($("#skillLibraryStatus"), localized("OpenAI公式一覧を読み込んでいます…", "Loading the OpenAI catalog…"));
+    try {
+      const skills = await api.listTrustedSkills();
+      const select = $("#trustedSkillSelect");
+      select.replaceChildren(new Option(localized("Skillを選択", "Choose a skill"), ""));
+      for (const skill of skills) select.appendChild(new Option(skill.name, skill.sourceUrl));
+      trustedSkillsLoaded = true;
+      setStatus($("#skillLibraryStatus"), localized(`${skills.length}件の公式Skillを取得しました。`, `Loaded ${skills.length} official skills.`));
+    } catch (error) {
+      setStatus($("#skillLibraryStatus"), error.message, true);
+    } finally {
+      button.disabled = false;
+    }
+  }
+
   function syncMotionReadouts() {
     for (const key of motionFields) {
       const input = $(`#${key}Input`);
@@ -2021,6 +2161,7 @@
     $("#remoteEnabledSettings").hidden = !enabled;
     $("#remoteWorkToggle").checked = Boolean(remote.workEnabled);
     $("#remoteTtsToggle").checked = remote.ttsEnabled !== false;
+    $("#remoteStartupGreetingToggle").checked = remote.startupGreetingEnabled !== false;
     $("#remotePcAudioToggle").checked = remote.pcAudioEnabled !== false;
     $("#remoteResponseModeSelect").value = remote.responseMode === "live" ? "live" : "tts";
     const remoteLiveOption = [...$("#remoteResponseModeSelect").options].find((option) => option.value === "live");
@@ -2106,6 +2247,7 @@
         bindAddress: $("#remoteAddressSelect").value,
         workEnabled: $("#remoteWorkToggle").checked,
         ttsEnabled: $("#remoteTtsToggle").checked,
+        startupGreetingEnabled: $("#remoteStartupGreetingToggle").checked,
         pcAudioEnabled: $("#remotePcAudioToggle").checked,
         responseMode: $("#remoteResponseModeSelect").value,
         port: Number($("#remotePortInput").value),
@@ -2148,6 +2290,7 @@
     if (chatHistoryView === "work") renderWorkHistory(workHistoryState);
     renderCharacters();
     syncCharacterEditor();
+    renderSkills();
     syncGeneratorUi();
     const backend = $(`input[name="backend"][value="${state.backend}"]`);
     if (backend) backend.checked = true;
@@ -3165,8 +3308,42 @@
     });
     api.onStopNormalSpeech?.(() => stopSpeechPlayback());
     api.onCharacterGeneration?.((payload) => updateGeneratorProgress(payload));
+    $("#skillAssignmentTargetSelect").addEventListener("change", renderSkills);
+    $("#loadTrustedSkillsButton").addEventListener("click", loadTrustedSkills);
+    $("#trustedSkillSelect").addEventListener("change", () => {
+      if ($("#trustedSkillSelect").value) $("#skillSourceUrlInput").value = "";
+      clearSkillInspection();
+    });
+    $("#skillSourceUrlInput").addEventListener("input", () => {
+      if ($("#skillSourceUrlInput").value.trim()) $("#trustedSkillSelect").value = "";
+      clearSkillInspection();
+    });
+    $("#inspectSkillButton").addEventListener("click", inspectSelectedSkill);
+    $("#installSkillButton").addEventListener("click", async () => {
+      if (!inspectedSkill?.requestedUrl) return;
+      const button = $("#installSkillButton");
+      button.disabled = true;
+      setStatus($("#skillLibraryStatus"), localized("Skillを端末へ保存しています…", "Saving the skill on this device…"));
+      try {
+        const target = skillAssignmentTarget();
+        const installedName = inspectedSkill.name;
+        state = await api.installSkill({
+          sourceUrl: inspectedSkill.requestedUrl,
+          expectedCommitSha: inspectedSkill.commitSha,
+          expectedId: inspectedSkill.id,
+        });
+        state = await api.setSkillAssignment({ skillId: inspectedSkill.id, scope: target.scope, characterId: target.characterId, enabled: true });
+        clearSkillInspection();
+        renderSkills();
+        setStatus($("#skillLibraryStatus"), localized(`「${installedName}」を追加し、選択中の割り当て先で有効にしました。`, "Skill added and enabled for the selected target."));
+      } catch (error) {
+        setStatus($("#skillLibraryStatus"), error.message, true);
+      } finally {
+        button.disabled = false;
+      }
+    });
     $("#remoteAccessToggle").addEventListener("change", saveRemoteSettings);
-    ["#remoteAddressSelect", "#remotePortInput", "#remoteSessionSelect", "#remoteResponseModeSelect", "#remoteWorkToggle", "#remoteTtsToggle", "#remotePcAudioToggle", "#remoteTailscaleHttpsPortInput"].forEach((selector) => {
+    ["#remoteAddressSelect", "#remotePortInput", "#remoteSessionSelect", "#remoteResponseModeSelect", "#remoteWorkToggle", "#remoteTtsToggle", "#remoteStartupGreetingToggle", "#remotePcAudioToggle", "#remoteTailscaleHttpsPortInput"].forEach((selector) => {
       $(selector).addEventListener("change", saveRemoteSettings);
     });
     $("#refreshRemoteTailscaleButton").addEventListener("click", async () => {
@@ -3265,6 +3442,7 @@
       button.addEventListener("click", () => {
         showPage(button.dataset.page);
         if (button.dataset.page === "support" && !lastDiagnostics) refreshSupportDiagnostics();
+        if (button.dataset.page === "skills" && !trustedSkillsLoaded) loadTrustedSkills();
       });
       button.addEventListener("keydown", (event) => {
         if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
@@ -4163,8 +4341,9 @@
     bindEvents();
     syncUi();
     const page = sessionStorage.getItem("charadock.activePage") || "chat";
-    showPage(["chat", "remote", "character", "voice", "connection", "desktop", "support"].includes(page) ? page : "chat");
+    showPage(["chat", "remote", "character", "skills", "voice", "connection", "desktop", "support"].includes(page) ? page : "chat");
     if (page === "support") refreshSupportDiagnostics();
+    if (page === "skills") loadTrustedSkills();
     refreshCodexAccount();
     refreshCodexModels();
     refreshRealtimeVoices();
