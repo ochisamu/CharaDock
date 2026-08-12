@@ -83,16 +83,6 @@ const {
   workAcknowledgementFallback,
 } = require("./lib/work-voice-reporter.cjs");
 const { isSocialConversationTurn } = require("./lib/interaction-intent.cjs");
-const {
-  WORK_SLM_EMOTIONS,
-  WORK_SLM_MODELS,
-  WORK_SLM_RUNTIME,
-  normalizeWorkSlmModelId,
-  parseWorkSlmOutput,
-  workSlmExpression,
-  workSlmModel,
-} = require("./lib/work-slm.cjs");
-const { WorkSlmSidecarClient } = require("./lib/work-slm-sidecar-client.cjs");
 const { RealtimeWorkSpeechCoordinator } = require("./lib/realtime-work-speech.cjs");
 const { BeatriceHostClient } = require("./lib/beatrice-host-client.cjs");
 const {
@@ -148,13 +138,6 @@ if (developmentUserDataArgument >= 0 && process.argv[developmentUserDataArgument
   const developmentUserDataPath = path.resolve(process.argv[developmentUserDataArgument + 1]);
   fs.mkdirSync(developmentUserDataPath, { recursive: true });
   app.setPath("userData", developmentUserDataPath);
-}
-const workSlmSidecarMode = process.argv.includes("--work-slm-sidecar");
-const workSlmUserDataArgument = process.argv.indexOf("--work-slm-user-data");
-if (workSlmSidecarMode && workSlmUserDataArgument >= 0 && process.argv[workSlmUserDataArgument + 1]) {
-  const workSlmUserDataPath = path.resolve(process.argv[workSlmUserDataArgument + 1]);
-  fs.mkdirSync(workSlmUserDataPath, { recursive: true });
-  app.setPath("userData", workSlmUserDataPath);
 }
 
 const AVATAR_IMAGE_FILES = Object.freeze({
@@ -299,13 +282,6 @@ let resolveKokoroReady;
 let kokoroWebGpuAvailable = null;
 let nextKokoroRequestId = 1;
 const pendingKokoroRequests = new Map();
-let workSlmClient;
-let workSlmWebGpuAvailable = null;
-let workSlmRuntimeState = "idle";
-let workSlmProgress = null;
-let workSlmActiveDevice = "";
-let workSlmAutoStartTimer;
-let workSlmPreparePromise;
 let controlWindow;
 let mascotWindow;
 let artifactPreviewWindow;
@@ -1900,7 +1876,6 @@ function publicAppState() {
     ...preferences.publicState(),
     remote: remoteServerStatus(),
     appUpdate: publicAppUpdateStatus(),
-    workSlm: publicWorkSlmStatus(),
     ttsProvider: characterTts.provider,
     styleBertVits2ModelId: characterTts.styleBertVits2ModelId,
     realtimeVoice: characterTts.realtimeVoice,
@@ -3373,77 +3348,6 @@ function waitForNextPageLoad(window, timeoutMs = 10_000) {
   });
 }
 
-function selectedWorkSlmSmokeModels(selection) {
-  const aliases = {
-    qwen35: "qwen3.5",
-    lfm: "lfm2.5-jp",
-    qwen25: "qwen2.5",
-  };
-  if (!selection || selection === "all") return WORK_SLM_MODELS;
-  const family = aliases[selection];
-  const model = WORK_SLM_MODELS.find((candidate) => candidate.family === family);
-  if (!model) throw new Error(`Unknown Work SLM smoke selection: ${selection}`);
-  return [model];
-}
-
-async function runWorkSlmModelSmokeTest(selection = "all") {
-  const previous = {
-    enabled: preferences.data.workSlmEnabled === true,
-    modelId: normalizeWorkSlmModelId(preferences.data.workSlmModelId),
-  };
-  try {
-    for (const model of selectedWorkSlmSmokeModels(selection)) {
-      destroyWorkSlmSidecar();
-      preferences.patch({ workSlmEnabled: false, workSlmModelId: model.id });
-      await new Promise((resolve) => setTimeout(resolve, 300));
-      const startedAt = Date.now();
-      const preparation = prepareWorkSlm();
-      // The model deliberately runs in another Electron process. Verify that
-      // its WebGPU startup cannot freeze either renderer or the native tray.
-      preparation.catch(() => {});
-      await new Promise((resolve) => setTimeout(resolve, 500));
-      const settingsResponsive = await Promise.race([
-        controlWindow.webContents.executeJavaScript(`(() => {
-          const tab = document.querySelector('.nav-tab[data-page="voice"]');
-          tab?.click();
-          const active = document.querySelector('[data-page-panel="voice"]')?.classList.contains('is-active');
-          document.querySelector('.nav-tab[data-page="chat"]')?.click();
-          return Boolean(active);
-        })()`),
-        new Promise((_, reject) => setTimeout(() => reject(new Error("settings became unresponsive while Work SLM was starting")), 2_000)),
-      ]);
-      if (!settingsResponsive) throw new Error("settings navigation did not respond while Work SLM was starting");
-      if (process.platform === "win32") {
-        tray.popUpContextMenu(trayMenu);
-        await new Promise((resolve) => setTimeout(resolve, 200));
-        tray.closeContextMenu();
-      }
-      console.log(`work-slm-smoke: UI responsive while ${model.shortLabel} starts`);
-      await preparation;
-      preferences.patch({ workSlmEnabled: true });
-      for (const announcement of [
-        { kind: "ack", sourceText: "READMEの公開準備を始めます" },
-        { kind: "progress", sourceText: "READMEの構成と説明を確認しています" },
-      ]) {
-        const generationStartedAt = Date.now();
-        const result = await rewriteWorkAnnouncementWithSlm({
-          kind: announcement.kind,
-          request: "READMEを公開向けに整えて",
-          text: announcement.sourceText,
-        });
-        if (!String(result?.text || "").trim() || !WORK_SLM_EMOTIONS.includes(result?.emotion)) {
-          throw new Error(`Work SLM ${announcement.kind} generation check failed: ${model.id}`);
-        }
-        console.log(`work-slm-smoke: ${announcement.kind} ok (${model.shortLabel}, ${Date.now() - generationStartedAt}ms): ${result.text}`);
-      }
-      console.log(`work-slm-smoke: model ok (${model.shortLabel}, ${Date.now() - startedAt}ms total)`);
-    }
-  } finally {
-    destroyWorkSlmSidecar();
-    preferences.patch({ workSlmEnabled: previous.enabled, workSlmModelId: previous.modelId });
-  }
-}
-
 async function runSmokeTest() {
   await Promise.all([waitForPageLoad(controlWindow), waitForPageLoad(mascotWindow)]);
   await new Promise((resolve) => setTimeout(resolve, 1800));
@@ -3485,19 +3389,9 @@ async function runSmokeTest() {
   const ttsDownloadUiReady = await controlWindow.webContents.executeJavaScript(`[
     'piperPlusModelDownloadButton', 'supertonicModelDownloadButton', 'kokoroModelDownloadButton', 'irodoriModelDownloadButton', 'irodoriV3ModelDownloadButton',
     'piperPlusModelDownloadProgress', 'supertonicModelDownloadProgress', 'kokoroModelDownloadProgress', 'irodoriModelDownloadProgress', 'irodoriV3ModelDownloadProgress',
-    'irodoriVersionSelect', 'irodoriPrecisionSelect', 'workSlmModelSelect', 'prepareWorkSlmButton', 'removeWorkSlmButton'
+    'irodoriVersionSelect', 'irodoriPrecisionSelect'
   ].every((id) => Boolean(document.getElementById(id)))`);
   if (!ttsDownloadUiReady) throw new Error("TTS model download controls check failed");
-  const workSlmRuntimePath = await ensureWorkSlmRuntime();
-  const workSlmProbe = await requestWorkSlm("probe", { runtimePath: workSlmRuntimePath }, { timeoutMs: 30_000, allowDownload: false });
-  if (!workSlmProbe.probed || !workSlmProbe.qwen35Supported || !workSlmProbe.lfm25Supported) {
-    throw new Error("Work SLM browser runtime, selectable model support, or persistent cache check failed");
-  }
-  const workSlmSmokeArgument = process.argv.find((argument) => argument.startsWith("--smoke-work-slm"));
-  if (workSlmSmokeArgument) {
-    const selection = workSlmSmokeArgument.replace(/^--smoke-work-slm-?/, "") || "all";
-    await runWorkSlmModelSmokeTest(selection);
-  }
   for (const provider of ["piper-plus", "supertonic-3", "kokoro", "irodori-webgpu", "irodori-webgpu-int4", "irodori-500m-v3"]) {
     const model = embeddedTtsModels.status(provider);
     const expectedSupported = provider !== "piper-plus" || process.platform === "win32";
@@ -4710,312 +4604,6 @@ function destroyKokoroWindow(error = new Error("Kokoro TTSを終了しました�
   }
   pendingKokoroRequests.clear();
   if (window && !window.isDestroyed()) window.destroy();
-}
-
-function workSlmMetadataDirectory() {
-  return path.join(app.getPath("userData"), "models", "work-slm");
-}
-
-function workSlmMarkerPath() {
-  return path.join(workSlmMetadataDirectory(), "ready.json");
-}
-
-function workSlmRuntimeSourcePath() {
-  return path.join(workSlmMetadataDirectory(), WORK_SLM_RUNTIME.name);
-}
-
-function workSlmRuntimeModulePath() {
-  return path.join(workSlmMetadataDirectory(), "transformers.web.mjs");
-}
-
-function validWorkSlmRuntimeSource() {
-  try {
-    const source = fs.readFileSync(workSlmRuntimeSourcePath());
-    return source.length === WORK_SLM_RUNTIME.bytes
-      && createHash("sha256").update(source).digest("hex") === WORK_SLM_RUNTIME.sha256;
-  } catch {
-    return false;
-  }
-}
-
-async function ensureWorkSlmRuntime() {
-  fs.mkdirSync(workSlmMetadataDirectory(), { recursive: true });
-  if (!validWorkSlmRuntimeSource()) {
-    fs.rmSync(workSlmRuntimeSourcePath(), { force: true });
-    let received = 0;
-    await downloadVerifiedFile({
-      fetchImpl: globalThis.fetch,
-      file: WORK_SLM_RUNTIME,
-      destination: workSlmRuntimeSourcePath(),
-      onChunk: (size) => {
-        received += size;
-        workSlmProgress = {
-          status: "downloading-runtime",
-          file: WORK_SLM_RUNTIME.name,
-          progress: Math.min(100, received / WORK_SLM_RUNTIME.bytes * 100),
-          loaded: received,
-          total: WORK_SLM_RUNTIME.bytes,
-        };
-        broadcastAppState();
-      },
-    });
-  }
-  const webgpuEntry = require.resolve("onnxruntime-web/webgpu");
-  const webgpuModule = path.join(path.dirname(webgpuEntry), "ort.webgpu.min.mjs");
-  const commonEntry = require.resolve("onnxruntime-common");
-  const commonModule = path.resolve(path.dirname(commonEntry), "..", "esm", "index.js");
-  if (!fs.existsSync(webgpuModule) || !fs.existsSync(commonModule)) throw new Error("Work SLMのWebGPUランタイムが見つかりません。");
-  const transformed = fs.readFileSync(workSlmRuntimeSourcePath(), "utf8")
-    // The browser bundle detects Electron's preload `process` object as Node and
-    // selects its intentionally empty onnxruntime-node shim. This hidden window
-    // must use the browser/WebGPU backend instead.
-    .replace(
-      'var IS_NODE_ENV = IS_PROCESS_AVAILABLE && process?.release?.name === "node" && !IS_DENO_WEB_RUNTIME;',
-      "var IS_NODE_ENV = false;",
-    )
-    .replace('from "onnxruntime-web/webgpu"', `from ${JSON.stringify(pathToFileURL(webgpuModule).href)}`)
-    .replace('from "onnxruntime-common"', `from ${JSON.stringify(pathToFileURL(commonModule).href)}`);
-  if (transformed.includes('var IS_NODE_ENV = IS_PROCESS_AVAILABLE && process?.release?.name === "node"')
-    || transformed.includes('from "onnxruntime-web/webgpu"')
-    || transformed.includes('from "onnxruntime-common"')) {
-    throw new Error("Work SLMランタイムを安全に準備できませんでした。");
-  }
-  fs.writeFileSync(workSlmRuntimeModulePath(), transformed, { mode: 0o600 });
-  return workSlmRuntimeModulePath();
-}
-
-function workSlmInstalled() {
-  const selected = workSlmModel(preferences.data.workSlmModelId);
-  try {
-    const marker = JSON.parse(fs.readFileSync(workSlmMarkerPath(), "utf8"));
-    const installed = installedWorkSlmModels().find((entry) => entry.id === selected.id);
-    return installed?.dtype === selected.dtype
-      && marker?.runtimeVersion === WORK_SLM_RUNTIME.version
-      && validWorkSlmRuntimeSource();
-  } catch {
-    return false;
-  }
-}
-
-function installedWorkSlmModels() {
-  try {
-    const marker = JSON.parse(fs.readFileSync(workSlmMarkerPath(), "utf8"));
-    const values = Array.isArray(marker?.models)
-      ? marker.models
-      : marker?.modelId ? [{ id: marker.modelId }] : [];
-    const byId = new Map();
-    for (const value of values) {
-      const entry = typeof value === "string" ? { id: value } : value;
-      const id = String(entry?.id || "");
-      if (!WORK_SLM_MODELS.some((model) => model.id === id)) continue;
-      byId.set(id, {
-        id,
-        dtype: String(entry?.dtype || ""),
-        ...(entry?.preparedAt ? { preparedAt: String(entry.preparedAt) } : {}),
-      });
-    }
-    return [...byId.values()];
-  } catch {
-    return [];
-  }
-}
-
-function installedWorkSlmModelIds() {
-  return installedWorkSlmModels().map((entry) => entry.id);
-}
-
-function publicWorkSlmStatus() {
-  const selected = workSlmModel(preferences.data.workSlmModelId);
-  return {
-    enabled: preferences.data.workSlmEnabled === true,
-    installed: workSlmInstalled(),
-    hasRuntime: validWorkSlmRuntimeSource(),
-    modelId: selected.id,
-    modelLabel: selected.label,
-    model: { ...selected },
-    models: WORK_SLM_MODELS.map((model) => ({ ...model })),
-    installedModelIds: installedWorkSlmModelIds(),
-    runtimeState: workSlmRuntimeState,
-    progress: workSlmProgress,
-    webgpuAvailable: workSlmWebGpuAvailable,
-    activeDevice: workSlmActiveDevice,
-  };
-}
-
-function destroyWorkSlmSidecar() {
-  clearTimeout(workSlmAutoStartTimer);
-  workSlmAutoStartTimer = null;
-  const client = workSlmClient;
-  workSlmClient = null;
-  workSlmRuntimeState = "idle";
-  workSlmActiveDevice = "";
-  client?.stop();
-}
-
-function ensureWorkSlmClient() {
-  if (workSlmClient) return workSlmClient;
-  const sidecarUserData = path.join(app.getPath("userData"), "work-slm-sidecar");
-  fs.mkdirSync(sidecarUserData, { recursive: true });
-  const client = new WorkSlmSidecarClient({
-    executablePath: process.execPath,
-    appPath: projectRoot,
-    userDataPath: sidecarUserData,
-    packaged: app.isPackaged,
-    onAvailability: (payload) => {
-      if (workSlmClient !== client) return;
-      workSlmWebGpuAvailable = Boolean(payload.webgpuAvailable);
-      broadcastAppState();
-    },
-    onProgress: (payload) => {
-      if (workSlmClient !== client) return;
-      workSlmProgress = {
-        status: String(payload.status || ""),
-        file: path.basename(String(payload.file || "")),
-        progress: Math.max(0, Math.min(100, Number(payload.progress) || 0)),
-        loaded: Math.max(0, Number(payload.loaded) || 0),
-        total: Math.max(0, Number(payload.total) || 0),
-      };
-      if (["ready", "done"].includes(workSlmProgress.status)) workSlmRuntimeState = "loading";
-      broadcastAppState();
-    },
-    onExit: (error, stopping) => {
-      if (workSlmClient !== client) return;
-      workSlmClient = null;
-      workSlmRuntimeState = stopping ? "idle" : "error";
-      workSlmActiveDevice = "";
-      if (!stopping) debugWorkSlmInference("sidecar-stopped", { error: String(error?.message || error) });
-      broadcastAppState();
-    },
-    onStderr: (text) => {
-      if (!app.isPackaged && text) console.warn(`[Work SLM sidecar] ${text}`);
-    },
-  });
-  workSlmClient = client;
-  return client;
-}
-
-async function requestWorkSlm(action, payload = {}, { timeoutMs = 2200, allowDownload = false } = {}) {
-  return ensureWorkSlmClient().request(action, {
-    action,
-    cacheDirectory: workSlmMetadataDirectory(),
-    runtimePath: action === "clear" ? "" : (payload.runtimePath || workSlmRuntimeModulePath()),
-    modelId: normalizeWorkSlmModelId(payload.modelId || preferences.data.workSlmModelId),
-    ...payload,
-  }, { timeoutMs, allowDownload });
-}
-
-async function prepareWorkSlm() {
-  if (workSlmPreparePromise) return workSlmPreparePromise;
-  const selected = workSlmModel(preferences.data.workSlmModelId);
-  workSlmPreparePromise = (async () => {
-    workSlmRuntimeState = workSlmInstalled() ? "loading" : "downloading";
-    workSlmProgress = null;
-    broadcastAppState();
-    try {
-      const runtimePath = await ensureWorkSlmRuntime();
-      const result = await requestWorkSlm("prepare", { runtimePath, modelId: selected.id }, { timeoutMs: 20 * 60_000, allowDownload: true });
-      fs.mkdirSync(workSlmMetadataDirectory(), { recursive: true });
-      const installed = installedWorkSlmModels().filter((entry) => entry.id !== selected.id);
-      const preparedAt = new Date().toISOString();
-      fs.writeFileSync(workSlmMarkerPath(), `${JSON.stringify({
-        runtimeVersion: WORK_SLM_RUNTIME.version,
-        models: [...installed, { id: selected.id, dtype: selected.dtype || "q4", preparedAt }],
-      }, null, 2)}\n`);
-      workSlmRuntimeState = "ready";
-      workSlmActiveDevice = String(result.device || "webgpu");
-      return publicWorkSlmStatus();
-    } catch (error) {
-      workSlmRuntimeState = "error";
-      throw error;
-    } finally {
-      broadcastAppState();
-    }
-  })();
-  try {
-    return await workSlmPreparePromise;
-  } finally {
-    workSlmPreparePromise = null;
-  }
-}
-
-function scheduleWorkSlmAutoStart(delayMs = 2_500) {
-  clearTimeout(workSlmAutoStartTimer);
-  workSlmAutoStartTimer = null;
-  if (!preferences.data.workSlmEnabled || !workSlmInstalled()) return;
-  if (["downloading", "loading", "ready"].includes(workSlmRuntimeState)) return;
-  workSlmAutoStartTimer = setTimeout(() => {
-    workSlmAutoStartTimer = null;
-    prepareWorkSlm().catch((error) => {
-      debugWorkSlmInference("automatic-start-failed", { error: String(error?.message || error) });
-    });
-  }, Math.max(0, Number(delayMs) || 0));
-}
-
-async function removeWorkSlm() {
-  await requestWorkSlm("clear", {}, { timeoutMs: 15_000 }).catch(() => {});
-  destroyWorkSlmSidecar();
-  fs.rmSync(workSlmMetadataDirectory(), { recursive: true, force: true });
-  workSlmProgress = null;
-  broadcastAppState();
-  return publicWorkSlmStatus();
-}
-
-function debugWorkSlmInference(event, details = {}) {
-  if (app.isPackaged) return;
-  console.log(`[Work SLM inference] ${event}: ${JSON.stringify(details)}`);
-}
-
-async function rewriteWorkAnnouncementWithSlm({ kind, text, request }) {
-  const modelId = normalizeWorkSlmModelId(preferences.data.workSlmModelId);
-  if (!preferences.data.workSlmEnabled || !workSlmInstalled() || workSlmRuntimeState !== "ready") {
-    debugWorkSlmInference("skipped", {
-      kind,
-      modelId,
-      enabled: preferences.data.workSlmEnabled === true,
-      installed: workSlmInstalled(),
-      runtimeState: workSlmRuntimeState,
-    });
-    return null;
-  }
-  const runtimePath = await ensureWorkSlmRuntime();
-  const character = activeCharacter();
-  const startedAt = Date.now();
-  debugWorkSlmInference("started", {
-    kind,
-    modelId,
-    request: String(request || "").slice(0, 300),
-    sourceText: String(text || "").slice(0, 200),
-    character: character.name,
-  });
-  try {
-    const result = await requestWorkSlm("rewrite", {
-      runtimePath,
-      modelId,
-      language: interfaceLanguage(),
-      kind,
-      request,
-      sourceText: text,
-      characterName: character.name,
-      personality: character.personality,
-    }, { timeoutMs: 5_000, allowDownload: false });
-    const parsed = parseWorkSlmOutput(JSON.stringify({ text: result.text, emotion: result.emotion }), { sourceText: text, request, kind });
-    debugWorkSlmInference("completed", {
-      kind,
-      modelId,
-      elapsedMs: Date.now() - startedAt,
-      outputText: parsed.text,
-      emotion: parsed.emotion,
-    });
-    return parsed;
-  } catch (error) {
-    debugWorkSlmInference("failed", {
-      kind,
-      modelId,
-      elapsedMs: Date.now() - startedAt,
-      error: String(error?.message || error),
-    });
-    throw error;
-  }
 }
 
 async function ensureKokoroWindow() {
@@ -6295,14 +5883,6 @@ function registerIpc() {
     assertTrustedSender(event);
     return normalizeRealtimeVoiceList(await codexClient.listRealtimeVoices());
   });
-  ipcMain.handle("workSlm:prepare", async (event) => {
-    assertTrustedSender(event);
-    return prepareWorkSlm();
-  });
-  ipcMain.handle("workSlm:remove", async (event) => {
-    assertTrustedSender(event);
-    return removeWorkSlm();
-  });
   ipcMain.handle("settings:save", async (event, patch) => {
     assertTrustedSender(event);
     const previousBackend = preferences.data.backend;
@@ -6312,8 +5892,6 @@ function registerIpc() {
     const previousDisplayId = String(preferences.data.preferredDisplayId || "");
     const previousUpdateChecksEnabled = preferences.data.updateChecksEnabled !== false;
     const previousUpdateChannel = preferences.data.updateChannel === "beta" ? "beta" : "stable";
-    const previousWorkSlmEnabled = preferences.data.workSlmEnabled === true;
-    const previousWorkSlmModelId = normalizeWorkSlmModelId(preferences.data.workSlmModelId);
     const requestedDisplayId = String(patch?.preferredDisplayId || "");
     const displayId = screen.getAllDisplays().some((display) => String(display.id) === requestedDisplayId) ? requestedDisplayId : "";
     const ttsProvider = ["system", "style-bert-vits2", "piper-plus", "supertonic-3", "irodori-webgpu", "kokoro", "sbv2-jp-extra"].includes(patch?.ttsProvider) ? patch.ttsProvider : "system";
@@ -6402,8 +5980,6 @@ function registerIpc() {
       codexChatReasoningEffort,
       codexWorkModel: String(patch?.codexWorkModel ?? preferences.data.codexWorkModel).trim().slice(0, 120),
       codexWorkReasoningEffort,
-      workSlmEnabled: patch?.workSlmEnabled === true,
-      workSlmModelId: normalizeWorkSlmModelId(patch?.workSlmModelId ?? preferences.data.workSlmModelId),
       alwaysOnTop: Boolean(patch?.alwaysOnTop),
       clickThrough: mascotPointerMode === "click-through",
       mascotPointerMode,
@@ -6458,14 +6034,6 @@ function registerIpc() {
       preferredDisplayId: displayId,
     };
     preferences.patch(allowed);
-    if (allowed.workSlmEnabled && !workSlmInstalled()) {
-      allowed.workSlmEnabled = false;
-      preferences.patch({ workSlmEnabled: false });
-    }
-    if ((!allowed.workSlmEnabled && previousWorkSlmEnabled) || allowed.workSlmModelId !== previousWorkSlmModelId) {
-      destroyWorkSlmSidecar();
-    }
-    if (allowed.workSlmEnabled) scheduleWorkSlmAutoStart(500);
     if (allowed.updateChannel !== previousUpdateChannel) appUpdateStatus = null;
     if (allowed.updateChecksEnabled && (!previousUpdateChecksEnabled || allowed.updateChannel !== previousUpdateChannel)) scheduleAppUpdateCheck();
     if (!allowed.updateChecksEnabled) clearTimeout(appUpdateCheckTimer);
@@ -7153,13 +6721,13 @@ function expressiveSpeechSegments(segments) {
   })).filter((segment) => segment.text);
 }
 
-function expressiveWorkAnnouncementSegment(text, emotion = "") {
+function expressiveWorkAnnouncementSegment(text) {
   const normalized = String(text || "").trim();
   if (!normalized) return [];
   return [{
     text: normalized,
     spokenText: configuredSpeechText(normalized),
-    expression: emotion ? workSlmExpression(emotion, normalized) : speechExpression(normalized),
+    expression: speechExpression(normalized),
   }];
 }
 
@@ -8074,8 +7642,7 @@ async function sendChatMessage(message, {
     workRunId: workRun?.id || "",
   });
   let workAnnouncementsOpen = true;
-  let workAnnouncementQueue = Promise.resolve();
-  const publishWorkAnnouncement = ({ kind, text: announcement, emotion = "" }) => {
+  const publishWorkAnnouncement = ({ kind, text: announcement }) => {
     if (!workAnnouncementsOpen || !announcement) return;
     sendStream({
       phase: "announcement",
@@ -8083,8 +7650,7 @@ async function sendChatMessage(message, {
       kind,
       text: announcement,
       displayText: announcement,
-      speechSegments: streamTtsEnabled ? expressiveWorkAnnouncementSegment(announcement, emotion) : [],
-      generatedBySlm: Boolean(emotion),
+      speechSegments: streamTtsEnabled ? expressiveWorkAnnouncementSegment(announcement) : [],
     });
   };
   const announceWork = ({ kind, text: announcement }) => {
@@ -8093,21 +7659,7 @@ async function sendChatMessage(message, {
       appendRealtimeOutputSpeech(announcement, kind).catch(() => false);
       return;
     }
-    if (!preferences.data.workSlmEnabled || !workSlmInstalled()) {
-      debugWorkSlmInference("bypassed", {
-        kind,
-        enabled: preferences.data.workSlmEnabled === true,
-        installed: workSlmInstalled(),
-      });
-      publishWorkAnnouncement({ kind, text: announcement });
-      return;
-    }
-    workAnnouncementQueue = workAnnouncementQueue.then(async () => {
-      if (!workAnnouncementsOpen) return;
-      const rewritten = await rewriteWorkAnnouncementWithSlm({ kind, text: announcement, request: requestText }).catch(() => null);
-      if (!workAnnouncementsOpen) return;
-      publishWorkAnnouncement({ kind, text: rewritten?.text || announcement, emotion: rewritten?.emotion || "" });
-    });
+    publishWorkAnnouncement({ kind, text: announcement });
   };
   const workVoiceReporter = workMode ? new WorkVoiceReporter({
     alreadyAcknowledged: workAcknowledged,
@@ -8340,7 +7892,6 @@ async function sendChatMessage(message, {
       });
     }
     result = { ...result, text: cleanAssistantText(result.text) };
-    await workAnnouncementQueue.catch(() => {});
     workAnnouncementsOpen = false;
     workVoiceReporter?.complete();
     const artifacts = workMode
@@ -8546,6 +8097,31 @@ async function transcribeAudio(payload) {
   });
 }
 
+async function removeRetiredWorkSlmData() {
+  const migrationDirectory = path.join(app.getPath("userData"), "migrations");
+  const migrationMarker = path.join(migrationDirectory, "work-slm-removed-v1");
+  if (fs.existsSync(migrationMarker)) return;
+  let cleanupWindow = null;
+  try {
+    // Older PoC builds stored model responses in a file:// CacheStorage cache.
+    // Open the same origin once and remove only that named cache.
+    cleanupWindow = new BrowserWindow({
+      show: false,
+      webPreferences: { nodeIntegration: false, contextIsolation: true },
+    });
+    await cleanupWindow.loadFile(path.join(__dirname, "work-slm.html"));
+    await cleanupWindow.webContents.executeJavaScript('globalThis.caches?.delete?.("charadock-work-slm-v1") ?? true');
+    fs.rmSync(path.join(app.getPath("userData"), "models", "work-slm"), { recursive: true, force: true });
+    fs.rmSync(path.join(app.getPath("userData"), "work-slm-sidecar"), { recursive: true, force: true });
+    fs.mkdirSync(migrationDirectory, { recursive: true });
+    fs.writeFileSync(migrationMarker, `${new Date().toISOString()}\n`, { mode: 0o600 });
+  } catch (error) {
+    if (!app.isPackaged) console.warn("Retired Work SLM cleanup will retry:", error);
+  } finally {
+    if (cleanupWindow && !cleanupWindow.isDestroyed()) cleanupWindow.destroy();
+  }
+}
+
 async function boot() {
   projectRoot = app.getAppPath();
   app.setAppLogsPath();
@@ -8554,6 +8130,7 @@ async function boot() {
   const projectRootIsArchive = projectRoot.toLowerCase().includes(".asar");
   const codexWorkingDirectory = app.isPackaged || projectRootIsArchive ? app.getPath("documents") : projectRoot;
   preferences = new Preferences(path.join(app.getPath("userData"), "preferences.json"), safeStorage);
+  await removeRetiredWorkSlmData();
   characterHomeManager = new CharacterHomeManager(
     path.join(app.getPath("userData"), "character-homes"),
     path.join(projectRoot, ".agents", "skills", "manage-character-home"),
@@ -8686,7 +8263,6 @@ async function boot() {
   registerShortcuts();
   startCursorLoop();
   scheduleIrodoriPrewarm();
-  if (!process.argv.includes("--smoke-test")) scheduleWorkSlmAutoStart();
   scheduleAppUpdateCheck();
   const syncDisplays = () => {
     if (!controlWindow || controlWindow.isDestroyed()) return;
@@ -8701,56 +8277,45 @@ async function boot() {
   if (process.argv.includes("--smoke-test")) await runSmokeTest();
 }
 
-if (workSlmSidecarMode) {
-  app.whenReady()
-    .then(() => require("./work-slm-sidecar.cjs").runWorkSlmSidecar({ app, BrowserWindow, ipcMain }))
-    .catch((error) => {
-      process.stderr.write(`Work SLM sidecar startup failed: ${String(error?.stack || error)}\n`);
-      app.exit(1);
-    });
-} else {
-  const hasLock = app.requestSingleInstanceLock();
-  process.on("uncaughtExceptionMonitor", (error) => diagnosticLog?.write("error", "uncaught-exception", error?.stack || error?.message || error));
-  process.on("unhandledRejection", (error) => diagnosticLog?.write("error", "unhandled-rejection", error?.stack || error?.message || error));
-  if (!hasLock) app.quit();
-  else {
-    app.on("second-instance", () => showControlWindow());
-    app.whenReady().then(boot).catch((error) => {
-      diagnosticLog?.write("error", "startup-failed", error?.stack || error?.message || error);
-      console.error("Desktop mascot startup failed:", error);
-      if (process.argv.includes("--smoke-test")) app.exit(1);
-      else app.quit();
-    });
-  }
-
-  app.on("window-all-closed", () => {});
-  app.on("activate", showControlWindow);
-  app.on("before-quit", () => {
-    clearTimeout(appUpdateCheckTimer);
-    clearTimeout(workSlmAutoStartTimer);
-    diagnosticLog?.write("info", "app-stop");
-    quitting = true;
-    clearInterval(cursorTimer);
-    clearTimeout(saveBoundsTimer);
-    clearTimeout(snapBoundsTimer);
-    stopMascotSnapAnimation();
-    globalShortcut.unregisterAll();
-    codexClient?.stop();
-    workCodexClient?.stop();
-    browserCodexClient?.stop();
-    computerCodexClient?.stop();
-    webPreviewRuntime?.stop().catch(() => {});
-    macComputerSkillClient?.stop();
-    stopBeatriceHost();
-    if (browserWindow && !browserWindow.isDestroyed()) browserWindow.destroy();
-    if (artifactPreviewWindow && !artifactPreviewWindow.isDestroyed()) artifactPreviewWindow.destroy();
-    destroyIrodoriWindow();
-    destroyKokoroWindow();
-    destroyWorkSlmSidecar();
-    sbv2Worker?.stop();
-    remoteServer?.stop().catch(() => {});
-    localServer?.stop();
+const hasLock = app.requestSingleInstanceLock();
+process.on("uncaughtExceptionMonitor", (error) => diagnosticLog?.write("error", "uncaught-exception", error?.stack || error?.message || error));
+process.on("unhandledRejection", (error) => diagnosticLog?.write("error", "unhandled-rejection", error?.stack || error?.message || error));
+if (!hasLock) app.quit();
+else {
+  app.on("second-instance", () => showControlWindow());
+  app.whenReady().then(boot).catch((error) => {
+    diagnosticLog?.write("error", "startup-failed", error?.stack || error?.message || error);
+    console.error("Desktop mascot startup failed:", error);
+    if (process.argv.includes("--smoke-test")) app.exit(1);
+    else app.quit();
   });
 }
+
+app.on("window-all-closed", () => {});
+app.on("activate", showControlWindow);
+app.on("before-quit", () => {
+  clearTimeout(appUpdateCheckTimer);
+  diagnosticLog?.write("info", "app-stop");
+  quitting = true;
+  clearInterval(cursorTimer);
+  clearTimeout(saveBoundsTimer);
+  clearTimeout(snapBoundsTimer);
+  stopMascotSnapAnimation();
+  globalShortcut.unregisterAll();
+  codexClient?.stop();
+  workCodexClient?.stop();
+  browserCodexClient?.stop();
+  computerCodexClient?.stop();
+  webPreviewRuntime?.stop().catch(() => {});
+  macComputerSkillClient?.stop();
+  stopBeatriceHost();
+  if (browserWindow && !browserWindow.isDestroyed()) browserWindow.destroy();
+  if (artifactPreviewWindow && !artifactPreviewWindow.isDestroyed()) artifactPreviewWindow.destroy();
+  destroyIrodoriWindow();
+  destroyKokoroWindow();
+  sbv2Worker?.stop();
+  remoteServer?.stop().catch(() => {});
+  localServer?.stop();
+});
 
 module.exports = { AVATAR_IMAGE_FILES, OPTIONAL_AVATAR_IMAGE_FILES, CHARACTERS, buildAvatarSnapshot, messageExpression, responseExpression };

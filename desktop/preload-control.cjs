@@ -44,8 +44,6 @@ contextBridge.exposeInMainWorld("mascotDesktop", {
   getCodexAccount: () => ipcRenderer.invoke("codex:account"),
   getCodexModels: () => ipcRenderer.invoke("codex:models"),
   getRealtimeVoices: () => ipcRenderer.invoke("codex:realtimeVoices"),
-  prepareWorkSlm: () => ipcRenderer.invoke("workSlm:prepare"),
-  removeWorkSlm: () => ipcRenderer.invoke("workSlm:remove"),
   startCodexLogin: () => ipcRenderer.invoke("codex:login"),
   logoutCodex: () => ipcRenderer.invoke("codex:logout"),
   completeOnboarding: (complete) => ipcRenderer.invoke("onboarding:complete", complete),

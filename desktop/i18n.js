@@ -243,7 +243,6 @@
     "SLMで進捗文を生成": "Generate progress messages with an SLM",
     "進捗生成モデル": "Progress model",
     "Qwen 3.5 0.8B Q4（推奨）": "Qwen 3.5 0.8B Q4 (Recommended)",
-    "LFM2.5 1.2B JP Q4F16（日本語特化・実験的）": "LFM2.5 1.2B JP Q4F16 (Japanese-specialized, experimental)",
     "Qwen 2.5 0.5B Q8": "Qwen 2.5 0.5B Q8",
     "選択したモデルが端末内で発話文と感情候補を生成します": "The selected model generates spoken updates and emotion cues on this device",
     "モデルは明示的に準備するまでダウンロードしません。最終回答とGPT-Liveには適用されません。": "Models are downloaded only when you prepare them. Final answers and GPT-Live are unchanged.",

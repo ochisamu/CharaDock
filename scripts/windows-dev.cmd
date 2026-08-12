@@ -25,25 +25,16 @@ if not exist "node_modules\electron\cli.js" (
 
 set "CHARADOCK_SHARED_PROFILE=0"
 set "CHARADOCK_SMOKE_TEST=0"
-set "CHARADOCK_SMOKE_WORK_SLM="
 :parse
 if "%~1"=="" goto run
 if /i "%~1"=="--shared-profile" set "CHARADOCK_SHARED_PROFILE=1"
 if /i "%~1"=="--smoke-test" set "CHARADOCK_SMOKE_TEST=1"
-if /i "%~1"=="--smoke-work-slm" set "CHARADOCK_SMOKE_WORK_SLM=all"
-if /i "%~1"=="--smoke-work-slm-qwen35" set "CHARADOCK_SMOKE_WORK_SLM=qwen35"
-if /i "%~1"=="--smoke-work-slm-lfm" set "CHARADOCK_SMOKE_WORK_SLM=lfm"
-if /i "%~1"=="--smoke-work-slm-qwen25" set "CHARADOCK_SMOKE_WORK_SLM=qwen25"
 shift
 goto parse
 
 :run
 set "CHARADOCK_EXTRA_ARGS="
 if "%CHARADOCK_SMOKE_TEST%"=="1" set "CHARADOCK_EXTRA_ARGS=--smoke-test"
-if /i "%CHARADOCK_SMOKE_WORK_SLM%"=="all" set "CHARADOCK_EXTRA_ARGS=%CHARADOCK_EXTRA_ARGS% --smoke-work-slm"
-if /i "%CHARADOCK_SMOKE_WORK_SLM%"=="qwen35" set "CHARADOCK_EXTRA_ARGS=%CHARADOCK_EXTRA_ARGS% --smoke-work-slm-qwen35"
-if /i "%CHARADOCK_SMOKE_WORK_SLM%"=="lfm" set "CHARADOCK_EXTRA_ARGS=%CHARADOCK_EXTRA_ARGS% --smoke-work-slm-lfm"
-if /i "%CHARADOCK_SMOKE_WORK_SLM%"=="qwen25" set "CHARADOCK_EXTRA_ARGS=%CHARADOCK_EXTRA_ARGS% --smoke-work-slm-qwen25"
 if "%CHARADOCK_SHARED_PROFILE%"=="1" goto run_shared
 set "CHARADOCK_DEV_PROFILE=%LOCALAPPDATA%\CharaDockDev\profile"
 if not exist "%CHARADOCK_DEV_PROFILE%" mkdir "%CHARADOCK_DEV_PROFILE%"

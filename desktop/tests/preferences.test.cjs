@@ -102,8 +102,6 @@ test("new installs enable onboarding and desktop positioning defaults", () => {
   assert.equal(state.codexChatReasoningEffort, "");
   assert.equal(state.codexWorkModel, "");
   assert.equal(state.codexWorkReasoningEffort, "");
-  assert.equal(state.workSlmEnabled, false);
-  assert.equal(state.workSlmModelId, "onnx-community/Qwen3.5-0.8B-ONNX-OPT");
   assert.equal(state.hasWorkDirectory, false);
   assert.equal(state.workDirectoryName, "");
   assert.deepEqual(preferences.data.irodoriVoices.map((voice) => voice.id), ["builtin-hiro", "builtin-kohaku"]);
@@ -377,23 +375,6 @@ test("preferences migrate the former Codex model to chat and work", () => {
   const state = new Preferences(file).publicState();
   assert.equal(state.codexChatModel, "legacy-model");
   assert.equal(state.codexWorkModel, "legacy-model");
-});
-
-test("preferences retain supported Work SLM models and reject arbitrary repositories", () => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "charadock-prefs-"));
-  const file = path.join(directory, "preferences.json");
-  fs.writeFileSync(file, JSON.stringify({ workSlmEnabled: true, workSlmModelId: "onnx-community/Qwen2.5-0.5B-Instruct" }));
-  let state = new Preferences(file).publicState();
-  assert.equal(state.workSlmEnabled, true);
-  assert.equal(state.workSlmModelId, "onnx-community/Qwen2.5-0.5B-Instruct");
-
-  fs.writeFileSync(file, JSON.stringify({ workSlmModelId: "LiquidAI/LFM2.5-1.2B-JP-202606-ONNX" }));
-  state = new Preferences(file).publicState();
-  assert.equal(state.workSlmModelId, "LiquidAI/LFM2.5-1.2B-JP-202606-ONNX");
-
-  fs.writeFileSync(file, JSON.stringify({ workSlmModelId: "untrusted/model" }));
-  state = new Preferences(file).publicState();
-  assert.equal(state.workSlmModelId, "onnx-community/Qwen3.5-0.8B-ONNX-OPT");
 });
 
 test("preferences migrate removed wake-word activation to VAD", () => {

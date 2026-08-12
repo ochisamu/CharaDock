@@ -7,7 +7,6 @@ const { BUNDLED_IRODORI_VOICES } = require("./irodori-voices.cjs");
 const { normalizeIrodoriEmotionStrength } = require("./irodori-caption.cjs");
 const { describeBeatriceModel } = require("./beatrice-v2.cjs");
 const { normalizeCharacterWorkspaces } = require("./character-home.cjs");
-const { DEFAULT_WORK_SLM_MODEL_ID, normalizeWorkSlmModelId } = require("./work-slm.cjs");
 
 const DEFAULT_IRODORI_VOICES = Object.freeze(BUNDLED_IRODORI_VOICES.map(({ sourceFileName: _sourceFileName, ...voice }) => Object.freeze({ ...voice })));
 const DEFAULT_CHARACTER_TTS_PROFILES = Object.freeze({
@@ -29,8 +28,6 @@ const DEFAULTS = Object.freeze({
   codexChatReasoningEffort: "",
   codexWorkModel: "",
   codexWorkReasoningEffort: "",
-  workSlmEnabled: false,
-  workSlmModelId: DEFAULT_WORK_SLM_MODEL_ID,
   alwaysOnTop: true,
   clickThrough: false,
   mascotPointerMode: "interactive",
@@ -292,8 +289,6 @@ class Preferences {
         if (!Object.prototype.hasOwnProperty.call(parsed, "codexWorkModel")) this.data.codexWorkModel = parsed.codexModel;
       }
       if (!["ja", "en"].includes(this.data.language)) this.data.language = "ja";
-      if (typeof this.data.workSlmEnabled !== "boolean") this.data.workSlmEnabled = false;
-      this.data.workSlmModelId = normalizeWorkSlmModelId(this.data.workSlmModelId);
       if (!["manual", "vad"].includes(this.data.voiceActivationMode)) this.data.voiceActivationMode = "vad";
       if (!["low", "normal", "high"].includes(this.data.vadSensitivity)) this.data.vadSensitivity = "normal";
       if (!Object.prototype.hasOwnProperty.call(parsed, "mascotPointerMode")) {

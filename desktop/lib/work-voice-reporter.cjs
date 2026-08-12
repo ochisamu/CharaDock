@@ -123,6 +123,10 @@ function workAcknowledgementFallback(request, language = "ja") {
     const safeDestinationSubject = conciseWorkAnnouncement(destinationSubject, 36);
     if (safeDestinationSubject) return `${safeDestinationSubject}を作るね。`;
   }
+  if (!english && /(?:web|ウェブ|ネット).*(?:調べ|しらべ|検索)/iu.test(String(request || ""))) {
+    const subject = webSearchSubject(request);
+    return subject ? `${subject}についてWebで調べるね。` : "Webで情報を調べるね。";
+  }
   const tailored = english ? englishCommitment(request) : japaneseCommitment(request);
   if (tailored) return conciseWorkAnnouncement(tailored, 64);
   const text = String(request || "");
@@ -222,6 +226,15 @@ function workTopic(request, language = "ja") {
   return target.length >= 2 ? target : text;
 }
 
+function webSearchSubject(request) {
+  const source = cleanWorkRequest(request, 64);
+  const match = source.match(/(?:web|ウェブ|ネット)(?:上)?(?:で|を使って)?\s*(.*?)\s*(?:を)?(?:調べ|しらべ|検索)/iu);
+  const subject = conciseWorkAnnouncement(match?.[1], 36)
+    .replace(/^[でをにへ、,\s]+|[でをにへ、,\s]+$/gu, "")
+    .trim();
+  return subject.length >= 2 ? subject : "";
+}
+
 function contextualizeWorkProgress(value, request, language = "ja") {
   const text = conciseWorkAnnouncement(value, 80);
   if (!text || !isGenericWorkUpdate(text)) return text;
@@ -231,7 +244,13 @@ function contextualizeWorkProgress(value, request, language = "ja") {
     if (/updat|writ|file/iu.test(text)) return `I'm applying the changes for ${topic}.`;
     return `I'm working through ${topic}.`;
   }
-  if (/専用ブラウザ|情報|調査|検索/u.test(text)) return `${topic}に必要な情報を確認しているよ。`;
+  if (/専用ブラウザ|情報|調査|検索/u.test(text)) {
+    const searchSubject = webSearchSubject(request);
+    if (/(?:web|ウェブ|ネット).*(?:調べ|しらべ|検索)/iu.test(String(request || ""))) {
+      return searchSubject ? `${searchSubject}についてWebで調べているよ。` : "Webで情報を調べているよ。";
+    }
+    return `${topic}について調べているよ。`;
+  }
   if (/コマンド|実行/u.test(text)) {
     if (/(?:作って|作成して|作成する|生成して|追加して)/u.test(String(request || ""))) return `${topic}を作っているよ。`;
     if (/(?:修正して|直して|改善して|不具合|バグ|エラー)/u.test(String(request || ""))) return `${topic}を直しているよ。`;
@@ -420,4 +439,5 @@ module.exports = {
   isIncompleteWorkAnnouncement,
   workTopic,
   workAcknowledgementFallback,
+  webSearchSubject,
 };

@@ -10,6 +10,7 @@ const {
   isMeaningfulWorkProgress,
   naturalizeWorkCommentary,
   workAcknowledgementFallback,
+  webSearchSubject,
 } = require("../lib/work-voice-reporter.cjs");
 
 function fakeClock() {
@@ -69,6 +70,21 @@ test("work announcements never speak links, paths, or code fences", () => {
   assert.equal(
     contextualizeWorkProgress("ファイルを更新中…", "artifacts/result.html を作成してください。見出しに 天気ダッシュボード、本文に予報を入れてください。"),
     "天気ダッシュボードのHTMLを仕上げているよ。",
+  );
+});
+
+test("generic Web research requests produce grammatical acknowledgements and progress", () => {
+  assert.equal(webSearchSubject("webでしらべてきてよ"), "");
+  assert.equal(workAcknowledgementFallback("webでしらべてきてよ"), "Webで情報を調べるね。");
+  assert.equal(
+    contextualizeWorkProgress("情報を確認しているよ。", "webでしらべてきてよ"),
+    "Webで情報を調べているよ。",
+  );
+  assert.equal(webSearchSubject("Webで東京の来週の天気を調べて"), "東京の来週の天気");
+  assert.equal(workAcknowledgementFallback("Webで東京の来週の天気を調べて"), "東京の来週の天気についてWebで調べるね。");
+  assert.equal(
+    contextualizeWorkProgress("検索しているよ。", "Webで東京の来週の天気を調べて"),
+    "東京の来週の天気についてWebで調べているよ。",
   );
 });
 
