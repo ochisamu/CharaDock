@@ -62,6 +62,7 @@
               <button id="workHistoryTab" type="button" role="tab" aria-selected="false">Work履歴</button>
             </div>
             <div class="work-folder-quick">
+              <label class="continuation-quick-toggle" title="起動時に前回の続きへ声をかける"><input id="chatContinuationToggle" type="checkbox" /><i></i><span>再開</span></label>
               <span id="interactionModeBadge">Chat</span>
               <label class="work-project-picker"><small>作業先</small><select id="chatWorkProjectSelect" aria-label="作業先プロジェクト"></select></label>
               <button id="openChatWorkDirectoryButton" class="button button-quiet" type="button">開く</button>
@@ -211,9 +212,49 @@
             <div><h3 id="characterCreditTitle">キャラクタークレジット</h3><p id="characterCreditText"></p></div>
             <div id="characterCreditLinks" class="character-credit-links"></div>
           </section>
-          <section class="character-memory" aria-labelledby="characterMemoryTitle">
-            <header><div><h3 id="characterMemoryTitle">このキャラのメモリ</h3><p>会話から自動で覚えた呼び名・好み・継続目標です。ほかのキャラとは共有しません。</p></div><button id="clearCharacterMemoriesButton" class="button button-quiet" type="button" hidden>すべて忘れる</button></header>
-            <div id="characterMemoryList" class="character-memory-list"></div>
+          <section class="character-knowledge" aria-labelledby="characterKnowledgeTitle">
+            <header>
+              <div><h3 id="characterKnowledgeTitle">このキャラが覚えていること</h3><p>会話を自分向けにする情報と、いま取り組んでいる続きです。保存範囲を分けたまま、ここでまとめて確認できます。</p></div>
+            </header>
+            <section class="character-memory knowledge-pane" aria-labelledby="characterMemoryTitle">
+              <header><div><p class="knowledge-eyebrow">あなたについて</p><h4 id="characterMemoryTitle">会話を自分向けにする記憶</h4><p>呼び名・好み・普段のやり方など、今後も役立つ内容を自然な会話から覚えます。このキャラだけが使います。</p></div><button id="clearCharacterMemoriesButton" class="button button-quiet" type="button" hidden>すべて忘れる</button></header>
+              <div id="characterMemoryList" class="character-memory-list"></div>
+            </section>
+            <section id="characterContinuation" class="character-continuation knowledge-pane" aria-labelledby="characterContinuationTitle">
+              <header>
+                <div><p class="knowledge-eyebrow">作業の続き</p><h4 id="characterContinuationTitle">現在の目的と次の一手</h4><p>キャラ共通・キャラクターホーム・追加プロジェクトを混ぜずに引き継ぎます。</p></div>
+                <label class="switch-row continuation-master-switch"><span><strong>起動時に声をかける</strong><small>続きがある場合だけ、一度だけ話します</small></span><input id="continuationModeToggle" type="checkbox" /><i></i></label>
+              </header>
+              <div class="continuation-scope-row">
+                <span><small>現在の範囲</small><strong id="continuationScopeLabel">このキャラ共通</strong><small id="continuationUpdatedAt" class="continuation-updated-at"></small></span>
+                <span id="continuationFreshnessBadge" class="continuation-freshness">記録なし</span>
+              </div>
+              <p id="continuationScopeHint" class="continuation-scope-hint">Chatの共通記録、キャラクターホームのWork、追加プロジェクトを分けて扱います。</p>
+              <div class="continuation-focus" aria-label="継続内容">
+                <div><small>現在の目的</small><p id="continuationGoalPreview">未設定</p></div>
+                <div><small>次の一手</small><p id="continuationNextStepPreview">未設定</p></div>
+              </div>
+              <details id="continuationEditor" class="continuation-editor">
+                <summary><span>内容を確認・編集</span><small>必要なときだけ開きます</small></summary>
+                <div class="continuation-fields continuation-primary-fields">
+                  <label>現在の目的<textarea id="continuationGoalInput" rows="2" maxlength="600" placeholder="例：ニュース検索を当日性まで正しく扱えるようにする"></textarea></label>
+                  <label>次の一手<textarea id="continuationNextStepInput" rows="2" maxlength="600" placeholder="次回、最初に提案してほしい行動"></textarea></label>
+                </div>
+                <details class="continuation-advanced">
+                  <summary><span>決定・進捗の詳細</span><small id="continuationDetailCount">詳細なし</small></summary>
+                  <div class="continuation-fields continuation-detail-fields">
+                    <label>決定事項・制約<textarea id="continuationDecisionsInput" rows="3" maxlength="4000" placeholder="1行に1件"></textarea></label>
+                    <label>確認済みの完了<textarea id="continuationCompletedInput" rows="3" maxlength="4000" placeholder="実際に完了・確認できた内容を1行に1件"></textarea></label>
+                    <label>未完了タスク<textarea id="continuationPendingInput" rows="3" maxlength="4000" placeholder="1行に1件"></textarea></label>
+                  </div>
+                </details>
+                <div class="continuation-actions">
+                  <p id="continuationStatus" class="inline-status" role="status">保存内容は起動時に全文会話ではなく短いサマリーとして使います。</p>
+                  <button id="clearContinuationButton" class="button button-danger" type="button" hidden>この範囲の記録を消去</button>
+                  <button id="saveContinuationButton" class="button button-primary" type="button">サマリーを保存</button>
+                </div>
+              </details>
+            </section>
           </section>
           <section class="character-workspace" aria-labelledby="characterWorkspaceTitle">
             <header><div><h3 id="characterWorkspaceTitle">キャラクターホームと担当プロジェクト</h3><p>このキャラ専用のホームを持ち、既存フォルダーは移動せず担当プロジェクトとして切り替えられます。</p></div><button id="addCharacterProjectButton" class="button button-quiet" type="button">プロジェクトを追加</button></header>

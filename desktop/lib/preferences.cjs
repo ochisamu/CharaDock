@@ -7,6 +7,7 @@ const { BUNDLED_IRODORI_VOICES } = require("./irodori-voices.cjs");
 const { normalizeIrodoriEmotionStrength } = require("./irodori-caption.cjs");
 const { describeBeatriceModel } = require("./beatrice-v2.cjs");
 const { normalizeCharacterWorkspaces } = require("./character-home.cjs");
+const { normalizeContinuationSummaries } = require("./continuation-summary.cjs");
 
 const DEFAULT_IRODORI_VOICES = Object.freeze(BUNDLED_IRODORI_VOICES.map(({ sourceFileName: _sourceFileName, ...voice }) => Object.freeze({ ...voice })));
 const DEFAULT_CHARACTER_TTS_PROFILES = Object.freeze({
@@ -107,6 +108,8 @@ const DEFAULTS = Object.freeze({
   edgeSnap: true,
   preferredDisplayId: "",
   interactionMode: "chat",
+  continuationStartupSpeechEnabled: true,
+  continuationSummaries: {},
   workDirectory: "",
   characterProfiles: {},
   customCharacters: [],
@@ -164,6 +167,9 @@ function normalizeWorkHistory(value) {
       characterName: String(entry.characterName || "").slice(0, 80),
       workDirectoryName: String(entry.workDirectoryName || "").slice(0, 260),
       workspaceKey: /^[a-f0-9]{24}$/.test(String(entry.workspaceKey || "")) ? String(entry.workspaceKey) : "",
+      continuationScopeKey: /^(?:common|home|project-[a-f0-9]{16})$/.test(String(entry.continuationScopeKey || "")) ? String(entry.continuationScopeKey) : "",
+      continuationProjectName: String(entry.continuationProjectName || "").slice(0, 100),
+      continuationRecordedAt: String(entry.continuationRecordedAt || "").slice(0, 40),
       artifacts: (Array.isArray(entry.artifacts) ? entry.artifacts : []).slice(0, 12).flatMap((artifact) => {
         const artifactPath = String(artifact?.path || "").replace(/\\/g, "/").slice(0, 1000);
         if (!artifactPath || artifactPath === ".." || artifactPath.startsWith("../") || artifactPath.startsWith("/") || /^[A-Za-z]:/.test(artifactPath)) return [];
@@ -190,7 +196,7 @@ function migrateBundledTowaPreferenceData(data) {
       changed = true;
     }
   }
-  for (const profileKey of ["characterProfiles", "characterTtsProfiles", "conversationHistories", "characterMemories", "characterWorkspaces"]) {
+  for (const profileKey of ["characterProfiles", "characterTtsProfiles", "conversationHistories", "characterMemories", "characterWorkspaces", "continuationSummaries"]) {
     const profiles = data[profileKey];
     if (!profiles || typeof profiles !== "object" || Array.isArray(profiles) || !profiles[LEGACY_TOWA_CHARACTER_ID]) continue;
     if (!profiles[BUILT_IN_TOWA_CHARACTER_ID]) profiles[BUILT_IN_TOWA_CHARACTER_ID] = profiles[LEGACY_TOWA_CHARACTER_ID];
@@ -239,7 +245,7 @@ function migrateBundledNikePreferenceData(data) {
       changed = true;
     }
   }
-  for (const profileKey of ["characterProfiles", "characterTtsProfiles", "conversationHistories", "characterMemories", "characterWorkspaces"]) {
+  for (const profileKey of ["characterProfiles", "characterTtsProfiles", "conversationHistories", "characterMemories", "characterWorkspaces", "continuationSummaries"]) {
     const profiles = data[profileKey];
     if (!profiles || typeof profiles !== "object" || Array.isArray(profiles) || !profiles[LEGACY_NIKE_CHARACTER_ID]) continue;
     if (!profiles[BUILT_IN_NIKE_CHARACTER_ID]) profiles[BUILT_IN_NIKE_CHARACTER_ID] = profiles[LEGACY_NIKE_CHARACTER_ID];
@@ -287,6 +293,10 @@ class Preferences {
       if (typeof parsed.codexModel === "string") {
         if (!Object.prototype.hasOwnProperty.call(parsed, "codexChatModel")) this.data.codexChatModel = parsed.codexModel;
         if (!Object.prototype.hasOwnProperty.call(parsed, "codexWorkModel")) this.data.codexWorkModel = parsed.codexModel;
+      }
+      if (!Object.prototype.hasOwnProperty.call(parsed, "continuationStartupSpeechEnabled")
+        && typeof parsed.continuationEnabled === "boolean") {
+        this.data.continuationStartupSpeechEnabled = parsed.continuationEnabled;
       }
       if (!["ja", "en"].includes(this.data.language)) this.data.language = "ja";
       if (!["manual", "vad"].includes(this.data.voiceActivationMode)) this.data.voiceActivationMode = "vad";
@@ -494,6 +504,8 @@ class Preferences {
       this.data.conversationHistories = normalizeConversationHistories(this.data.conversationHistories);
       this.data.characterMemories = normalizeCharacterMemories(this.data.characterMemories);
       this.data.characterWorkspaces = normalizeCharacterWorkspaces(this.data.characterWorkspaces);
+      if (typeof this.data.continuationStartupSpeechEnabled !== "boolean") this.data.continuationStartupSpeechEnabled = true;
+      this.data.continuationSummaries = normalizeContinuationSummaries(this.data.continuationSummaries);
       this.data.webPreviewRuntimes = this.data.webPreviewRuntimes && typeof this.data.webPreviewRuntimes === "object" && !Array.isArray(this.data.webPreviewRuntimes)
         ? Object.fromEntries(Object.entries(this.data.webPreviewRuntimes).slice(0, 100).flatMap(([projectId, runtime]) =>
           /^web-[a-f0-9]{18}$/.test(String(projectId)) && ["auto", "windows", "wsl"].includes(runtime) ? [[projectId, runtime]] : []))
@@ -519,7 +531,7 @@ class Preferences {
   publicState() {
     const state = {};
     for (const key of PUBLIC_KEYS) {
-      if (!["customCharacters", "workDirectory", "piperPlusExecutablePath", "piperPlusModelPath", "supertonicModelDirectory", "irodoriModelDirectory", "irodoriV4ModelDirectory", "irodoriV4Int4ModelDirectory", "irodoriReferenceAudioPath", "irodoriVoices", "kokoroModelDirectory", "sbv2Models", "beatriceVstPath", "beatriceModelPath", "beatriceModels", "characterTtsProfiles", "conversationHistories", "characterMemories", "characterWorkspaces", "webPreviewRuntimes", "workHistory", "remoteTrustedDevices"].includes(key)) state[key] = this.data[key];
+      if (!["customCharacters", "workDirectory", "piperPlusExecutablePath", "piperPlusModelPath", "supertonicModelDirectory", "irodoriModelDirectory", "irodoriV4ModelDirectory", "irodoriV4Int4ModelDirectory", "irodoriReferenceAudioPath", "irodoriVoices", "kokoroModelDirectory", "sbv2Models", "beatriceVstPath", "beatriceModelPath", "beatriceModels", "characterTtsProfiles", "conversationHistories", "characterMemories", "characterWorkspaces", "continuationSummaries", "webPreviewRuntimes", "workHistory", "remoteTrustedDevices"].includes(key)) state[key] = this.data[key];
     }
     state.hasWorkDirectory = Boolean(this.data.workDirectory);
     state.workDirectoryName = this.data.workDirectory ? path.basename(this.data.workDirectory) : "";

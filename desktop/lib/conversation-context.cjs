@@ -28,27 +28,29 @@ function timestamp(value) {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
-function continuityEntries({ conversationHistory = [], workHistory = [], characterId = "", workspaceKey = "" } = {}) {
+function continuityEntries({ conversationHistory = [], workHistory = [], characterId = "", workspaceKey = "", since = 0 } = {}) {
+  const minimumTimestamp = Math.max(0, Number(since) || 0);
   const conversation = (Array.isArray(conversationHistory) ? conversationHistory : []).map((entry, index) => ({
     type: "conversation",
     role: entry?.role === "assistant" ? "assistant" : "user",
     text: String(entry?.text || "").replace(/\s+/g, " ").trim().slice(0, 600),
     at: timestamp(entry?.createdAt),
     order: index,
-  })).filter((entry) => entry.text);
+  })).filter((entry) => entry.text && (!minimumTimestamp || entry.at >= minimumTimestamp));
   const work = (Array.isArray(workHistory) ? workHistory : []).flatMap((run, index) => {
     if (run?.status !== "completed") return [];
     if (characterId && run?.characterId && run.characterId !== characterId) return [];
     if (workspaceKey && run?.workspaceKey !== workspaceKey) return [];
     const request = String(run?.request || "").replace(/\s+/g, " ").trim().slice(0, 500);
     const result = String(run?.result || "").replace(/\s+/g, " ").trim().slice(0, 800);
-    if (!request && !result) return [];
+    const at = timestamp(run?.finishedAt || run?.startedAt);
+    if ((!request && !result) || (minimumTimestamp && at < minimumTimestamp)) return [];
     return [{
       type: "work",
       request,
       result,
       artifacts: (Array.isArray(run?.artifacts) ? run.artifacts : []).slice(0, 4).map((item) => String(item?.path || "").replace(/[\r\n]/g, " ").slice(0, 300)).filter(Boolean),
-      at: timestamp(run?.finishedAt || run?.startedAt),
+      at,
       order: 10_000 + index,
     }];
   });

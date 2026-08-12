@@ -227,7 +227,7 @@ test("setup can be rerun and support diagnostics stay separate from private cont
   assert.match(preload, /support:getDiagnostics/);
   assert.match(preload, /support:exportBundle/);
   assert.match(main, /privacy:[\s\S]*excluded:[\s\S]*"API keys"/);
-  assert.doesNotMatch(main.match(/async function supportDiagnostics\(\)[\s\S]*?\n}\n/)?.[0] || "", /conversationHistory|characterMemories|workHistory/);
+  assert.doesNotMatch(main.match(/async function supportDiagnostics\(\)[\s\S]*?\n}\n/)?.[0] || "", /conversationHistory|characterMemories|continuationSummaries|workHistory/);
 });
 
 test("app updates use the trusted GitHub release flow without automatic execution", () => {
@@ -430,5 +430,35 @@ test("Codex memory tools proactively create and update character memories", () =
   const main = fs.readFileSync(path.join(projectRoot, "desktop", "main.cjs"), "utf8");
   assert.match(main, /name: "memory_save"/);
   assert.match(main, /name: "memory_update"/);
-  assert.match(main, /Evaluate every user message for durable personalization/);
+  assert.match(main, /Evaluate every user message, including ordinary conversation and Work requests/);
+});
+
+test("Character memory and continuation are grouped, scoped, editable, private, and greet by default", () => {
+  const html = fs.readFileSync(path.join(projectRoot, "desktop", "control.html"), "utf8");
+  const control = fs.readFileSync(path.join(projectRoot, "desktop", "control.js"), "utf8");
+  const preload = fs.readFileSync(path.join(projectRoot, "desktop", "preload-control.cjs"), "utf8");
+  const main = fs.readFileSync(path.join(projectRoot, "desktop", "main.cjs"), "utf8");
+  for (const id of ["chatContinuationToggle", "continuationModeToggle", "continuationScopeLabel", "continuationUpdatedAt", "continuationGoalPreview", "continuationNextStepPreview", "continuationDetailCount", "continuationGoalInput", "continuationDecisionsInput", "continuationCompletedInput", "continuationPendingInput", "continuationNextStepInput", "saveContinuationButton", "clearContinuationButton"]) {
+    assert.match(html, new RegExp(`id="${id}"`));
+  }
+  assert.doesNotMatch(html, /id="continuationEditor"[^>]*\sopen(?:\s|>)/);
+  assert.match(html, /class="continuation-advanced"/);
+  assert.match(html, /このキャラが覚えていること/);
+  assert.match(html, /あなたについて/);
+  assert.match(html, /作業の続き/);
+  assert.match(control, /setContinuationStartupSpeech\(requested\)/);
+  assert.match(control, /saveContinuationSummary/);
+  assert.match(control, /clearContinuationSummary/);
+  assert.match(preload, /continuation:setStartupSpeech/);
+  assert.match(preload, /continuation:save/);
+  assert.match(preload, /continuation:clear/);
+  assert.match(main, /function maybeOfferStartupContinuation/);
+  assert.match(main, /preferences\.data\.continuationStartupSpeechEnabled === false/);
+  assert.match(main, /dynamicTools: \[\.\.\.MEMORY_DYNAMIC_TOOLS, \.\.\.CONTINUATION_DYNAMIC_TOOLS\]/);
+  assert.match(main, /developerInstructions: `\$\{workModeInstructions\(\)\}[\s\S]*MEMORY_TOOL_INSTRUCTIONS/);
+  assert.match(main, /since: appSessionStartedAt/);
+  assert.match(main, /startupContinuationAttempts\.has\(attemptKey\)/);
+  assert.match(main, /project\.id === HOME_PROJECT_ID && preferences\.data\.interactionMode === "work"[\s\S]*HOME_SCOPE_KEY/);
+  assert.match(main, /if \(scopeKey === COMMON_SCOPE_KEY\)[\s\S]{0,500}continuationRecordedAt/);
+  assert.match(main, /\^\(\?:common\|home\|project-/);
 });

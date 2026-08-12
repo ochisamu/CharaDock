@@ -68,6 +68,19 @@ const { discoverWorkArtifacts, fileChangeCandidates, isArtifactInsideWorkspace }
 const { boundedConversationHistory, sharedContinuityContext } = require("./lib/conversation-context.cjs");
 const { clearCharacterMemories, removeCharacterMemory, saveCharacterMemory, updateCharacterMemory } = require("./lib/character-memory.cjs");
 const {
+  COMMON_SCOPE_KEY,
+  HOME_SCOPE_KEY,
+  clearContinuationSummary,
+  continuationEligibility,
+  continuationFallbackMessage,
+  continuationPromptContext,
+  continuationSummary,
+  mergeContinuationCandidate,
+  mergeVerifiedWork,
+  saveContinuationSummary,
+  validateGroundedContinuationMessage,
+} = require("./lib/continuation-summary.cjs");
+const {
   createGeneratedCharacterRemovalPlan,
   installPuruPuruCharacter,
   removeGeneratedCharacterDirectory,
@@ -331,6 +344,7 @@ let pendingScreenShare = null;
 let pendingBrowserUse = null;
 let pendingComputerUse = null;
 let conversationHistory = [];
+const appSessionStartedAt = Date.now();
 const lastThinkingFillerIndex = new Map();
 let activeBrowserSession = null;
 let activeComputerSession = null;
@@ -341,6 +355,7 @@ let browserWindowSessionId = null;
 let mascotCaptureProtectionDepth = 0;
 const TOOL_AUTHORIZATION_TTL_MS = 5 * 60_000;
 let workHistory = [];
+const startupContinuationAttempts = new Set();
 const characterThumbnailCache = new Map();
 const characterMotionCache = new Map();
 const lastPetPhraseIndex = new Map();
@@ -403,7 +418,7 @@ const MEMORY_DYNAMIC_TOOLS = Object.freeze([
   {
     type: "function",
     name: "memory_save",
-    description: "Proactively save one durable, non-sensitive fact the user shared about themselves for this character to remember across future conversations. Do not wait for an explicit request. Use for stable preferences, preferred names, relationship style, background, or ongoing goals; never store secrets, sensitive traits, transient requests, guesses, or external facts.",
+    description: "Silently save one durable, non-sensitive fact about the user when it will likely remain useful for months or years and change future responses. Explicit 'remember this' wording is not required. Use for names, stable preferences, recurring interaction needs, background, or long-term personal goals. Never store current task/project state, quoted or rewritten text, secrets, sensitive traits, transient requests, guesses, or external facts.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -447,13 +462,37 @@ const MEMORY_DYNAMIC_TOOLS = Object.freeze([
     },
   },
 ]);
+const CONTINUATION_DYNAMIC_TOOLS = Object.freeze([{
+  type: "function",
+  name: "continuation_update",
+  description: "Update the current character-and-project continuation summary only when the user establishes a durable goal, decision/constraint, explicitly unfinished task, or agreed next step. Never record transcript text, secrets, guesses, logs, or completion claims. Verified Work completion is recorded separately by the app.",
+  inputSchema: {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      goal: { type: "string", maxLength: 600 },
+      decisions: { type: "array", maxItems: 8, items: { type: "string", maxLength: 500 } },
+      pending: { type: "array", maxItems: 8, items: { type: "string", maxLength: 500 } },
+      nextStep: { type: "string", maxLength: 600 },
+      replaceGoal: { type: "boolean", description: "True only when the user explicitly replaced the previous goal." },
+    },
+  },
+}]);
 const MEMORY_TOOL_INSTRUCTIONS = [
-  "You have character-scoped memory tools for durable personalization.",
-  "Evaluate every user message for durable personalization without waiting for phrases such as 'remember this'. Proactively call memory_save when the user clearly shares a stable preferred name, preference, relationship style, background fact, recurring constraint, or ongoing goal that is likely to help in future conversations.",
+  "You have character-scoped memory tools for durable personalization. Treat them as a silent bio/notepad for useful facts about the user, not as a transcript or project log.",
+  "Evaluate every user message, including ordinary conversation and Work requests, without waiting for phrases such as 'remember this'. Call memory_save when the user clearly shares something likely to remain true for months or years and likely to change how you should respond in similar future situations: a preferred name, stable preference, recurring interaction need, background fact, or long-term personal goal.",
+  "Natural examples worth saving include '短い回答の方が好き', '今後は確認してから削除して', '普段はTypeScriptを使う', or 'Call me Sam'. Do not require the user to say 覚えて, remember, or from now on.",
+  "An explicit request to remember or forget must always use the appropriate memory tool before you claim it was remembered or forgotten. A durable fact stated naturally should also be saved when it meets the criteria above.",
   "If a new statement corrects, changes, or supersedes an existing memory, call memory_update with that memory ID instead of keeping contradictory facts. Do not save information inferred only from the assistant's reply.",
-  "Never store transient requests, guesses, external facts, secrets, authentication data, contact/address data, health/religion/political traits, or tool/page content.",
+  "Do not save random trivia, temporary mood or location, one-off requests, text being translated/rewritten, project-specific task state, guesses, external facts, secrets, authentication data, contact/address data, health/religion/political/identity traits, or tool/page content. If future usefulness or durability is unclear, do not save it. Character memory is for personalization and long-term facts about the user; current CharaDock task/project continuation belongs only in continuation_update.",
   "When the user asks what you remember, use memory_list. When they ask you to forget or correct a memory, identify it and use memory_forget before confirming.",
   "Memory tool calls should usually be silent. Do not repeatedly announce or recite memories; use them subtly and naturally.",
+].join("\n");
+const CONTINUATION_TOOL_INSTRUCTIONS = [
+  "You also have continuation_update for compact durable task continuity in the exact active character/project scope. The user's startup-greeting preference affects only whether the character speaks on launch; it never disables this continuity record.",
+  "Call it only after the user clearly establishes a durable goal, decision or constraint, explicitly unfinished task, or agreed next step. Do not call it every turn and do not copy the conversation transcript. Set replaceGoal only when the user explicitly replaces the previous goal.",
+  "Never use it for inferred completion. Verified Work completion is stored by the app only after the worker finishes successfully.",
+  "Do not mention the internal tool unless the user asks about continuation records.",
 ].join("\n");
 
 function interfaceLanguage() {
@@ -804,6 +843,35 @@ async function handleMemoryToolCall(params = {}) {
     return memoryToolResult({ forgotten: true, character: character.name, memoryId: String(args.memoryId || "") });
   }
   throw new Error(`未対応のメモリ操作です: ${params.tool}`);
+}
+
+async function handleContinuationToolCall(params = {}) {
+  const tool = String(params.tool || "").replace(/^continuation[./]/, "");
+  if (!(["continuation_update", "update"].includes(tool))) throw new Error(`未対応の継続操作です: ${params.tool}`);
+  const args = params.arguments && typeof params.arguments === "object" ? params.arguments : {};
+  const character = activeCharacter();
+  const scope = currentContinuationScope(character.id);
+  const updated = mergeContinuationCandidate(preferences.data.continuationSummaries, {
+    characterId: character.id,
+    scopeKey: scope.key,
+    projectName: scope.projectName,
+    goal: args.goal,
+    decisions: args.decisions,
+    pending: args.pending,
+    nextStep: args.nextStep,
+    replaceGoal: args.replaceGoal === true,
+  });
+  preferences.patch({ continuationSummaries: updated.summaries });
+  broadcastAppState();
+  return memoryToolResult({ updated: true, scope: scope.type, summary: updated.record });
+}
+
+async function handleCharacterContextToolCall(params = {}) {
+  const tool = String(params.tool || "");
+  if (tool.startsWith("continuation_") || tool.startsWith("continuation.") || params.namespace === "continuation") {
+    return handleContinuationToolCall(params);
+  }
+  return handleMemoryToolCall(params);
 }
 
 function fileToDataUrl(filePath) {
@@ -1916,6 +1984,7 @@ function publicAppState() {
     conversationHistory: conversationHistory.map((entry) => ({ ...entry })),
     workHistory: { activeWorkRunId, runs: publicWorkHistory() },
     memories: characterMemories(),
+    continuation: publicContinuationState(),
     characterWorkspace: publicCharacterWorkspace(),
     webPreview: webPreviewRuntime?.publicState() || { status: "idle", logs: [] },
     hasWorkDirectory: Boolean(workDirectory),
@@ -2019,7 +2088,7 @@ async function supportDiagnostics() {
   const report = {
     generatedAt: new Date().toISOString(),
     privacy: {
-      excluded: ["API keys", "conversations", "character memories", "work content", "attachments", "user dictionaries", "full local paths"],
+      excluded: ["API keys", "conversations", "character memories", "continuation summaries", "work content", "attachments", "user dictionaries", "full local paths"],
     },
     app: {
       name: app.getName(),
@@ -2047,6 +2116,7 @@ async function supportDiagnostics() {
       backend: state.backend,
       characterId: state.characterId,
       interactionMode: state.interactionMode,
+      continuationStartupSpeechEnabled: state.continuationStartupSpeechEnabled,
       speechInputProvider: state.speechInputProvider,
       voiceActivationMode: state.voiceActivationMode,
       vadSensitivity: state.vadSensitivity,
@@ -2085,6 +2155,32 @@ function activeWorkspaceProject(characterId = activeCharacter().id) {
   return workspace.activeProjectId === HOME_PROJECT_ID
     ? { id: HOME_PROJECT_ID, name: mainText("キャラクターホーム", "Character Home"), home: true }
     : workspace.projects.find((project) => project.id === workspace.activeProjectId) || { id: HOME_PROJECT_ID, name: mainText("キャラクターホーム", "Character Home"), home: true };
+}
+
+function currentContinuationScope(characterId = activeCharacter().id) {
+  const project = activeWorkspaceProject(characterId);
+  return project.id === HOME_PROJECT_ID && preferences.data.interactionMode === "work"
+    ? { key: HOME_SCOPE_KEY, type: "home", projectName: mainText("キャラクターホーム", "Character Home") }
+    : project.id === HOME_PROJECT_ID
+      ? { key: COMMON_SCOPE_KEY, type: "character", projectName: "" }
+    : { key: project.id, type: "project", projectName: String(project.name || "").slice(0, 100) };
+}
+
+function currentContinuationSummary(characterId = activeCharacter().id) {
+  const scope = currentContinuationScope(characterId);
+  return continuationSummary(preferences?.data?.continuationSummaries, characterId, scope.key);
+}
+
+function publicContinuationState() {
+  const scope = currentContinuationScope();
+  const summary = currentContinuationSummary();
+  const eligibility = continuationEligibility(summary);
+  return {
+    startupSpeechEnabled: preferences.data.continuationStartupSpeechEnabled !== false,
+    scope: { key: scope.key, type: scope.type, projectName: scope.projectName },
+    summary,
+    ...eligibility,
+  };
 }
 
 function ensureCharacterHome(character = activeCharacter()) {
@@ -2435,14 +2531,36 @@ async function openDynamicWebPreview() {
 }
 
 function currentSharedContinuityContext(maxBodyLength = 2_800) {
-  return sharedContinuityContext({
+  const scope = currentContinuationScope();
+  const scopeGuard = scope.type === "project"
+    ? mainText(
+      `継続情報の保存範囲は、現在の「${scope.projectName}」プロジェクトだけです。別プロジェクトの情報を混ぜないでください。`,
+      `Continuation storage is restricted to the current “${scope.projectName}” project. Never mix another project into it.`,
+    )
+    : scope.type === "home"
+      ? mainText(
+        "継続情報の保存範囲は、このキャラクターのホーム内の作業だけです。キャラクター共通の会話や追加プロジェクトの情報を混ぜないでください。",
+        "Continuation storage is restricted to work inside this character's Home. Never mix character-wide chat or an attached project into it.",
+      )
+    : mainText(
+      "継続情報の保存範囲は、このキャラクター共通です。特定プロジェクト、ファイル、実装タスクの情報は保存せず、プロジェクトに依存しない会話上の目的と次の一手だけを扱ってください。",
+      "Continuation storage is character-wide. Do not store project-, file-, or implementation-specific tasks; keep only cross-project conversation goals and next steps.",
+    );
+  const summary = currentContinuationSummary();
+  const freshness = continuationEligibility(summary);
+  const durable = summary && !freshness.stale && freshness.reason !== "invalid-date"
+    ? continuationPromptContext(summary, interfaceLanguage())
+    : "";
+  const recent = sharedContinuityContext({
     conversationHistory,
     workHistory,
     characterId: activeCharacter().id,
     workspaceKey: workDirectoryKey(),
+    since: appSessionStartedAt,
     language: interfaceLanguage(),
-    maxBodyLength,
+    maxBodyLength: Math.min(1_200, maxBodyLength),
   });
+  return [scopeGuard, durable, recent].filter(Boolean).join("\n\n");
 }
 
 function broadcastWorkHistory() {
@@ -2454,6 +2572,7 @@ function broadcastWorkHistory() {
 }
 
 function beginWorkRun(request) {
+  const continuationScope = currentContinuationScope();
   const run = {
     id: `work-${Date.now()}-${nextWorkRunId++}`,
     startedAt: new Date().toISOString(),
@@ -2466,6 +2585,9 @@ function beginWorkRun(request) {
     characterName: activeCharacter().name,
     workDirectoryName: path.basename(validWorkDirectory()),
     workspaceKey: workDirectoryKey(),
+    continuationScopeKey: continuationScope.key,
+    continuationProjectName: continuationScope.projectName,
+    continuationRecordedAt: "",
     artifacts: [],
   };
   workHistory.unshift(run);
@@ -2474,6 +2596,38 @@ function beginWorkRun(request) {
   persistWorkHistory();
   broadcastWorkHistory();
   return run;
+}
+
+function recordContinuationForWorkRun(run) {
+  if (!run || run.continuationRecordedAt) return;
+  if (!["completed", "interrupted", "failed"].includes(run.status)) return;
+  const scopeKey = /^(?:common|home|project-[a-f0-9]{16})$/.test(String(run.continuationScopeKey || ""))
+    ? run.continuationScopeKey
+    : "";
+  if (!scopeKey || !run.characterId) return;
+  if (scopeKey === COMMON_SCOPE_KEY) {
+    // A common scope is reserved for project-independent conversation. Work must
+    // resolve to Character Home or an attached project before it can be recorded.
+    run.continuationRecordedAt = new Date().toISOString();
+    return;
+  }
+  try {
+    const merged = mergeVerifiedWork(preferences.data.continuationSummaries, {
+      characterId: run.characterId,
+      scopeKey,
+      projectName: run.continuationProjectName,
+      runId: run.id,
+      status: run.status,
+      request: run.request,
+      result: run.result,
+      artifacts: run.artifacts,
+    });
+    run.continuationRecordedAt = new Date().toISOString();
+    preferences.patch({ continuationSummaries: merged.summaries });
+  } catch (error) {
+    run.continuationRecordedAt = new Date().toISOString();
+    diagnosticLog?.write("warn", "continuation-work-update-skipped", error?.message || String(error));
+  }
 }
 
 function updateWorkRun(run, changes = {}) {
@@ -2488,6 +2642,7 @@ function updateWorkRun(run, changes = {}) {
   if (changes.artifacts !== undefined) run.artifacts = (Array.isArray(changes.artifacts) ? changes.artifacts : []).slice(0, 12).map((artifact) => ({ ...artifact }));
   if (changes.finished) run.finishedAt = new Date().toISOString();
   if (run.status !== "running" && activeWorkRunId === run.id) activeWorkRunId = null;
+  if (changes.finished) recordContinuationForWorkRun(run);
   persistWorkHistory();
   broadcastWorkHistory();
 }
@@ -2563,12 +2718,14 @@ function ensureWorkClient() {
     workCodexClient = new CodexAppServerClient({
       ...runtime,
       ...workCodexSettings(),
-      developerInstructions: workModeInstructions(),
+      developerInstructions: `${workModeInstructions()}\n\n${MEMORY_TOOL_INSTRUCTIONS}\n\n${CONTINUATION_TOOL_INSTRUCTIONS}`,
       sandbox: "workspace-write",
       approvalPolicy: "never",
       serviceName: "charadock_worker",
       personality: "friendly",
       webSearchMode: "live",
+      dynamicTools: [...MEMORY_DYNAMIC_TOOLS, ...CONTINUATION_DYNAMIC_TOOLS],
+      onDynamicToolCall: handleCharacterContextToolCall,
     });
   }
   const character = activeCharacter();
@@ -3833,6 +3990,87 @@ async function runSmokeTest() {
   await new Promise((resolve) => setTimeout(resolve, 220));
   const characterControlImage = await controlWindow.capturePage();
   fs.writeFileSync(path.join(outputDir, "control-character.png"), characterControlImage.toPNG());
+  const previousSmokeContinuation = {
+    startupSpeechEnabled: preferences.data.continuationStartupSpeechEnabled,
+    summaries: preferences.data.continuationSummaries,
+    conversationHistories: preferences.data.conversationHistories,
+    interactionMode: preferences.data.interactionMode,
+  };
+  try {
+    preferences.patch({ interactionMode: "chat" });
+    broadcastAppState();
+    const continuationEditorReady = await controlWindow.webContents.executeJavaScript(`(async () => {
+      await window.mascotDesktop.setContinuationStartupSpeech(true);
+      const saved = await window.mascotDesktop.saveContinuationSummary({
+        goal: 'ニュース検索の当日性を改善する',
+        decisions: '検索日を基準にする',
+        completed: '実装方針を確認した',
+        pending: '判定処理を実装する',
+        nextStep: '判定処理を実装する',
+      });
+      await new Promise((resolve) => setTimeout(resolve, 120));
+      const section = document.querySelector('#characterContinuation');
+      section.scrollIntoView({ block: 'center' });
+      await new Promise((resolve) => setTimeout(resolve, 120));
+      return Boolean(
+        saved.continuation?.summary?.nextStep === '判定処理を実装する' &&
+        document.querySelector('#continuationNextStepInput').value === '判定処理を実装する' &&
+        saved.continuation?.startupSpeechEnabled !== false &&
+        document.querySelector('#continuationScopeLabel').textContent.includes('共通')
+      );
+    })()`);
+    if (!continuationEditorReady) throw new Error("Character Continuation editor did not preserve its scoped record");
+    startupContinuationAttempts.clear();
+    const startupOffered = await maybeOfferStartupContinuation({ allowInSmoke: true, skipGeneration: true, ttsEnabled: false });
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    const startupBubbleReady = await mascotWindow.webContents.executeJavaScript(`document.querySelector('#desktopMascotBubbleText')?.textContent.includes('判定処理を実装する')`);
+    if (!startupOffered || !startupBubbleReady) throw new Error("Character Continuation startup greeting did not reach the mascot bubble");
+    const continuationStoredWhileOff = await controlWindow.webContents.executeJavaScript(`(async () => {
+      const storedWhileOff = await window.mascotDesktop.setContinuationStartupSpeech(false);
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      return Boolean(
+        storedWhileOff.continuation?.summary?.nextStep === '判定処理を実装する' &&
+        document.querySelector('#continuationNextStepInput').value === '判定処理を実装する' &&
+        storedWhileOff.continuation?.startupSpeechEnabled === false &&
+        document.querySelector('#continuationScopeLabel').textContent.includes('共通')
+      );
+    })()`);
+    if (!continuationStoredWhileOff) throw new Error("Character Continuation editor did not preserve its scoped record while startup speech was off");
+    fs.writeFileSync(path.join(outputDir, "control-character-continuation.png"), (await controlWindow.capturePage()).toPNG());
+    const continuationDeleted = await controlWindow.webContents.executeJavaScript(`(async () => {
+      const state = await window.mascotDesktop.clearContinuationSummary();
+      await new Promise((resolve) => setTimeout(resolve, 80));
+      return !state.continuation?.summary && !document.querySelector('#continuationNextStepInput').value;
+    })()`);
+    if (!continuationDeleted) throw new Error("Character Continuation record could not be deleted");
+    preferences.patch({ interactionMode: "work" });
+    broadcastAppState();
+    const homeContinuationReady = await controlWindow.webContents.executeJavaScript(`(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      const saved = await window.mascotDesktop.saveContinuationSummary({
+        goal: 'キャラクターホームでデモを作る',
+        pending: 'デモページを作る',
+        nextStep: 'デモページを作る',
+      });
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      const ready = saved.continuation?.scope?.type === 'home' &&
+        saved.continuation?.summary?.nextStep === 'デモページを作る' &&
+        document.querySelector('#continuationScopeLabel').textContent.includes('ホーム');
+      await window.mascotDesktop.clearContinuationSummary();
+      return ready;
+    })()`);
+    if (!homeContinuationReady) throw new Error("Character Home continuation scope was unavailable in Work");
+  } finally {
+    preferences.patch({
+      continuationStartupSpeechEnabled: previousSmokeContinuation.startupSpeechEnabled,
+      continuationSummaries: previousSmokeContinuation.summaries,
+      conversationHistories: previousSmokeContinuation.conversationHistories,
+      interactionMode: previousSmokeContinuation.interactionMode,
+    });
+    conversationHistory = [...(previousSmokeContinuation.conversationHistories?.[activeCharacter().id] || [])];
+    startupContinuationAttempts.clear();
+    broadcastAppState();
+  }
   const motionControlsReady = await controlWindow.webContents.executeJavaScript(`(() => {
     const keys = ['avatarSize', 'rangeLeft', 'rangeRight', 'rangeUp', 'rangeDown', 'followSpeed', 'breathStrength', 'rollStrength', 'pyokoStrength', 'hairSpring', 'hairWarp'];
     const ready = keys.every((key) => document.querySelector('#' + key + 'Input')?.value && document.querySelector('#' + key + 'Output')?.textContent) &&
@@ -3928,7 +4166,7 @@ async function runSmokeTest() {
     return document.querySelector('[data-page-panel="support"]').classList.contains('is-active') &&
       document.querySelector('#reopenOnboardingButton') && document.querySelector('#exportSupportBundleButton') &&
       report?.app?.version && report?.privacy?.excluded?.length >= 5 &&
-      !/conversationHistory|encryptedApiKey|characterMemories|workHistory/.test(serialized);
+      !/conversationHistory|encryptedApiKey|characterMemories|continuationSummaries|workHistory/.test(serialized);
   })()`);
   if (!supportPageReady) throw new Error("support diagnostics page check failed");
   fs.writeFileSync(path.join(outputDir, "control-support.png"), (await controlWindow.capturePage()).toPNG());
@@ -4482,6 +4720,135 @@ function showMascotSpeech(text, { durationMs = 9000, ttsEnabled = preferences.da
     spokenText: configuredSpeechText(text),
   });
   if (!readAloud) localServer.pushInput({ ...currentCursorInput(), ...responseExpression(text) });
+}
+
+function rememberAssistantAnnouncement(text) {
+  const normalized = cleanAssistantText(String(text || "")).trim().slice(0, 1000);
+  if (!normalized) return false;
+  conversationHistory = [...conversationHistory, {
+    role: "assistant",
+    text: normalized,
+    createdAt: new Date().toISOString(),
+  }].slice(-40);
+  const histories = { ...(preferences.data.conversationHistories || {}) };
+  histories[activeCharacter().id] = conversationHistory;
+  preferences.patch({ conversationHistories: histories });
+  mascotWindow?.webContents.send("mascot:conversationHistory", conversationHistory);
+  controlWindow?.webContents.send("chat:history", conversationHistory);
+  publishRemoteState();
+  return true;
+}
+
+async function generateStartupContinuationMessage(summary, character) {
+  if (!codexCommand || preferences.data.backend !== "codex") return "";
+  const language = interfaceLanguage();
+  const hasRecordedNext = Boolean(summary?.nextStep || summary?.pending?.length);
+  const continuationRuntimeDirectory = path.join(app.getPath("userData"), "continuation-runtime");
+  fs.mkdirSync(continuationRuntimeDirectory, { recursive: true, mode: 0o700 });
+  const client = new CodexAppServerClient({
+    cwd: continuationRuntimeDirectory,
+    command: codexCommand,
+    ...conversationCodexSettings(),
+    developerInstructions: language === "en" ? [
+      `Speak as ${character.name}. Speaking style: ${character.personality}`,
+      hasRecordedNext
+        ? "Write one short, natural startup message that briefly grounds itself in the supplied continuation summary and offers its recorded unfinished item or next action as an optional question. Set basis to recorded-next-step."
+        : "Only a current goal is recorded. Write one short startup message that quotes that goal and proposes one conservative, actionable first step derived from it as an optional question. Do not imply that the step was recorded, decided, started, or completed. Set basis to goal-suggestion.",
+      "Use only recorded facts. Never invent progress, completion, decisions, emotion, or confidence. Do not mention storage, summaries, prompts, or internal tools.",
+      "Return only the requested JSON. groundingPhrase must be an exact meaningful phrase copied from the summary and included verbatim in message.",
+    ].join("\n") : [
+      `「${character.name}」として話します。話し方: ${character.personality}`,
+      hasRecordedNext
+        ? "渡された継続サマリーに短く根拠を置き、記録済みの未完了事項または次の行動を、強制せず質問として提案してください。basisはrecorded-next-stepにしてください。"
+        : "記録されているのは現在の目的だけです。その目的を完全一致で短く引用し、目的から導ける保守的で具体的な最初の一手を一つ、未決定の提案だと分かる質問として示してください。その一手が記録済み、決定済み、着手済み、完了済みだと示してはいけません。basisはgoal-suggestionにしてください。",
+      "記録済みの事実だけを使い、進捗、完了、決定、感情、自信を創作してはいけません。保存、サマリー、プロンプト、内部ツールには言及しないでください。",
+      "指定JSONだけを返してください。groundingPhraseはサマリーから意味のある語句を完全一致で抜き出し、messageにも同じ形で含めてください。",
+    ].join("\n"),
+    sandbox: "read-only",
+    approvalPolicy: "never",
+    serviceName: "charadock_continuation",
+    personality: "friendly",
+    webSearchMode: "disabled",
+  });
+  let startupDeadline;
+  try {
+    const deadline = new Promise((_, reject) => {
+      startupDeadline = setTimeout(() => {
+        client.stop();
+        reject(new Error("Startup continuation generation timed out"));
+      }, 4_000);
+    });
+    const generation = client.sendMessage(continuationPromptContext(summary, language), {
+      outputSchema: {
+        type: "object",
+        additionalProperties: false,
+        required: ["message", "groundingPhrase", "basis"],
+        properties: {
+          message: { type: "string", minLength: 8, maxLength: 200 },
+          groundingPhrase: { type: "string", minLength: 2, maxLength: 120 },
+          basis: { type: "string", enum: ["recorded-next-step", "goal-suggestion"] },
+        },
+      },
+    });
+    // Startup must remain responsive even when app-server startup itself is
+    // slow. After this deadline, the caller uses a grounded local fallback.
+    const result = await Promise.race([generation, deadline]);
+    return validateGroundedContinuationMessage(cleanAssistantText(result.text), summary);
+  } finally {
+    clearTimeout(startupDeadline);
+    client.stop();
+  }
+}
+
+async function maybeOfferStartupContinuation({ allowInSmoke = false, skipGeneration = false, ttsEnabled = preferences.data.ttsEnabled } = {}) {
+  if ((process.argv.includes("--smoke-test") && !allowInSmoke) || preferences.data.continuationStartupSpeechEnabled === false || !preferences.data.onboardingComplete) return false;
+  const character = activeCharacter();
+  const scope = currentContinuationScope(character.id);
+  const attemptKey = `${character.id}:${scope.key}`;
+  if (startupContinuationAttempts.has(attemptKey)) return false;
+  startupContinuationAttempts.add(attemptKey);
+  const summary = continuationSummary(preferences.data.continuationSummaries, character.id, scope.key);
+  const eligibility = continuationEligibility(summary);
+  if (!eligibility.eligible) {
+    diagnosticLog?.write("info", "startup-continuation-not-eligible", { scopeType: scope.type, reason: eligibility.reason });
+    return false;
+  }
+  const historyLength = conversationHistory.length;
+  let message = "";
+  let source = "generated";
+  if (!skipGeneration) {
+    try {
+      message = await generateStartupContinuationMessage(summary, character);
+    } catch (error) {
+      diagnosticLog?.write("warn", "startup-continuation-generation-failed", error?.message || String(error));
+    }
+  }
+  if (!message) {
+    message = continuationFallbackMessage(summary, interfaceLanguage());
+    source = "grounded-fallback";
+    diagnosticLog?.write("info", "startup-continuation-fallback", { scopeType: scope.type, reason: eligibility.reason });
+  }
+  if (!message
+    || preferences.data.continuationStartupSpeechEnabled === false
+    || activeCharacter().id !== character.id
+    || currentContinuationScope(character.id).key !== scope.key
+    || conversationHistory.length !== historyLength
+    || activeWorkRunId
+    || activeRealtimeStarting
+    || currentRealtimeClient()
+    || codexClient?.hasActiveTurn?.()) return false;
+  rememberAssistantAnnouncement(message);
+  showMascotSpeech(message, { durationMs: 16_000, ttsEnabled, persistent: true });
+  diagnosticLog?.write("info", "startup-continuation-offered", { scopeType: scope.type, reason: eligibility.reason, source });
+  return true;
+}
+
+function scheduleStartupContinuation() {
+  if (process.argv.includes("--smoke-test")) return;
+  const offer = () => setTimeout(() => maybeOfferStartupContinuation().catch(() => false), 800);
+  if (!mascotWindow || mascotWindow.isDestroyed()) return;
+  if (mascotWindow.webContents.isLoadingMainFrame()) mascotWindow.webContents.once("did-finish-load", offer);
+  else offer();
 }
 
 function destroyIrodoriWindow(error = new Error("Irodori TTS WebGPUを終了しました。")) {
@@ -5376,8 +5743,10 @@ async function removeGeneratedCharacter(characterId) {
   delete memoryProfiles[characterId];
   const characterWorkspaces = { ...(preferences.data.characterWorkspaces || {}) };
   delete characterWorkspaces[characterId];
+  const continuationSummaries = { ...(preferences.data.continuationSummaries || {}) };
+  delete continuationSummaries[characterId];
   characterHomeManager?.remove(characterId);
-  preferences.patch({ ...plan.patch, conversationHistories, characterMemories: memoryProfiles, characterWorkspaces });
+  preferences.patch({ ...plan.patch, conversationHistories, characterMemories: memoryProfiles, characterWorkspaces, continuationSummaries });
   characterThumbnailCache.delete(`${plan.directory}:complete`);
   characterMotionCache.delete(plan.directory);
   lastPetPhraseIndex.delete(characterId);
@@ -6528,6 +6897,49 @@ function registerIpc() {
     const memoriesByCharacter = clearCharacterMemories(preferences.data.characterMemories, activeCharacter().id);
     preferences.patch({ characterMemories: memoriesByCharacter });
     refreshConversationAfterMemoryChange();
+    return broadcastAppState();
+  });
+  ipcMain.handle("continuation:setStartupSpeech", (event, enabled) => {
+    assertTrustedSender(event);
+    const next = Boolean(enabled);
+    if (next === (preferences.data.continuationStartupSpeechEnabled !== false)) return publicAppState();
+    if (activeWorkRunId || currentRealtimeClient() || activeRealtimeStarting || codexClient?.hasActiveTurn?.()) {
+      throw new Error(mainText("応答や作業が終わってから起動時の声かけを変更してください。", "Wait for the current response or work to finish before changing startup greeting."));
+    }
+    preferences.patch({ continuationStartupSpeechEnabled: next });
+    return broadcastAppState();
+  });
+  ipcMain.handle("continuation:save", (event, input = {}) => {
+    assertTrustedSender(event);
+    if (activeWorkRunId || currentRealtimeClient() || activeRealtimeStarting || codexClient?.hasActiveTurn?.()) {
+      throw new Error(mainText("応答や作業が終わってから継続サマリーを保存してください。", "Wait for the current response or work to finish before saving the continuation summary."));
+    }
+    const character = activeCharacter();
+    const scope = currentContinuationScope(character.id);
+    const saved = saveContinuationSummary(preferences.data.continuationSummaries, {
+      characterId: character.id,
+      scopeKey: scope.key,
+      projectName: scope.projectName,
+      summary: input,
+    });
+    preferences.patch({ continuationSummaries: saved.summaries });
+    codexClient?.reset();
+    openAIClient?.reset();
+    resetWorkClient();
+    return broadcastAppState();
+  });
+  ipcMain.handle("continuation:clear", (event) => {
+    assertTrustedSender(event);
+    if (activeWorkRunId || currentRealtimeClient() || activeRealtimeStarting || codexClient?.hasActiveTurn?.()) {
+      throw new Error(mainText("応答や作業が終わってから継続サマリーを削除してください。", "Wait for the current response or work to finish before deleting the continuation summary."));
+    }
+    const character = activeCharacter();
+    const scope = currentContinuationScope(character.id);
+    const cleared = clearContinuationSummary(preferences.data.continuationSummaries, character.id, scope.key);
+    preferences.patch({ continuationSummaries: cleared.summaries });
+    codexClient?.reset();
+    openAIClient?.reset();
+    resetWorkClient();
     return broadcastAppState();
   });
   ipcMain.handle("character:configure", async (event, payload) => {
@@ -8275,6 +8687,7 @@ async function boot() {
   preferences.patch({ workDirectory: selectedWorkspaceDirectory(initialCharacter) });
   conversationHistory = conversationHistoryForCharacter(preferences.data.characterId);
   workHistory = Array.isArray(preferences.data.workHistory) ? preferences.data.workHistory.map((run) => ({ ...run, activities: [...(run.activities || [])] })) : [];
+  for (const run of workHistory) recordContinuationForWorkRun(run);
   registerArtifactPreviewProtocol();
   persistWorkHistory();
   irodoriVoiceLibrary = new IrodoriVoiceLibrary(path.join(app.getPath("userData"), "irodori-voices"));
@@ -8359,10 +8772,10 @@ async function boot() {
     cwd: codexWorkingDirectory,
     command: codexCommand,
     ...conversationCodexSettings(),
-    developerInstructions: MEMORY_TOOL_INSTRUCTIONS,
+    developerInstructions: `${MEMORY_TOOL_INSTRUCTIONS}\n\n${CONTINUATION_TOOL_INSTRUCTIONS}`,
     webSearchMode: "live",
-    dynamicTools: MEMORY_DYNAMIC_TOOLS,
-    onDynamicToolCall: handleMemoryToolCall,
+    dynamicTools: [...MEMORY_DYNAMIC_TOOLS, ...CONTINUATION_DYNAMIC_TOOLS],
+    onDynamicToolCall: handleCharacterContextToolCall,
   });
   codexClient.setPersona(personaInstructions());
   registerIpc();
@@ -8385,6 +8798,7 @@ async function boot() {
   startCursorLoop();
   scheduleIrodoriPrewarm();
   scheduleAppUpdateCheck();
+  scheduleStartupContinuation();
   const syncDisplays = () => {
     if (!controlWindow || controlWindow.isDestroyed()) return;
     controlWindow.webContents.send("app:stateChanged", publicAppState());

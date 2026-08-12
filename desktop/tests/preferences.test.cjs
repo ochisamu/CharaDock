@@ -47,6 +47,8 @@ test("new installs enable onboarding and desktop positioning defaults", () => {
   assert.equal(state.edgeSnap, true);
   assert.equal(state.preferredDisplayId, "");
   assert.equal(state.interactionMode, "chat");
+  assert.equal(state.continuationStartupSpeechEnabled, true);
+  assert.equal(state.continuationSummaries, undefined);
   assert.equal(state.ttsProvider, "system");
   assert.equal(state.realtimeVoice, "cove");
   assert.equal(state.styleBertVits2Url, "http://localhost:5000");
@@ -127,6 +129,55 @@ test("new installs enable onboarding and desktop positioning defaults", () => {
     assert.equal(profile.irodoriVersion, "500m-v3");
     assert.equal(profile.irodoriPrecision, "fp16");
   }
+});
+
+test("preferences retain private character and project continuation summaries", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "charadock-prefs-continuation-"));
+  const file = path.join(directory, "preferences.json");
+  fs.writeFileSync(file, JSON.stringify({
+    continuationStartupSpeechEnabled: false,
+    continuationSummaries: {
+      "amber-avatar": {
+        common: {
+          goal: "公開準備を進める",
+          nextStep: "READMEを確認する",
+          createdAt: "2026-08-12T00:00:00.000Z",
+          updatedAt: "2026-08-12T00:00:00.000Z",
+        },
+        "project-1111111111111111": {
+          projectName: "CharaDock",
+          pending: ["Windows版を検証する"],
+          nextStep: "Windows版を検証する",
+          createdAt: "2026-08-12T00:00:00.000Z",
+          updatedAt: "2026-08-12T00:00:00.000Z",
+        },
+        home: {
+          projectName: "キャラクターホーム",
+          pending: ["デモページを完成させる"],
+          nextStep: "表示を確認する",
+          createdAt: "2026-08-12T00:00:00.000Z",
+          updatedAt: "2026-08-12T00:00:00.000Z",
+        },
+      },
+    },
+  }));
+  const preferences = new Preferences(file);
+  assert.equal(preferences.data.continuationStartupSpeechEnabled, false);
+  assert.equal(preferences.data.continuationSummaries["amber-avatar"].common.nextStep, "READMEを確認する");
+  assert.equal(preferences.data.continuationSummaries["amber-avatar"]["project-1111111111111111"].projectName, "CharaDock");
+  assert.equal(preferences.data.continuationSummaries["amber-avatar"].home.nextStep, "表示を確認する");
+  assert.equal(preferences.publicState().continuationSummaries, undefined);
+  fs.rmSync(directory, { recursive: true, force: true });
+});
+
+test("preferences migrate the former continuation toggle to startup speech", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "charadock-prefs-continuation-toggle-"));
+  const file = path.join(directory, "preferences.json");
+  fs.writeFileSync(file, JSON.stringify({ continuationEnabled: false }));
+  const preferences = new Preferences(file);
+  assert.equal(preferences.data.continuationStartupSpeechEnabled, false);
+  assert.equal(preferences.publicState().continuationStartupSpeechEnabled, false);
+  fs.rmSync(directory, { recursive: true, force: true });
 });
 
 test("Irodori INT4 selection is normalized globally and per character", () => {

@@ -51,6 +51,7 @@
   let speechPlaybackToken = 0;
   let streamingMessage = null;
   let renderedConversationCharacterId = "";
+  let renderedContinuationSignature = "";
   let chatBusy = false;
   let pendingChatFollowUp = null;
   let chatAttachments = [];
@@ -90,6 +91,7 @@
     { page: "remote", target: "#remoteAccessCard", ja: "リモートアクセス", en: "Remote access", detailJa: "同じWi-FiからChatとWorkを操作", detailEn: "Use Chat and Work from the same Wi-Fi", keywords: "remote mobile lan qr smartphone スマホ リモート", popular: true },
     { page: "character", target: "#characterLibraryTitle", ja: "キャラクター一覧", en: "Character library", detailJa: "使うキャラクターを切り替える", detailEn: "Switch the active character", keywords: "avatar select library キャラ", popular: true },
     { page: "character", target: "#characterProfileCard", ja: "名前・性格・メモリ", en: "Name, personality, and memory", detailJa: "選択中のキャラクターを編集", detailEn: "Edit the selected character", keywords: "profile persona memory bubble 名前 性格 記憶 吹き出し" },
+    { page: "character", target: "#characterContinuation", ja: "キャラクター継続モード", en: "Character Continuation", detailJa: "前回の目的と次の一手を確認・編集", detailEn: "Review and edit the previous goal and next step", keywords: "continuation resume summary 継続 再開 前回 次の一手", popular: true },
     { page: "character", target: "#motionEditorTitle", ja: "キャラクターの動き", en: "Character motion", detailJa: "サイズ、追従、呼吸、髪揺れ", detailEn: "Size, tracking, breathing, and hair motion", keywords: "motion animation lip sync hair blink マウス リップシンク", popular: true },
     { page: "character", target: "#characterAddTitle", ja: "キャラクターを追加", en: "Add a character", detailJa: ".purupuruまたは画像から作成", detailEn: "Import .purupuru or create from an image", keywords: "import image generator purupuru 画像 追加" },
     { page: "voice", target: "#voiceInputCard", ja: "音声入力", en: "Voice input", detailJa: "認識方式、VAD、自動送信", detailEn: "Recognition, VAD, and auto-send", keywords: "microphone stt sherpa vad realtime マイク 音声認識", popular: true },
@@ -1410,6 +1412,73 @@
     }
   }
 
+  function renderContinuationEditor() {
+    const continuation = state?.continuation || { startupSpeechEnabled: true, scope: { type: "character", key: "common", projectName: "" }, summary: null };
+    const startupSpeechEnabled = continuation.startupSpeechEnabled !== false;
+    const summary = continuation.summary || null;
+    const scope = continuation.scope || { type: "character", key: "common", projectName: "" };
+    $("#chatContinuationToggle").checked = startupSpeechEnabled;
+    $("#continuationModeToggle").checked = startupSpeechEnabled;
+    const busy = Boolean(chatBusy || workHistoryState.activeWorkRunId || realtimePeerConnection || realtimeStarting);
+    $("#chatContinuationToggle").disabled = busy;
+    $("#continuationModeToggle").disabled = busy;
+    $("#saveContinuationButton").disabled = busy;
+    $("#clearContinuationButton").disabled = busy;
+    const projectScope = scope.type === "project";
+    const homeScope = scope.type === "home";
+    $("#continuationScopeLabel").textContent = projectScope
+      ? localized(`${scope.projectName || "現在のプロジェクト"} 専用`, `${scope.projectName || "Current project"} only`)
+      : homeScope
+        ? localized(`${currentCharacter()?.name || "このキャラ"} ホーム`, `${currentCharacter()?.name || "This character"} · Home`)
+        : localized(`${currentCharacter()?.name || "このキャラ"} 共通`, `${currentCharacter()?.name || "This character"} · shared`);
+    $("#continuationScopeHint").textContent = projectScope
+      ? localized("この記録は現在のプロジェクトだけで使われ、別プロジェクトやキャラクターホームには表示されません。", "This record is used only for the current project, never another project or Character Home.")
+      : homeScope
+        ? localized("この記録はキャラクターホーム内のWorkだけで使われ、共通の会話や追加プロジェクトには表示されません。", "This record is used only for Work inside Character Home, never shared chat or an attached project.")
+        : localized("キャラ共通では、特定プロジェクトに依存しない会話上の目的と次の一手だけを扱います。", "The shared character scope stores only conversation goals and next steps that do not depend on a specific project.");
+    const updated = summary?.updatedAt ? formatHistoryTime(summary.updatedAt) : "";
+    $("#continuationUpdatedAt").textContent = updated
+      ? localized(`最終更新 ${updated}`, `Updated ${updated}`)
+      : "";
+    const badge = $("#continuationFreshnessBadge");
+    badge.classList.toggle("is-ready", Boolean(continuation.eligible));
+    badge.classList.toggle("is-stale", Boolean(continuation.stale));
+    badge.textContent = !summary
+      ? localized("記録なし", "No record")
+      : continuation.stale
+        ? localized("古い記録", "Stale")
+        : continuation.eligible
+          ? localized("再開できます", "Ready to resume")
+          : localized("次の一手なし", "No next step");
+    $("#clearContinuationButton").hidden = !summary;
+    const signature = `${state.characterId}:${scope.key}:${summary?.updatedAt || "empty"}`;
+    if (signature === renderedContinuationSignature && $("#characterContinuation").contains(document.activeElement)) return;
+    renderedContinuationSignature = signature;
+    $("#continuationGoalInput").value = summary?.goal || "";
+    $("#continuationDecisionsInput").value = (summary?.decisions || []).join("\n");
+    $("#continuationCompletedInput").value = (summary?.completed || []).map((item) => item.text || item).join("\n");
+    $("#continuationPendingInput").value = (summary?.pending || []).join("\n");
+    $("#continuationNextStepInput").value = summary?.nextStep || "";
+    const goalPreview = $("#continuationGoalPreview");
+    const nextStepPreview = $("#continuationNextStepPreview");
+    goalPreview.textContent = summary?.goal || localized("未設定", "Not set");
+    nextStepPreview.textContent = summary?.nextStep
+      || (summary?.goal
+        ? localized("起動時に目的から提案します", "A suggestion will be derived from the goal at startup")
+        : localized("未設定", "Not set"));
+    goalPreview.classList.toggle("is-empty", !summary?.goal);
+    nextStepPreview.classList.toggle("is-empty", !summary?.nextStep);
+    const decisionCount = summary?.decisions?.length || 0;
+    const completedCount = summary?.completed?.length || 0;
+    const pendingCount = summary?.pending?.length || 0;
+    $("#continuationDetailCount").textContent = decisionCount + completedCount + pendingCount
+      ? localized(`決定 ${decisionCount} · 完了 ${completedCount} · 未完了 ${pendingCount}`, `Decisions ${decisionCount} · Done ${completedCount} · Open ${pendingCount}`)
+      : localized("詳細なし", "No details");
+    setStatus($("#continuationStatus"), summary
+      ? localized("起動時は必要な内容だけを短い継続サマリーとして使います。", "Only the relevant details are used as a brief continuation summary at startup.")
+      : localized("この範囲にはまだ継続記録がありません。", "There is no continuation record for this scope yet."));
+  }
+
   function syncCharacterEditor() {
     const character = currentCharacter();
     if (!character) return;
@@ -1439,6 +1508,7 @@
     $("#removeCharacterButton").hidden = !character.generated;
     $("#removeCharacterButton").disabled = false;
     renderCharacterMemories();
+    renderContinuationEditor();
     syncMotionReadouts();
     setStatus($("#characterProfileStatus"), `${character.name}の設定`);
   }
@@ -2905,6 +2975,10 @@
     $("#sendButton").firstChild.textContent = chatBusy ? localized("差し込む ", "Follow up ") : localized("送信 ", "Send ");
     $("#stopButton").hidden = !chatBusy;
     $("#stopButton").disabled = false;
+    $("#chatContinuationToggle").disabled = chatBusy || Boolean(workHistoryState.activeWorkRunId || realtimePeerConnection || realtimeStarting);
+    $("#continuationModeToggle").disabled = $("#chatContinuationToggle").disabled;
+    $("#saveContinuationButton").disabled = $("#chatContinuationToggle").disabled;
+    $("#clearContinuationButton").disabled = $("#chatContinuationToggle").disabled;
   }
 
   async function sendChat() {
@@ -3357,6 +3431,63 @@
         setStatus($("#characterProfileStatus"), `${character.name}のメモリをすべて削除しました。`);
       } catch (error) {
         setStatus($("#characterProfileStatus"), error.message, true);
+      }
+    });
+    const changeContinuationStartupSpeech = async (event) => {
+      const requested = Boolean(event.currentTarget.checked);
+      const toggles = [$("#chatContinuationToggle"), $("#continuationModeToggle")];
+      toggles.forEach((toggle) => { toggle.checked = requested; toggle.disabled = true; });
+      try {
+        state = await api.setContinuationStartupSpeech(requested);
+        syncUi();
+        setStatus($("#continuationStatus"), requested
+          ? localized("起動時の声かけを有効にしました。続きがある場合だけ一度話します。", "Startup greeting is on. It speaks once only when there is something to resume.")
+          : localized("起動時の声かけを停止しました。記憶と作業の続きはそのまま保持します。", "Startup greeting is off. Memories and work continuation remain available."));
+      } catch (error) {
+        toggles.forEach((toggle) => { toggle.checked = state?.continuation?.startupSpeechEnabled !== false; toggle.disabled = false; });
+        setStatus(event.currentTarget.id === "chatContinuationToggle" ? $("#chatStatus") : $("#continuationStatus"), error.message, true);
+      }
+    };
+    $("#chatContinuationToggle").addEventListener("change", changeContinuationStartupSpeech);
+    $("#continuationModeToggle").addEventListener("change", changeContinuationStartupSpeech);
+    $("#saveContinuationButton").addEventListener("click", async () => {
+      const button = $("#saveContinuationButton");
+      button.disabled = true;
+      setStatus($("#continuationStatus"), localized("継続サマリーを確認して保存しています…", "Validating and saving the continuation summary…"));
+      try {
+        state = await api.saveContinuationSummary({
+          goal: $("#continuationGoalInput").value,
+          decisions: $("#continuationDecisionsInput").value,
+          completed: $("#continuationCompletedInput").value,
+          pending: $("#continuationPendingInput").value,
+          nextStep: $("#continuationNextStepInput").value,
+        });
+        renderedContinuationSignature = "";
+        syncUi();
+        setStatus($("#continuationStatus"), localized("このキャラと現在の範囲に保存しました。", "Saved for this character and current scope."));
+      } catch (error) {
+        setStatus($("#continuationStatus"), error.message, true);
+      } finally {
+        button.disabled = Boolean(chatBusy || workHistoryState.activeWorkRunId || realtimePeerConnection || realtimeStarting);
+      }
+    });
+    $("#clearContinuationButton").addEventListener("click", async () => {
+      const scopeLabel = $("#continuationScopeLabel").textContent;
+      if (!window.confirm(localized(
+        `「${scopeLabel}」の継続サマリーを削除しますか？利用者メモリや会話・Work履歴は削除されません。`,
+        `Delete the continuation summary for “${scopeLabel}”? User memory and Chat/Work history are not deleted.`,
+      ))) return;
+      const button = $("#clearContinuationButton");
+      button.disabled = true;
+      try {
+        state = await api.clearContinuationSummary();
+        renderedContinuationSignature = "";
+        syncUi();
+        setStatus($("#continuationStatus"), localized("この範囲の継続サマリーを削除しました。", "Deleted the continuation summary for this scope."));
+      } catch (error) {
+        setStatus($("#continuationStatus"), error.message, true);
+      } finally {
+        button.disabled = Boolean(chatBusy || workHistoryState.activeWorkRunId || realtimePeerConnection || realtimeStarting);
       }
     });
     $("#removeCharacterButton").addEventListener("click", async () => {

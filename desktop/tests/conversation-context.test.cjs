@@ -54,3 +54,19 @@ test("shared continuity excludes another character, workspace, and unfinished wo
   assert.equal(entries.length, 1);
   assert.equal(entries[0].request, "same project");
 });
+
+test("shared continuity can exclude persisted history from before this app session", () => {
+  const sessionStart = Date.parse("2026-08-12T10:00:00.000Z");
+  const entries = continuityEntries({
+    since: sessionStart,
+    conversationHistory: [
+      { role: "user", text: "前回の会話", createdAt: "2026-08-11T10:00:00.000Z" },
+      { role: "user", text: "今回の会話", createdAt: "2026-08-12T10:00:01.000Z" },
+    ],
+    workHistory: [
+      { status: "completed", request: "古い作業", result: "完了", finishedAt: "2026-08-11T10:00:00.000Z" },
+      { status: "completed", request: "今回の作業", result: "完了", finishedAt: "2026-08-12T10:00:02.000Z" },
+    ],
+  });
+  assert.deepEqual(entries.map((entry) => entry.type === "work" ? entry.request : entry.text), ["今回の会話", "今回の作業"]);
+});
