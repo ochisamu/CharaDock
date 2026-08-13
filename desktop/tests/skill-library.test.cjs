@@ -62,13 +62,14 @@ function mockFetch(url) {
   if (value.includes("/git/trees/")) return Promise.resolve(response({
     truncated: false,
     tree: [
-      { path: "LICENSE", type: "blob", mode: "100644", size: 11 },
       { path: "skills/.curated/demo/SKILL.md", type: "blob", mode: "100644", size: Buffer.byteLength(SKILL_TEXT) },
+      { path: "skills/.curated/demo/LICENSE.txt", type: "blob", mode: "100644", size: 11 },
       { path: "skills/.curated/demo/references/note.txt", type: "blob", mode: "100644", size: 5 },
     ],
   }, { json: true }));
   if (value.endsWith("/SKILL.md")) return Promise.resolve(response(SKILL_TEXT));
   if (value.endsWith("/references/note.txt")) return Promise.resolve(response("hello"));
+  if (value.endsWith("/LICENSE.txt")) return Promise.resolve(response("Apache-2.0"));
   return Promise.resolve(response("missing", { status: 404 }));
 }
 
@@ -79,15 +80,15 @@ function trustedCatalogFetch(url) {
   if (value.includes(`/git/trees/${COMMIT}`)) return Promise.resolve(response({
     truncated: false,
     tree: [
-      { path: "LICENSE", type: "blob", mode: "100644", size: 11 },
       { path: "skills/.curated/demo/SKILL.md", type: "blob", mode: "100644", size: Buffer.byteLength(SKILL_TEXT) },
+      { path: "skills/.curated/demo/LICENSE.txt", type: "blob", mode: "100644", size: 11 },
     ],
   }, { json: true }));
   if (value.includes(`/git/trees/${ANTHROPIC_COMMIT}`)) return Promise.resolve(response({
     truncated: false,
     tree: [
-      { path: "LICENSE", type: "blob", mode: "100644", size: 11 },
       { path: "skills/frontend-design/SKILL.md", type: "blob", mode: "100644", size: Buffer.byteLength(ANTHROPIC_DESIGN_SKILL) },
+      { path: "skills/frontend-design/LICENSE.txt", type: "blob", mode: "100644", size: 11 },
       { path: "skills/docx/SKILL.md", type: "blob", mode: "100644", size: Buffer.byteLength(ANTHROPIC_DOCX_SKILL) },
       { path: "skills/docx/LICENSE.txt", type: "blob", mode: "100644", size: 13 },
     ],
@@ -118,20 +119,27 @@ test("inspects and pins an OpenAI curated skill", async () => {
   assert.equal(resolved.sourceKind, "openai-curated");
   assert.equal(resolved.sourceName, "OpenAI");
   assert.equal(resolved.license, "Apache-2.0");
-  assert.equal(resolved.files.length, 2);
+  assert.equal(resolved.files.length, 3);
+  assert.equal(resolved.files.some((file) => file.path === "LICENSE.txt"), true);
 });
 
-test("lists OpenAI and Anthropic official skills with source and license metadata", async () => {
+test("lists redistributable OpenAI and Anthropic official skills with source and license metadata", async () => {
   const skills = await listTrustedSkillCatalog(trustedCatalogFetch);
-  assert.equal(skills.length, 3);
+  assert.equal(skills.length, 2);
   const anthropicDesign = skills.find((skill) => skill.name === "frontend-design");
   const anthropicDocx = skills.find((skill) => skill.name === "docx");
   assert.equal(anthropicDesign.sourceKind, "anthropic-official");
   assert.equal(anthropicDesign.sourceName, "Anthropic");
   assert.equal(anthropicDesign.license, "Apache-2.0");
-  assert.equal(anthropicDocx.license, "Anthropic Terms");
-  assert.match(anthropicDocx.sourceUrl, new RegExp(ANTHROPIC_COMMIT));
+  assert.equal(anthropicDocx, undefined);
   assert.equal(skills.find((skill) => skill.name === "demo-skill").sourceName, "OpenAI");
+});
+
+test("rejects direct installation of Anthropic Skills with non-redistributable terms", async () => {
+  await assert.rejects(
+    resolveSkillSource("https://github.com/anthropics/skills/tree/main/skills/docx", trustedCatalogFetch),
+    /独自利用条件/,
+  );
 });
 
 test("keeps a working official catalog when the other source is unavailable", async () => {
@@ -164,6 +172,7 @@ test("installs once and assigns globally or per character", async () => {
     assert.equal(skills[0].contentSha, resolved.contentSha);
     assert.equal(fs.existsSync(path.join(root, record.directoryName, "SKILL.md")), true);
     assert.equal(fs.readFileSync(path.join(root, record.directoryName, "references", "note.txt"), "utf8"), "hello");
+    assert.equal(fs.readFileSync(path.join(root, record.directoryName, "LICENSE.txt"), "utf8"), "Apache-2.0");
     const assignments = normalizeSkillAssignments({
       all: [record.id],
       characters: { kohaku: [record.id], towa: ["missing"] },
