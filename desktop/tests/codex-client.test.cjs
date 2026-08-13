@@ -344,6 +344,38 @@ test("Codex client injects an explicit skill item into turn/start", async () => 
   ]);
 });
 
+test("per-turn Skills override defaults without resetting the active thread", async () => {
+  const client = new CodexAppServerClient();
+  client.ensureStarted = async () => {};
+  client.threadId = "thread-existing";
+  client.ensureThread = async () => client.threadId;
+  client.setTurnStartSkillItems([{ name: "default-skill", path: "/skills/default" }]);
+  client.threadId = "thread-existing";
+  let turnParams;
+  client.request = async (method, params) => {
+    if (method !== "turn/start") return {};
+    turnParams = params;
+    setImmediate(() => {
+      client.handleLine(JSON.stringify({
+        method: "item/agentMessage/delta",
+        params: { turnId: "turn-picked-skill", delta: "done" },
+      }));
+      client.handleLine(JSON.stringify({
+        method: "turn/completed",
+        params: { turn: { id: "turn-picked-skill", status: "completed" } },
+      }));
+    });
+    return { turn: { id: "turn-picked-skill" } };
+  };
+  await client.sendMessage("この送信だけ", { skillItems: [{ name: "picked-skill", path: "/skills/picked" }] });
+  assert.equal(client.threadId, "thread-existing");
+  assert.deepEqual(turnParams.input, [
+    { type: "text", text: "この送信だけ" },
+    { type: "skill", name: "picked-skill", path: "/skills/picked" },
+  ]);
+  assert.deepEqual(client.turnStartSkillItems, [{ name: "default-skill", path: "/skills/default" }]);
+});
+
 test("Computer Use clients fail closed on unhandled approval requests", async () => {
   const client = new CodexAppServerClient({ rejectInteractiveRequests: true });
   client.proc = { stdin: { writable: true } };

@@ -379,6 +379,8 @@ test("preferences promote the former generated Towa to the bundled character", (
     characterProfiles: { "user-avatar-ms5afs58": { name: "トワ改" } },
     characterTtsProfiles: { "user-avatar-ms5afs58": { provider: "kokoro", realtimeVoice: "ember" } },
     characterMemories: { "user-avatar-ms5afs58": [{ id: "memory-towa", category: "preference", content: "工具が好き" }] },
+    managedSkills: [{ id: "skill-demo", name: "demo", directoryName: "demo-skill-demo", sourceKind: "github" }],
+    skillAssignments: { all: [], characters: { "user-avatar-ms5afs58": ["skill-demo"] } },
   }));
   const preferences = new Preferences(file);
   assert.equal(preferences.data.characterId, "towa-avatar");
@@ -386,6 +388,7 @@ test("preferences promote the former generated Towa to the bundled character", (
   assert.equal(preferences.data.characterProfiles["towa-avatar"].name, "トワ改");
   assert.equal(preferences.data.characterTtsProfiles["towa-avatar"].provider, "kokoro");
   assert.equal(preferences.data.characterMemories["towa-avatar"][0].content, "工具が好き");
+  assert.deepEqual(preferences.data.skillAssignments.characters["towa-avatar"], ["skill-demo"]);
   assert.equal(Object.prototype.hasOwnProperty.call(preferences.data.characterProfiles, "user-avatar-ms5afs58"), false);
 });
 
@@ -404,6 +407,8 @@ test("preferences promote the profile AI Nike character to the bundled character
     conversationHistories: { [legacyId]: [{ role: "user", text: "こんにちは" }] },
     characterMemories: { [legacyId]: [{ id: "memory-nike", category: "preference", content: "実例を重視" }] },
     characterWorkspaces: { [legacyId]: { activeProjectId: "home", projects: [] } },
+    managedSkills: [{ id: "skill-demo", name: "demo", directoryName: "demo-skill-demo", sourceKind: "github" }],
+    skillAssignments: { all: [], characters: { [legacyId]: ["skill-demo"] } },
     workHistory: [{ id: "work-nike", request: "調査して", status: "completed", characterId: legacyId, characterName: "AIニケちゃん" }],
   }));
   const preferences = new Preferences(file);
@@ -414,6 +419,7 @@ test("preferences promote the profile AI Nike character to the bundled character
   assert.equal(preferences.data.characterTtsProfiles["nike-avatar"].sbv2ModelId, "sbv2-nike");
   assert.equal(preferences.data.conversationHistories["nike-avatar"][0].text, "こんにちは");
   assert.equal(preferences.data.characterMemories["nike-avatar"][0].content, "実例を重視");
+  assert.deepEqual(preferences.data.skillAssignments.characters["nike-avatar"], ["skill-demo"]);
   assert.equal(preferences.data.workHistory[0].characterId, "nike-avatar");
   assert.equal(Object.prototype.hasOwnProperty.call(preferences.data.characterProfiles, legacyId), false);
 });

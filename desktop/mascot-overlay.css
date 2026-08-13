@@ -64,6 +64,9 @@
 .ui-symbol-stop { -webkit-mask-image: url("../assets/ui/icons/stop.svg"); mask-image: url("../assets/ui/icons/stop.svg"); }
 .ui-symbol-microphone { -webkit-mask-image: url("../assets/ui/icons/microphone.svg"); mask-image: url("../assets/ui/icons/microphone.svg"); }
 .ui-symbol-attach { -webkit-mask-image: url("../assets/ui/icons/attach.svg"); mask-image: url("../assets/ui/icons/attach.svg"); }
+.ui-symbol-plus { -webkit-mask-image: url("../assets/ui/icons/plus.svg"); mask-image: url("../assets/ui/icons/plus.svg"); }
+.ui-symbol-sparkle { -webkit-mask-image: url("../assets/ui/icons/sparkle.svg"); mask-image: url("../assets/ui/icons/sparkle.svg"); }
+.ui-symbol-search { -webkit-mask-image: url("../assets/ui/icons/search.svg"); mask-image: url("../assets/ui/icons/search.svg"); }
 .ui-symbol-folder-open { -webkit-mask-image: url("../assets/ui/icons/folder-open.svg"); mask-image: url("../assets/ui/icons/folder-open.svg"); }
 .ui-symbol-history { -webkit-mask-image: url("../assets/ui/icons/history.svg"); mask-image: url("../assets/ui/icons/history.svg"); }
 .ui-symbol-close { -webkit-mask-image: url("../assets/ui/icons/close.svg"); mask-image: url("../assets/ui/icons/close.svg"); }
@@ -372,7 +375,7 @@ body.is-work-panel-open #desktopMascotBubble.is-visible { opacity: 0; transform:
   transition: opacity .18s ease, transform .24s cubic-bezier(.2,.8,.2,1), visibility .18s;
 }
 #desktopMascotComposer.has-attachments { row-gap: 6px; }
-#desktopMascotAttachmentList {
+#desktopMascotContextList {
   grid-area: attachments;
   display: flex;
   min-width: 0;
@@ -381,8 +384,9 @@ body.is-work-panel-open #desktopMascotBubble.is-visible { opacity: 0; transform:
   padding: 0 1px 1px;
   scrollbar-width: none;
 }
-#desktopMascotAttachmentList[hidden] { display: none !important; }
-#desktopMascotAttachmentList::-webkit-scrollbar { display: none; }
+#desktopMascotContextList[hidden] { display: none !important; }
+#desktopMascotContextList::-webkit-scrollbar { display: none; }
+#desktopMascotAttachmentList, #desktopMascotSkillList { display: contents; }
 .desktop-mascot-attachment {
   display: inline-flex;
   align-items: center;
@@ -400,6 +404,7 @@ body.is-work-panel-open #desktopMascotBubble.is-visible { opacity: 0; transform:
   font: 650 9px/1 var(--pet-font-ui);
 }
 .desktop-mascot-attachment > .ui-symbol { width: 12px; height: 12px; color: var(--pet-accent); }
+.desktop-mascot-attachment.is-skill { color: color-mix(in srgb, var(--pet-accent) 76%, var(--pet-text)); background: color-mix(in srgb, var(--pet-accent) 10%, var(--pet-control-subtle)); border-color: var(--pet-accent-line); }
 .desktop-mascot-attachment > span:nth-child(2) { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .desktop-mascot-attachment button {
   display: grid;
@@ -414,6 +419,49 @@ body.is-work-panel-open #desktopMascotBubble.is-visible { opacity: 0; transform:
   background: transparent;
   cursor: pointer;
 }
+#desktopMascotAddPopover {
+  position: absolute;
+  z-index: 4;
+  left: 7px;
+  bottom: 55px;
+  width: min(340px, calc(100% - 14px));
+  padding: 7px;
+  color: var(--pet-text);
+  background: var(--pet-surface-thick);
+  border: 1px solid var(--pet-border-strong);
+  border-radius: 15px;
+  box-shadow: var(--pet-panel-shadow);
+  backdrop-filter: blur(26px) saturate(1.14);
+  transform-origin: 21px bottom;
+  animation: mascot-add-popover-in 170ms cubic-bezier(.2,.8,.2,1) both;
+  font-family: var(--pet-font-ui);
+}
+#desktopMascotAddPopover[hidden] { display: none !important; }
+@keyframes mascot-add-popover-in { from { opacity: 0; transform: translateY(5px) scale(.985); } }
+#desktopMascotAddFile { display: grid; grid-template-columns: auto minmax(0,1fr); align-items: center; gap: 9px; width: 100%; padding: 8px; color: var(--pet-text); text-align: left; background: transparent; border: 0; border-radius: 10px; cursor: pointer; }
+#desktopMascotAddFile:hover { background: var(--pet-control-subtle); }
+#desktopMascotAddFile > .ui-symbol { width: 17px; height: 17px; margin: 8px; color: var(--pet-accent); }
+#desktopMascotAddFile strong, #desktopMascotAddFile small, #desktopMascotAddPopover header strong, #desktopMascotAddPopover header small { display: block; }
+#desktopMascotAddFile strong, #desktopMascotAddPopover header strong { font: 750 10.5px/1.3 var(--pet-font-ui); }
+#desktopMascotAddFile small, #desktopMascotAddPopover header small { margin-top: 2px; color: var(--pet-text-muted); font: 600 8.5px/1.35 var(--pet-font-ui); }
+#desktopMascotAddPopover > header { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 2px; padding: 8px 7px 6px; border-top: 1px solid var(--pet-border); }
+#desktopMascotAddPopover > header button { padding: 5px 7px; color: var(--pet-accent); background: transparent; border: 0; border-radius: 7px; font: 750 9px/1 var(--pet-font-ui); cursor: pointer; }
+#desktopMascotAddPopover > header button:hover { background: var(--pet-control-subtle); }
+#desktopMascotAddPopover > label { display: flex; align-items: center; gap: 7px; margin: 0 4px 6px; padding: 0 8px; color: var(--pet-text-muted); background: var(--pet-control-subtle); border: 1px solid var(--pet-border); border-radius: 9px; }
+#desktopMascotAddPopover > label:focus-within { border-color: var(--pet-accent-line); }
+#desktopMascotAddPopover > label .ui-symbol { width: 13px; height: 13px; }
+#desktopMascotSkillSearch { width: 100%; height: 31px; padding: 0; color: var(--pet-text); background: transparent; border: 0; outline: 0; font: 650 10px/1 var(--pet-font-ui); }
+#desktopMascotSkillPicker { display: grid; gap: 2px; max-height: 190px; overflow-y: auto; }
+#desktopMascotSkillPicker > p { margin: 3px; padding: 13px; color: var(--pet-text-muted); background: var(--pet-control-subtle); border-radius: 9px; text-align: center; font: 650 9px/1.4 var(--pet-font-ui); }
+#desktopMascotSkillPicker > button { display: grid; grid-template-columns: auto minmax(0,1fr) auto; align-items: center; gap: 8px; min-height: 45px; padding: 6px 8px; color: var(--pet-text); text-align: left; background: transparent; border: 0; border-radius: 9px; cursor: pointer; }
+#desktopMascotSkillPicker > button:hover, #desktopMascotSkillPicker > button.is-keyboard-active { background: var(--pet-control-subtle); }
+#desktopMascotSkillPicker > button[aria-selected="true"] { background: color-mix(in srgb, var(--pet-accent) 10%, var(--pet-control-subtle)); }
+#desktopMascotSkillPicker > button > .ui-symbol { width: 16px; height: 16px; color: var(--pet-accent); }
+#desktopMascotSkillPicker > button span { min-width: 0; }
+#desktopMascotSkillPicker strong, #desktopMascotSkillPicker small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#desktopMascotSkillPicker strong { font: 750 10px/1.3 var(--pet-font-ui); }
+#desktopMascotSkillPicker small { margin-top: 2px; color: var(--pet-text-muted); font: 600 8px/1.3 var(--pet-font-ui); }
+#desktopMascotSkillPicker em { color: var(--pet-accent); font: 750 8px/1 var(--pet-font-ui); font-style: normal; }
 .desktop-mascot-attachment button:hover, .desktop-mascot-attachment button:focus-visible { color: var(--pet-text); background: var(--pet-control-hover); }
 .desktop-mascot-attachment button:active { transform: scale(.9); }
 .desktop-mascot-attachment button .ui-symbol { width: 10px; height: 10px; }
@@ -826,7 +874,7 @@ body.is-position-locked #desktopMascotPetZone { cursor: pointer; }
   #stage, #desktopMascotBubble, #desktopMascotComposer, #desktopMascotWorkPanel,
   #desktopMascotHint, #desktopMascotChatButton, #desktopMascotSettingsButton,
   #desktopMascotBubbleMore, #desktopMascotPermissionActions button, #desktopMascotAutoSendCountdown,
-  #desktopMascotVoiceBadge, #desktopMascotFileDrop {
+  #desktopMascotVoiceBadge, #desktopMascotFileDrop, #desktopMascotAddPopover {
     transition-duration: 140ms !important;
     animation: none !important;
   }
@@ -835,7 +883,7 @@ body.is-position-locked #desktopMascotPetZone { cursor: pointer; }
   body.is-file-dragging:not(.is-work-panel-open) #stage { transform: none; }
 }
 @media (prefers-reduced-transparency: reduce) {
-  #desktopMascotBubble, #desktopMascotComposer, #desktopMascotWorkPanel,
+  #desktopMascotBubble, #desktopMascotComposer, #desktopMascotWorkPanel, #desktopMascotAddPopover,
   #desktopMascotChatButton, #desktopMascotSettingsButton, #desktopMascotMicButton, #desktopMascotAttachButton,
   #desktopMascotStopButton, #desktopMascotWorkTarget, #desktopMascotWorkOpenButton, #desktopMascotWorkHistoryButton,
   #desktopMascotAutoSendCountdown, #desktopMascotVoiceBadge, #desktopMascotFileDrop {

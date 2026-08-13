@@ -9,6 +9,7 @@ const IRODORI_CHUNK_LENGTH = 40;
 const IRODORI_FIRST_CHUNK_LENGTH = 40;
 const IRODORI_CHUNK_OVERFLOW = 4;
 const IRODORI_MAX_CHUNKS = 24;
+const IRODORI_V4_MIN_STEPS = 16;
 
 const V3_MODEL_NAMES = Object.freeze([
   "text_encoder",
@@ -40,6 +41,23 @@ function isFile(filePath) {
 
 function hasModels(directory, modelNames = V4_MODEL_NAMES) {
   return modelNames.every((name) => isFile(path.join(directory, `${name}.onnx`)) && isFile(path.join(directory, `${name}.onnx.data`)));
+}
+
+function irodoriV4ModelRelease(modelsDirectory) {
+  const configPath = path.join(String(modelsDirectory || ""), "model-config.json");
+  try {
+    const stat = fs.statSync(configPath);
+    if (!stat.isFile() || stat.size > 128 * 1024) return { modelRelease: "unknown", modelOutdated: false };
+    const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
+    const repository = String(config?.repo || "");
+    if (/Irodori-TTS-v4\.1-Small(?:-Quantized)?(?:\/|$)/.test(repository)) {
+      return { modelRelease: "v4.1", modelOutdated: false };
+    }
+    if (/Irodori-TTS-v4-Small(?:-Quantized)?(?:\/|$)/.test(repository)) {
+      return { modelRelease: "v4", modelOutdated: true };
+    }
+  } catch {}
+  return { modelRelease: "unknown", modelOutdated: false };
 }
 
 function v4CandidateLayouts(root) {
@@ -76,6 +94,28 @@ function normalizedVersion(value) {
   return value === "500m-v3" ? "500m-v3" : "v4-small";
 }
 
+function irodoriGenerationSettings(version, {
+  numSteps = 16,
+  tScheduleMode = "linear",
+  cfgExecution = "sequential",
+} = {}) {
+  const normalizedSteps = Math.min(40, Math.max(4, Math.round(Number(numSteps) || 16)));
+  if (normalizedVersion(version) === "v4-small") {
+    // Keep both V4 precisions on the same known-good recipe as the standalone
+    // runtime. The Sway shortcut belongs to the older 500M-v3 integration.
+    return {
+      numSteps: Math.max(IRODORI_V4_MIN_STEPS, normalizedSteps),
+      tScheduleMode: "linear",
+      cfgExecution: "sequential",
+    };
+  }
+  return {
+    numSteps: normalizedSteps,
+    tScheduleMode: tScheduleMode === "linear" ? "linear" : "sway",
+    cfgExecution: cfgExecution === "batched" ? "batched" : "sequential",
+  };
+}
+
 function resolveIrodoriModelDirectory(directory, requestedVersion = "v4-small") {
   const root = path.resolve(String(directory || "."));
   const version = normalizedVersion(requestedVersion);
@@ -105,11 +145,15 @@ function irodoriModelStatus(directory, referenceAudioPath = "", webgpuAvailable 
     && isFile(path.join(resolved.tokenizer, "tokenizer_config.json"));
   const referenceReady = isFile(referenceAudioPath) && path.extname(referenceAudioPath).toLowerCase() === ".wav";
   const referenceRequired = !(resolved.version === "v4-small" && options.mode === "design");
+  const release = resolved.version === "v4-small"
+    ? irodoriV4ModelRelease(resolved.models)
+    : { modelRelease: "500m-v3", modelOutdated: false };
   return {
     ready: Boolean(resolved.root) && missingFiles.length === 0 && tokenizerReady && (!referenceRequired || referenceReady),
     modelReady: Boolean(resolved.root) && missingFiles.length === 0 && tokenizerReady,
     referenceReady,
     referenceRequired,
+    ...release,
     version: resolved.version,
     directoryName: resolved.root ? path.basename(resolved.root) : "",
     referenceName: referenceReady ? path.basename(referenceAudioPath) : "",
@@ -175,11 +219,14 @@ module.exports = {
   IRODORI_CHUNK_OVERFLOW,
   IRODORI_CHUNK_LENGTH,
   IRODORI_FIRST_CHUNK_LENGTH,
+  IRODORI_V4_MIN_STEPS,
   IRODORI_VERSIONS,
   MODEL_NAMES,
   V3_MODEL_NAMES,
   V4_MODEL_NAMES,
   irodoriModelStatus,
+  irodoriV4ModelRelease,
+  irodoriGenerationSettings,
   resolveIrodoriModelDirectory,
   splitIrodoriText,
   validateIrodoriModelDirectory,

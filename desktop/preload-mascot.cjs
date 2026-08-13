@@ -59,12 +59,21 @@ window.addEventListener("DOMContentLoaded", () => {
       <button type="button" data-countdown-action="cancel">取消</button>
     </div>
     <form id="desktopMascotComposer">
-      <div id="desktopMascotAttachmentList" aria-label="添付ファイル" hidden></div>
+      <div id="desktopMascotContextList" hidden>
+        <div id="desktopMascotAttachmentList" aria-label="添付ファイル"></div>
+        <div id="desktopMascotSkillList" aria-label="この送信で使うSkills"></div>
+      </div>
+      <section id="desktopMascotAddPopover" role="dialog" aria-label="ファイルまたはSkillを追加" hidden>
+        <button id="desktopMascotAddFile" type="button"><span class="ui-symbol ui-symbol-attach" aria-hidden="true"></span><span><strong>ファイルを添付</strong><small>ドラッグ＆ドロップにも対応</small></span></button>
+        <header><span><strong>この送信で使うSkill</strong><small>/ または @ でも検索</small></span><button id="desktopMascotManageSkills" type="button">管理</button></header>
+        <label><span class="ui-symbol ui-symbol-search" aria-hidden="true"></span><input id="desktopMascotSkillSearch" type="search" autocomplete="off" aria-label="Skillを検索" placeholder="Skillを検索"></label>
+        <div id="desktopMascotSkillPicker" role="listbox" aria-label="利用できるSkills"></div>
+      </section>
       <button id="desktopMascotModeButton" type="button" aria-label="ChatとWorkを切り替える">Chat</button>
       <button id="desktopMascotWorkTarget" type="button" aria-label="作業先フォルダーを変更する"></button>
       <button id="desktopMascotWorkOpenButton" type="button" aria-label="作業先フォルダーを開く" title="作業先フォルダーを開く"><span class="ui-symbol ui-symbol-folder-open" aria-hidden="true"></span></button>
       <button id="desktopMascotWorkHistoryButton" type="button" aria-label="履歴を開く" aria-expanded="false" title="履歴を開く"><span class="ui-symbol ui-symbol-history" aria-hidden="true"></span></button>
-      <button id="desktopMascotAttachButton" type="button" aria-label="ファイルを添付" title="ファイルを添付"><span class="ui-symbol ui-symbol-attach" aria-hidden="true"></span></button>
+      <button id="desktopMascotAttachButton" type="button" aria-label="ファイルまたはSkillを追加" aria-expanded="false" aria-controls="desktopMascotAddPopover" title="ファイルまたはSkillを追加"><span class="ui-symbol ui-symbol-plus" aria-hidden="true"></span></button>
       <input id="desktopMascotFileInput" type="file" multiple hidden>
       <button id="desktopMascotMicButton" type="button" aria-label="音声入力" aria-pressed="false" title="音声入力"><span class="ui-symbol ui-symbol-microphone" aria-hidden="true"></span></button>
       <textarea id="desktopMascotInput" rows="1" maxlength="6000" aria-label="メッセージ" placeholder="短く話しかける…"></textarea>
@@ -106,7 +115,12 @@ window.addEventListener("DOMContentLoaded", () => {
   const micButton = dock.querySelector("#desktopMascotMicButton");
   const attachButton = dock.querySelector("#desktopMascotAttachButton");
   const fileInput = dock.querySelector("#desktopMascotFileInput");
+  const contextList = dock.querySelector("#desktopMascotContextList");
   const attachmentList = dock.querySelector("#desktopMascotAttachmentList");
+  const selectedSkillList = dock.querySelector("#desktopMascotSkillList");
+  const addPopover = dock.querySelector("#desktopMascotAddPopover");
+  const skillSearch = dock.querySelector("#desktopMascotSkillSearch");
+  const skillPicker = dock.querySelector("#desktopMascotSkillPicker");
   const modeButton = dock.querySelector("#desktopMascotModeButton");
   const workTarget = dock.querySelector("#desktopMascotWorkTarget");
   const workOpenButton = dock.querySelector("#desktopMascotWorkOpenButton");
@@ -127,6 +141,9 @@ window.addEventListener("DOMContentLoaded", () => {
   let sending = false;
   let pendingFollowUp = null;
   let mascotAttachments = [];
+  let mascotSelectedSkillIds = [];
+  let mascotSkillPickerIndex = 0;
+  let mascotSkillTrigger = null;
   let fileDragDepth = 0;
   let speechRecognition;
   let appState;
@@ -411,15 +428,19 @@ window.addEventListener("DOMContentLoaded", () => {
   };
 
   const uiText = (japanese, english) => appState?.language === "en" ? english : japanese;
+  const syncMascotContextVisibility = () => {
+    const hasContext = mascotAttachments.length > 0 || mascotSelectedSkillIds.length > 0;
+    contextList.hidden = !hasContext;
+    form.classList.toggle("has-attachments", hasContext);
+    attachButton.classList.toggle("has-attachments", hasContext);
+    const label = hasContext
+      ? uiText(`${mascotAttachments.length}件のファイル・${mascotSelectedSkillIds.length}件のSkill`, `${mascotAttachments.length} files · ${mascotSelectedSkillIds.length} Skills`)
+      : uiText("ファイルまたはSkillを追加", "Add a file or Skill");
+    attachButton.setAttribute("aria-label", label);
+    attachButton.title = label;
+  };
   const renderMascotAttachments = () => {
     attachmentList.replaceChildren();
-    attachmentList.hidden = mascotAttachments.length === 0;
-    form.classList.toggle("has-attachments", mascotAttachments.length > 0);
-    attachButton.classList.toggle("has-attachments", mascotAttachments.length > 0);
-    attachButton.setAttribute("aria-label", mascotAttachments.length
-      ? uiText(`添付ファイル ${mascotAttachments.length}件`, `${mascotAttachments.length} attached files`)
-      : uiText("ファイルを添付", "Attach files"));
-    attachButton.title = attachButton.getAttribute("aria-label");
     for (const attachment of mascotAttachments) {
       const chip = document.createElement("span");
       chip.className = "desktop-mascot-attachment";
@@ -438,6 +459,7 @@ window.addEventListener("DOMContentLoaded", () => {
       chip.append(icon, name, remove);
       attachmentList.appendChild(chip);
     }
+    syncMascotContextVisibility();
     resizeInput();
   };
   const mergeMascotAttachments = (attachments = []) => {
@@ -474,6 +496,113 @@ window.addEventListener("DOMContentLoaded", () => {
     } else if (candidates.length) {
       setStatus(uiText(`${candidates.length}件をキャラに渡しました。依頼を入力してください`, `${candidates.length} file(s) handed to the character. Add your request`), 5500);
     }
+  };
+
+  const mascotSkillRecords = (query = "") => {
+    const normalizedQuery = String(query || "").trim().toLocaleLowerCase();
+    return (appState?.skills?.installed || [])
+      .filter((skill) => skill.health !== "missing")
+      .filter((skill) => !normalizedQuery || [skill.name, skill.description, skill.sourceName]
+        .some((value) => String(value || "").toLocaleLowerCase().includes(normalizedQuery)))
+      .sort((left, right) => Number(Boolean(right.active)) - Number(Boolean(left.active)) || String(left.name).localeCompare(String(right.name)));
+  };
+  const renderMascotSelectedSkills = () => {
+    const records = new Map((appState?.skills?.installed || []).map((skill) => [skill.id, skill]));
+    mascotSelectedSkillIds = mascotSelectedSkillIds.filter((id) => records.get(id)?.health !== "missing");
+    selectedSkillList.replaceChildren();
+    for (const id of mascotSelectedSkillIds) {
+      const skill = records.get(id);
+      if (!skill) continue;
+      const chip = document.createElement("span");
+      chip.className = "desktop-mascot-attachment is-skill";
+      const icon = document.createElement("span");
+      icon.className = "ui-symbol ui-symbol-sparkle";
+      icon.setAttribute("aria-hidden", "true");
+      const name = document.createElement("span");
+      name.textContent = skill.name;
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.dataset.skillId = id;
+      remove.setAttribute("aria-label", uiText(`${skill.name}を今回の送信から外す`, `Remove ${skill.name} from this turn`));
+      remove.innerHTML = '<span class="ui-symbol ui-symbol-close" aria-hidden="true"></span>';
+      chip.append(icon, name, remove);
+      selectedSkillList.appendChild(chip);
+    }
+    syncMascotContextVisibility();
+    resizeInput();
+  };
+  const renderMascotSkillPicker = () => {
+    const records = mascotSkillRecords(skillSearch.value);
+    mascotSkillPickerIndex = Math.max(0, Math.min(mascotSkillPickerIndex, Math.max(0, records.length - 1)));
+    skillPicker.replaceChildren();
+    if (!records.length) {
+      const empty = document.createElement("p");
+      empty.textContent = uiText("該当するSkillがありません", "No matching Skills");
+      skillPicker.appendChild(empty);
+      return;
+    }
+    records.forEach((skill, index) => {
+      const selected = mascotSelectedSkillIds.includes(skill.id);
+      const button = document.createElement("button");
+      button.type = "button";
+      button.dataset.skillId = skill.id;
+      button.setAttribute("role", "option");
+      button.setAttribute("aria-selected", String(selected));
+      button.classList.toggle("is-keyboard-active", index === mascotSkillPickerIndex);
+      const icon = document.createElement("span");
+      icon.className = "ui-symbol ui-symbol-sparkle";
+      icon.setAttribute("aria-hidden", "true");
+      const copy = document.createElement("span");
+      const name = document.createElement("strong");
+      name.textContent = skill.name;
+      const description = document.createElement("small");
+      description.textContent = skill.description || skill.sourceName || uiText("端末に追加済み", "Installed");
+      copy.append(name, description);
+      const status = document.createElement("em");
+      status.textContent = selected ? uiText("選択中", "Selected") : skill.active ? uiText("使用中", "Active") : uiText("今回のみ", "This turn");
+      button.append(icon, copy, status);
+      button.addEventListener("pointermove", () => {
+        if (mascotSkillPickerIndex === index) return;
+        mascotSkillPickerIndex = index;
+        skillPicker.querySelectorAll("button").forEach((candidate, candidateIndex) => candidate.classList.toggle("is-keyboard-active", candidateIndex === index));
+      });
+      skillPicker.appendChild(button);
+    });
+  };
+  const closeMascotAddPopover = ({ returnFocus = false } = {}) => {
+    if (addPopover.hidden) return;
+    addPopover.hidden = true;
+    attachButton.setAttribute("aria-expanded", "false");
+    mascotSkillTrigger = null;
+    if (returnFocus) input.focus({ preventScroll: true });
+  };
+  const openMascotAddPopover = ({ query = "", trigger = null, focusSearch = true } = {}) => {
+    mascotSkillTrigger = trigger;
+    mascotSkillPickerIndex = 0;
+    addPopover.hidden = false;
+    attachButton.setAttribute("aria-expanded", "true");
+    skillSearch.value = query;
+    renderMascotSkillPicker();
+    if (focusSearch) requestAnimationFrame(() => skillSearch.focus({ preventScroll: true }));
+  };
+  const toggleMascotSkill = (skillId) => {
+    if (mascotSelectedSkillIds.includes(skillId)) mascotSelectedSkillIds = mascotSelectedSkillIds.filter((id) => id !== skillId);
+    else if (mascotSelectedSkillIds.length >= 8) { setStatus(uiText("1回に指定できるSkillは8件までです", "You can select up to 8 Skills per turn"), 5000); return; }
+    else mascotSelectedSkillIds.push(skillId);
+    if (mascotSkillTrigger) {
+      const before = input.value.slice(0, mascotSkillTrigger.start);
+      input.value = `${before}${input.value.slice(mascotSkillTrigger.end)}`;
+      input.setSelectionRange(before.length, before.length);
+      closeMascotAddPopover({ returnFocus: true });
+    }
+    renderMascotSelectedSkills();
+    renderMascotSkillPicker();
+  };
+  const mascotSkillTriggerAtCursor = () => {
+    const cursor = input.selectionStart;
+    const before = input.value.slice(0, cursor);
+    const match = before.match(/(?:^|[\s\n])([/@])([^\s/@]*)$/u);
+    return match ? { start: cursor - match[1].length - match[2].length, end: cursor, query: match[2] } : null;
   };
   const setFileDragActive = (active) => {
     document.body.classList.toggle("is-file-dragging", Boolean(active));
@@ -651,6 +780,11 @@ window.addEventListener("DOMContentLoaded", () => {
   const setOpen = (open, { focus = false, temporaryInteraction = false } = {}) => {
     clearTimeout(autoCloseTimer);
     dock.classList.toggle("is-open", Boolean(open));
+    if (!open) {
+      addPopover.hidden = true;
+      attachButton.setAttribute("aria-expanded", "false");
+      mascotSkillTrigger = null;
+    }
     if (open && temporaryInteraction && !temporaryInteractionHold) {
       temporaryInteractionHold = true;
       ipcRenderer.invoke("mascotInline:interactionHold", true).catch(() => {});
@@ -668,7 +802,42 @@ window.addEventListener("DOMContentLoaded", () => {
     renderMascotAttachments();
     input.focus({ preventScroll: true });
   });
-  attachButton.addEventListener("click", () => fileInput.click());
+  selectedSkillList.addEventListener("click", (event) => {
+    const remove = event.target.closest("button[data-skill-id]");
+    if (!remove) return;
+    mascotSelectedSkillIds = mascotSelectedSkillIds.filter((id) => id !== remove.dataset.skillId);
+    renderMascotSelectedSkills();
+    renderMascotSkillPicker();
+    input.focus({ preventScroll: true });
+  });
+  attachButton.addEventListener("click", () => {
+    if (addPopover.hidden) openMascotAddPopover();
+    else closeMascotAddPopover({ returnFocus: true });
+  });
+  dock.querySelector("#desktopMascotAddFile").addEventListener("click", () => {
+    closeMascotAddPopover();
+    fileInput.click();
+  });
+  dock.querySelector("#desktopMascotManageSkills").addEventListener("click", () => {
+    closeMascotAddPopover();
+    ipcRenderer.invoke("mascotInline:openControl");
+  });
+  skillPicker.addEventListener("click", (event) => {
+    const option = event.target.closest("button[data-skill-id]");
+    if (option) toggleMascotSkill(option.dataset.skillId);
+  });
+  skillSearch.addEventListener("input", () => { mascotSkillPickerIndex = 0; renderMascotSkillPicker(); });
+  skillSearch.addEventListener("keydown", (event) => {
+    const records = mascotSkillRecords(skillSearch.value);
+    if (event.key === "Escape") { event.preventDefault(); closeMascotAddPopover({ returnFocus: true }); return; }
+    if (["ArrowDown", "ArrowUp"].includes(event.key) && records.length) {
+      event.preventDefault();
+      mascotSkillPickerIndex = (mascotSkillPickerIndex + (event.key === "ArrowDown" ? 1 : -1) + records.length) % records.length;
+      renderMascotSkillPicker();
+      return;
+    }
+    if (event.key === "Enter" && records[mascotSkillPickerIndex]) { event.preventDefault(); toggleMascotSkill(records[mascotSkillPickerIndex].id); }
+  });
   fileInput.addEventListener("change", () => {
     addMascotFiles(fileInput.files);
     fileInput.value = "";
@@ -1149,6 +1318,7 @@ window.addEventListener("DOMContentLoaded", () => {
     if (workPanel.classList.contains("is-open") && !workPanel.contains(event.target) && !workHistoryButton.contains(event.target)) {
       setWorkPanelOpen(false);
     }
+    if (!addPopover.hidden && !addPopover.contains(event.target) && !attachButton.contains(event.target)) closeMascotAddPopover();
   });
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape" && workPanel.classList.contains("is-open")) setWorkPanelOpen(false);
@@ -1199,11 +1369,29 @@ window.addEventListener("DOMContentLoaded", () => {
     }
   });
   input.addEventListener("keydown", (event) => {
-    if (event.key === "Escape") { event.preventDefault(); input.blur(); setOpen(false); }
+    if (mascotSkillTrigger && !addPopover.hidden) {
+      const records = mascotSkillRecords(mascotSkillTrigger.query);
+      if (event.key === "Escape") { event.preventDefault(); closeMascotAddPopover(); return; }
+      if (["ArrowDown", "ArrowUp"].includes(event.key) && records.length) {
+        event.preventDefault();
+        mascotSkillPickerIndex = (mascotSkillPickerIndex + (event.key === "ArrowDown" ? 1 : -1) + records.length) % records.length;
+        renderMascotSkillPicker();
+        return;
+      }
+      if (event.key === "Enter" && !event.shiftKey && records[mascotSkillPickerIndex]) {
+        event.preventDefault();
+        toggleMascotSkill(records[mascotSkillPickerIndex].id);
+        return;
+      }
+    }
+    if (event.key === "Escape") { event.preventDefault(); closeMascotAddPopover(); input.blur(); setOpen(false); }
     if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); form.requestSubmit(); }
   });
   input.addEventListener("input", () => {
     if (autoSendCountdownCommand && input.value.trim() !== autoSendCountdownCommand) clearAutoSendCountdown();
+    const trigger = mascotSkillTriggerAtCursor();
+    if (trigger) openMascotAddPopover({ query: trigger.query, trigger, focusSearch: false });
+    else if (mascotSkillTrigger) closeMascotAddPopover();
     resizeInput();
   });
   autoSendCountdown.addEventListener("click", (event) => {
@@ -1216,7 +1404,7 @@ window.addEventListener("DOMContentLoaded", () => {
       setStatus("自動送信を取り消しました。内容を編集できます", 4200);
     }
   });
-  const sendMascotMessage = async (message, attachments = []) => {
+  const sendMascotMessage = async (message, attachments = [], selectedSkillIds = []) => {
     setSendingControls(true);
     const useActiveRealtime = Boolean(realtimePeer);
     let streamOwnsBusyState = false;
@@ -1233,6 +1421,7 @@ window.addEventListener("DOMContentLoaded", () => {
       const result = await ipcRenderer.invoke("mascotInline:chat", {
         message,
         attachmentPaths: attachments.map((item) => item.path),
+        selectedSkillIds,
       });
       if (["screen", "browser", "computer"].includes(result.permissionRequest?.type)) {
         showPermission(result);
@@ -1253,6 +1442,10 @@ window.addEventListener("DOMContentLoaded", () => {
       }
     } catch (error) {
       if (attachments.length) mergeMascotAttachments(attachments);
+      if (selectedSkillIds.length) {
+        mascotSelectedSkillIds = [...new Set([...mascotSelectedSkillIds, ...selectedSkillIds])];
+        renderMascotSelectedSkills();
+      }
       const interrupted = /interrupt|cancel|abort|中断/i.test(String(error.message || ""));
       const interruptedText = appState?.interactionMode === "work"
         ? "作業を中断しました。履歴から内容を確認できます。"
@@ -1265,7 +1458,7 @@ window.addEventListener("DOMContentLoaded", () => {
         input.focus();
         const followUp = pendingFollowUp;
         pendingFollowUp = null;
-        if (followUp) queueMicrotask(() => sendMascotMessage(followUp.message, followUp.attachments));
+        if (followUp) queueMicrotask(() => sendMascotMessage(followUp.message, followUp.attachments, followUp.selectedSkillIds));
       }
     }
   };
@@ -1279,12 +1472,13 @@ window.addEventListener("DOMContentLoaded", () => {
     input.focus();
     const followUp = pendingFollowUp;
     pendingFollowUp = null;
-    if (followUp) queueMicrotask(() => sendMascotMessage(followUp.message, followUp.attachments));
+    if (followUp) queueMicrotask(() => sendMascotMessage(followUp.message, followUp.attachments, followUp.selectedSkillIds));
   };
 
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     const attachments = mascotAttachments.slice();
+    const selectedSkillIds = [...mascotSelectedSkillIds];
     const message = input.value.trim() || (attachments.length
       ? uiText("添付したファイルを確認してください。", "Please review the attached files.")
       : "");
@@ -1297,13 +1491,20 @@ window.addEventListener("DOMContentLoaded", () => {
       setStatus(uiText("ファイル添付はLiveを停止してから送信してください", "Stop Live before sending file attachments"), 6000);
       return;
     }
+    if (realtimePeer && selectedSkillIds.length) {
+      setStatus(uiText("Skillを指定した送信はLiveを停止してから行ってください", "Stop Live before sending with selected Skills"), 6000);
+      return;
+    }
     clearAutoSendCountdown();
     input.value = "";
     mascotAttachments = [];
+    mascotSelectedSkillIds = [];
     renderMascotAttachments();
+    renderMascotSelectedSkills();
+    closeMascotAddPopover();
     resizeInput();
     if (sending) {
-      pendingFollowUp = { message, attachments };
+      pendingFollowUp = { message, attachments, selectedSkillIds };
       stopTtsPlayback();
       stopButton.disabled = true;
       setStatus("差し込みを受け付けました。現在の応答を止めています…", 30_000);
@@ -1315,7 +1516,7 @@ window.addEventListener("DOMContentLoaded", () => {
       }
       return;
     }
-    await sendMascotMessage(message, attachments);
+    await sendMascotMessage(message, attachments, selectedSkillIds);
   });
 
   stopButton.addEventListener("click", async () => {
@@ -2345,6 +2546,8 @@ window.addEventListener("DOMContentLoaded", () => {
     appState = { ...appState, ...state };
     applyInterfaceLanguage(appState.language);
     applyInteractionMode(appState);
+    renderMascotSelectedSkills();
+    if (!addPopover.hidden) renderMascotSkillPicker();
   });
   ipcRenderer.on("mascot:tts", (_event, payload) => {
     appState = { ...appState, ttsEnabled: Boolean(payload?.enabled), ttsProvider: payload?.provider || "system" };
@@ -2393,6 +2596,7 @@ window.addEventListener("DOMContentLoaded", () => {
     applyCharacter(state.characters?.find((character) => character.id === state.characterId));
     applyWindowSettings(state);
     applyPointerState({ mode: state.mascotPointerMode, autoHidden: false });
+    renderMascotSelectedSkills();
     chatHistoryState = Array.isArray(state.conversationHistory) ? state.conversationHistory : [];
     ipcRenderer.invoke("mascotInline:getWorkHistory").then((payload) => {
       workHistoryState = payload;

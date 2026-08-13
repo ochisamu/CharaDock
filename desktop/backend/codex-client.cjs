@@ -550,14 +550,15 @@ class CodexAppServerClient {
     return true;
   }
 
-  sendMessage(message, { onDelta, onEvent, localImagePath = "", localImagePaths = [], localAudioPath = "", outputSchema = null, timeoutMs = 180_000 } = {}) {
+  sendMessage(message, { onDelta, onEvent, localImagePath = "", localImagePaths = [], localAudioPath = "", skillItems = null, outputSchema = null, timeoutMs = 180_000 } = {}) {
     const run = async () => {
       this.turnStarting = true;
       this.interruptRequested = false;
       await this.ensureStarted();
       const threadId = await this.ensureThread();
       const input = [{ type: "text", text: String(message || "").trim() }];
-      for (const skill of this.turnStartSkillItems) {
+      const turnSkills = Array.isArray(skillItems) ? skillItems : this.turnStartSkillItems;
+      for (const skill of turnSkills) {
         if (skill && typeof skill === "object" && String(skill.name || "").trim()) {
           input.push({ type: "skill", name: String(skill.name), path: String(this.pathMapper(skill.path || "")) });
         }

@@ -264,10 +264,10 @@ test("conversation and work surfaces expose history, folder access, interruption
   assert.match(controlPreload, /work:getHistory/);
   assert.match(controlPreload, /work:openDirectory/);
   assert.match(controlPreload, /work:openArtifact/);
-  assert.match(control, /pendingChatFollowUp = \{ message, attachments \}/);
+  assert.match(control, /pendingChatFollowUp = \{ message, attachments, selectedSkillIds \}/);
   assert.match(control, /bindFileDropZone\(\$\("#chatForm"\)/);
   assert.match(control, /appendWorkArtifactActions/);
-  assert.match(mascot, /pendingFollowUp = \{ message, attachments \}/);
+  assert.match(mascot, /pendingFollowUp = \{ message, attachments, selectedSkillIds \}/);
   assert.match(mascot, /webUtils\.getPathForFile\(file\)/);
   assert.match(mascot, /id="desktopMascotAttachmentList"/);
   assert.match(mascot, /fileDrop\.id = "desktopMascotFileDrop"/);
@@ -279,6 +279,23 @@ test("conversation and work surfaces expose history, folder access, interruption
   assert.match(main, /work:openDirectory/);
   assert.match(main, /async function setCharacter\(characterId\) \{[\s\S]*if \(activeWorkRunId\)[\s\S]*Characters cannot be switched while Work is running/);
   assert.match(control, /syncCharacterSwitchAvailability[\s\S]*button\.disabled = workRunning/);
+});
+
+test("chat composers select per-turn Skills from plus, slash, and at shortcuts", () => {
+  const html = fs.readFileSync(path.join(projectRoot, "desktop", "control.html"), "utf8");
+  const control = fs.readFileSync(path.join(projectRoot, "desktop", "control.js"), "utf8");
+  const mascot = fs.readFileSync(path.join(projectRoot, "desktop", "preload-mascot.cjs"), "utf8");
+  const main = fs.readFileSync(path.join(projectRoot, "desktop", "main.cjs"), "utf8");
+  for (const id of ["chatAddButton", "chatAddPopover", "chatSkillPickerSearch", "chatSkillPickerList", "chatSelectedSkillList"]) {
+    assert.match(html, new RegExp(`id="${id}"`));
+  }
+  assert.match(control, /match\(\/(?:[\s\S])*\(\[\/@\]\)/);
+  assert.match(control, /selectedSkillIds: selectedSkillIds|selectedSkillIds \}/);
+  assert.match(mascot, /id="desktopMascotAddPopover"/);
+  assert.match(mascot, /id="desktopMascotSkillPicker"/);
+  assert.match(mascot, /selectedSkillIds,/);
+  assert.match(main, /function explicitTurnSkillItems\(value\)/);
+  assert.match(main, /skillItems: turnSkillItems/);
 });
 
 test("avatar output buttons open a sandboxed companion preview without covering the mascot", () => {
@@ -454,7 +471,7 @@ test("Character memory and continuation are grouped, scoped, editable, private, 
   assert.match(preload, /continuation:clear/);
   assert.match(main, /function maybeOfferStartupContinuation/);
   assert.match(main, /preferences\.data\.continuationStartupSpeechEnabled === false/);
-  assert.match(main, /dynamicTools: \[\.\.\.MEMORY_DYNAMIC_TOOLS, \.\.\.CONTINUATION_DYNAMIC_TOOLS\]/);
+  assert.match(main, /dynamicTools: \[\.\.\.MEMORY_DYNAMIC_TOOLS, \.\.\.CONTINUATION_DYNAMIC_TOOLS, \.\.\.SKILL_CREATOR_DYNAMIC_TOOLS\]/);
   assert.match(main, /developerInstructions: `\$\{workModeInstructions\(\)\}[\s\S]*MEMORY_TOOL_INSTRUCTIONS/);
   assert.match(main, /since: appSessionStartedAt/);
   assert.match(main, /startupContinuationAttempts\.has\(attemptKey\)/);

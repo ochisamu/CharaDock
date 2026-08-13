@@ -4,7 +4,7 @@ const path = require("node:path");
 const { pathToFileURL } = require("node:url");
 const { ipcRenderer } = require("electron");
 
-const { resolveIrodoriModelDirectory } = require("./lib/irodori-webgpu.cjs");
+const { irodoriGenerationSettings, resolveIrodoriModelDirectory } = require("./lib/irodori-webgpu.cjs");
 const { wavDataUrl } = require("./lib/supertonic-tts.cjs");
 
 const V3_MODEL_NAMES = Object.freeze({
@@ -157,18 +157,23 @@ async function synthesizeRequest(request) {
   const startedAt = performance.now();
   const version = request.version === "500m-v3" ? "500m-v3" : "v4-small";
   const mode = version === "v4-small" && request.mode === "design" ? "design" : "reference";
+  const generation = irodoriGenerationSettings(version, {
+    numSteps: request.numSteps,
+    tScheduleMode: request.tScheduleMode,
+    cfgExecution: request.cfgExecution,
+  });
   const engine = await loadEngine(request.modelDirectory, version);
   const reference = mode === "reference" ? await loadReference(request.referenceAudioPath, version === "500m-v3" ? 60 : 120) : null;
   const preparedAt = performance.now();
   const options = {
-    numSteps: Math.min(40, Math.max(4, Math.round(Number(request.numSteps) || 8))),
+    numSteps: generation.numSteps,
     swayCoeff: -1,
     seed: Math.max(0, Math.round(Number(request.seed) || 0)),
   };
   if (version === "500m-v3") {
     const result = await engine.synthesize(String(request.text || ""), reference.samples, 48000, {
       ...options,
-      tScheduleMode: request.tScheduleMode === "linear" ? "linear" : "sway",
+      tScheduleMode: generation.tScheduleMode,
       speakerCacheKey: reference.key,
     });
     return {
@@ -181,6 +186,14 @@ async function synthesizeRequest(request) {
         referenceCacheHit: reference.cacheHit,
         speakerCacheHit: Boolean(result.speakerCacheHit),
         captionCacheHit: false,
+        generationSchedule: generation.tScheduleMode,
+        generationSteps: generation.numSteps,
+        generationCfgExecution: generation.cfgExecution,
+        modelVersion: version,
+        modelPrecision: "fp16",
+        modelRelease: String(request.modelRelease || ""),
+        textLength: Array.from(String(request.text || "")).length,
+        captionLength: 0,
       },
     };
   }
@@ -204,8 +217,8 @@ async function synthesizeRequest(request) {
     {
       ...options,
       speaker,
-      schedule: request.tScheduleMode === "linear" ? "linear" : "sway",
-      cfgExecution: request.cfgExecution === "batched" ? "batched" : "sequential",
+      schedule: generation.tScheduleMode,
+      cfgExecution: generation.cfgExecution,
       trimTrailingUtterance: true,
     },
   );
@@ -219,6 +232,17 @@ async function synthesizeRequest(request) {
       referenceCacheHit: reference?.cacheHit || false,
       speakerCacheHit,
       captionCacheHit: (Number(engine.captionCacheHits) || 0) > captionCacheHitsBefore,
+      generationSchedule: generation.tScheduleMode,
+      generationSteps: generation.numSteps,
+      generationCfgExecution: generation.cfgExecution,
+      modelVersion: version,
+      modelPrecision: request.precision === "int4" ? "int4" : "fp16",
+      modelRelease: String(request.modelRelease || ""),
+      textLength: Array.from(String(request.text || "")).length,
+      captionLength: Array.from(String(request.caption || "")).length,
+      sequenceLength: Number(result.sequenceLength) || 0,
+      trimmedSequenceLength: Number(result.trimmedSequenceLength) || 0,
+      trailingUtteranceTrimmed: Boolean(result.trailingUtteranceTrimmed),
     },
   };
 }

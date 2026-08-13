@@ -187,8 +187,17 @@ function normalizeWorkHistory(value) {
   });
 }
 
+function migrateSkillAssignmentCharacter(data, legacyId, builtInId) {
+  const characters = data.skillAssignments?.characters;
+  if (!characters || typeof characters !== "object" || Array.isArray(characters) || !characters[legacyId]) return false;
+  characters[builtInId] = [...new Set([...(characters[builtInId] || []), ...characters[legacyId]])];
+  delete characters[legacyId];
+  return true;
+}
+
 function migrateBundledTowaPreferenceData(data) {
   let changed = false;
+  if (migrateSkillAssignmentCharacter(data, LEGACY_TOWA_CHARACTER_ID, BUILT_IN_TOWA_CHARACTER_ID)) changed = true;
   if (data.characterId === LEGACY_TOWA_CHARACTER_ID) {
     data.characterId = BUILT_IN_TOWA_CHARACTER_ID;
     changed = true;
@@ -238,6 +247,7 @@ function migrateBundledKohakuDisplayName(data) {
 
 function migrateBundledNikePreferenceData(data) {
   let changed = false;
+  if (migrateSkillAssignmentCharacter(data, LEGACY_NIKE_CHARACTER_ID, BUILT_IN_NIKE_CHARACTER_ID)) changed = true;
   if (data.characterId === LEGACY_NIKE_CHARACTER_ID) {
     data.characterId = BUILT_IN_NIKE_CHARACTER_ID;
     changed = true;

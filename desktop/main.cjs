@@ -92,9 +92,10 @@ const { localAttachmentInstructions, normalizeLocalAttachments } = require("./li
 const { RealtimeTurnBuffer, normalizedText } = require("./lib/realtime-turn-buffer.cjs");
 const {
   assignedSkillIds,
+  createOrUpdateLocalSkill,
   installResolvedSkill,
   installedDirectory,
-  listOpenAiCuratedSkills,
+  listTrustedSkillCatalog,
   normalizeManagedSkills,
   normalizeSkillAssignments,
   resolveSkillSource,
@@ -275,6 +276,8 @@ let remoteTailscaleStatus = { installed: null, active: false, managed: false, ur
 const REMOTE_TTS_OWNER_ID = "charadock-link";
 let codexClient;
 let workCodexClient;
+let skillMutationQueue = Promise.resolve();
+let skillMutationActive = false;
 let browserCodexClient;
 let computerCodexClient;
 let macComputerSkillClient;
@@ -490,6 +493,24 @@ const CONTINUATION_DYNAMIC_TOOLS = Object.freeze([{
     },
   },
 }]);
+const SKILL_CREATOR_DYNAMIC_TOOLS = Object.freeze([{
+  type: "function",
+  name: "skill_create",
+  description: "Save a user-approved, text-only reusable CharaDock Skill derived from the conversation. Call only after showing the exact draft and receiving explicit confirmation. Never include secrets, personal paths, logs, or an unedited transcript.",
+  inputSchema: {
+    type: "object",
+    additionalProperties: false,
+    required: ["name", "description", "instructions", "scope", "confirmed"],
+    properties: {
+      name: { type: "string", pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$", minLength: 2, maxLength: 64 },
+      description: { type: "string", minLength: 20, maxLength: 600 },
+      instructions: { type: "string", minLength: 80, maxLength: 12000 },
+      scope: { type: "string", enum: ["character", "all"] },
+      confirmed: { type: "boolean", description: "Must be true only after the user explicitly approved the displayed draft." },
+      replaceExisting: { type: "boolean", description: "True only when the user explicitly approved replacing an existing same-named CharaDock Skill." },
+    },
+  },
+}]);
 const MEMORY_TOOL_INSTRUCTIONS = [
   "You have character-scoped memory tools for durable personalization. Treat them as a silent bio/notepad for useful facts about the user, not as a transcript or project log.",
   "Evaluate every user message, including ordinary conversation and Work requests, without waiting for phrases such as 'remember this'. Call memory_save when the user clearly shares something likely to remain true for months or years and likely to change how you should respond in similar future situations: a preferred name, stable preference, recurring interaction need, background fact, or long-term personal goal.",
@@ -505,6 +526,12 @@ const CONTINUATION_TOOL_INSTRUCTIONS = [
   "Call it only after the user clearly establishes a durable goal, decision or constraint, explicitly unfinished task, or agreed next step. Do not call it every turn and do not copy the conversation transcript. Set replaceGoal only when the user explicitly replaces the previous goal.",
   "Never use it for inferred completion. Verified Work completion is stored by the app only after the worker finishes successfully.",
   "Do not mention the internal tool unless the user asks about continuation records.",
+].join("\n");
+const SKILL_CREATOR_TOOL_INSTRUCTIONS = [
+  "Skill Creator is built in. When the user asks to turn the current conversation, approach, or repeated workflow into a Skill, derive only the reusable procedure rather than copying the transcript.",
+  "Show a compact draft with a lowercase kebab-case name, trigger-oriented description, instructions, and target (this character or all characters). Ask for one explicit confirmation before calling skill_create.",
+  "Never save secrets, credentials, personal paths, temporary logs, one-off details, or unsupported assumptions. The created Skill is text-only. Set replaceExisting only after explicit approval to replace an existing same-named Skill.",
+  "Do not create a Skill merely because it might be useful; the user must ask for it or accept your proposal, and must approve the exact draft before saving.",
 ].join("\n");
 
 function interfaceLanguage() {
@@ -878,8 +905,56 @@ async function handleContinuationToolCall(params = {}) {
   return memoryToolResult({ updated: true, scope: scope.type, summary: updated.record });
 }
 
+async function handleSkillCreatorToolCall(params = {}) {
+  const tool = String(params.tool || "").replace(/^skills?[./]/, "");
+  if (!(tool === "skill_create" || tool === "create")) throw new Error(`未対応のSkill操作です: ${params.tool}`);
+  const args = params.arguments && typeof params.arguments === "object" ? params.arguments : {};
+  if (args.confirmed !== true) throw new Error(mainText("Skillを保存する前に、内容を提示してユーザーの明示的な確認を得てください。", "Show the exact Skill draft and obtain the user's explicit confirmation before saving it."));
+  return runSkillMutation(async () => {
+  const current = normalizeManagedSkills(preferences.data.managedSkills);
+  const existing = current.find((skill) => skill.sourceKind === "charadock-created" && skill.name === String(args.name || "").trim());
+  if (existing && args.replaceExisting !== true) {
+    throw new Error(mainText("同名のSkillがあります。置き換える内容を提示し、ユーザーの明示的な確認を得てください。", "A Skill with this name already exists. Show the replacement and obtain explicit confirmation."));
+  }
+  if (!existing && current.length >= 100) throw new Error(mainText("端末に保存できるSkillは100件までです。不要なSkillを削除してから再試行してください。", "Up to 100 Skills can be stored. Remove an unused Skill and try again."));
+  const record = await createOrUpdateLocalSkill({
+    name: args.name,
+    description: args.description,
+    instructions: args.instructions,
+  }, managedSkillRoot());
+  const managedSkills = normalizeManagedSkills([...current.filter((skill) => skill.id !== record.id), record]);
+  const assignments = normalizeSkillAssignments(preferences.data.skillAssignments, managedSkills.map((skill) => skill.id));
+  const clearedAssignments = {
+    all: assignments.all.filter((id) => id !== record.id),
+    characters: Object.fromEntries(Object.entries(assignments.characters).flatMap(([characterId, ids]) => {
+      const filtered = ids.filter((id) => id !== record.id);
+      return filtered.length ? [[characterId, filtered]] : [];
+    })),
+  };
+  const skillAssignments = assignmentWithSkill(clearedAssignments, record.id, args.scope === "all"
+    ? { scope: "all" }
+    : { scope: "character", characterId: activeCharacter().id });
+  preferences.patch({
+    managedSkills,
+    skillAssignments: normalizeSkillAssignments(skillAssignments, managedSkills.map((skill) => skill.id)),
+  });
+  broadcastAppState();
+  diagnosticLog?.write("info", "skill-created", { name: record.name, scope: args.scope === "all" ? "all" : "character" });
+  return memoryToolResult({
+    saved: true,
+    replaced: Boolean(existing),
+    skill: { id: record.id, name: record.name, description: record.description },
+    scope: args.scope === "all" ? "all" : "character",
+    appliesFrom: "next-request",
+  });
+  });
+}
+
 async function handleCharacterContextToolCall(params = {}) {
   const tool = String(params.tool || "");
+  if (tool === "skill_create" || tool.startsWith("skill.") || params.namespace === "skill") {
+    return handleSkillCreatorToolCall(params);
+  }
   if (tool.startsWith("continuation_") || tool.startsWith("continuation.") || params.namespace === "continuation") {
     return handleContinuationToolCall(params);
   }
@@ -1381,8 +1456,8 @@ function remoteTtsModelSettings(characterId = preferences.data.characterId) {
     const referencePath = voice ? irodoriVoiceLibrary.voicePath(voice) : "";
     const variants = [
       { value: "500m-v3:fp16", label: "500M-v3 · FP16", version: "500m-v3", precision: "fp16", directory: preferences.data.irodoriModelDirectory },
-      { value: "v4-small:fp16", label: "v4 Small · FP16", version: "v4-small", precision: "fp16", directory: preferences.data.irodoriV4ModelDirectory },
-      { value: "v4-small:int4", label: "v4 Small · INT4", version: "v4-small", precision: "int4", directory: preferences.data.irodoriV4Int4ModelDirectory },
+      { value: "v4-small:fp16", label: "v4.1 Small · FP16", version: "v4-small", precision: "fp16", directory: preferences.data.irodoriV4ModelDirectory },
+      { value: "v4-small:int4", label: "v4.1 Small · INT4", version: "v4-small", precision: "int4", directory: preferences.data.irodoriV4Int4ModelDirectory },
     ].map((variant) => ({
       ...variant,
       available: irodoriModelStatus(variant.directory, referencePath, irodoriWebGpuAvailable, { version: variant.version, mode: settings.irodoriMode }).modelReady,
@@ -1974,27 +2049,114 @@ function managedSkillRoot() {
   return path.join(app.getPath("userData"), "skills");
 }
 
+const BUILTIN_SKILL_CREATOR_ID = "charadock-skill-creator";
+
+function builtInSkillCreatorDirectory() {
+  return path.join(app.getPath("userData"), "built-in-skills", "skill-creator");
+}
+
+function ensureBuiltInSkillCreator() {
+  const source = path.join(projectRoot, ".agents", "skills", "skill-creator", "SKILL.md");
+  const destination = path.join(builtInSkillCreatorDirectory(), "SKILL.md");
+  const content = fs.readFileSync(source);
+  try {
+    if (fs.readFileSync(destination).equals(content)) return destination;
+  } catch {}
+  fs.mkdirSync(path.dirname(destination), { recursive: true, mode: 0o700 });
+  fs.writeFileSync(destination, content, { mode: 0o600 });
+  return destination;
+}
+
+function builtInSkillCreatorItem() {
+  return { name: "skill-creator", path: builtInSkillCreatorDirectory() };
+}
+
+function publicBuiltInSkillCreator() {
+  return {
+    id: BUILTIN_SKILL_CREATOR_ID,
+    name: "skill-creator",
+    description: mainText("会話の流れから再利用できる手順を抽出し、確認後にCharaDock Skillとして保存します。", "Turns a useful conversation into a reusable CharaDock Skill after you approve the draft."),
+    repository: "CharaDock",
+    sourceUrl: "",
+    commitSha: "",
+    skillPath: ".agents/skills/skill-creator",
+    sourceKind: "charadock-builtin",
+    sourceName: "CharaDock",
+    category: "productivity",
+    trusted: true,
+    license: "Apache-2.0",
+    builtIn: true,
+    health: fs.existsSync(path.join(builtInSkillCreatorDirectory(), "SKILL.md")) ? "ready" : "missing",
+    assigned: true,
+    active: true,
+  };
+}
+
 function normalizedSkillPreferences() {
   const skills = normalizeManagedSkills(preferences.data.managedSkills);
   const assignments = normalizeSkillAssignments(preferences.data.skillAssignments, skills.map((skill) => skill.id));
   return { skills, assignments };
 }
 
+function runSkillMutation(task) {
+  const guardedTask = async () => {
+    skillMutationActive = true;
+    try { return await task(); }
+    finally { skillMutationActive = false; }
+  };
+  const result = skillMutationQueue.then(guardedTask, guardedTask);
+  skillMutationQueue = result.catch(() => {});
+  return result;
+}
+
+function assignmentWithSkill(assignments, skillId, target, enabled = true) {
+  const next = { all: [...(assignments?.all || [])], characters: { ...(assignments?.characters || {}) } };
+  const update = (items) => enabled ? [...new Set([...(items || []), skillId])] : (items || []).filter((id) => id !== skillId);
+  if (target?.scope === "all") {
+    next.all = update(next.all);
+    if (enabled) {
+      for (const [characterId, ids] of Object.entries(next.characters)) {
+        const filtered = ids.filter((id) => id !== skillId);
+        if (filtered.length) next.characters[characterId] = filtered;
+        else delete next.characters[characterId];
+      }
+    }
+  } else {
+    const characterId = String(target?.characterId || preferences.data.characterId);
+    if (enabled && next.all.includes(skillId)) return next;
+    const assigned = update(next.characters[characterId] || []);
+    if (assigned.length) next.characters[characterId] = assigned;
+    else delete next.characters[characterId];
+  }
+  return next;
+}
+
 function publicSkillState() {
   const { skills, assignments } = normalizedSkillPreferences();
   const activeIds = new Set(assignedSkillIds(assignments, preferences.data.characterId));
+  const health = (skill) => {
+    const directory = installedDirectory(managedSkillRoot(), skill);
+    try { return fs.statSync(path.join(directory, "SKILL.md")).isFile() ? "ready" : "missing"; }
+    catch { return "missing"; }
+  };
   return {
-    installed: skills.map(({ directoryName: _directoryName, ...skill }) => ({ ...skill, active: activeIds.has(skill.id) })),
+    installed: [publicBuiltInSkillCreator(), ...skills.map(({ directoryName: _directoryName, ...skill }) => {
+      const skillHealth = health({ ...skill, directoryName: _directoryName });
+      return { ...skill, health: skillHealth, assigned: activeIds.has(skill.id), active: activeIds.has(skill.id) && skillHealth === "ready" };
+    })],
     assignments,
     activeCharacterId: preferences.data.characterId,
-    activeIds: [...activeIds],
+    activeIds: [BUILTIN_SKILL_CREATOR_ID, ...activeIds],
   };
 }
 
 function activeCharacterSkillItems(characterId = preferences.data.characterId) {
   const { skills, assignments } = normalizedSkillPreferences();
   const activeIds = new Set(assignedSkillIds(assignments, characterId));
-  return skills.flatMap((skill) => {
+  const builtIn = fs.existsSync(path.join(builtInSkillCreatorDirectory(), "SKILL.md"))
+    ? [builtInSkillCreatorItem()]
+    : [];
+  return [...builtIn, ...skills.flatMap((skill) => {
     if (!activeIds.has(skill.id)) return [];
     const directory = installedDirectory(managedSkillRoot(), skill);
     try {
@@ -2003,7 +2165,54 @@ function activeCharacterSkillItems(characterId = preferences.data.characterId) {
       return [];
     }
     return [{ name: skill.name, path: directory }];
+  })];
+}
+
+function normalizeTurnSkillIds(value) {
+  if (!Array.isArray(value)) return [];
+  const ids = [...new Set(value.map((id) => String(id || "").trim()).filter(Boolean))];
+  if (ids.length > 8) throw new Error(mainText("1回に指定できるSkillは8件までです。", "You can select up to 8 Skills per turn."));
+  return ids;
+}
+
+function explicitTurnSkillItems(value) {
+  const requestedIds = normalizeTurnSkillIds(value);
+  if (!requestedIds.length) return [];
+  const { skills } = normalizedSkillPreferences();
+  const available = new Map(skills.map((skill) => [skill.id, skill]));
+  return requestedIds.map((id) => {
+    if (id === BUILTIN_SKILL_CREATOR_ID) {
+      const item = builtInSkillCreatorItem();
+      if (!fs.existsSync(path.join(item.path, "SKILL.md"))) {
+        throw new Error(mainText("Skill Creatorを準備できませんでした。設定のSkillsから修復してください。", "Skill Creator is unavailable. Repair it from Skills in Settings."));
+      }
+      return item;
+    }
+    const skill = available.get(id);
+    if (!skill) throw new Error(mainText("選択したSkillが端末にありません。Skillsを開き直してください。", "A selected Skill is no longer installed. Reopen the Skills picker."));
+    const directory = installedDirectory(managedSkillRoot(), skill);
+    try {
+      if (!fs.statSync(path.join(directory, "SKILL.md")).isFile()) throw new Error("missing");
+    } catch {
+      throw new Error(mainText(`「${skill.name}」を読み込めません。設定のSkillsから修復してください。`, `Cannot load “${skill.name}”. Repair it from Skills in Settings.`));
+    }
+    return { name: skill.name, path: directory };
   });
+}
+
+function mergeTurnSkillItems(...groups) {
+  const items = [];
+  const seen = new Set();
+  for (const skill of groups.flat()) {
+    const name = String(skill?.name || "").trim();
+    const skillPath = String(skill?.path || "").trim();
+    if (!name || !skillPath) continue;
+    const key = `${name}\u0000${path.resolve(skillPath)}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    items.push({ name, path: skillPath });
+  }
+  return items;
 }
 
 function publicAppState() {
@@ -2763,6 +2972,7 @@ function broadcastAppState() {
     interactionMode: state.interactionMode,
     hasWorkDirectory: state.hasWorkDirectory,
     workDirectoryName: state.workDirectoryName,
+    skills: state.skills,
   });
   mascotWindow?.webContents.send("mascot:voiceInputSettings", {
     speechInputProvider: state.speechInputProvider,
@@ -2792,13 +3002,13 @@ function ensureWorkClient() {
     workCodexClient = new CodexAppServerClient({
       ...runtime,
       ...workCodexSettings(),
-      developerInstructions: `${workModeInstructions()}\n\n${MEMORY_TOOL_INSTRUCTIONS}\n\n${CONTINUATION_TOOL_INSTRUCTIONS}`,
+      developerInstructions: `${workModeInstructions()}\n\n${MEMORY_TOOL_INSTRUCTIONS}\n\n${CONTINUATION_TOOL_INSTRUCTIONS}\n\n${SKILL_CREATOR_TOOL_INSTRUCTIONS}`,
       sandbox: "workspace-write",
       approvalPolicy: "never",
       serviceName: "charadock_worker",
       personality: "friendly",
       webSearchMode: "live",
-      dynamicTools: [...MEMORY_DYNAMIC_TOOLS, ...CONTINUATION_DYNAMIC_TOOLS],
+      dynamicTools: [...MEMORY_DYNAMIC_TOOLS, ...CONTINUATION_DYNAMIC_TOOLS, ...SKILL_CREATOR_DYNAMIC_TOOLS],
       onDynamicToolCall: handleCharacterContextToolCall,
     });
   }
@@ -4992,6 +5202,7 @@ async function synthesizeIrodoriSegment(text) {
     pendingIrodoriRequests.set(requestId, { resolve, reject, timer });
   });
   const characterTts = characterTtsSettings();
+  const modelStatus = activeIrodoriStatus(null);
   const caption = characterTts.irodoriVersion === "v4-small"
     ? dynamicIrodoriCaption(characterTts.irodoriCaption, text, {
       enabled: characterTts.irodoriAutoEmotion,
@@ -5005,6 +5216,8 @@ async function synthesizeIrodoriSegment(text) {
     referenceAudioPath: activeIrodoriVoicePath(),
     version: characterTts.irodoriVersion,
     mode: characterTts.irodoriMode,
+    precision: characterTts.irodoriPrecision,
+    modelRelease: modelStatus.modelRelease,
     caption: caption.caption,
     emotion: caption.emotion,
     cfgExecution: preferences.data.irodoriCfgExecution,
@@ -5088,6 +5301,8 @@ function scheduleIrodoriPrewarm(delayMs = 3000) {
         referenceAudioPath,
         version: characterTtsSettings().irodoriVersion,
         mode: characterTtsSettings().irodoriMode,
+        precision: characterTtsSettings().irodoriPrecision,
+        modelRelease: activeIrodoriStatus(null).modelRelease,
         caption: characterTtsSettings().irodoriCaption,
         cfgExecution: preferences.data.irodoriCfgExecution,
         numSteps: preferences.data.irodoriSteps,
@@ -5829,8 +6044,13 @@ async function removeGeneratedCharacter(characterId) {
   delete characterWorkspaces[characterId];
   const continuationSummaries = { ...(preferences.data.continuationSummaries || {}) };
   delete continuationSummaries[characterId];
+  const skillAssignments = {
+    ...(preferences.data.skillAssignments || {}),
+    characters: { ...(preferences.data.skillAssignments?.characters || {}) },
+  };
+  delete skillAssignments.characters[characterId];
   characterHomeManager?.remove(characterId);
-  preferences.patch({ ...plan.patch, conversationHistories, characterMemories: memoryProfiles, characterWorkspaces, continuationSummaries });
+  preferences.patch({ ...plan.patch, conversationHistories, characterMemories: memoryProfiles, characterWorkspaces, continuationSummaries, skillAssignments });
   characterThumbnailCache.delete(`${plan.directory}:complete`);
   characterMotionCache.delete(plan.directory);
   lastPetPhraseIndex.delete(characterId);
@@ -6191,6 +6411,17 @@ function registerIpc() {
         decodeMs: Math.round(Number(metrics.decodeMs) || 0),
         referenceCacheHit: Boolean(metrics.referenceCacheHit),
         speakerCacheHit: Boolean(metrics.speakerCacheHit),
+        modelVersion: String(metrics.modelVersion || ""),
+        modelPrecision: String(metrics.modelPrecision || ""),
+        modelRelease: String(metrics.modelRelease || ""),
+        generationSchedule: String(metrics.generationSchedule || ""),
+        generationSteps: Math.round(Number(metrics.generationSteps) || 0),
+        generationCfgExecution: String(metrics.generationCfgExecution || ""),
+        textLength: Math.round(Number(metrics.textLength) || 0),
+        captionLength: Math.round(Number(metrics.captionLength) || 0),
+        sequenceLength: Math.round(Number(metrics.sequenceLength) || 0),
+        trimmedSequenceLength: Math.round(Number(metrics.trimmedSequenceLength) || 0),
+        trailingUtteranceTrimmed: Boolean(metrics.trailingUtteranceTrimmed),
       });
       pending.resolve(payload.audioDataUrl);
     }
@@ -6225,8 +6456,9 @@ function registerIpc() {
     assertTrustedSender(event, "mascot");
     const message = typeof payload === "object" && payload ? payload.message : payload;
     const attachments = normalizeLocalAttachments(typeof payload === "object" && payload ? payload.attachmentPaths : []);
+    const selectedSkillIds = normalizeTurnSkillIds(typeof payload === "object" && payload ? payload.selectedSkillIds : []);
     if (attachments.length && preferences.data.backend !== "codex") throw new Error("ファイル添付はCodex app-server接続時に利用できます。");
-    return handleMascotConversation(message, { localAttachments: attachments });
+    return handleMascotConversation(message, { localAttachments: attachments, selectedSkillIds });
   });
   ipcMain.handle("mascotInline:approveScreenShare", async (event, requestId) => {
     assertTrustedSender(event, "mascot");
@@ -6773,7 +7005,7 @@ function registerIpc() {
     assertTrustedSender(event);
     const settings = characterTtsSettings();
     const version = settings.irodoriVersion;
-    const versionLabel = version === "500m-v3" ? "Irodori TTS 500M-v3" : `Irodori TTS v4 Small ${settings.irodoriPrecision.toUpperCase()}`;
+    const versionLabel = version === "500m-v3" ? "Irodori TTS 500M-v3" : `Irodori TTS v4.1 Small ${settings.irodoriPrecision.toUpperCase()}`;
     const result = await dialog.showOpenDialog(controlWindow, {
       title: mainText(`${versionLabel}のモデルフォルダーを選択`, `Choose the ${versionLabel} model folder`),
       properties: ["openDirectory"],
@@ -7028,7 +7260,7 @@ function registerIpc() {
   });
   ipcMain.handle("skills:listTrusted", async (event) => {
     assertTrustedSender(event);
-    return listOpenAiCuratedSkills();
+    return listTrustedSkillCatalog();
   });
   ipcMain.handle("skills:inspect", async (event, sourceUrl) => {
     assertTrustedSender(event);
@@ -7038,6 +7270,8 @@ function registerIpc() {
       name: resolved.name,
       description: resolved.description,
       repository: resolved.repository,
+      sourceName: resolved.sourceName,
+      category: resolved.category,
       sourceUrl: resolved.sourceUrl,
       commitSha: resolved.commitSha,
       sourceKind: resolved.sourceKind,
@@ -7049,76 +7283,99 @@ function registerIpc() {
   });
   ipcMain.handle("skills:install", async (event, input = {}) => {
     assertTrustedSender(event);
-    if (activeWorkRunId || currentRealtimeClient() || activeRealtimeStarting || workCodexClient?.hasActiveTurn?.()) {
-      throw new Error(mainText("応答や作業が終わってからSkillを追加してください。", "Wait for the current response or work to finish before adding a skill."));
-    }
-    const sourceUrl = typeof input === "string" ? input : input.sourceUrl;
-    const resolved = await resolveSkillSource(String(sourceUrl || "").slice(0, 2000));
-    const expectedCommitSha = String(input?.expectedCommitSha || "");
-    const expectedId = String(input?.expectedId || "");
-    if ((expectedCommitSha && resolved.commitSha !== expectedCommitSha) || (expectedId && resolved.id !== expectedId)) {
-      throw new Error(mainText("確認後に配布元が更新されました。もう一度内容を確認してください。", "The source changed after inspection. Inspect it again before installing."));
-    }
-    const previous = normalizeManagedSkills(preferences.data.managedSkills).find((skill) => skill.id === resolved.id);
-    const record = await installResolvedSkill(resolved, managedSkillRoot());
-    if (previous) {
-      const oldDirectory = installedDirectory(managedSkillRoot(), previous);
-      const newDirectory = installedDirectory(managedSkillRoot(), record);
-      if (oldDirectory !== newDirectory && oldDirectory.startsWith(`${managedSkillRoot()}${path.sep}`)) {
-        await fs.promises.rm(oldDirectory, { recursive: true, force: true }).catch(() => {});
+    return runSkillMutation(async () => {
+      if (activeWorkRunId || currentRealtimeClient() || activeRealtimeStarting || workCodexClient?.hasActiveTurn?.()) {
+        throw new Error(mainText("応答や作業が終わってからSkillを追加してください。", "Wait for the current response or work to finish before adding a skill."));
       }
-    }
-    const managedSkills = normalizeManagedSkills([
-      ...preferences.data.managedSkills.filter((skill) => skill?.id !== record.id),
-      record,
-    ]);
-    const skillAssignments = normalizeSkillAssignments(preferences.data.skillAssignments, managedSkills.map((skill) => skill.id));
-    preferences.patch({ managedSkills, skillAssignments });
-    resetWorkClient();
-    diagnosticLog?.write("info", "skill-installed", { name: record.name, repository: record.repository, trusted: record.trusted });
-    return broadcastAppState();
+      const sourceUrl = typeof input === "string" ? input : input.sourceUrl;
+      const resolved = await resolveSkillSource(String(sourceUrl || "").slice(0, 2000));
+      const expectedCommitSha = String(input?.expectedCommitSha || "");
+      const expectedId = String(input?.expectedId || "");
+      if (!expectedCommitSha || !expectedId || resolved.commitSha !== expectedCommitSha || resolved.id !== expectedId) {
+        throw new Error(mainText("確認後に配布元が更新されました。もう一度内容を確認してください。", "The source changed after inspection. Inspect it again before installing."));
+      }
+      const current = normalizeManagedSkills(preferences.data.managedSkills);
+      const previous = current.find((skill) => skill.id === resolved.id);
+      if (!previous && current.length >= 100) throw new Error(mainText("端末に保存できるSkillは100件までです。不要なSkillを削除してから再試行してください。", "Up to 100 Skills can be stored. Remove an unused Skill and try again."));
+      const requestedTarget = input?.assignment?.scope === "all"
+        ? { scope: "all" }
+        : input?.assignment?.scope === "character"
+          ? { scope: "character", characterId: String(input.assignment.characterId || preferences.data.characterId) }
+          : null;
+      if (requestedTarget?.scope === "character" && !allCharacters().some((character) => character.id === requestedTarget.characterId)) {
+        throw new Error(mainText("キャラクターが見つかりません。", "Character not found."));
+      }
+      const record = await installResolvedSkill(resolved, managedSkillRoot());
+      const managedSkills = normalizeManagedSkills([...current.filter((skill) => skill.id !== record.id), record]);
+      let skillAssignments = normalizeSkillAssignments(preferences.data.skillAssignments, managedSkills.map((skill) => skill.id));
+      if (requestedTarget) {
+        skillAssignments = normalizeSkillAssignments(assignmentWithSkill(skillAssignments, record.id, requestedTarget), managedSkills.map((skill) => skill.id));
+      }
+      preferences.patch({ managedSkills, skillAssignments });
+      if (previous) {
+        const oldDirectory = installedDirectory(managedSkillRoot(), previous);
+        const newDirectory = installedDirectory(managedSkillRoot(), record);
+        if (oldDirectory !== newDirectory && oldDirectory.startsWith(`${managedSkillRoot()}${path.sep}`)) {
+          await fs.promises.rm(oldDirectory, { recursive: true, force: true }).catch(() => {});
+        }
+      }
+      resetWorkClient();
+      diagnosticLog?.write("info", "skill-installed", { name: record.name, repository: record.repository, trusted: record.trusted });
+      return broadcastAppState();
+    });
   });
-  ipcMain.handle("skills:setAssignment", (event, payload = {}) => {
+  ipcMain.handle("skills:setAssignment", async (event, payload = {}) => {
     assertTrustedSender(event);
-    if (activeWorkRunId || currentRealtimeClient() || activeRealtimeStarting || workCodexClient?.hasActiveTurn?.()) {
-      throw new Error(mainText("応答や作業が終わってからSkillの割り当てを変更してください。", "Wait for the current response or work to finish before changing skill assignments."));
-    }
-    const { skills, assignments } = normalizedSkillPreferences();
-    const skillId = String(payload.skillId || "");
-    if (!skills.some((skill) => skill.id === skillId)) throw new Error(mainText("Skillが見つかりません。", "Skill not found."));
-    const scope = payload.scope === "all" ? "all" : "character";
-    const enabled = Boolean(payload.enabled);
-    const next = { all: [...assignments.all], characters: { ...assignments.characters } };
-    const update = (items) => enabled ? [...new Set([...items, skillId])] : items.filter((id) => id !== skillId);
-    if (scope === "all") next.all = update(next.all);
-    else {
-      const characterId = String(payload.characterId || preferences.data.characterId);
-      if (!allCharacters().some((character) => character.id === characterId)) throw new Error(mainText("キャラクターが見つかりません。", "Character not found."));
-      const assigned = update(next.characters[characterId] || []);
-      if (assigned.length) next.characters[characterId] = assigned;
-      else delete next.characters[characterId];
-    }
-    preferences.patch({ skillAssignments: normalizeSkillAssignments(next, skills.map((skill) => skill.id)) });
-    resetWorkClient();
-    return broadcastAppState();
+    return runSkillMutation(async () => {
+      if (activeWorkRunId || currentRealtimeClient() || activeRealtimeStarting || workCodexClient?.hasActiveTurn?.()) {
+        throw new Error(mainText("応答や作業が終わってからSkillの割り当てを変更してください。", "Wait for the current response or work to finish before changing skill assignments."));
+      }
+      const { skills, assignments } = normalizedSkillPreferences();
+      const skillId = String(payload.skillId || "");
+      if (!skills.some((skill) => skill.id === skillId)) throw new Error(mainText("Skillが見つかりません。", "Skill not found."));
+      const target = payload.scope === "all"
+        ? { scope: "all" }
+        : { scope: "character", characterId: String(payload.characterId || preferences.data.characterId) };
+      if (target.scope === "character" && !allCharacters().some((character) => character.id === target.characterId)) throw new Error(mainText("キャラクターが見つかりません。", "Character not found."));
+      const next = assignmentWithSkill(assignments, skillId, target, Boolean(payload.enabled));
+      preferences.patch({ skillAssignments: normalizeSkillAssignments(next, skills.map((skill) => skill.id)) });
+      resetWorkClient();
+      return broadcastAppState();
+    });
   });
   ipcMain.handle("skills:remove", async (event, skillId) => {
     assertTrustedSender(event);
-    if (activeWorkRunId || currentRealtimeClient() || activeRealtimeStarting || workCodexClient?.hasActiveTurn?.()) {
-      throw new Error(mainText("応答や作業が終わってからSkillを削除してください。", "Wait for the current response or work to finish before removing a skill."));
-    }
-    const { skills } = normalizedSkillPreferences();
-    const record = skills.find((skill) => skill.id === String(skillId || ""));
-    if (!record) return publicAppState();
-    const directory = installedDirectory(managedSkillRoot(), record);
-    if (!directory.startsWith(`${managedSkillRoot()}${path.sep}`)) throw new Error("Skillの保存先が不正です。");
-    await fs.promises.rm(directory, { recursive: true, force: true });
-    const managedSkills = skills.filter((skill) => skill.id !== record.id);
-    const skillAssignments = normalizeSkillAssignments(preferences.data.skillAssignments, managedSkills.map((skill) => skill.id));
-    preferences.patch({ managedSkills, skillAssignments });
-    resetWorkClient();
-    diagnosticLog?.write("info", "skill-removed", { name: record.name, repository: record.repository });
-    return broadcastAppState();
+    return runSkillMutation(async () => {
+      if (activeWorkRunId || currentRealtimeClient() || activeRealtimeStarting || workCodexClient?.hasActiveTurn?.()) {
+        throw new Error(mainText("応答や作業が終わってからSkillを削除してください。", "Wait for the current response or work to finish before removing a skill."));
+      }
+      if (String(skillId || "") === BUILTIN_SKILL_CREATOR_ID) throw new Error(mainText("Skill CreatorはCharaDockの標準機能のため削除できません。", "Skill Creator is built into CharaDock and cannot be removed."));
+      const { skills } = normalizedSkillPreferences();
+      const record = skills.find((skill) => skill.id === String(skillId || ""));
+      if (!record) return publicAppState();
+      const directory = installedDirectory(managedSkillRoot(), record);
+      if (!directory.startsWith(`${managedSkillRoot()}${path.sep}`)) throw new Error("Skillの保存先が不正です。");
+      const removalStaging = `${directory}.remove-${process.pid}-${randomBytes(6).toString("hex")}`;
+      let staged = false;
+      try {
+        await fs.promises.rename(directory, removalStaging);
+        staged = true;
+      } catch (error) {
+        if (error?.code !== "ENOENT") throw error;
+      }
+      const managedSkills = skills.filter((skill) => skill.id !== record.id);
+      const skillAssignments = normalizeSkillAssignments(preferences.data.skillAssignments, managedSkills.map((skill) => skill.id));
+      try {
+        preferences.patch({ managedSkills, skillAssignments });
+      } catch (error) {
+        if (staged) await fs.promises.rename(removalStaging, directory).catch(() => {});
+        throw error;
+      }
+      if (staged) await fs.promises.rm(removalStaging, { recursive: true, force: true }).catch(() => {});
+      resetWorkClient();
+      diagnosticLog?.write("info", "skill-removed", { name: record.name, repository: record.repository });
+      return broadcastAppState();
+    });
   });
   ipcMain.handle("character:configure", async (event, payload) => {
     assertTrustedSender(event);
@@ -7248,8 +7505,9 @@ function registerIpc() {
     assertTrustedSender(event);
     const message = typeof payload === "object" && payload ? payload.message : payload;
     const attachments = normalizeLocalAttachments(typeof payload === "object" && payload ? payload.attachmentPaths : []);
+    const selectedSkillIds = normalizeTurnSkillIds(typeof payload === "object" && payload ? payload.selectedSkillIds : []);
     if (attachments.length && preferences.data.backend !== "codex") throw new Error("ファイル添付はCodex app-server接続時に利用できます。");
-    return sendChatMessage(message, { localAttachments: attachments });
+    return sendChatMessage(message, { localAttachments: attachments, selectedSkillIds });
   });
   ipcMain.handle("chat:interrupt", async (event) => {
     assertTrustedSender(event);
@@ -7482,7 +7740,7 @@ function screenSharePermissionText() {
   return "今の画面を1枚だけ見てもいい？ 回答したら画像は端末から消すね。";
 }
 
-function requestScreenShare(message) {
+function requestScreenShare(message, deliveryOptions = {}) {
   revokeBrowserAuthorization({ closeWindow: true });
   revokeComputerAuthorization();
   pendingBrowserUse = null;
@@ -7490,6 +7748,7 @@ function requestScreenShare(message) {
   pendingScreenShare = {
     id: `screen-${Date.now()}`,
     message: String(message || "").trim().slice(0, 12_000),
+    selectedSkillIds: normalizeTurnSkillIds(deliveryOptions.selectedSkillIds),
     expiresAt: Date.now() + 60_000,
   };
   const response = {
@@ -7577,7 +7836,7 @@ function browserPermissionText(target) {
   return `${host}この依頼と、5分以内の明確な続きで操作してもいい？ 危険な確定操作の前では止まるね。`;
 }
 
-function requestBrowserUse(message) {
+function requestBrowserUse(message, deliveryOptions = {}) {
   const target = extractBrowserTarget(message);
   revokeBrowserAuthorization({ closeWindow: true });
   revokeComputerAuthorization();
@@ -7586,6 +7845,7 @@ function requestBrowserUse(message) {
   pendingBrowserUse = {
     id: `browser-${Date.now()}`,
     message: String(message || "").trim().slice(0, 12_000),
+    selectedSkillIds: normalizeTurnSkillIds(deliveryOptions.selectedSkillIds),
     targetUrl: target?.href || "",
     allowedHost: target?.hostname || "",
     expiresAt: Date.now() + 60_000,
@@ -7922,7 +8182,7 @@ function computerPermissionText() {
   return `今の${japanesePlatformName}画面を見ながら、この依頼と5分以内の明確な続きで操作してもいい？ いつでも途中で止められるよ。`;
 }
 
-function requestComputerUse(message) {
+function requestComputerUse(message, deliveryOptions = {}) {
   revokeBrowserAuthorization({ closeWindow: true });
   revokeComputerAuthorization();
   pendingScreenShare = null;
@@ -7930,6 +8190,7 @@ function requestComputerUse(message) {
   pendingComputerUse = {
     id: `computer-${Date.now()}`,
     message: String(message || "").trim().slice(0, 12_000),
+    selectedSkillIds: normalizeTurnSkillIds(deliveryOptions.selectedSkillIds),
     expiresAt: Date.now() + 60_000,
   };
   const response = {
@@ -8051,7 +8312,7 @@ async function approveComputerUse(requestId, deliveryOptions = {}) {
   retainedComputerAuthorization = computerSession;
   activeComputerSession = computerSession;
   try {
-    return await sendChatMessage(request.message, { ...deliveryOptions, computerSession });
+    return await sendChatMessage(request.message, { selectedSkillIds: request.selectedSkillIds, ...deliveryOptions, computerSession });
   } finally {
     computerSession.active = false;
     if (activeComputerSession === computerSession) activeComputerSession = null;
@@ -8076,7 +8337,7 @@ async function approveBrowserUse(requestId, deliveryOptions = {}) {
   };
   retainedBrowserAuthorization = browserSession;
   try {
-    return await sendChatMessage(request.message, { ...deliveryOptions, browserSession });
+    return await sendChatMessage(request.message, { selectedSkillIds: request.selectedSkillIds, ...deliveryOptions, browserSession });
   } finally {
     browserSession.active = false;
     if (activeBrowserSession === browserSession) activeBrowserSession = null;
@@ -8087,7 +8348,7 @@ async function approveBrowserUse(requestId, deliveryOptions = {}) {
 async function continueBrowserUse(message, browserSession, deliveryOptions = {}) {
   const target = extractBrowserTarget(message);
   if (target && browserSession.allowedHost && !isAllowedBrowserUrl(target, browserSession.allowedHost)) {
-    return requestBrowserUse(message);
+    return requestBrowserUse(message, deliveryOptions);
   }
   browserSession.active = true;
   browserSession.toolCallCount = 0;
@@ -8127,7 +8388,7 @@ async function approveScreenShare(requestId, deliveryOptions = {}) {
   publishRemoteState();
   const capture = await captureCurrentDisplayOnce();
   try {
-    return await sendChatMessage(request.message, { ...deliveryOptions, localImagePath: capture.imagePath });
+    return await sendChatMessage(request.message, { selectedSkillIds: request.selectedSkillIds, ...deliveryOptions, localImagePath: capture.imagePath });
   } finally {
     fs.rmSync(capture.directory, { recursive: true, force: true });
   }
@@ -8193,7 +8454,7 @@ async function handleMascotConversation(message, deliveryOptions = {}) {
   }
   const screenPending = currentScreenShareRequest();
   const screenAction = screenShareConversationAction(text, Boolean(screenPending));
-  if (screenAction === "request") return requestScreenShare(text);
+  if (screenAction === "request") return requestScreenShare(text, deliveryOptions);
   if (screenAction === "approve") return approveScreenShare(screenPending.id, deliveryOptions);
   if (screenAction === "deny") {
     return declinePermissionRequest("screen", screenPending.id);
@@ -8245,8 +8506,8 @@ async function handleMascotConversation(message, deliveryOptions = {}) {
   // lease. Explicit new browser/computer requests below will ask again.
   if (browserAuthorization) revokeBrowserAuthorization({ closeWindow: true });
   if (computerAuthorization) revokeComputerAuthorization();
-  if (browserAction === "request") return requestBrowserUse(text);
-  if (computerAction === "request") return requestComputerUse(text);
+  if (browserAction === "request") return requestBrowserUse(text, deliveryOptions);
+  if (computerAction === "request") return requestComputerUse(text, deliveryOptions);
   return sendChatMessage(text, deliveryOptions);
 }
 
@@ -8260,6 +8521,7 @@ async function sendChatMessage(message, {
   suppressPcAudio = false,
   artifactTarget = null,
   forceWork = false,
+  selectedSkillIds = [],
 } = {}) {
   const text = String(message || "").trim().slice(0, 12_000);
   if (!text && !localAttachments.length) throw new Error("メッセージを入力してください。");
@@ -8273,6 +8535,15 @@ async function sendChatMessage(message, {
   const selectedWorkMode = forceWork || preferences.data.interactionMode === "work";
   const conversationalWorkTurn = !forceWork && selectedWorkMode && !localAttachments.length && isSocialConversationTurn(requestText);
   const workMode = selectedWorkMode && !conversationalWorkTurn;
+  const explicitSkills = explicitTurnSkillItems(selectedSkillIds);
+  if (explicitSkills.length && preferences.data.backend !== "codex") {
+    throw new Error(mainText("Skillの指定はCodex app-server接続時に利用できます。", "Selecting Skills requires a Codex app-server connection."));
+  }
+  const turnSkillItems = mergeTurnSkillItems(
+    workMode ? activeCharacterSkillItems() : [builtInSkillCreatorItem()],
+    explicitSkills,
+  );
+  if (workMode && skillMutationActive) throw new Error(mainText("Skillの追加・更新が終わってからWorkを開始してください。", "Wait for the Skill change to finish before starting Work."));
   const context = currentSharedContinuityContext();
   const memoryContext = characterMemoryContext();
   const resolvedArtifactTarget = workMode ? activeArtifactContextTarget(artifactTarget) : null;
@@ -8285,7 +8556,13 @@ async function sendChatMessage(message, {
     )
     : "";
   const attachmentInstructions = localAttachmentInstructions(localAttachments, interfaceLanguage());
-  const codexText = [requestText, artifactContext, memoryContext, context, imageInstructions, attachmentInstructions].filter(Boolean).join("\n\n");
+  const selectedSkillInstruction = explicitSkills.length
+    ? mainText(
+      `ユーザーは今回の送信で次のSkillを明示的に選びました。依頼に適合するものを優先して使用してください: ${explicitSkills.map((skill) => skill.name).join("、")}`,
+      `The user explicitly selected these Skills for this turn. Prefer the ones that apply to the request: ${explicitSkills.map((skill) => skill.name).join(", ")}`,
+    )
+    : "";
+  const codexText = [requestText, selectedSkillInstruction, artifactContext, memoryContext, context, imageInstructions, attachmentInstructions].filter(Boolean).join("\n\n");
   if (workMode && preferences.data.backend !== "codex") throw new Error("WorkはCodex app-server接続時のみ利用できます。");
   if (workMode && activeWorkRunId) throw new Error("実行中の作業があります。完了を待つか、履歴パネルから中断してください。");
   const workRun = workMode ? beginWorkRun(requestText) : null;
@@ -8449,7 +8726,7 @@ async function sendChatMessage(message, {
           onDynamicToolCall: (params) => handleComputerToolCall(computerSession, params),
         });
         computerCodexClient.setPersona(personaInstructions());
-        result = await computerCodexClient.sendMessage(codexText, { onDelta, onEvent: observeWorkAgentMessage });
+        result = await computerCodexClient.sendMessage(codexText, { onDelta, onEvent: observeWorkAgentMessage, skillItems: turnSkillItems });
       } else if (process.platform === "darwin") {
         const skillClient = new CodexAppServerClient({
           cwd: app.getPath("documents"),
@@ -8478,7 +8755,11 @@ async function sendChatMessage(message, {
           }
           skillClient.setTurnStartSkillItems([computerUseSkill]);
           skillClient.setPersona(personaInstructions());
-          result = await skillClient.sendMessage(`$computer-use:computer-use ${codexText}`, { onDelta, onEvent: observeWorkAgentMessage });
+          result = await skillClient.sendMessage(`$computer-use:computer-use ${codexText}`, {
+            onDelta,
+            onEvent: observeWorkAgentMessage,
+            skillItems: mergeTurnSkillItems([computerUseSkill], turnSkillItems),
+          });
         } finally {
           skillClient.stop();
           macComputerSkillClient = null;
@@ -8532,9 +8813,9 @@ async function sendChatMessage(message, {
         onDynamicToolCall: (params) => handleBrowserToolCall(browserSession, params),
       });
       browserCodexClient.setPersona(personaInstructions());
-      if (workMode) browserCodexClient.setTurnStartSkillItems(activeCharacterSkillItems());
       result = await browserCodexClient.sendMessage(codexText, {
         onDelta,
+        skillItems: turnSkillItems,
         onEvent: (message) => {
           collectWorkArtifacts(message.params?.item);
           observeWorkAgentMessage(message);
@@ -8551,6 +8832,7 @@ async function sendChatMessage(message, {
       result = await worker.sendMessage(codexText, {
         localImagePath,
         localImagePaths: localAttachments.filter((item) => item.image).map((item) => item.path),
+        skillItems: turnSkillItems,
         onDelta,
         onEvent: (message) => {
           const itemType = String(message.params?.item?.type || "");
@@ -8578,9 +8860,11 @@ async function sendChatMessage(message, {
       });
     } else {
       codexClient.setPersona(personaInstructions());
+      codexClient.setTurnStartSkillItems([builtInSkillCreatorItem()]);
       let searchingWeb = false;
       result = await codexClient.sendMessage(codexText, {
         onDelta,
+        skillItems: turnSkillItems,
         localImagePath,
         localImagePaths: localAttachments.filter((item) => item.image).map((item) => item.path),
         onEvent: (event) => {
@@ -8842,6 +9126,7 @@ async function boot() {
   const projectRootIsArchive = projectRoot.toLowerCase().includes(".asar");
   const codexWorkingDirectory = app.isPackaged || projectRootIsArchive ? app.getPath("documents") : projectRoot;
   preferences = new Preferences(path.join(app.getPath("userData"), "preferences.json"), safeStorage);
+  ensureBuiltInSkillCreator();
   await removeRetiredWorkSlmData();
   characterHomeManager = new CharacterHomeManager(
     path.join(app.getPath("userData"), "character-homes"),
@@ -8951,12 +9236,13 @@ async function boot() {
     cwd: codexWorkingDirectory,
     command: codexCommand,
     ...conversationCodexSettings(),
-    developerInstructions: `${MEMORY_TOOL_INSTRUCTIONS}\n\n${CONTINUATION_TOOL_INSTRUCTIONS}`,
+    developerInstructions: `${MEMORY_TOOL_INSTRUCTIONS}\n\n${CONTINUATION_TOOL_INSTRUCTIONS}\n\n${SKILL_CREATOR_TOOL_INSTRUCTIONS}`,
     webSearchMode: "live",
-    dynamicTools: [...MEMORY_DYNAMIC_TOOLS, ...CONTINUATION_DYNAMIC_TOOLS],
+    dynamicTools: [...MEMORY_DYNAMIC_TOOLS, ...CONTINUATION_DYNAMIC_TOOLS, ...SKILL_CREATOR_DYNAMIC_TOOLS],
     onDynamicToolCall: handleCharacterContextToolCall,
   });
   codexClient.setPersona(personaInstructions());
+  codexClient.setTurnStartSkillItems([builtInSkillCreatorItem()]);
   registerIpc();
 
   session.defaultSession.setPermissionRequestHandler((webContents, permission, callback) => {
