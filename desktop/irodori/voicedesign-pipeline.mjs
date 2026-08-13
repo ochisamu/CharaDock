@@ -167,10 +167,16 @@ export function findTrailingUtteranceCutoff(audio, sampleRate, {
 
     const lookaheadEnd = Math.min(windows, silenceEnd + lookaheadWindows);
     let resumedSpeech = 0;
+    let longestResumedSpeech = 0;
     for (let next = silenceEnd; next < lookaheadEnd; next++) {
-      if (levels[next] >= speechThreshold) resumedSpeech += 1;
+      if (levels[next] >= speechThreshold) {
+        resumedSpeech += 1;
+        longestResumedSpeech = Math.max(longestResumedSpeech, resumedSpeech);
+      } else {
+        resumedSpeech = 0;
+      }
     }
-    if (resumedSpeech >= resumedSpeechWindows) {
+    if (longestResumedSpeech >= resumedSpeechWindows) {
       const cutoff = window * windowSamples + Math.round(sampleRate * tailPaddingMs / 1000);
       return Math.max(1, Math.min(audio.length, cutoff));
     }
@@ -181,7 +187,7 @@ export function findTrailingUtteranceCutoff(audio, sampleRate, {
 
 export function shouldTrimTrailingUtterance(textValue) {
   const normalized = normalizeText(textValue).trim();
-  if (!normalized || /[、，,；;：:…（）()［］\[\]「」『』]/u.test(normalized)) return false;
+  if (!normalized || /[；;：:…（）()［］\[\]「」『』]/u.test(normalized)) return false;
   const spokenCharacters = [...normalized.replace(/[\s。．.!！?？"'“”‘’]/gu, "")].length;
   return spokenCharacters > 0;
 }

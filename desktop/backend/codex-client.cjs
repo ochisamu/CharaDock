@@ -41,6 +41,10 @@ function permissionProfileForSandbox(sandbox) {
   return "";
 }
 
+function isBenignCodexStderr(value) {
+  return /failed to load models cache:\s*missing field [`'“”]?base_instructions/i.test(String(value || ""));
+}
+
 function appServerArgs(webSearchMode = "", sandbox = "") {
   const args = ["app-server", "--stdio", "--enable", "realtime_conversation"];
   if (WEB_SEARCH_MODES.has(webSearchMode)) args.push("-c", `web_search=${JSON.stringify(webSearchMode)}`);
@@ -146,8 +150,15 @@ class CodexAppServerClient {
   }
 
   setTurnStartSkillItems(skillItems) {
-    this.turnStartSkillItems = Array.isArray(skillItems) ? skillItems : [];
-    this.threadId = null;
+    const next = (Array.isArray(skillItems) ? skillItems : []).flatMap((skill) => {
+      const name = String(skill?.name || "").trim();
+      const skillPath = String(skill?.path || "").trim();
+      return name && skillPath ? [{ name, path: skillPath }] : [];
+    });
+    const previousSignature = JSON.stringify(this.turnStartSkillItems || []);
+    const nextSignature = JSON.stringify(next);
+    this.turnStartSkillItems = next;
+    if (previousSignature !== nextSignature) this.threadId = null;
   }
 
   async listSkills({ forceReload = false } = {}) {
@@ -197,7 +208,7 @@ class CodexAppServerClient {
     child.on("error", (error) => this.handleExit(null, error.message));
     child.stderr.on("data", (chunk) => {
       const text = String(chunk || "").trim();
-      if (text) console.warn("codex app-server:", text);
+      if (text && !isBenignCodexStderr(text)) console.warn("codex app-server:", text);
     });
     child.once("exit", (code, signal) => this.handleExit(code, signal));
     this.readline = readline.createInterface({ input: child.stdout });
@@ -463,10 +474,13 @@ class CodexAppServerClient {
 
   async startRealtime({
     sdp,
-    prompt = "",
+    prompt,
     voice = "",
     clientManagedHandoffs = false,
+    codexResponseHandoffMode = "bemTags",
     delegationAckFiller,
+    includeStartupContext = true,
+    initialItems = [],
     onEvent,
   } = {}) {
     if (!String(sdp || "").startsWith("v=0")) throw new Error("WebRTCの音声接続情報が正しくありません。");
@@ -490,13 +504,22 @@ class CodexAppServerClient {
         threadId,
         outputModality: "audio",
         version: "v3",
-        codexResponseHandoffMode: "bemTags",
-        prompt: String(prompt || "").slice(0, 4000),
-        includeStartupContext: true,
+        codexResponseHandoffMode: codexResponseHandoffMode === "thinking" ? "thinking" : "bemTags",
+        includeStartupContext: includeStartupContext !== false,
         clientManagedHandoffs: Boolean(clientManagedHandoffs),
         flushTranscriptTailOnSessionEnd: true,
         transport: { type: "webrtc", sdp: String(sdp) },
       };
+      // Omission and an empty value have intentionally different meanings in
+      // app-server. Omit the field to retain Codex's built-in Realtime prompt
+      // (including native delegation); an explicit value replaces it.
+      if (prompt !== undefined) params.prompt = prompt === null ? null : String(prompt).slice(0, 4000);
+      const normalizedInitialItems = (Array.isArray(initialItems) ? initialItems : []).slice(0, 8).flatMap((item) => {
+        const role = ["user", "developer", "assistant"].includes(item?.role) ? item.role : "";
+        const text = String(item?.text || "").trim().slice(0, 12_000);
+        return role && text ? [{ role, text }] : [];
+      });
+      if (normalizedInitialItems.length) params.initialItems = normalizedInitialItems;
       if (typeof delegationAckFiller === "boolean") params.delegationAckFiller = delegationAckFiller;
       if (voice) params.voice = String(voice);
       await Promise.race([this.request("thread/realtime/start", params, 60_000), startupFailure]);
@@ -539,16 +562,33 @@ class CodexAppServerClient {
     return true;
   }
 
-  sendMessage(message, { onDelta, onEvent, localImagePath = "", localImagePaths = [], localAudioPath = "", outputSchema = null, timeoutMs = 180_000 } = {}) {
+  async steerActiveTurn(message, { skillItems = null } = {}) {
+    const threadId = this.threadId;
+    const turnId = this.activeTurnId;
+    const normalized = String(message || "").trim();
+    if (!threadId || !turnId || !normalized) return false;
+    const input = [{ type: "text", text: normalized }];
+    const turnSkills = Array.isArray(skillItems) ? skillItems : [];
+    for (const skill of turnSkills) {
+      if (skill && typeof skill === "object" && String(skill.name || "").trim()) {
+        input.push({ type: "skill", name: String(skill.name), path: String(this.pathMapper(skill.path || "")) });
+      }
+    }
+    await this.request("turn/steer", { threadId, expectedTurnId: turnId, input }, 30_000);
+    return true;
+  }
+
+  sendMessage(message, { onDelta, onEvent, localImagePath = "", localImagePaths = [], localAudioPath = "", skillItems = null, outputSchema = null, timeoutMs = 180_000 } = {}) {
     const run = async () => {
       this.turnStarting = true;
       this.interruptRequested = false;
       await this.ensureStarted();
       const threadId = await this.ensureThread();
       const input = [{ type: "text", text: String(message || "").trim() }];
-      for (const skill of this.turnStartSkillItems) {
+      const turnSkills = Array.isArray(skillItems) ? skillItems : this.turnStartSkillItems;
+      for (const skill of turnSkills) {
         if (skill && typeof skill === "object" && String(skill.name || "").trim()) {
-          input.push({ type: "skill", name: String(skill.name), path: String(skill.path || "") });
+          input.push({ type: "skill", name: String(skill.name), path: String(this.pathMapper(skill.path || "")) });
         }
       }
       const images = [...new Set([localImagePath, ...(Array.isArray(localImagePaths) ? localImagePaths : [])].filter(Boolean).map(String))];
@@ -633,6 +673,7 @@ module.exports = {
   isOfficialComputerUseSkill,
   normalizeSkillName,
   appServerArgs,
+  isBenignCodexStderr,
   permissionProfileForSandbox,
   workspaceSandboxPolicy,
 };

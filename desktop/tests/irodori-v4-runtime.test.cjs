@@ -91,9 +91,48 @@ test("Irodori v4 removes an unrelated utterance after a long silent gap", async 
   trailingSilence.fill(0.5, 400, 1000);
   assert.equal(findTrailingUtteranceCutoff(trailingSilence, sampleRate), trailingSilence.length);
 
+  const intermittentNoise = new Float32Array(3000);
+  intermittentNoise.fill(0.5, 400, 1000);
+  intermittentNoise.fill(0.5, 1600, 1680);
+  intermittentNoise.fill(0.5, 1760, 1840);
+  assert.equal(findTrailingUtteranceCutoff(intermittentNoise, sampleRate), intermittentNoise.length);
+
   assert.equal(shouldTrimTrailingUtterance("音声テストです。"), true);
   assert.equal(shouldTrimTrailingUtterance("これからよろしくね。"), true);
-  assert.equal(shouldTrimTrailingUtterance("最高33℃、最低27℃。"), false);
+  assert.equal(shouldTrimTrailingUtterance("今、確認してるね。"), true);
+  assert.equal(shouldTrimTrailingUtterance("うん、これから確認するね。"), true);
+  assert.equal(shouldTrimTrailingUtterance("最高33℃、最低27℃。"), true);
   assert.equal(shouldTrimTrailingUtterance("午後に少し雨が降る見込みです。"), true);
+  assert.equal(shouldTrimTrailingUtterance("今日は晴れ、明日は雨です。"), true);
+  assert.equal(shouldTrimTrailingUtterance("はい、今、確認してるね。"), true);
+  assert.equal(shouldTrimTrailingUtterance("午前の結果：晴れです。"), false);
   assert.equal(shouldTrimTrailingUtterance("折りたたみ傘と熱中症対策があると安心だよ。"), true);
+});
+
+test("Irodori v4 synthesis applies trailing-utterance cleanup to comma prose", async () => {
+  const { IrodoriVoiceDesignTTS } = await import(pathToFileURL(path.join(__dirname, "..", "irodori", "voicedesign-pipeline.mjs")).href);
+  const runtime = new IrodoriVoiceDesignTTS({
+    ort: { Tensor },
+    tokenizer: { encode: () => [1] },
+    sessions: {
+      text: {}, caption: {}, duration: {}, dit: {}, dac: {},
+    },
+  });
+  const condition = { state: new Float32Array(1), mask: new Uint8Array([1]), tokens: 1, dim: 1 };
+  runtime.encodeText = async () => condition;
+  runtime.encodeCaption = async () => condition;
+  runtime.predictDuration = async () => 75;
+  runtime.rfLoop = async () => new Float32Array(75 * 32).fill(1);
+  runtime.decode = async () => {
+    const audio = new Float32Array(3 * 48_000);
+    audio.fill(0.5, 0.4 * 48_000, 1 * 48_000);
+    audio.fill(0.5, 1.6 * 48_000, 2.2 * 48_000);
+    return audio;
+  };
+
+  const result = await runtime.synthesize("今、確認してるね。", "自然な日本語", {
+    trimTrailingUtterance: true,
+  });
+  assert.equal(result.trailingUtteranceTrimmed, true);
+  assert.equal(result.audio.length, 1.08 * 48_000);
 });

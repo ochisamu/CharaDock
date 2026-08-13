@@ -4,6 +4,9 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
 
+const fsp = fs.promises;
+const HASH_YIELD_BYTES = 8 * 1024 * 1024;
+
 const PIPER_MODEL_COMMIT = "36b59c825c36bd386b8960cf3f604382f52f2a87";
 const KOKORO_COMMIT = "1939ad2a8e416c0acfeecc08a694d14ef25f2231";
 const IRODORI_500M_V3_COMMIT = "b75a9bbf2c10e12682d37e91e0efaf6d4e54bd29";
@@ -11,6 +14,8 @@ const IRODORI_V4_RELEASE = "v4-small-e4aaac4-webgpu-fp16-r2";
 const IRODORI_V4_RELEASE_BASE = `https://github.com/ochisamu/irodori-tts-v4-webgpu-models/releases/download/${IRODORI_V4_RELEASE}`;
 const IRODORI_V4_INT4_RELEASE = "v4-small-quantized-4a5a4d6-webgpu-int4-r1";
 const IRODORI_V4_INT4_RELEASE_BASE = `https://github.com/ochisamu/irodori-tts-v4-webgpu-models/releases/download/${IRODORI_V4_INT4_RELEASE}`;
+const IRODORI_V41_DURATION_RELEASE = "v4.1-small-webgpu-duration-r1";
+const IRODORI_V41_DURATION_RELEASE_BASE = `https://github.com/ochisamu/irodori-tts-v4-webgpu-models/releases/download/${IRODORI_V41_DURATION_RELEASE}`;
 
 const TTS_MODELS = Object.freeze({
   "piper-plus": Object.freeze({
@@ -86,14 +91,16 @@ const TTS_MODELS = Object.freeze({
   }),
   "irodori-webgpu": Object.freeze({
     id: "irodori-webgpu",
-    label: "Irodori TTS v4 Small · FP16 WebGPU",
-    description: "Voice Designと許諾済み参照音声によるVoice Cloneに対応する日本語WebGPUモデルです。",
-    directoryName: "irodori-tts-v4-small-webgpu-fp16-r2",
+    label: "Irodori TTS v4.1 Small · FP16 WebGPU",
+    description: "過大な発話長を改善したv4.1。Voice Designと許諾済み参照音声によるVoice Cloneに対応します。",
+    directoryName: "irodori-tts-v4.1-small-webgpu-fp16-r1",
     obsoleteDirectoryNames: Object.freeze([
       "irodori-tts-v4-small-webgpu-fp16",
       "irodori-tts-v4-small-webgpu-fp16-r1",
+      "irodori-tts-v4-small-webgpu-fp16-r2",
     ]),
-    downloadBytes: 1_771_099_224,
+    downloadBytes: 1_771_102_085,
+    incrementalDownloadBytes: 43_861_055,
     sourceUrl: "https://github.com/ochisamu/irodori-tts-v4-webgpu-models",
     licenseUrl: "https://github.com/ochisamu/irodori-tts-v4-webgpu-models/blob/main/LICENSES/Irodori-TTS-v4-Small-LICENSE",
     files: Object.freeze([
@@ -105,8 +112,8 @@ const TTS_MODELS = Object.freeze({
       ["models/dacvae_encoder.onnx.data", 54_697_984, "a963ab4f4be69451b04243e0b8ef9b53e3be5d615e09595e5eb83be5b9094489"],
       ["models/dit_v4.onnx", 2_947_623, "2e631ba1cd63c8ea6d270a94bba70d26f1f4fa5ec4f81796e7bbde9688517918"],
       ["models/dit_v4.onnx.data", 732_364_800, "2b62b71756aef1efb6d54788c2ad2da21f8f6748d3ae246532914369c865e81d"],
-      ["models/duration.onnx", 272_385, "94f086fae6d17afc2966b16f8c20846a33184af588b47fa7107c94fbdf2c228e"],
-      ["models/duration.onnx.data", 43_581_440, "7b9c9be211665540243cc6960dad6e4eff7cfc0f08a35e04997e01ca2339509e"],
+      ["models/duration.onnx", 275_215, "12b2258bbe915e28224de20af4b1f7c8d4dea31045d2d1bda695ba05a5bedbe6", `${IRODORI_V41_DURATION_RELEASE_BASE}/fp16-duration.onnx`],
+      ["models/duration.onnx.data", 43_581_440, "ee6f1cfb3f866ec6fe48727c6dca94a0c6e27859cb16bb669156eec4750475a9", `${IRODORI_V41_DURATION_RELEASE_BASE}/fp16-duration.onnx.data`],
       ["models/speaker_encoder.onnx", 1_432_778, "69f07c07b1f6447e5e7f89d1c9a4fb179cf1dd9332f16ad8525cbb36e7deb924"],
       ["models/speaker_encoder.onnx.data", 121_423_872, "8d7fa32a4cdc66ec0463fc4767bd5fd9762efcd8c9ec543558538dbc47745d1e"],
       ["models/text_backbone.onnx", 3_409_326, "cd50ebf5cc03d24c74b14e0639e8bb7d49b5035a7281b31640fb7b5431d188dd"],
@@ -115,22 +122,25 @@ const TTS_MODELS = Object.freeze({
       ["models/text_projector.onnx.data", 3_473_408, "83d7365c6f8d18a31c2cca91501bd93cde032d4171e2b35986d07f65f932b4ed"],
       ["tokenizer/irodori_v4/tokenizer.json", 6_718_495, "6a0734cf21c802169defaffe719bc2ef12bb9d0be37e54b61ed27aa89394723d"],
       ["tokenizer/irodori_v4/tokenizer_config.json", 668, "d229a271c64de1a7939d20d3665498e873fa91d5ee2edf135d73ec752cb9c9d3"],
-      ["models/model-config.json", 4_369, "11876f5c11248a261a77b80f2504a4ced51f49691f50942f3a14305ef1cdf97a"],
-    ].map(([relativePath, bytes, sha256]) => Object.freeze({
+      ["models/model-config.json", 4_400, "cf96cf3a4c5174f2af75be07065e8e8441d060bf67972333ae27763005620187", `${IRODORI_V41_DURATION_RELEASE_BASE}/fp16-model-config.json`],
+    ].map(([relativePath, bytes, sha256, url]) => Object.freeze({
       name: path.basename(relativePath),
       relativePath,
-      url: `${IRODORI_V4_RELEASE_BASE}/${path.basename(relativePath)}`,
+      url: url || `${IRODORI_V4_RELEASE_BASE}/${path.basename(relativePath)}`,
       bytes,
       sha256,
     }))),
   }),
   "irodori-webgpu-int4": Object.freeze({
     id: "irodori-webgpu-int4",
-    label: "Irodori TTS v4 Small · INT4 WebGPU",
-    description: "公式INT4版を起点にした約853MBの軽量W4A16 WebGPUモデルです。",
-    directoryName: "irodori-tts-v4-small-quantized-webgpu-int4-r1",
-    obsoleteDirectoryNames: Object.freeze([]),
-    downloadBytes: 853_295_612,
+    label: "Irodori TTS v4.1 Small · INT4 WebGPU",
+    description: "改善済みDuration Predictorを含む約853MBの軽量W4A16 WebGPUモデルです。",
+    directoryName: "irodori-tts-v4.1-small-quantized-webgpu-int4-r1",
+    obsoleteDirectoryNames: Object.freeze([
+      "irodori-tts-v4-small-quantized-webgpu-int4-r1",
+    ]),
+    downloadBytes: 853_297_043,
+    incrementalDownloadBytes: 43_861_081,
     sourceUrl: "https://github.com/ochisamu/irodori-tts-v4-webgpu-models",
     licenseUrl: "https://github.com/ochisamu/irodori-tts-v4-webgpu-models/blob/main/LICENSES/Irodori-TTS-v4-Small-LICENSE",
     files: Object.freeze([
@@ -142,8 +152,8 @@ const TTS_MODELS = Object.freeze({
       ["models/dacvae_encoder.onnx.data", 54_697_984, "a963ab4f4be69451b04243e0b8ef9b53e3be5d615e09595e5eb83be5b9094489"],
       ["models/dit_v4.onnx", 2_802_048, "6a7b3aa7de9723149b81962359bef0c62677acefecea14811297207ba9d837e5"],
       ["models/dit_v4.onnx.data", 253_895_424, "031c05c334cbc56ddb37ab3609f02ed7eae151404ceb4018d4a62b1c892bd3ec"],
-      ["models/duration.onnx", 273_517, "299558f4c86d47f57ada1f977a440e580435a7143ad0bbb88b47fb6f25c0c410"],
-      ["models/duration.onnx.data", 43_581_440, "97c9274ceab389c96612f689f957b39713375e2d6c45a32c6848904897392c0c"],
+      ["models/duration.onnx", 275_215, "e7de80effd7206f17994c844287a258642d73b91bb52e664f090e1190aa59e7c", `${IRODORI_V41_DURATION_RELEASE_BASE}/int4-duration.onnx`],
+      ["models/duration.onnx.data", 43_581_440, "9c4ade0f4b3db1b4e23877a8452544c2b951a0126b801a87ee989e63b2fb42c4", `${IRODORI_V41_DURATION_RELEASE_BASE}/int4-duration.onnx.data`],
       ["models/speaker_encoder.onnx", 1_357_019, "18c393534655758b81f01727fc5be2987fa0e8d19682c577eb886ad5ab0e0e7e"],
       ["models/speaker_encoder.onnx.data", 31_836_480, "47de6f39d786108ee268bfb5135e3f418d1a3632fc56947f66531a2e6bcb73b0"],
       ["models/text_backbone.onnx", 3_221_288, "f073230f7dfdc34a4927393dab7feb03db38ec9850a92e86b68cc9ff2710814a"],
@@ -152,11 +162,11 @@ const TTS_MODELS = Object.freeze({
       ["models/text_projector.onnx.data", 3_473_408, "56755c911c4aecfbdba869e2ee4faa6651eef6628e76d9bd0aa3bbe211f50173"],
       ["tokenizer/irodori_v4/tokenizer.json", 6_718_495, "6a0734cf21c802169defaffe719bc2ef12bb9d0be37e54b61ed27aa89394723d"],
       ["tokenizer/irodori_v4/tokenizer_config.json", 668, "d229a271c64de1a7939d20d3665498e873fa91d5ee2edf135d73ec752cb9c9d3"],
-      ["models/model-config.json", 4_693, "d97f1f4c0c740132ef7586f01c5197674a4ea194cd2411de9d1fa2e5ac230466"],
-    ].map(([relativePath, bytes, sha256]) => Object.freeze({
+      ["models/model-config.json", 4_426, "3b6ad07b722533c0b50bdc95adcd07e7a1222bdddb6af2faad7d85a1af120ba0", `${IRODORI_V41_DURATION_RELEASE_BASE}/int4-model-config.json`],
+    ].map(([relativePath, bytes, sha256, url]) => Object.freeze({
       name: path.basename(relativePath),
       relativePath,
-      url: `${IRODORI_V4_INT4_RELEASE_BASE}/${path.basename(relativePath)}`,
+      url: url || `${IRODORI_V4_INT4_RELEASE_BASE}/${path.basename(relativePath)}`,
       bytes,
       sha256,
     }))),
@@ -239,12 +249,98 @@ function assertEnoughDiskSpace(directory, requiredBytes) {
   }
 }
 
+async function assertEnoughDiskSpaceAsync(directory, requiredBytes) {
+  if (typeof fsp.statfs !== "function") return;
+  const stats = await fsp.statfs(directory);
+  const available = Number(stats.bavail) * Number(stats.bsize);
+  const required = Math.ceil(requiredBytes * 1.15) + 64 * 1024 * 1024;
+  if (Number.isFinite(available) && available < required) {
+    const requiredGb = (required / 1024 / 1024 / 1024).toFixed(1);
+    throw new Error(`モデルの保存容量が不足しています（空き容量を約${requiredGb}GB以上確保してください）。`);
+  }
+}
+
+function yieldToEventLoop() {
+  return new Promise((resolve) => setImmediate(resolve));
+}
+
+async function sha256File(filePath, { expectedBytes, onChunk } = {}) {
+  const hash = crypto.createHash("sha256");
+  let received = 0;
+  let bytesSinceYield = 0;
+  for await (const chunk of fs.createReadStream(filePath, { highWaterMark: 1024 * 1024 })) {
+    hash.update(chunk);
+    received += chunk.length;
+    bytesSinceYield += chunk.length;
+    onChunk?.(chunk.length);
+    if (bytesSinceYield >= HASH_YIELD_BYTES) {
+      bytesSinceYield = 0;
+      await yieldToEventLoop();
+    }
+  }
+  if (Number.isFinite(expectedBytes) && received !== expectedBytes) {
+    return { bytes: received, sha256: null };
+  }
+  return { bytes: received, sha256: hash.digest("hex") };
+}
+
+function managedSourceDirectories(baseDirectory, model) {
+  const names = [model?.directoryName, ...(model?.obsoleteDirectoryNames || [])];
+  const seen = new Set();
+  return names.flatMap((directoryName) => {
+    if (!directoryName || path.basename(directoryName) !== directoryName || seen.has(directoryName)) return [];
+    seen.add(directoryName);
+    const directory = path.resolve(baseDirectory, directoryName);
+    return path.dirname(directory) === baseDirectory ? [directory] : [];
+  });
+}
+
+function managedFilePath(directory, relativePath) {
+  const root = path.resolve(directory);
+  const candidate = path.resolve(root, relativePath);
+  const prefix = `${root}${path.sep}`;
+  return candidate.startsWith(prefix) ? candidate : null;
+}
+
+async function findVerifiedReusableFile({ baseDirectory, model, file }) {
+  for (const directory of managedSourceDirectories(baseDirectory, model)) {
+    const candidate = managedFilePath(directory, file.relativePath);
+    if (!candidate) continue;
+    try {
+      const stats = await fsp.lstat(candidate);
+      if (!stats.isFile() || stats.isSymbolicLink() || stats.size !== file.bytes) continue;
+      const digest = await sha256File(candidate, { expectedBytes: file.bytes });
+      if (digest.sha256 === file.sha256) return candidate;
+    } catch {}
+  }
+  return null;
+}
+
+async function reuseVerifiedFile({ source, destination, file }) {
+  await fsp.mkdir(path.dirname(destination), { recursive: true });
+  try {
+    await fsp.link(source, destination);
+    return "hardlink";
+  } catch (linkError) {
+    try {
+      await fsp.copyFile(source, destination, fs.constants.COPYFILE_EXCL);
+      const digest = await sha256File(destination, { expectedBytes: file.bytes });
+      if (digest.sha256 !== file.sha256) throw new Error(`${file.name}の再利用後のSHA-256が一致しません。`);
+      return "copy";
+    } catch (copyError) {
+      await fsp.rm(destination, { force: true }).catch(() => {});
+      if (copyError?.code === "EEXIST") throw linkError;
+      throw copyError;
+    }
+  }
+}
+
 async function downloadVerifiedFile({ fetchImpl, file, destination, onChunk }) {
   const response = await fetchImpl(file.url, { redirect: "follow" });
   if (!response?.ok || !response.body) throw new Error(`モデルをダウンロードできませんでした (HTTP ${response?.status || "unknown"})`);
-  fs.mkdirSync(path.dirname(destination), { recursive: true });
+  await fsp.mkdir(path.dirname(destination), { recursive: true });
   const temporaryPath = `${destination}.download`;
-  const output = fs.openSync(temporaryPath, "w", 0o600);
+  const output = await fsp.open(temporaryPath, "w", 0o600);
   const hash = crypto.createHash("sha256");
   let received = 0;
   try {
@@ -253,30 +349,28 @@ async function downloadVerifiedFile({ fetchImpl, file, destination, onChunk }) {
       const { done, value } = await reader.read();
       if (done) break;
       const chunk = Buffer.from(value);
-      fs.writeSync(output, chunk);
+      await output.writeFile(chunk);
       hash.update(chunk);
       received += chunk.length;
       onChunk?.(chunk.length);
     }
-  } finally {
-    fs.closeSync(output);
+    await output.close();
+    if (received !== file.bytes) throw new Error(`${file.name}のダウンロードサイズが一致しません。`);
+    if (hash.digest("hex") !== file.sha256) throw new Error(`${file.name}のSHA-256が一致しません。`);
+    await fsp.rename(temporaryPath, destination);
+  } catch (error) {
+    await output.close().catch(() => {});
+    await fsp.rm(temporaryPath, { force: true }).catch(() => {});
+    throw error;
   }
-  if (received !== file.bytes) {
-    fs.rmSync(temporaryPath, { force: true });
-    throw new Error(`${file.name}のダウンロードサイズが一致しません。`);
-  }
-  if (hash.digest("hex") !== file.sha256) {
-    fs.rmSync(temporaryPath, { force: true });
-    throw new Error(`${file.name}のSHA-256が一致しません。`);
-  }
-  fs.renameSync(temporaryPath, destination);
 }
 
 class EmbeddedTtsModels {
-  constructor(baseDirectory, { fetchImpl = globalThis.fetch, platform = process.platform } = {}) {
+  constructor(baseDirectory, { fetchImpl = globalThis.fetch, platform = process.platform, models = TTS_MODELS } = {}) {
     this.baseDirectory = path.resolve(baseDirectory);
     this.fetchImpl = fetchImpl;
     this.platform = platform;
+    this.models = models;
     this.downloadPromise = null;
     this.downloadingProvider = null;
     this.progress = null;
@@ -286,11 +380,16 @@ class EmbeddedTtsModels {
   cleanupStaleDownloads() {
     try {
       for (const entry of fs.readdirSync(this.baseDirectory, { withFileTypes: true })) {
-        if (entry.isDirectory() && /^\.download-(piper-plus|supertonic-3|irodori-webgpu|irodori-500m-v3|kokoro)-\d+$/.test(entry.name)) {
+        const match = /^\.download-(.+)-(\d+)$/.exec(entry.name);
+        if (entry.isDirectory() && match && this.models[match[1]]) {
           fs.rmSync(path.join(this.baseDirectory, entry.name), { recursive: true, force: true });
         }
       }
     } catch {}
+  }
+
+  modelForId(provider) {
+    return this.models[String(provider || "")] || null;
   }
 
   directoryFor(model) {
@@ -302,14 +401,23 @@ class EmbeddedTtsModels {
   }
 
   isInstalled(provider) {
-    const model = modelForId(provider);
+    const model = this.modelForId(provider);
     return Boolean(model) && requiredPaths(model, this.directoryFor(model)).every(isFile);
   }
 
+  obsoleteInstallations(model) {
+    return managedSourceDirectories(this.baseDirectory, model)
+      .filter((directory) => directory !== this.directoryFor(model))
+      .filter((directory) => requiredPaths(model, directory).every(isFile));
+  }
+
   installedPaths(provider) {
-    const model = modelForId(provider);
-    if (!model || !this.isInstalled(provider)) return {};
-    const directory = this.directoryFor(model);
+    const model = this.modelForId(provider);
+    if (!model) return {};
+    const directory = this.isInstalled(provider)
+      ? this.directoryFor(model)
+      : this.obsoleteInstallations(model)[0];
+    if (!directory) return {};
     if (provider === "piper-plus") return {
       executablePath: path.join(directory, "piper", "bin", "piper.exe"),
       modelPath: path.join(directory, "models", "tsukuyomi-chan-6lang-fp16.onnx"),
@@ -317,14 +425,14 @@ class EmbeddedTtsModels {
     return { modelDirectory: directory };
   }
 
-  cleanupObsoleteVersions(model) {
+  async cleanupObsoleteVersions(model) {
     const removed = [];
     for (const directoryName of model?.obsoleteDirectoryNames || []) {
       if (!directoryName || directoryName === model.directoryName || path.basename(directoryName) !== directoryName) continue;
       const target = path.resolve(this.baseDirectory, directoryName);
-      if (path.dirname(target) !== this.baseDirectory || !fs.existsSync(target)) continue;
+      if (path.dirname(target) !== this.baseDirectory) continue;
       try {
-        fs.rmSync(target, { recursive: true, force: true });
+        await fsp.rm(target, { recursive: true, force: true });
         removed.push(directoryName);
       } catch (error) {
         console.warn(`旧音声合成モデルを削除できませんでした (${directoryName}): ${error?.message || error}`);
@@ -334,15 +442,18 @@ class EmbeddedTtsModels {
   }
 
   status(provider) {
-    const model = modelForId(provider);
+    const model = this.modelForId(provider);
     if (!model) throw new Error("対応していない音声合成モデルです。");
+    const installed = this.isInstalled(model.id);
     return {
       provider: model.id,
       label: model.label,
       description: model.description,
       downloadBytes: model.downloadBytes,
+      incrementalDownloadBytes: Number(model.incrementalDownloadBytes) || 0,
       supported: this.isSupported(model),
-      installed: this.isInstalled(model.id),
+      installed,
+      upgradeAvailable: !installed && this.obsoleteInstallations(model).length > 0,
       downloading: this.downloadingProvider === model.id,
       progress: this.downloadingProvider === model.id ? this.progress : null,
       sourceUrl: model.sourceUrl,
@@ -357,11 +468,11 @@ class EmbeddedTtsModels {
   }
 
   async download(provider, onProgress) {
-    const model = modelForId(provider);
+    const model = this.modelForId(provider);
     if (!model) throw new Error("対応していない音声合成モデルです。");
     if (!this.isSupported(model)) throw new Error(`${model.label}のサンプルはWindows版アプリでダウンロードできます。`);
     if (this.isInstalled(model.id)) {
-      this.cleanupObsoleteVersions(model);
+      await this.cleanupObsoleteVersions(model);
       return this.status(model.id);
     }
     if (this.downloadPromise) {
@@ -378,9 +489,19 @@ class EmbeddedTtsModels {
   }
 
   async downloadModel(model, onProgress) {
-    fs.mkdirSync(this.baseDirectory, { recursive: true });
-    assertEnoughDiskSpace(this.baseDirectory, model.downloadBytes);
+    await fsp.mkdir(this.baseDirectory, { recursive: true });
     const temporaryDirectory = path.join(this.baseDirectory, `.download-${model.id}-${Date.now()}`);
+    const reusableFiles = new Map();
+    for (const file of model.files || []) {
+      this.emitProgress(onProgress, model, "verifying", 0, file.name);
+      const source = await findVerifiedReusableFile({ baseDirectory: this.baseDirectory, model, file });
+      if (source) reusableFiles.set(file.relativePath, source);
+    }
+    const reusableBytes = [...reusableFiles.keys()].reduce((sum, relativePath) => {
+      const file = model.files.find((candidate) => candidate.relativePath === relativePath);
+      return sum + (file?.bytes || 0);
+    }, 0);
+    await assertEnoughDiskSpaceAsync(this.baseDirectory, Math.max(0, model.downloadBytes - reusableBytes));
     let receivedBytes = 0;
     const downloadFile = async (file, destination) => {
       this.emitProgress(onProgress, model, "downloading", receivedBytes, file.name);
@@ -394,50 +515,77 @@ class EmbeddedTtsModels {
         },
       });
     };
+    const installFile = async (file, destination) => {
+      const source = reusableFiles.get(file.relativePath);
+      if (!source) return downloadFile(file, destination);
+      this.emitProgress(onProgress, model, "reusing", receivedBytes, file.name);
+      await reuseVerifiedFile({ source, destination, file });
+      receivedBytes += file.bytes;
+      this.emitProgress(onProgress, model, "reusing", receivedBytes, file.name);
+    };
     try {
-      fs.mkdirSync(temporaryDirectory, { recursive: true });
+      await fsp.mkdir(temporaryDirectory, { recursive: true });
       if (model.id === "piper-plus") {
         const archivePath = path.join(temporaryDirectory, model.runtime.archiveName);
         await downloadFile({ ...model.runtime, name: model.runtime.archiveName }, archivePath);
         const extracted = path.join(temporaryDirectory, "runtime");
-        fs.mkdirSync(extracted, { recursive: true });
+        await fsp.mkdir(extracted, { recursive: true });
         this.emitProgress(onProgress, model, "extracting", receivedBytes, model.runtime.archiveName);
         await runProcess(this.platform === "win32" ? "tar.exe" : "unzip", this.platform === "win32"
           ? ["-xf", archivePath, "-C", extracted]
           : ["-q", archivePath, "-d", extracted]);
-        fs.rmSync(archivePath, { force: true });
-        for (const file of model.files) await downloadFile(file, path.join(temporaryDirectory, "ready", file.relativePath));
-        fs.renameSync(path.join(extracted, "piper"), path.join(temporaryDirectory, "ready", "piper"));
+        await fsp.rm(archivePath, { force: true });
+        for (const file of model.files) await installFile(file, path.join(temporaryDirectory, "ready", file.relativePath));
+        await fsp.rename(path.join(extracted, "piper"), path.join(temporaryDirectory, "ready", "piper"));
       } else if (model.archive) {
         const archivePath = path.join(temporaryDirectory, model.archive.archiveName);
         await downloadFile({ ...model.archive, name: model.archive.archiveName }, archivePath);
         const extracted = path.join(temporaryDirectory, "extracted");
-        fs.mkdirSync(extracted, { recursive: true });
+        await fsp.mkdir(extracted, { recursive: true });
         this.emitProgress(onProgress, model, "extracting", receivedBytes, model.archive.archiveName);
         await runProcess(this.platform === "win32" ? "tar.exe" : "tar", ["-xjf", archivePath, "-C", extracted]);
-        fs.rmSync(archivePath, { force: true });
-        fs.renameSync(path.join(extracted, model.directoryName), path.join(temporaryDirectory, "ready"));
+        await fsp.rm(archivePath, { force: true });
+        await fsp.rename(path.join(extracted, model.directoryName), path.join(temporaryDirectory, "ready"));
       } else {
-        for (const file of model.files) await downloadFile(file, path.join(temporaryDirectory, "ready", file.relativePath));
+        for (const file of model.files) await installFile(file, path.join(temporaryDirectory, "ready", file.relativePath));
       }
       const ready = path.join(temporaryDirectory, "ready");
       if (!requiredPaths(model, ready).every(isFile)) throw new Error("ダウンロードした音声合成モデルに必要なファイルがありません。");
       const destination = this.directoryFor(model);
-      if (fs.existsSync(destination)) fs.rmSync(destination, { recursive: true, force: true });
-      fs.renameSync(ready, destination);
-      this.cleanupObsoleteVersions(model);
+      const backup = path.join(this.baseDirectory, `.previous-${model.id}-${Date.now()}`);
+      let movedExistingDestination = false;
+      if (fs.existsSync(destination)) {
+        await fsp.rename(destination, backup);
+        movedExistingDestination = true;
+      }
+      try {
+        await fsp.rename(ready, destination);
+      } catch (error) {
+        if (movedExistingDestination && !fs.existsSync(destination)) {
+          await fsp.rename(backup, destination).catch(() => {});
+        }
+        throw error;
+      }
+      if (movedExistingDestination) {
+        await fsp.rm(backup, { recursive: true, force: true }).catch((error) => {
+          console.warn(`更新前の音声合成モデルを削除できませんでした: ${error?.message || error}`);
+        });
+      }
+      await this.cleanupObsoleteVersions(model);
       this.emitProgress(onProgress, model, "done", model.downloadBytes);
       return this.status(model.id);
     } finally {
-      try { fs.rmSync(temporaryDirectory, { recursive: true, force: true }); } catch {}
+      await fsp.rm(temporaryDirectory, { recursive: true, force: true }).catch(() => {});
     }
   }
 
   remove(provider) {
-    const model = modelForId(provider);
+    const model = this.modelForId(provider);
     if (!model) throw new Error("対応していない音声合成モデルです。");
     if (this.downloadingProvider === model.id) throw new Error("モデルのダウンロード中は削除できません。");
-    fs.rmSync(this.directoryFor(model), { recursive: true, force: true });
+    for (const directory of managedSourceDirectories(this.baseDirectory, model)) {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
     return this.status(model.id);
   }
 }
@@ -446,7 +594,11 @@ module.exports = {
   EmbeddedTtsModels,
   TTS_MODELS,
   assertEnoughDiskSpace,
+  assertEnoughDiskSpaceAsync,
   downloadVerifiedFile,
+  findVerifiedReusableFile,
   modelForId,
   requiredPaths,
+  reuseVerifiedFile,
+  sha256File,
 };

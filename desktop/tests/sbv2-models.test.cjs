@@ -6,6 +6,7 @@ const path = require("node:path");
 const test = require("node:test");
 
 const { Sbv2ModelLibrary, normalizeManifest } = require("../lib/sbv2-models.cjs");
+const { createStderrCollector, isBenignOrtAssignmentWarning } = require("../lib/sbv2-worker-client.cjs");
 
 const manifest = {
   name: "Test Voice",
@@ -16,6 +17,23 @@ const manifest = {
     { name: "Happy", localId: 4 },
   ] }],
 };
+
+test("JP-Extra hides ONNX provider assignment diagnostics but keeps real errors", () => {
+  assert.equal(isBenignOrtAssignmentWarning("VerifyEachNodeIsAssignedToAnEp Some nodes were not assigned"), true);
+  assert.equal(isBenignOrtAssignmentWarning("model file is missing"), false);
+});
+
+test("JP-Extra stderr collector joins split provider warnings without hiding later errors", async () => {
+  const logged = [];
+  const collector = createStderrCollector((value) => logged.push(value), 5);
+  collector.push("Some nodes were not assi");
+  collector.push("gned to the preferred execution providers");
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.deepEqual(logged, []);
+  collector.push("model file is missing");
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.deepEqual(logged, ["model file is missing"]);
+});
 
 test("JP-Extra AIVMX models are copied into app-owned storage and remain selectable", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "charadock-sbv2-models-"));

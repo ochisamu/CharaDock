@@ -2,6 +2,30 @@
 const { fork } = require("node:child_process");
 const path = require("node:path");
 
+function isBenignOrtAssignmentWarning(value) {
+  return /VerifyEachNodeIsAssignedToAnEp|Some nodes were not assigned|Rerunning with verbose output|shape related ops to CPU|negative impact on performance/i.test(String(value || ""));
+}
+
+function createStderrCollector(log, delayMs = 100) {
+  let buffer = "";
+  let timer = null;
+  const flush = () => {
+    clearTimeout(timer);
+    timer = null;
+    const text = buffer.trim();
+    buffer = "";
+    if (text && !isBenignOrtAssignmentWarning(text)) log(text);
+  };
+  return {
+    push(chunk) {
+      buffer += String(chunk || "");
+      clearTimeout(timer);
+      timer = setTimeout(flush, delayMs);
+    },
+    flush,
+  };
+}
+
 class Sbv2WorkerClient {
   constructor({
     executablePath = process.execPath,
@@ -18,6 +42,7 @@ class Sbv2WorkerClient {
     this.child = null;
     this.pending = new Map();
     this.nextId = 1;
+    this.stderrCollector = null;
   }
 
   ensureStarted() {
@@ -30,10 +55,14 @@ class Sbv2WorkerClient {
       windowsHide: true,
     });
     this.child = child;
-    child.stderr?.on("data", (chunk) => console.warn(`JP-Extra worker: ${String(chunk).trim()}`));
+    const stderrCollector = createStderrCollector((text) => console.warn(`JP-Extra worker: ${text}`));
+    this.stderrCollector = stderrCollector;
+    child.stderr?.on("data", (chunk) => stderrCollector.push(chunk));
     child.on("message", (message) => this.handleMessage(message));
     child.on("error", (error) => this.rejectAll(error));
     child.on("exit", (code, signal) => {
+      stderrCollector.flush();
+      if (this.stderrCollector === stderrCollector) this.stderrCollector = null;
       if (this.child === child) this.child = null;
       this.rejectAll(new Error(`JP-Extraワーカーが停止しました（${signal || code || "unknown"}）。`));
     });
@@ -88,10 +117,12 @@ class Sbv2WorkerClient {
   stop() {
     const child = this.child;
     this.child = null;
+    this.stderrCollector?.flush();
+    this.stderrCollector = null;
     this.rejectAll(new Error("JP-Extraワーカーを終了しました。"));
     if (child?.connected) child.disconnect();
     setTimeout(() => { if (!child?.killed) child?.kill(); }, 3000).unref?.();
   }
 }
 
-module.exports = { Sbv2WorkerClient };
+module.exports = { Sbv2WorkerClient, createStderrCollector, isBenignOrtAssignmentWarning };

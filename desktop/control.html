@@ -28,6 +28,7 @@
         <button class="nav-tab is-active" type="button" data-page="chat"><span class="ui-symbol ui-symbol-chat" aria-hidden="true"></span>Chat</button>
         <button class="nav-tab" type="button" data-page="remote"><span class="ui-symbol ui-symbol-settings" aria-hidden="true"></span>リモート</button>
         <button class="nav-tab" type="button" data-page="character"><span class="ui-symbol ui-symbol-character" aria-hidden="true"></span>キャラクター</button>
+        <button class="nav-tab" type="button" data-page="skills"><span class="ui-symbol ui-symbol-sparkle" aria-hidden="true"></span>Skills</button>
         <button class="nav-tab" type="button" data-page="voice"><span class="ui-symbol ui-symbol-voice" aria-hidden="true"></span>音声</button>
         <p class="nav-section-label">システム</p>
         <button class="nav-tab" type="button" data-page="connection"><span class="ui-symbol ui-symbol-connection" aria-hidden="true"></span>AI接続</button>
@@ -62,6 +63,7 @@
               <button id="workHistoryTab" type="button" role="tab" aria-selected="false">Work履歴</button>
             </div>
             <div class="work-folder-quick">
+              <label class="continuation-quick-toggle" title="起動時に前回の続きへ声をかける"><input id="chatContinuationToggle" type="checkbox" /><i></i><span>再開</span></label>
               <span id="interactionModeBadge">Chat</span>
               <label class="work-project-picker"><small>作業先</small><select id="chatWorkProjectSelect" aria-label="作業先プロジェクト"></select></label>
               <button id="openChatWorkDirectoryButton" class="button button-quiet" type="button">開く</button>
@@ -86,11 +88,30 @@
 
           <form id="chatForm" class="composer">
             <div class="composer-drop-hint" aria-hidden="true"><span class="ui-symbol ui-symbol-attach"></span><strong>ここにファイルをドロップ</strong></div>
-            <div id="chatAttachmentList" class="chat-attachment-list" aria-label="添付ファイル"></div>
+            <div class="chat-context-list">
+              <div id="chatAttachmentList" class="chat-attachment-list" aria-label="添付ファイル"></div>
+              <div id="chatSelectedSkillList" class="chat-selected-skill-list" aria-label="この送信で使うSkills"></div>
+            </div>
             <textarea id="chatInput" rows="3" maxlength="12000" placeholder="メッセージを入力…（Ctrl＋Enterで送信）"></textarea>
             <input id="chatAttachmentInput" type="file" multiple hidden />
+            <section id="chatAddPopover" class="composer-add-popover" role="dialog" aria-label="ファイルまたはSkillを追加" hidden>
+              <button id="chatAddFileAction" class="composer-add-file" type="button">
+                <span class="composer-add-icon"><span class="ui-symbol ui-symbol-attach" aria-hidden="true"></span></span>
+                <span><strong>ファイルを添付</strong><small>ドラッグ＆ドロップにも対応</small></span>
+              </button>
+              <div class="composer-skill-picker-head">
+                <span><strong>この送信で使うSkill</strong><small id="chatSkillPickerMeta">/ または @ でも検索</small></span>
+                <button id="chatManageSkillsButton" type="button">管理</button>
+              </div>
+              <label class="composer-skill-search">
+                <span class="ui-symbol ui-symbol-search" aria-hidden="true"></span>
+                <span class="visually-hidden">Skillを検索</span>
+                <input id="chatSkillPickerSearch" type="search" autocomplete="off" placeholder="Skillを検索" />
+              </label>
+              <div id="chatSkillPickerList" class="composer-skill-picker-list" role="listbox" aria-label="利用できるSkills"></div>
+            </section>
             <div class="composer-actions is-text-only">
-              <button id="chatAttachmentButton" class="icon-text-button" type="button"><span class="ui-symbol ui-symbol-attach" aria-hidden="true"></span>ファイル</button>
+              <button id="chatAddButton" class="composer-add-button" type="button" aria-label="ファイルまたはSkillを追加" aria-expanded="false" aria-controls="chatAddPopover"><span class="ui-symbol ui-symbol-plus" aria-hidden="true"></span></button>
               <span id="chatComposerHint" class="composer-hint">設定画面では文字入力のみ</span>
               <button id="sendButton" class="button button-primary" type="submit">送信 <span class="ui-symbol ui-symbol-send" aria-hidden="true"></span></button>
               <button id="stopButton" class="button button-danger" type="button" hidden>中断 <span class="ui-symbol ui-symbol-stop" aria-hidden="true"></span></button>
@@ -129,6 +150,7 @@
               <label>リモートの応答音声<select id="remoteResponseModeSelect"><option value="tts">通常TTS</option><option value="live">GPT-Live（スマートフォンで開始）</option></select></label>
               <label class="switch-row"><span><strong>スマートフォンでWorkを許可</strong><small>現在の作業先と、このキャラのホーム内で作業できます</small></span><input id="remoteWorkToggle" type="checkbox" /><i></i></label>
               <label class="switch-row"><span><strong>スマートフォンでキャラ音声を再生</strong><small>通常TTSの設定済み音声をスマートフォン側でも生成します</small></span><input id="remoteTtsToggle" type="checkbox" /><i></i></label>
+              <label class="switch-row"><span><strong>リモートを開いたときに声をかける</strong><small>作業の続きがある場合だけ、端末ごとに一度話します。Live選択時は接続後の声を使います</small></span><input id="remoteStartupGreetingToggle" type="checkbox" /><i></i></label>
               <label class="switch-row"><span><strong>PCでも回答音声を再生</strong><small>OFFにするとリモートから送った通常TTSをPCでは鳴らしません</small></span><input id="remotePcAudioToggle" type="checkbox" /><i></i></label>
               <section class="remote-tailscale-note" aria-labelledby="remoteTailscaleTitle">
                 <div class="remote-tailscale-heading"><strong id="remoteTailscaleTitle">Tailscale HTTPS（任意）</strong><span id="remoteTailscaleBadge" class="setup-state-badge">未確認</span></div>
@@ -211,9 +233,49 @@
             <div><h3 id="characterCreditTitle">キャラクタークレジット</h3><p id="characterCreditText"></p></div>
             <div id="characterCreditLinks" class="character-credit-links"></div>
           </section>
-          <section class="character-memory" aria-labelledby="characterMemoryTitle">
-            <header><div><h3 id="characterMemoryTitle">このキャラのメモリ</h3><p>会話から自動で覚えた呼び名・好み・継続目標です。ほかのキャラとは共有しません。</p></div><button id="clearCharacterMemoriesButton" class="button button-quiet" type="button" hidden>すべて忘れる</button></header>
-            <div id="characterMemoryList" class="character-memory-list"></div>
+          <section class="character-knowledge" aria-labelledby="characterKnowledgeTitle">
+            <header>
+              <div><h3 id="characterKnowledgeTitle">このキャラが覚えていること</h3><p>会話を自分向けにする情報と、いま取り組んでいる続きです。保存範囲を分けたまま、ここでまとめて確認できます。</p></div>
+            </header>
+            <section class="character-memory knowledge-pane" aria-labelledby="characterMemoryTitle">
+              <header><div><p class="knowledge-eyebrow">あなたについて</p><h4 id="characterMemoryTitle">会話を自分向けにする記憶</h4><p>呼び名・好み・普段のやり方など、今後も役立つ内容を自然な会話から覚えます。このキャラだけが使います。</p></div><button id="clearCharacterMemoriesButton" class="button button-quiet" type="button" hidden>すべて忘れる</button></header>
+              <div id="characterMemoryList" class="character-memory-list"></div>
+            </section>
+            <section id="characterContinuation" class="character-continuation knowledge-pane" aria-labelledby="characterContinuationTitle">
+              <header>
+                <div><p class="knowledge-eyebrow">作業の続き</p><h4 id="characterContinuationTitle">現在の目的と次の一手</h4><p>キャラ共通・キャラクターホーム・追加プロジェクトを混ぜずに引き継ぎます。</p></div>
+                <label class="switch-row continuation-master-switch"><span><strong>起動時に声をかける</strong><small>続きがある場合だけ、一度だけ話します</small></span><input id="continuationModeToggle" type="checkbox" /><i></i></label>
+              </header>
+              <div class="continuation-scope-row">
+                <span><small>現在の範囲</small><strong id="continuationScopeLabel">このキャラ共通</strong><small id="continuationUpdatedAt" class="continuation-updated-at"></small></span>
+                <span id="continuationFreshnessBadge" class="continuation-freshness">記録なし</span>
+              </div>
+              <p id="continuationScopeHint" class="continuation-scope-hint">Chatの共通記録、キャラクターホームのWork、追加プロジェクトを分けて扱います。</p>
+              <div class="continuation-focus" aria-label="継続内容">
+                <div><small>現在の目的</small><p id="continuationGoalPreview">未設定</p></div>
+                <div><small>次の一手</small><p id="continuationNextStepPreview">未設定</p></div>
+              </div>
+              <details id="continuationEditor" class="continuation-editor">
+                <summary><span>内容を確認・編集</span><small>必要なときだけ開きます</small></summary>
+                <div class="continuation-fields continuation-primary-fields">
+                  <label>現在の目的<textarea id="continuationGoalInput" rows="2" maxlength="600" placeholder="例：ニュース検索を当日性まで正しく扱えるようにする"></textarea></label>
+                  <label>次の一手<textarea id="continuationNextStepInput" rows="2" maxlength="600" placeholder="次回、最初に提案してほしい行動"></textarea></label>
+                </div>
+                <details class="continuation-advanced">
+                  <summary><span>決定・進捗の詳細</span><small id="continuationDetailCount">詳細なし</small></summary>
+                  <div class="continuation-fields continuation-detail-fields">
+                    <label>決定事項・制約<textarea id="continuationDecisionsInput" rows="3" maxlength="4000" placeholder="1行に1件"></textarea></label>
+                    <label>確認済みの完了<textarea id="continuationCompletedInput" rows="3" maxlength="4000" placeholder="実際に完了・確認できた内容を1行に1件"></textarea></label>
+                    <label>未完了タスク<textarea id="continuationPendingInput" rows="3" maxlength="4000" placeholder="1行に1件"></textarea></label>
+                  </div>
+                </details>
+                <div class="continuation-actions">
+                  <p id="continuationStatus" class="inline-status" role="status">保存内容は起動時に全文会話ではなく短いサマリーとして使います。</p>
+                  <button id="clearContinuationButton" class="button button-danger" type="button" hidden>この範囲の記録を消去</button>
+                  <button id="saveContinuationButton" class="button button-primary" type="button">サマリーを保存</button>
+                </div>
+              </details>
+            </section>
           </section>
           <section class="character-workspace" aria-labelledby="characterWorkspaceTitle">
             <header><div><h3 id="characterWorkspaceTitle">キャラクターホームと担当プロジェクト</h3><p>このキャラ専用のホームを持ち、既存フォルダーは移動せず担当プロジェクトとして切り替えられます。</p></div><button id="addCharacterProjectButton" class="button button-quiet" type="button">プロジェクトを追加</button></header>
@@ -256,6 +318,49 @@
           <div><span class="card-icon">◌</span><div><h2>動きと反応</h2><p>自動まばたき、呼吸、髪揺れ、アプリ上のマウス追従、音量リップシンクを利用します。</p></div></div>
           <label class="switch-row"><span><strong>マウスを目で追う</strong><small>カーソルがキャラクター上にある間だけ追従</small></span><input id="mouseFollowToggle" type="checkbox" /><i></i></label>
         </div>
+      </section>
+
+      <section class="page" data-page-panel="skills">
+        <header class="page-header"><div><p class="eyebrow">Capabilities</p><h1>Skills</h1></div><span id="skillCountBadge" class="setup-state-badge">有効 0</span></header>
+        <p class="page-lead">必要な能力を見つけて追加すると、選択したキャラクターのWorkですぐ使えます。</p>
+        <section id="skillAssignmentCard" class="skill-target-bar" aria-label="Skillの割り当て先">
+          <div class="skill-target-identity"><span class="ui-symbol ui-symbol-character" aria-hidden="true"></span><span><small>Skillsを設定する相手</small><strong id="skillTargetSummary">このキャラクター</strong></span></div>
+          <div class="skill-target-metrics" aria-live="polite"><span><strong id="skillActiveCount">0</strong><small>使用中</small></span><span><strong id="skillInstalledCount">0</strong><small>端末に保存</small></span><span id="skillIssueMetric" hidden><strong id="skillIssueCount">0</strong><small>要確認</small></span></div>
+          <label><span class="visually-hidden">割り当て先</span><select id="skillAssignmentTargetSelect"></select></label>
+        </section>
+        <section id="skillLibraryCard" class="card settings-card skill-library-card">
+          <header class="skill-section-heading"><div><p class="eyebrow">Skill Catalog</p><h2>使う能力を管理</h2><p>使用状態を確認しながら、追加・停止・削除までこの画面で完了できます。</p></div><div class="skill-trust-group"><span class="skill-trust-badge is-trusted">OpenAI</span><span class="skill-trust-badge is-anthropic">Anthropic</span></div></header>
+          <div id="skillCatalogViews" class="skill-view-segment" role="group" aria-label="Skillの表示範囲">
+            <button type="button" data-skill-view="active" aria-pressed="true"><span>使用中</span><strong id="skillActiveViewCount">0</strong></button>
+            <button type="button" data-skill-view="all" aria-pressed="false"><span>探す</span><strong id="skillCatalogViewCount">0</strong></button>
+            <button type="button" data-skill-view="installed" aria-pressed="false"><span>端末に保存</span><strong id="skillInstalledViewCount">0</strong></button>
+          </div>
+          <div class="skill-catalog-toolbar">
+            <label class="skill-catalog-search"><span class="ui-symbol ui-symbol-search" aria-hidden="true"></span><input id="skillCatalogSearchInput" type="search" autocomplete="off" placeholder="名前や用途で検索" /></label>
+            <div id="skillSourceFilters" class="skill-filter-segment" role="group" aria-label="配布元で絞り込み">
+              <button type="button" data-skill-source="all" aria-pressed="true">すべて</button>
+              <button type="button" data-skill-source="charadock" aria-pressed="false">CharaDock</button>
+              <button type="button" data-skill-source="openai" aria-pressed="false">OpenAI</button>
+              <button type="button" data-skill-source="anthropic" aria-pressed="false">Anthropic</button>
+              <button type="button" data-skill-source="github" aria-pressed="false">GitHub</button>
+            </div>
+          </div>
+          <div id="trustedSkillCatalog" class="trusted-skill-catalog">
+            <div class="skill-catalog-skeleton"></div><div class="skill-catalog-skeleton"></div><div class="skill-catalog-skeleton"></div>
+          </div>
+          <div class="skill-catalog-footer"><p id="skillLibraryStatus" class="inline-status" role="status">公式カタログを準備しています…</p><button id="retrySkillCatalogButton" class="button button-secondary" type="button" hidden>再読み込み</button></div>
+          <details class="skill-url-details">
+            <summary><span>カタログにないSkillをGitHub URLから追加</span><small>詳細設定</small></summary>
+            <p>公開GitHubのSkillフォルダー、またはSKILL.mdのURLに対応します。インストール時にスクリプトは実行しません。</p>
+            <input id="skillSourceUrlInput" type="url" maxlength="2000" placeholder="https://github.com/owner/repo/tree/main/path/to/skill" />
+            <div class="skill-inspect-actions"><p id="customSkillStatus" class="inline-status" role="status">任意URLは追加前に内容と配布元を確認します。</p><button id="inspectSkillButton" class="button button-secondary" type="button">内容を確認</button></div>
+            <article id="skillInspectionPreview" class="skill-inspection-preview" hidden>
+              <div><span id="skillInspectionTrust" class="skill-trust-badge">GitHub</span><strong id="skillInspectionName"></strong><p id="skillInspectionDescription"></p><small id="skillInspectionMeta"></small></div>
+              <button id="installSkillButton" class="button button-primary" type="button">追加して有効化</button>
+            </article>
+          </details>
+        </section>
+        <aside class="skill-security-note"><span class="ui-symbol ui-symbol-support" aria-hidden="true"></span><p><strong>Skillはアプリの機能拡張です。</strong> 任意URLでは説明と配布元を確認してください。割り当ては利用範囲の整理であり、悪意あるSkillに対する安全境界ではありません。</p></aside>
       </section>
 
       <section class="page" data-page-panel="voice">
@@ -581,11 +686,11 @@
               </div>
               <div id="irodoriSettings" class="tts-provider-settings" hidden>
                 <label>モデル世代<select id="irodoriVersionSelect">
-                  <option value="v4-small">v4 Small（推奨・Voice Design対応）</option>
+                  <option value="v4-small">v4.1 Small（推奨・Voice Design対応）</option>
                   <option value="500m-v3">500M-v3（従来版・Voice Clone）</option>
                 </select></label>
                 <div id="irodoriV4Panel">
-                  <p class="hint"><strong>Irodori TTS v4 Small · WebGPU</strong></p>
+                  <p class="hint"><strong>Irodori TTS v4.1 Small · WebGPU</strong></p>
                   <label>モデル精度<select id="irodoriPrecisionSelect">
                     <option value="fp16">FP16（高品質・約1.7GB）</option>
                     <option value="int4">INT4（軽量・約853MB）</option>
@@ -612,10 +717,14 @@
                     <option value="natural">自然（推奨）</option>
                     <option value="expressive">豊か</option>
                   </select></label>
-                  <label>CFG実行<select id="irodoriCfgExecutionSelect">
-                    <option value="sequential">逐次（省VRAM・推奨）</option>
-                    <option value="batched">一括（高速・高VRAM）</option>
-                  </select></label>
+                  <div class="irodori-generation-profile" role="note">
+                    <span>
+                      <strong>安定性優先の生成設定</strong>
+                      <small>FP16とINT4は、末尾の余分な発話を抑えるため検証済みの設定で生成します。</small>
+                    </span>
+                    <b>Linear・16ステップ以上・逐次処理</b>
+                  </div>
+                  <input id="irodoriCfgExecutionSelect" type="hidden" value="sequential" />
                 </div>
                 <div id="irodoriV3Panel" hidden>
                   <p class="hint"><strong>Irodori TTS 500M-v3 · WebGPU（従来版）</strong></p>
@@ -628,7 +737,15 @@
                     </div>
                     <p id="irodoriV3ModelDownloadHint" class="hint">従来の約500Mパラメータ版です。WebGPU用FP16一式として約1.2GBを使用し、参照音声が必要です。</p>
                   </div>
-                  <p class="hint">キャプション・参照なしVoice Design・動的感情はv4 Small専用です。</p>
+                  <p class="hint">キャプション・参照なしVoice Design・動的感情はv4.1 Small専用です。</p>
+                  <details id="irodoriV3GenerationSettings" class="tts-advanced">
+                    <summary>500M-v3の生成品質</summary>
+                    <div class="size-actions">
+                      <label>生成方式<select id="irodoriSamplingModeSelect"><option value="sway">高速（Sway）</option><option value="linear">互換（Linear）</option></select></label>
+                      <label>生成ステップ（4–40）<input id="irodoriStepsInput" type="number" min="4" max="40" step="1" /></label>
+                    </div>
+                    <p id="irodoriGenerationHint" class="hint">500M-v3ではSwayによる高速生成を選べます。音質が合わない場合はステップ数を増やすかLinearへ戻してください。</p>
+                  </details>
                 </div>
                 <details class="tts-advanced">
                   <summary>手動モデルを使う</summary>
@@ -645,14 +762,11 @@
                   <p id="irodoriReferenceHint" class="hint">WAV / MP3 / M4A / AAC / OGG / FLAC / WebMを48kHz WAVへ変換し、アプリ内へコピーします。元ファイルを削除しても使えます。v4は最大120秒まで利用します。</p>
                 </div>
                 <details class="tts-advanced">
-                  <summary>速度と品質を詳しく調整</summary>
+                  <summary>再生速度とシード</summary>
                   <div class="size-actions">
                     <label>再生速度（0.5–2.0×）<input id="irodoriSpeedInput" type="number" min="0.5" max="2" step="0.05" /></label>
-                    <label>生成方式<select id="irodoriSamplingModeSelect"><option value="sway">高速（Sway）</option><option value="linear">互換（Linear）</option></select></label>
-                    <label>生成ステップ（4–40）<input id="irodoriStepsInput" type="number" min="4" max="40" step="1" /></label>
+                    <label>シード<input id="irodoriSeedInput" type="number" min="0" max="2147483647" step="1" /></label>
                   </div>
-                  <p class="hint">高速設定はSway 8ステップです。音質が合わない場合は10～12ステップ、またはLinearへ戻せます。</p>
-                  <label>シード<input id="irodoriSeedInput" type="number" min="0" max="2147483647" step="1" /></label>
                 </details>
                 <p id="irodoriStatus" class="hint">Irodori TTSの準備状況を確認しています…</p>
                 <p class="hint">テキストと参照音声は端末内で処理されます。本人の許可がある声、または利用権を持つ音声だけを使用してください。</p>
@@ -764,6 +878,13 @@
     </header>
     <div id="artifactPreviewBody" class="artifact-preview-body"></div>
   </aside>
+  <section id="skillRemoveDialog" class="confirmation-overlay" role="dialog" aria-modal="true" aria-labelledby="skillRemoveTitle" hidden>
+    <div class="confirmation-sheet">
+      <span class="confirmation-icon is-danger"><span class="ui-symbol ui-symbol-trash" aria-hidden="true"></span></span>
+      <div><p class="eyebrow">Remove Skill</p><h2 id="skillRemoveTitle">端末から削除</h2><p id="skillRemoveMessage"></p><small>Skillの保存ファイルを削除します。必要になった場合は公式カタログまたはGitHub URLから再追加できます。</small></div>
+      <footer><button id="cancelSkillRemoveButton" class="button button-secondary" type="button">キャンセル</button><button id="confirmSkillRemoveButton" class="button button-danger" type="button">端末から削除</button></footer>
+    </div>
+  </section>
   <section id="onboarding" class="onboarding" role="dialog" aria-modal="true" aria-labelledby="onboardingTitle" hidden>
     <div class="onboarding-window">
       <header class="onboarding-header">

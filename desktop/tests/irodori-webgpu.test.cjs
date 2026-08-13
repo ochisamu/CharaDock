@@ -5,7 +5,7 @@ const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
 
-const { IRODORI_CHUNK_LENGTH, IRODORI_CHUNK_OVERFLOW, IRODORI_FIRST_CHUNK_LENGTH, MODEL_NAMES, V3_MODEL_NAMES, irodoriModelStatus, resolveIrodoriModelDirectory, splitIrodoriText, validateIrodoriModelDirectory } = require("../lib/irodori-webgpu.cjs");
+const { IRODORI_CHUNK_LENGTH, IRODORI_CHUNK_OVERFLOW, IRODORI_FIRST_CHUNK_LENGTH, IRODORI_V4_MIN_STEPS, MODEL_NAMES, V3_MODEL_NAMES, irodoriGenerationSettings, irodoriModelStatus, resolveIrodoriModelDirectory, splitIrodoriText, validateIrodoriModelDirectory } = require("../lib/irodori-webgpu.cjs");
 
 function fixture() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "charadock-irodori-"));
@@ -70,6 +70,18 @@ test("Irodori recognizes the v4 Small WebGPU INT4 artifact layout", () => {
   fs.rmSync(root, { recursive: true, force: true });
 });
 
+test("Irodori identifies original V4 and V4.1 model metadata", () => {
+  const root = fixture();
+  const configPath = path.join(root, "onnx_fp16", "model-config.json");
+  fs.writeFileSync(configPath, JSON.stringify({ repo: "Aratako/Irodori-TTS-v4-Small" }));
+  assert.equal(irodoriModelStatus(root).modelOutdated, true);
+  assert.equal(irodoriModelStatus(root).modelRelease, "v4");
+  fs.writeFileSync(configPath, JSON.stringify({ repo: "Aratako/Irodori-TTS-v4.1-Small" }));
+  assert.equal(irodoriModelStatus(root).modelOutdated, false);
+  assert.equal(irodoriModelStatus(root).modelRelease, "v4.1");
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
 test("Irodori v4 reference mode requires a reference WAV", () => {
   const root = fixture();
   const reference = path.join(root, "voice.wav");
@@ -110,6 +122,36 @@ test("Irodori keeps short sentences in separate inference chunks", () => {
     "明日は雨です！",
     "でも出かけます？",
   ]);
+});
+
+test("Irodori v4 uses the validated Linear profile for FP16 and INT4", () => {
+  assert.equal(IRODORI_V4_MIN_STEPS, 16);
+  for (const precision of ["fp16", "int4"]) {
+    assert.deepEqual(irodoriGenerationSettings("v4-small", {
+      precision,
+      numSteps: 8,
+      tScheduleMode: "sway",
+      cfgExecution: "batched",
+    }), {
+      numSteps: 16,
+      tScheduleMode: "linear",
+      cfgExecution: "sequential",
+    });
+  }
+  assert.deepEqual(irodoriGenerationSettings("v4-small", { numSteps: 24, tScheduleMode: "sway" }), {
+    numSteps: 24,
+    tScheduleMode: "linear",
+    cfgExecution: "sequential",
+  });
+});
+
+test("Irodori 500M-v3 keeps the selectable accelerated profile", () => {
+  assert.deepEqual(irodoriGenerationSettings("500m-v3", { numSteps: 8, tScheduleMode: "sway" }), {
+    numSteps: 8,
+    tScheduleMode: "sway",
+    cfgExecution: "sequential",
+  });
+  assert.equal(irodoriGenerationSettings("500m-v3", { cfgExecution: "batched" }).cfgExecution, "batched");
 });
 
 test("Irodori uses a 40-character natural-boundary ceiling without losing text", () => {

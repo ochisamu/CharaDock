@@ -1,6 +1,6 @@
 {
   "name": "charadock",
-  "version": "0.1.4",
+  "version": "0.2.0",
   "description": "CharaDock is a transparent Windows desktop companion powered by PuruPuru PNGTuber, Codex app-server, and the OpenAI Responses API.",
   "main": "desktop/main.cjs",
   "author": "ochisamu",

@@ -11,6 +11,23 @@ function conciseWorkAnnouncement(value, maxLength = 96) {
   return text.slice(0, Math.max(1, length)).trim();
 }
 
+function naturalizeWorkCommentary(value, maxLength = 96) {
+  // Keep the worker's own user-facing sentence, but remove technical tokens
+  // that should never be spoken. Preserve safe bare file names such as
+  // "README" while full paths continue to be removed by sanitizeSpeechText.
+  const prepared = String(value || "")
+    .normalize("NFKC")
+    .replace(/\b([A-Za-z0-9_-]{2,})\.(?:html?|css|js|cjs|mjs|ts|tsx|jsx|json|ya?ml|toml|ini|png|jpe?g|webp|wav|mp3|md|pdf)\b/giu, "$1");
+  return conciseWorkAnnouncement(prepared, maxLength)
+    .replace(/\s+/g, " ")
+    .replace(/を\s+(?:に|へ|で)\s*(?=(?:作|保存|出力|生成|追加|配置|書|まとめ|確認|更新|反映|実装|修正|直|調べ|検証|テスト))/gu, "を")
+    .replace(/(^|[、。！？!?]\s*)まず\s+の(?=\S)/gu, "$1まず")
+    .replace(/(^|[、。！？!?]\s*)の(?=\S)/gu, "$1")
+    .replace(/^[をにへで]\s*/u, "")
+    .replace(/\s+([、。！？!?])/gu, "$1")
+    .trim();
+}
+
 function hasWorkSpeechTechnicalDetail(value) {
   const text = String(value || "");
   return /(?:https?|ftp):\/\//iu.test(text)
@@ -68,10 +85,11 @@ function japaneseCommitment(value) {
     .replace(/入れて(?:ね|よ)?$/u, "入れる")
     .replace(/変えて(?:ね|よ)?$/u, "変える")
     .replace(/組み込んで(?:ね|よ)?$/u, "組み込む")
+    .replace(/(?:に|へ)?(?:しといて|しておいて)(?:ね|よ)?$/u, "にしておく")
     .replace(/して(?:ね|よ)?$/u, "する")
     .trim();
   if (!text) return "";
-  if (/(?:する|させる|進める|作る|直す|調べる|試す|探す|消す|話す|出す|撮る|まとめる|開く|読み込む|書く|読む|選ぶ|使う|見る|入れる|変える|組み込む|確認する|更新する|対応する|生成する|変換する|ビルドする|テストする|プレビューする)$/u.test(text)) {
+  if (/(?:する|させる|進める|作る|直す|調べる|試す|探す|消す|話す|出す|撮る|まとめる|開く|読み込む|書く|読む|選ぶ|使う|見る|入れる|変える|組み込む|しておく|確認する|更新する|対応する|生成する|変換する|ビルドする|テストする|プレビューする)$/u.test(text)) {
     return `${text}ね。`;
   }
   if (/[?？]$/u.test(String(value || "")) || /^(?:何|なに|どう|どこ|いつ|誰|だれ|なぜ|どうして)/u.test(text)) {
@@ -105,6 +123,10 @@ function workAcknowledgementFallback(request, language = "ja") {
     const destinationSubject = String(request || "").match(/(?:^|[。！？!?]\s*)([^、。\n]{2,48}?)を[、,]?\s*(?=(?:\.{0,2}[\\/])?[\w.-]+[\\/])/u)?.[1];
     const safeDestinationSubject = conciseWorkAnnouncement(destinationSubject, 36);
     if (safeDestinationSubject) return `${safeDestinationSubject}を作るね。`;
+  }
+  if (!english && /(?:web|ウェブ|ネット).*(?:調べ|しらべ|検索)/iu.test(String(request || ""))) {
+    const subject = webSearchSubject(request);
+    return subject ? `${subject}についてWebで調べるね。` : "Webで情報を調べるね。";
   }
   const tailored = english ? englishCommitment(request) : japaneseCommitment(request);
   if (tailored) return conciseWorkAnnouncement(tailored, 64);
@@ -205,6 +227,15 @@ function workTopic(request, language = "ja") {
   return target.length >= 2 ? target : text;
 }
 
+function webSearchSubject(request) {
+  const source = cleanWorkRequest(request, 64);
+  const match = source.match(/(?:web|ウェブ|ネット)(?:上)?(?:で|を使って)?\s*(.*?)\s*(?:を)?(?:調べ|しらべ|検索)/iu);
+  const subject = conciseWorkAnnouncement(match?.[1], 36)
+    .replace(/^[でをにへ、,\s]+|[でをにへ、,\s]+$/gu, "")
+    .trim();
+  return subject.length >= 2 ? subject : "";
+}
+
 function contextualizeWorkProgress(value, request, language = "ja") {
   const text = conciseWorkAnnouncement(value, 80);
   if (!text || !isGenericWorkUpdate(text)) return text;
@@ -214,7 +245,13 @@ function contextualizeWorkProgress(value, request, language = "ja") {
     if (/updat|writ|file/iu.test(text)) return `I'm applying the changes for ${topic}.`;
     return `I'm working through ${topic}.`;
   }
-  if (/専用ブラウザ|情報|調査|検索/u.test(text)) return `${topic}に必要な情報を確認しているよ。`;
+  if (/専用ブラウザ|情報|調査|検索/u.test(text)) {
+    const searchSubject = webSearchSubject(request);
+    if (/(?:web|ウェブ|ネット).*(?:調べ|しらべ|検索)/iu.test(String(request || ""))) {
+      return searchSubject ? `${searchSubject}についてWebで調べているよ。` : "Webで情報を調べているよ。";
+    }
+    return `${topic}について調べているよ。`;
+  }
   if (/コマンド|実行/u.test(text)) {
     if (/(?:作って|作成して|作成する|生成して|追加して)/u.test(String(request || ""))) return `${topic}を作っているよ。`;
     if (/(?:修正して|直して|改善して|不具合|バグ|エラー)/u.test(String(request || ""))) return `${topic}を直しているよ。`;
@@ -253,6 +290,7 @@ class WorkVoiceReporter {
     maxLength = 48,
     request = "",
     language = "ja",
+    preferNaturalCommentary = false,
   } = {}) {
     this.onAnnouncement = typeof onAnnouncement === "function" ? onAnnouncement : () => {};
     this.now = now;
@@ -263,6 +301,7 @@ class WorkVoiceReporter {
     this.maxLength = Math.max(32, Math.min(80, Number(maxLength) || 48));
     this.request = String(request || "");
     this.language = language === "en" ? "en" : "ja";
+    this.preferNaturalCommentary = Boolean(preferNaturalCommentary);
     this.startedAt = this.now();
     this.lastAnnouncementAt = alreadyAcknowledged ? this.startedAt : 0;
     this.lastText = "";
@@ -336,6 +375,9 @@ class WorkVoiceReporter {
     const sourceText = String(value || "");
     const technicalDetail = hasWorkSpeechTechnicalDetail(sourceText);
     const rawText = conciseWorkAnnouncement(sourceText, this.maxLength);
+    const naturalText = this.preferNaturalCommentary
+      ? naturalizeWorkCommentary(sourceText, this.maxLength)
+      : rawText;
     if (this.finished || !rawText) return;
     if (!this.seenFirstCommentary) {
       this.seenFirstCommentary = true;
@@ -343,11 +385,21 @@ class WorkVoiceReporter {
       if (this.fallbackTimer) this.cancel(this.fallbackTimer);
       this.fallbackTimer = null;
       this.acknowledged = true;
-      const text = technicalDetail || isGenericWorkUpdate(rawText) || isIncompleteWorkAnnouncement(rawText)
+      const usableNaturalText = naturalText
+        && !isGenericWorkUpdate(naturalText)
+        && !isIncompleteWorkAnnouncement(naturalText);
+      const text = (this.preferNaturalCommentary ? !usableNaturalText : technicalDetail || !usableNaturalText)
         ? workAcknowledgementFallback(this.request, this.language)
-        : rawText;
+        : naturalText;
       this.emit("ack", text);
       this.schedulePendingProgress();
+      return;
+    }
+    if (this.preferNaturalCommentary
+      && naturalText
+      && !isGenericWorkUpdate(naturalText)
+      && !isIncompleteWorkAnnouncement(naturalText)) {
+      this.queueProgress(naturalText, 2);
       return;
     }
     if (technicalDetail) {
@@ -380,6 +432,7 @@ module.exports = {
   WorkVoiceReporter,
   cleanWorkRequest,
   conciseWorkAnnouncement,
+  naturalizeWorkCommentary,
   contextualizeWorkProgress,
   hasWorkSpeechTechnicalDetail,
   isMeaningfulWorkProgress,
@@ -387,4 +440,5 @@ module.exports = {
   isIncompleteWorkAnnouncement,
   workTopic,
   workAcknowledgementFallback,
+  webSearchSubject,
 };

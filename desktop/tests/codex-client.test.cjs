@@ -6,11 +6,17 @@ const {
   CODEX_MASCOT_INSTRUCTIONS,
   CodexAppServerClient,
   appServerArgs,
+  isBenignCodexStderr,
   isOfficialComputerUseSkill,
   normalizeSkillName,
   permissionProfileForSandbox,
   workspaceSandboxPolicy,
 } = require("../backend/codex-client.cjs");
+
+test("Codex client suppresses only the known non-fatal models cache warning", () => {
+  assert.equal(isBenignCodexStderr("failed to load models cache: missing field `base_instructions` at line 94"), true);
+  assert.equal(isBenignCodexStderr("authentication failed"), false);
+});
 
 test("Codex work client can explicitly enable live web search", () => {
   assert.deepEqual(appServerArgs("live"), [
@@ -338,6 +344,38 @@ test("Codex client injects an explicit skill item into turn/start", async () => 
   ]);
 });
 
+test("per-turn Skills override defaults without resetting the active thread", async () => {
+  const client = new CodexAppServerClient();
+  client.ensureStarted = async () => {};
+  client.threadId = "thread-existing";
+  client.ensureThread = async () => client.threadId;
+  client.setTurnStartSkillItems([{ name: "default-skill", path: "/skills/default" }]);
+  client.threadId = "thread-existing";
+  let turnParams;
+  client.request = async (method, params) => {
+    if (method !== "turn/start") return {};
+    turnParams = params;
+    setImmediate(() => {
+      client.handleLine(JSON.stringify({
+        method: "item/agentMessage/delta",
+        params: { turnId: "turn-picked-skill", delta: "done" },
+      }));
+      client.handleLine(JSON.stringify({
+        method: "turn/completed",
+        params: { turn: { id: "turn-picked-skill", status: "completed" } },
+      }));
+    });
+    return { turn: { id: "turn-picked-skill" } };
+  };
+  await client.sendMessage("この送信だけ", { skillItems: [{ name: "picked-skill", path: "/skills/picked" }] });
+  assert.equal(client.threadId, "thread-existing");
+  assert.deepEqual(turnParams.input, [
+    { type: "text", text: "この送信だけ" },
+    { type: "skill", name: "picked-skill", path: "/skills/picked" },
+  ]);
+  assert.deepEqual(client.turnStartSkillItems, [{ name: "default-skill", path: "/skills/default" }]);
+});
+
 test("Computer Use clients fail closed on unhandled approval requests", async () => {
   const client = new CodexAppServerClient({ rejectInteractiveRequests: true });
   client.proc = { stdin: { writable: true } };
@@ -384,20 +422,68 @@ test("Codex client starts WebRTC realtime and forwards transcript events", async
     prompt: "日本語",
     voice: "maple",
     clientManagedHandoffs: true,
+    codexResponseHandoffMode: "thinking",
     delegationAckFiller: false,
+    includeStartupContext: false,
+    initialItems: [{ role: "developer", text: "Use the selected Work skill." }],
     onEvent: (event) => events.push(event),
   });
   assert.equal(result.threadId, "thread-voice");
   assert.equal(calls[0].method, "thread/realtime/start");
   assert.equal(calls[0].params.outputModality, "audio");
   assert.equal(calls[0].params.version, "v3");
-  assert.equal(calls[0].params.codexResponseHandoffMode, "bemTags");
+  assert.equal(calls[0].params.codexResponseHandoffMode, "thinking");
   assert.equal(calls[0].params.clientManagedHandoffs, true);
   assert.equal(calls[0].params.delegationAckFiller, false);
+  assert.equal(calls[0].params.includeStartupContext, false);
+  assert.deepEqual(calls[0].params.initialItems, [{ role: "developer", text: "Use the selected Work skill." }]);
   assert.equal(calls[0].params.voice, "maple");
+  assert.equal(calls[0].params.prompt, "日本語");
   assert.deepEqual(calls[0].params.transport, { type: "webrtc", sdp: "v=0\r\n..." });
   client.handleLine(JSON.stringify({ method: "thread/realtime/transcript/delta", params: { threadId: "thread-voice", role: "user", delta: "こんにちは" } }));
   assert.equal(events[0].params.delta, "こんにちは");
+});
+
+test("Codex client omits a Realtime prompt so app-server can retain native delegation", async () => {
+  const calls = [];
+  const client = new CodexAppServerClient();
+  client.ensureStarted = async () => {};
+  client.ensureThread = async () => {
+    client.threadId = "thread-native-handoff";
+    return client.threadId;
+  };
+  client.request = async (method, params) => {
+    calls.push({ method, params });
+    return {};
+  };
+  await client.startRealtime({ sdp: "v=0\r\n...", clientManagedHandoffs: false });
+  assert.equal(calls[0].method, "thread/realtime/start");
+  assert.equal(Object.hasOwn(calls[0].params, "prompt"), false);
+});
+
+test("Codex client steers an active Realtime Work turn with text and Skills", async () => {
+  const calls = [];
+  const client = new CodexAppServerClient({ pathMapper: (value) => `/mapped${value}` });
+  client.threadId = "thread-live-work";
+  client.activeTurnId = "turn-live-work";
+  client.request = async (method, params) => {
+    calls.push({ method, params });
+    return { turnId: "turn-live-work" };
+  };
+  assert.equal(await client.steerActiveTurn("READMEも更新して", {
+    skillItems: [{ name: "docs", path: "/skill/docs" }],
+  }), true);
+  assert.deepEqual(calls[0], {
+    method: "turn/steer",
+    params: {
+      threadId: "thread-live-work",
+      expectedTurnId: "turn-live-work",
+      input: [
+        { type: "text", text: "READMEも更新して" },
+        { type: "skill", name: "docs", path: "/mapped/skill/docs" },
+      ],
+    },
+  });
 });
 
 test("Codex client surfaces realtime startup notification errors immediately", async () => {

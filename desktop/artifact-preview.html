@@ -24,6 +24,14 @@
     <section id="previewBody" class="preview-body" aria-live="polite">
       <div class="preview-loading"><i></i><span>プレビューを準備しています…</span></div>
     </section>
+    <footer class="revision-panel">
+      <div class="revision-label"><strong id="revisionTitle">この成果物を続けて修正</strong><span id="revisionHint">ここに入力するか、Workの音声入力で話しかけてください。</span></div>
+      <form id="revisionForm" class="revision-form">
+        <textarea id="revisionInput" rows="1" maxlength="4000" placeholder="例: タイトルを大きくして、配色をもう少し落ち着かせて"></textarea>
+        <button id="revisionSendButton" class="primary-button" type="submit">修正する</button>
+      </form>
+      <p id="revisionState" class="revision-state" aria-live="polite"></p>
+    </footer>
     <p id="previewStatus" class="preview-status" role="status" hidden></p>
   </main>
   <script src="/vendor/highlightjs/11.11.1/highlight.min.js"></script>

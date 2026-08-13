@@ -51,9 +51,25 @@
   let speechPlaybackToken = 0;
   let streamingMessage = null;
   let renderedConversationCharacterId = "";
+  let renderedContinuationSignature = "";
+  let inspectedSkill = null;
+  let trustedSkillCatalog = [];
+  let trustedSkillCatalogLoaded = false;
+  let trustedSkillCatalogLoading = false;
+  let skillCatalogView = "active";
+  let skillCatalogSource = "all";
+  let skillCatalogQuery = "";
+  const BUILTIN_SKILL_CREATOR_ID = "charadock-skill-creator";
+  const installingSkillIds = new Set();
+  const mutatingSkillIds = new Set();
+  let pendingSkillRemoval = null;
+  let skillRemoveFocusReturn = null;
   let chatBusy = false;
   let pendingChatFollowUp = null;
   let chatAttachments = [];
+  let chatSelectedSkillIds = [];
+  let chatSkillPickerIndex = 0;
+  let chatSkillTrigger = null;
   let chatHistoryView = "conversation";
   let workHistoryState = { activeWorkRunId: null, runs: [] };
   let activeArtifactPreview = null;
@@ -90,8 +106,11 @@
     { page: "remote", target: "#remoteAccessCard", ja: "リモートアクセス", en: "Remote access", detailJa: "同じWi-FiからChatとWorkを操作", detailEn: "Use Chat and Work from the same Wi-Fi", keywords: "remote mobile lan qr smartphone スマホ リモート", popular: true },
     { page: "character", target: "#characterLibraryTitle", ja: "キャラクター一覧", en: "Character library", detailJa: "使うキャラクターを切り替える", detailEn: "Switch the active character", keywords: "avatar select library キャラ", popular: true },
     { page: "character", target: "#characterProfileCard", ja: "名前・性格・メモリ", en: "Name, personality, and memory", detailJa: "選択中のキャラクターを編集", detailEn: "Edit the selected character", keywords: "profile persona memory bubble 名前 性格 記憶 吹き出し" },
+    { page: "character", target: "#characterContinuation", ja: "キャラクター継続モード", en: "Character Continuation", detailJa: "前回の目的と次の一手を確認・編集", detailEn: "Review and edit the previous goal and next step", keywords: "continuation resume summary 継続 再開 前回 次の一手", popular: true },
     { page: "character", target: "#motionEditorTitle", ja: "キャラクターの動き", en: "Character motion", detailJa: "サイズ、追従、呼吸、髪揺れ", detailEn: "Size, tracking, breathing, and hair motion", keywords: "motion animation lip sync hair blink マウス リップシンク", popular: true },
     { page: "character", target: "#characterAddTitle", ja: "キャラクターを追加", en: "Add a character", detailJa: ".purupuruまたは画像から作成", detailEn: "Import .purupuru or create from an image", keywords: "import image generator purupuru 画像 追加" },
+    { page: "skills", target: "#skillAssignmentCard", ja: "キャラクターのSkills", en: "Character skills", detailJa: "全キャラまたはキャラごとにSkillを割り当てる", detailEn: "Assign skills globally or per character", keywords: "skill capabilities workflow 得意 能力 割り当て", popular: true },
+    { page: "skills", target: "#skillLibraryCard", ja: "Skillを追加", en: "Add a skill", detailJa: "OpenAI・Anthropic公式カタログ、またはGitHub URLから追加", detailEn: "Add from the OpenAI and Anthropic catalogs or a GitHub URL", keywords: "skill install github url openai anthropic curated 追加", popular: true },
     { page: "voice", target: "#voiceInputCard", ja: "音声入力", en: "Voice input", detailJa: "認識方式、VAD、自動送信", detailEn: "Recognition, VAD, and auto-send", keywords: "microphone stt sherpa vad realtime マイク 音声認識", popular: true },
     { page: "voice", target: "#characterVoiceCard", ja: "キャラクターの声", en: "Character voice", detailJa: "Liveまたは通常TTSの声を選ぶ", detailEn: "Choose a Live or standard TTS voice", keywords: "tts live realtime speaker voice 読み上げ", popular: true },
     { page: "voice", target: "#realtimeVoiceSettings", ja: "Realtimeの声", en: "Realtime voice", detailJa: "GPT-Liveの声と声変換", detailEn: "GPT-Live voice and conversion", keywords: "codex live openai beatrice" },
@@ -185,6 +204,145 @@
     if (!additions.length) setStatus($("#chatStatus"), localized("ファイルの場所を取得できませんでした。", "Could not access the selected file path."), true);
     else if (unique.size > 8) setStatus($("#chatStatus"), localized("添付は8ファイルまでです。", "You can attach up to 8 files."), true);
     else setStatus($("#chatStatus"), localized(`${chatAttachments.length}件のファイルを添付しました。`, `${chatAttachments.length} file(s) attached.`));
+  }
+
+  function chatSkillRecords(query = "") {
+    const normalizedQuery = String(query || "").trim().toLocaleLowerCase();
+    return (state?.skills?.installed || [])
+      .filter((skill) => skill.health !== "missing")
+      .filter((skill) => !normalizedQuery || [skill.name, skill.description, skill.sourceName]
+        .some((value) => String(value || "").toLocaleLowerCase().includes(normalizedQuery)))
+      .sort((left, right) => Number(Boolean(right.active)) - Number(Boolean(left.active)) || String(left.name).localeCompare(String(right.name)));
+  }
+
+  function renderChatSelectedSkills() {
+    const list = $("#chatSelectedSkillList");
+    const records = new Map((state?.skills?.installed || []).map((skill) => [skill.id, skill]));
+    chatSelectedSkillIds = chatSelectedSkillIds.filter((id) => records.get(id)?.health !== "missing");
+    list.replaceChildren();
+    chatSelectedSkillIds.forEach((id) => {
+      const skill = records.get(id);
+      if (!skill) return;
+      const chip = document.createElement("span");
+      chip.className = "chat-attachment-chip is-skill";
+      const icon = document.createElement("span");
+      icon.className = "ui-symbol ui-symbol-sparkle";
+      icon.setAttribute("aria-hidden", "true");
+      const name = document.createElement("span");
+      name.textContent = skill.name;
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.setAttribute("aria-label", localized(`${skill.name}を今回の送信から外す`, `Remove ${skill.name} from this turn`));
+      remove.innerHTML = '<span class="ui-symbol ui-symbol-close" aria-hidden="true"></span>';
+      remove.addEventListener("click", () => {
+        toggleChatSkill(id);
+      });
+      chip.append(icon, name, remove);
+      list.appendChild(chip);
+    });
+  }
+
+  function renderChatSkillPicker() {
+    const list = $("#chatSkillPickerList");
+    const records = chatSkillRecords($("#chatSkillPickerSearch").value);
+    chatSkillPickerIndex = Math.max(0, Math.min(chatSkillPickerIndex, Math.max(0, records.length - 1)));
+    list.replaceChildren();
+    if (!records.length) {
+      const empty = document.createElement("p");
+      empty.className = "composer-skill-empty";
+      empty.textContent = localized("該当するSkillがありません。", "No matching Skills.");
+      list.appendChild(empty);
+      return;
+    }
+    records.forEach((skill, index) => {
+      const selected = chatSelectedSkillIds.includes(skill.id);
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = `composer-skill-option${index === chatSkillPickerIndex ? " is-keyboard-active" : ""}`;
+      button.dataset.skillId = skill.id;
+      button.setAttribute("role", "option");
+      button.setAttribute("aria-selected", String(selected));
+      const icon = document.createElement("span");
+      icon.className = "ui-symbol ui-symbol-sparkle";
+      icon.setAttribute("aria-hidden", "true");
+      const copy = document.createElement("span");
+      const name = document.createElement("strong");
+      name.textContent = skill.name;
+      const description = document.createElement("small");
+      description.textContent = skill.description || skill.sourceName || localized("端末に追加済み", "Installed on this device");
+      copy.append(name, description);
+      const status = document.createElement("em");
+      status.textContent = realtimePeerConnection && state?.interactionMode !== "work"
+        ? localized("Live Workのみ", "Live Work only")
+        : selected ? localized("選択中", "Selected") : skill.active ? localized("使用中", "Active") : localized("今回のみ", "This turn");
+      button.append(icon, copy, status);
+      button.addEventListener("pointermove", () => {
+        if (chatSkillPickerIndex === index) return;
+        chatSkillPickerIndex = index;
+        list.querySelectorAll(".composer-skill-option").forEach((candidate, candidateIndex) => candidate.classList.toggle("is-keyboard-active", candidateIndex === index));
+      });
+      button.addEventListener("click", () => toggleChatSkill(skill.id));
+      list.appendChild(button);
+    });
+  }
+
+  function toggleChatSkill(skillId) {
+    const removing = chatSelectedSkillIds.includes(skillId);
+    if (!removing && realtimePeerConnection && state?.interactionMode !== "work") {
+      setStatus($("#chatStatus"), localized("LiveでSkillを指定できるのはWorkモードだけです。", "Skills can be selected in Live Work only."), true);
+      return;
+    }
+    if (removing) {
+      chatSelectedSkillIds = chatSelectedSkillIds.filter((id) => id !== skillId);
+    } else if (chatSelectedSkillIds.length >= 8) {
+      setStatus($("#chatStatus"), localized("1回に指定できるSkillは8件までです。", "You can select up to 8 Skills per turn."), true);
+      return;
+    } else {
+      chatSelectedSkillIds.push(skillId);
+    }
+    if (chatSkillTrigger) {
+      const input = $("#chatInput");
+      const before = input.value.slice(0, chatSkillTrigger.start);
+      const after = input.value.slice(chatSkillTrigger.end);
+      input.value = `${before}${after}`;
+      input.setSelectionRange(before.length, before.length);
+      closeChatAddPopover({ returnFocus: true });
+    }
+    renderChatSelectedSkills();
+    renderChatSkillPicker();
+    if (realtimePeerConnection && state?.interactionMode === "work") {
+      api.setCodexRealtimeTurnSkills(chatSelectedSkillIds).catch((error) => {
+        setStatus($("#chatStatus"), error.message, true);
+      });
+    }
+  }
+
+  function closeChatAddPopover({ returnFocus = false } = {}) {
+    const popover = $("#chatAddPopover");
+    if (popover.hidden) return;
+    popover.hidden = true;
+    $("#chatAddButton").setAttribute("aria-expanded", "false");
+    chatSkillTrigger = null;
+    if (returnFocus) $("#chatInput").focus({ preventScroll: true });
+  }
+
+  function openChatAddPopover({ query = "", trigger = null, focusSearch = true } = {}) {
+    chatSkillTrigger = trigger;
+    chatSkillPickerIndex = 0;
+    $("#chatAddPopover").hidden = false;
+    $("#chatAddButton").setAttribute("aria-expanded", "true");
+    $("#chatSkillPickerSearch").value = query;
+    renderChatSkillPicker();
+    if (focusSearch) requestAnimationFrame(() => $("#chatSkillPickerSearch").focus({ preventScroll: true }));
+  }
+
+  function chatSkillTriggerAtCursor() {
+    const input = $("#chatInput");
+    const cursor = input.selectionStart;
+    const before = input.value.slice(0, cursor);
+    const match = before.match(/(?:^|[\s\n])([/@])([^\s/@]*)$/u);
+    if (!match) return null;
+    return { start: cursor - match[1].length - match[2].length, end: cursor, query: match[2] };
   }
 
   async function importPuruPuruFile(file) {
@@ -304,11 +462,20 @@
     const total = Number(transfer.totalBytes || model.downloadBytes) || 1;
     const received = Number(transfer.receivedBytes) || 0;
     const size = downloadSizeLabel(model.downloadBytes);
-    if (model.downloading || ["downloading", "extracting"].includes(transfer.phase)) {
+    if (model.downloading || ["verifying", "reusing", "downloading", "extracting"].includes(transfer.phase)) {
       progress.hidden = false;
       if (transfer.phase === "extracting") {
         progress.removeAttribute("value");
         setStatus(status, "モデルを展開しています…");
+      } else if (transfer.phase === "verifying") {
+        progress.removeAttribute("value");
+        const current = transfer.currentFile ? ` · ${transfer.currentFile}` : "";
+        setStatus(status, `${localized("既存モデルを検証しています…", "Verifying the existing model…")}${current}`);
+      } else if (transfer.phase === "reusing") {
+        const percent = Math.min(100, Math.round(received / total * 100));
+        progress.value = percent;
+        const current = transfer.currentFile ? ` · ${transfer.currentFile}` : "";
+        setStatus(status, `${localized("変更のないモデルデータを再利用しています…", "Reusing unchanged model data…")} ${percent}%${current}`);
       } else {
         const percent = Math.min(100, Math.round(received / total * 100));
         progress.value = percent;
@@ -320,14 +487,20 @@
       progress.value = 0;
       if (model.supported === false) setStatus(status, "このサンプルの自動導入はWindows版で利用できます。");
       else if (model.installed) setStatus(status, `${model.label || "サンプルモデル"} · 導入済み`);
+      else if (model.upgradeAvailable) setStatus(status, localized("旧V4モデルが導入されています。V4.1へ差分更新できます。", "An older V4 model is installed. You can update it to V4.1."));
       else setStatus(status, "サンプルモデルはまだダウンロードされていません。");
     }
     download.hidden = Boolean(model.installed);
     download.disabled = Boolean(model.downloading) || model.supported === false;
-    remove.hidden = !model.installed;
+    remove.hidden = !model.installed && !model.upgradeAvailable;
     remove.disabled = Boolean(model.downloading);
-    download.textContent = `ダウンロード（約${size}）`;
-    hint.textContent = `${model.description || "ローカル音声合成モデル"} 初回ダウンロード約${size}。音声生成は端末内で完結します。`;
+    const incrementalSize = downloadSizeLabel(model.incrementalDownloadBytes);
+    download.textContent = model.upgradeAvailable
+      ? localized(`V4.1へ更新（通常約${incrementalSize}）`, `Update to V4.1 (usually about ${incrementalSize})`)
+      : `ダウンロード（約${size}）`;
+    hint.textContent = model.upgradeAvailable
+      ? localized(`${model.description || "ローカル音声合成モデル"} 変更のない大容量ファイルはSHA-256検証後に再利用し、差分だけ取得します。`, `${model.description || "Local speech model"} Unchanged large files are reused after SHA-256 verification, and only the update is downloaded.`)
+      : `${model.description || "ローカル音声合成モデル"} 初回ダウンロード約${size}。音声生成は端末内で完結します。`;
   }
 
   function setCodexModelOptions(select, selectedValue) {
@@ -637,6 +810,7 @@
       chat: ["Chat", "Chat"],
       remote: ["リモート", "Remote"],
       character: ["キャラクター", "Character"],
+      skills: ["Skills", "Skills"],
       voice: ["音声", "Voice"],
       connection: ["AI接続", "AI Connection"],
       desktop: ["デスクトップ", "Desktop"],
@@ -1410,6 +1584,73 @@
     }
   }
 
+  function renderContinuationEditor() {
+    const continuation = state?.continuation || { startupSpeechEnabled: true, scope: { type: "character", key: "common", projectName: "" }, summary: null };
+    const startupSpeechEnabled = continuation.startupSpeechEnabled !== false;
+    const summary = continuation.summary || null;
+    const scope = continuation.scope || { type: "character", key: "common", projectName: "" };
+    $("#chatContinuationToggle").checked = startupSpeechEnabled;
+    $("#continuationModeToggle").checked = startupSpeechEnabled;
+    const busy = Boolean(chatBusy || workHistoryState.activeWorkRunId || realtimePeerConnection || realtimeStarting);
+    $("#chatContinuationToggle").disabled = busy;
+    $("#continuationModeToggle").disabled = busy;
+    $("#saveContinuationButton").disabled = busy;
+    $("#clearContinuationButton").disabled = busy;
+    const projectScope = scope.type === "project";
+    const homeScope = scope.type === "home";
+    $("#continuationScopeLabel").textContent = projectScope
+      ? localized(`${scope.projectName || "現在のプロジェクト"} 専用`, `${scope.projectName || "Current project"} only`)
+      : homeScope
+        ? localized(`${currentCharacter()?.name || "このキャラ"} ホーム`, `${currentCharacter()?.name || "This character"} · Home`)
+        : localized(`${currentCharacter()?.name || "このキャラ"} 共通`, `${currentCharacter()?.name || "This character"} · shared`);
+    $("#continuationScopeHint").textContent = projectScope
+      ? localized("この記録は現在のプロジェクトだけで使われ、別プロジェクトやキャラクターホームには表示されません。", "This record is used only for the current project, never another project or Character Home.")
+      : homeScope
+        ? localized("この記録はキャラクターホーム内のWorkだけで使われ、共通の会話や追加プロジェクトには表示されません。", "This record is used only for Work inside Character Home, never shared chat or an attached project.")
+        : localized("キャラ共通では、特定プロジェクトに依存しない会話上の目的と次の一手だけを扱います。", "The shared character scope stores only conversation goals and next steps that do not depend on a specific project.");
+    const updated = summary?.updatedAt ? formatHistoryTime(summary.updatedAt) : "";
+    $("#continuationUpdatedAt").textContent = updated
+      ? localized(`最終更新 ${updated}`, `Updated ${updated}`)
+      : "";
+    const badge = $("#continuationFreshnessBadge");
+    badge.classList.toggle("is-ready", Boolean(continuation.eligible));
+    badge.classList.toggle("is-stale", Boolean(continuation.stale));
+    badge.textContent = !summary
+      ? localized("記録なし", "No record")
+      : continuation.stale
+        ? localized("古い記録", "Stale")
+        : continuation.eligible
+          ? localized("再開できます", "Ready to resume")
+          : localized("次の一手なし", "No next step");
+    $("#clearContinuationButton").hidden = !summary;
+    const signature = `${state.characterId}:${scope.key}:${summary?.updatedAt || "empty"}`;
+    if (signature === renderedContinuationSignature && $("#characterContinuation").contains(document.activeElement)) return;
+    renderedContinuationSignature = signature;
+    $("#continuationGoalInput").value = summary?.goal || "";
+    $("#continuationDecisionsInput").value = (summary?.decisions || []).join("\n");
+    $("#continuationCompletedInput").value = (summary?.completed || []).map((item) => item.text || item).join("\n");
+    $("#continuationPendingInput").value = (summary?.pending || []).join("\n");
+    $("#continuationNextStepInput").value = summary?.nextStep || "";
+    const goalPreview = $("#continuationGoalPreview");
+    const nextStepPreview = $("#continuationNextStepPreview");
+    goalPreview.textContent = summary?.goal || localized("未設定", "Not set");
+    nextStepPreview.textContent = summary?.nextStep
+      || (summary?.goal
+        ? localized("起動時に目的から提案します", "A suggestion will be derived from the goal at startup")
+        : localized("未設定", "Not set"));
+    goalPreview.classList.toggle("is-empty", !summary?.goal);
+    nextStepPreview.classList.toggle("is-empty", !summary?.nextStep);
+    const decisionCount = summary?.decisions?.length || 0;
+    const completedCount = summary?.completed?.length || 0;
+    const pendingCount = summary?.pending?.length || 0;
+    $("#continuationDetailCount").textContent = decisionCount + completedCount + pendingCount
+      ? localized(`決定 ${decisionCount} · 完了 ${completedCount} · 未完了 ${pendingCount}`, `Decisions ${decisionCount} · Done ${completedCount} · Open ${pendingCount}`)
+      : localized("詳細なし", "No details");
+    setStatus($("#continuationStatus"), summary
+      ? localized("起動時は必要な内容だけを短い継続サマリーとして使います。", "Only the relevant details are used as a brief continuation summary at startup.")
+      : localized("この範囲にはまだ継続記録がありません。", "There is no continuation record for this scope yet."));
+  }
+
   function syncCharacterEditor() {
     const character = currentCharacter();
     if (!character) return;
@@ -1439,8 +1680,442 @@
     $("#removeCharacterButton").hidden = !character.generated;
     $("#removeCharacterButton").disabled = false;
     renderCharacterMemories();
+    renderContinuationEditor();
     syncMotionReadouts();
     setStatus($("#characterProfileStatus"), `${character.name}の設定`);
+  }
+
+  function skillAssignmentTarget() {
+    const value = String($("#skillAssignmentTargetSelect")?.value || "");
+    return value === "all" ? { scope: "all", characterId: "" } : { scope: "character", characterId: value || state.characterId };
+  }
+
+  function skillCategoryLabel(category) {
+    return ({
+      documents: localized("文書", "Documents"),
+      design: localized("デザイン", "Design"),
+      development: localized("開発", "Development"),
+      communication: localized("コミュニケーション", "Communication"),
+      productivity: localized("生産性", "Productivity"),
+    })[category] || localized("その他", "Other");
+  }
+
+  function skillSizeLabel(bytes) {
+    const size = Math.max(0, Number(bytes) || 0);
+    if (size >= 1024 * 1024) return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+    return `${Math.max(1, Math.round(size / 1024))} KB`;
+  }
+
+  function currentSkillAssignmentSets() {
+    const assignments = state.skills?.assignments || { all: [], characters: {} };
+    const target = skillAssignmentTarget();
+    return {
+      target,
+      allAssigned: new Set(assignments.all || []),
+      characterAssigned: new Set(assignments.characters?.[target.characterId] || []),
+    };
+  }
+
+  function skillIsAssignedToTarget(skillId, target) {
+    if (skillId === BUILTIN_SKILL_CREATOR_ID) return true;
+    const assignments = state.skills?.assignments || { all: [], characters: {} };
+    if ((assignments.all || []).includes(skillId)) return true;
+    return target.scope === "character" && (assignments.characters?.[target.characterId] || []).includes(skillId);
+  }
+
+  function skillAssignmentState(skillId, assignmentSets = currentSkillAssignmentSets()) {
+    if (skillId === BUILTIN_SKILL_CREATOR_ID) {
+      return { global: true, direct: false, inherited: assignmentSets.target.scope === "character", active: true };
+    }
+    const global = assignmentSets.allAssigned.has(skillId);
+    const direct = assignmentSets.target.scope === "character" && assignmentSets.characterAssigned.has(skillId);
+    return {
+      global,
+      direct,
+      inherited: assignmentSets.target.scope === "character" && global,
+      active: assignmentSets.target.scope === "all" ? global : global || direct,
+    };
+  }
+
+  function skillSourceId(skill) {
+    if (skill.sourceId) return skill.sourceId;
+    if (skill.builtIn || skill.sourceKind === "charadock-builtin" || skill.sourceKind === "charadock-created") return "charadock";
+    if (skill.sourceKind === "openai-curated") return "openai";
+    if (skill.sourceKind === "anthropic-official") return "anthropic";
+    return "github";
+  }
+
+  function skillDisplayRecords() {
+    const records = new Map(trustedSkillCatalog.map((skill) => [skill.id, skill]));
+    for (const installed of state.skills?.installed || []) {
+      const catalog = records.get(installed.id);
+      records.set(installed.id, {
+        ...installed,
+        ...catalog,
+        id: installed.id,
+        name: catalog?.name || installed.name,
+        description: catalog?.description || installed.description,
+        sourceId: skillSourceId(catalog || installed),
+        sourceName: catalog?.sourceName || installed.sourceName || installed.repository || "GitHub",
+        fileCount: catalog?.fileCount || 0,
+        totalBytes: catalog?.totalBytes || 0,
+        installedRecord: installed,
+        updateAvailable: Boolean(catalog?.contentSha && (installed.contentSha
+          ? catalog.contentSha !== installed.contentSha
+          : catalog.commitSha && installed.commitSha && catalog.commitSha !== installed.commitSha)),
+      });
+    }
+    return [...records.values()].sort((left, right) => Number(Boolean(right.builtIn)) - Number(Boolean(left.builtIn)));
+  }
+
+  function updateSkillSummary() {
+    const installed = state.skills?.installed || [];
+    const assignmentSets = currentSkillAssignmentSets();
+    const activeCount = installed.filter((skill) => skillAssignmentState(skill.id, assignmentSets).active && skill.health !== "missing").length;
+    const issueCount = installed.filter((skill) => skillAssignmentState(skill.id, assignmentSets).active && skill.health === "missing").length;
+    $("#skillActiveCount").textContent = String(activeCount);
+    const pickerMeta = $("#chatSkillPickerMeta");
+    if (pickerMeta) pickerMeta.textContent = localized(`${activeCount}件が通常使用中 · / または @ でも検索`, `${activeCount} active by default · Type / or @ to search`);
+    $("#skillInstalledCount").textContent = String(installed.length);
+    $("#skillIssueCount").textContent = String(issueCount);
+    $("#skillIssueMetric").hidden = issueCount === 0;
+    $("#skillActiveViewCount").textContent = String(activeCount + issueCount);
+    $("#skillInstalledViewCount").textContent = String(installed.length);
+    $("#skillCatalogViewCount").textContent = String(skillDisplayRecords().length);
+    $("#skillCountBadge").textContent = issueCount
+      ? localized(`使用中 ${activeCount} · 要確認 ${issueCount}`, `${activeCount} active · ${issueCount} needs attention`)
+      : localized(`使用中 ${activeCount}`, `${activeCount} active`);
+  }
+
+  function skillAssignedCharacterCount(skillId) {
+    const assignments = state.skills?.assignments || { all: [], characters: {} };
+    if ((assignments.all || []).includes(skillId)) return (state.characters || []).length;
+    return Object.values(assignments.characters || {}).filter((ids) => Array.isArray(ids) && ids.includes(skillId)).length;
+  }
+
+  function skillEditingLocked() {
+    return Boolean(workHistoryState.activeWorkRunId || realtimePeerConnection || realtimeStarting);
+  }
+
+  async function setCatalogSkillEnabled(skill, enabled) {
+    if (!skill?.id || mutatingSkillIds.has(skill.id)) return;
+    const assignment = skillAssignmentState(skill.id);
+    if (!enabled && assignment.inherited) {
+      skillCatalogView = "active";
+      $("#skillAssignmentTargetSelect").value = "all";
+      renderSkills();
+      setStatus($("#skillLibraryStatus"), localized("このSkillは全キャラクター共通です。全キャラクター設定へ切り替えました。", "This skill is enabled for all characters. Switched to All characters settings."));
+      return;
+    }
+    mutatingSkillIds.add(skill.id);
+    renderSkills();
+    try {
+      const target = skillAssignmentTarget();
+      state = await api.setSkillAssignment({ skillId: skill.id, scope: target.scope, characterId: target.characterId, enabled });
+      renderSkills();
+      setStatus($("#skillLibraryStatus"), enabled
+        ? localized(`「${skill.name}」を使用中にしました。次のWorkから適用されます。`, `Enabled “${skill.name}”. It applies from the next Work request.`)
+        : localized(`「${skill.name}」を停止しました。端末には残っています。`, `Disabled “${skill.name}”. It remains stored on this device.`));
+    } catch (error) {
+      setStatus($("#skillLibraryStatus"), error.message, true);
+    } finally {
+      mutatingSkillIds.delete(skill.id);
+      renderSkills();
+    }
+  }
+
+  async function removeCatalogSkill(skill) {
+    if (!skill?.id || mutatingSkillIds.has(skill.id)) return;
+    const affected = skillAssignedCharacterCount(skill.id);
+    pendingSkillRemoval = skill;
+    skillRemoveFocusReturn = document.activeElement;
+    $("#skillRemoveMessage").textContent = affected
+      ? localized(`「${skill.name}」を端末から削除しますか？ ${affected}キャラクターの割り当ても解除されます。`, `Remove “${skill.name}” from this device? It will also be unassigned from ${affected} character(s).`)
+      : localized(`「${skill.name}」を端末から削除しますか？`, `Remove “${skill.name}” from this device?`);
+    $("#skillRemoveDialog").hidden = false;
+    requestAnimationFrame(() => $("#cancelSkillRemoveButton").focus());
+  }
+
+  function closeSkillRemoveDialog() {
+    $("#skillRemoveDialog").hidden = true;
+    pendingSkillRemoval = null;
+    skillRemoveFocusReturn?.focus?.({ preventScroll: true });
+    skillRemoveFocusReturn = null;
+  }
+
+  async function confirmSkillRemoval() {
+    const skill = pendingSkillRemoval;
+    if (!skill?.id || mutatingSkillIds.has(skill.id)) return;
+    mutatingSkillIds.add(skill.id);
+    $("#confirmSkillRemoveButton").disabled = true;
+    $("#cancelSkillRemoveButton").disabled = true;
+    renderSkills();
+    try {
+      state = await api.removeSkill(skill.id);
+      closeSkillRemoveDialog();
+      renderSkills();
+      setStatus($("#skillLibraryStatus"), localized(`「${skill.name}」を端末から削除しました。`, `Removed “${skill.name}” from this device.`));
+    } catch (error) {
+      $("#skillRemoveMessage").textContent = localized(`削除できませんでした: ${error.message}`, `Could not remove the Skill: ${error.message}`);
+      setStatus($("#skillLibraryStatus"), error.message, true);
+    } finally {
+      mutatingSkillIds.delete(skill.id);
+      $("#confirmSkillRemoveButton").disabled = false;
+      $("#cancelSkillRemoveButton").disabled = false;
+      renderSkills();
+    }
+  }
+
+  function renderTrustedSkillCatalog() {
+    const catalog = $("#trustedSkillCatalog");
+    if (!catalog) return;
+    updateSkillSummary();
+    catalog.setAttribute("aria-busy", String(trustedSkillCatalogLoading));
+    if (trustedSkillCatalogLoading && !trustedSkillCatalog.length && !(state.skills?.installed || []).length) {
+      catalog.replaceChildren(...[0, 1, 2, 3].map(() => {
+        const skeleton = document.createElement("div");
+        skeleton.className = "skill-catalog-skeleton";
+        return skeleton;
+      }));
+      return;
+    }
+    const normalizedQuery = skillCatalogQuery.trim().toLocaleLowerCase(state?.language === "en" ? "en" : "ja");
+    const installedById = new Map((state.skills?.installed || []).map((skill) => [skill.id, skill]));
+    const assignmentSets = currentSkillAssignmentSets();
+    const skills = skillDisplayRecords().filter((skill) => {
+      const installed = installedById.get(skill.id);
+      const assignment = installed ? skillAssignmentState(skill.id, assignmentSets) : { active: false };
+      if (skillCatalogView === "active" && !assignment.active) return false;
+      if (skillCatalogView === "installed" && !installed) return false;
+      if (skillCatalogSource !== "all" && skillSourceId(skill) !== skillCatalogSource) return false;
+      if (!normalizedQuery) return true;
+      return [skill.name, skill.description, skill.sourceName, skillCategoryLabel(skill.category)]
+        .some((value) => String(value || "").toLocaleLowerCase(state?.language === "en" ? "en" : "ja").includes(normalizedQuery));
+    });
+    catalog.replaceChildren();
+    if (!skills.length) {
+      const empty = document.createElement("p");
+      empty.className = "skill-catalog-empty";
+      empty.textContent = skillCatalogView === "active" && !normalizedQuery
+        ? localized("この対象で使用中のSkillはありません。「探す」から能力を追加できます。", "No skills are active for this target. Add capabilities from Find.")
+        : skillCatalogView === "installed" && !normalizedQuery
+          ? localized("端末に保存されているSkillはありません。", "No skills are stored on this device.")
+          : trustedSkillCatalogLoaded
+            ? localized("条件に合うSkillがありません。検索語や配布元を変えてください。", "No skills match. Try another search or source.")
+            : localized("公式カタログを取得できませんでした。", "The official catalog could not be loaded.");
+      catalog.appendChild(empty);
+      return;
+    }
+    for (const skill of skills) {
+      const installed = installedById.get(skill.id);
+      const assignment = installed ? skillAssignmentState(skill.id, assignmentSets) : { active: false, inherited: false };
+      const needsRepair = installed?.health === "missing";
+      const localRepairUnavailable = needsRepair && skill.sourceKind === "charadock-created";
+      const installing = installingSkillIds.has(skill.id) || mutatingSkillIds.has(skill.id);
+      const editingLocked = skillEditingLocked();
+      const article = document.createElement("article");
+      article.className = `skill-catalog-card${assignment.active && !needsRepair ? " is-active" : installed ? " is-stored" : ""}${installing ? " is-installing" : ""}`;
+
+      const top = document.createElement("div");
+      top.className = "skill-card-top";
+      const source = document.createElement("span");
+      source.className = `skill-card-source${skillSourceId(skill) === "anthropic" ? " is-anthropic" : skillSourceId(skill) === "charadock" ? " is-charadock" : ""}`;
+      source.textContent = skill.sourceName;
+      const category = document.createElement("span");
+      category.className = "skill-card-category";
+      category.textContent = skillCategoryLabel(skill.category);
+      top.append(source, category);
+
+      const title = document.createElement("h3");
+      title.textContent = skill.name;
+      const description = document.createElement("p");
+      description.textContent = skill.description;
+
+      const status = document.createElement("span");
+      status.className = `skill-card-state${needsRepair ? " is-warning" : assignment.active ? " is-active" : installed ? " is-stored" : ""}`;
+      status.textContent = skill.builtIn
+        ? localized("標準で常に使用中", "Always active by default")
+        : needsRepair
+        ? localized("保存ファイルが見つかりません・要修復", "Stored files missing · Repair needed")
+        : assignment.inherited
+        ? localized("全キャラクター共通で使用中", "Active for all characters")
+        : assignment.active
+          ? localized("この対象で使用中", "Active for this target")
+          : installed
+            ? skill.updateAvailable ? localized("端末に保存・更新あり", "Stored on device · Update available") : localized("端末に保存・停止中", "Stored on device · Off")
+            : localized("未追加", "Not added");
+
+      const footer = document.createElement("div");
+      footer.className = "skill-card-footer";
+      const meta = document.createElement("div");
+      meta.className = "skill-card-meta";
+      const license = document.createElement("span");
+      license.textContent = skill.license === "User-created"
+        ? localized("ユーザー作成", "User-created")
+        : skill.license || localized("ライセンス未確認", "License unverified");
+      if (skill.license === "Anthropic Terms") license.className = "has-terms";
+      meta.appendChild(license);
+      if (Number(skill.fileCount) > 0 || Number(skill.totalBytes) > 0) {
+        const size = document.createElement("span");
+        size.textContent = localized(`${skill.fileCount}ファイル · ${skillSizeLabel(skill.totalBytes)}`, `${skill.fileCount} files · ${skillSizeLabel(skill.totalBytes)}`);
+        meta.appendChild(size);
+      }
+      const actions = document.createElement("div");
+      actions.className = "skill-card-actions";
+      if (skill.builtIn) {
+        const builtIn = document.createElement("span");
+        builtIn.className = "skill-builtin-badge";
+        builtIn.textContent = localized("標準搭載", "Built in");
+        actions.appendChild(builtIn);
+      } else {
+        const primary = document.createElement("button");
+        primary.type = "button";
+        primary.className = `button ${assignment.active && !needsRepair ? "button-secondary is-active" : installed ? "button-secondary" : "button-primary"} skill-card-primary`;
+        primary.disabled = installing || editingLocked || localRepairUnavailable;
+        primary.textContent = installing
+          ? localized("追加中…", "Adding…")
+          : needsRepair
+            ? localRepairUnavailable ? localized("再作成が必要", "Recreation needed") : localized("修復", "Repair")
+            : skill.updateAvailable
+              ? assignment.active ? localized("更新", "Update") : localized("更新して使う", "Update & enable")
+              : assignment.inherited
+                ? localized("全キャラ設定", "All settings")
+                : assignment.active
+                  ? localized("使用を停止", "Disable")
+                  : installed
+                    ? localized("この対象で使う", "Enable here")
+                    : localized("追加して使う", "Add & enable");
+        primary.setAttribute("aria-label", assignment.active
+          ? localized(`${skill.name}の使用設定を変更`, `Change usage for ${skill.name}`)
+          : localized(`${skill.name}を追加または有効化`, `Add or enable ${skill.name}`));
+        primary.addEventListener("click", () => {
+          if (!installed || needsRepair || skill.updateAvailable) installCatalogSkill(skill);
+          else setCatalogSkillEnabled(skill, !assignment.active);
+        });
+        actions.appendChild(primary);
+      }
+      if (installed && !skill.builtIn) {
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.className = "button button-quiet skill-card-delete";
+        remove.disabled = installing || editingLocked;
+        remove.title = localized("端末から削除", "Remove from device");
+        remove.setAttribute("aria-label", localized(`${skill.name}を端末から削除`, `Remove ${skill.name} from this device`));
+        const icon = document.createElement("span");
+        icon.className = "ui-symbol ui-symbol-trash";
+        icon.setAttribute("aria-hidden", "true");
+        remove.appendChild(icon);
+        remove.addEventListener("click", () => removeCatalogSkill(skill));
+        actions.appendChild(remove);
+      }
+      footer.append(meta, actions);
+      article.append(top, title, description, status, footer);
+      catalog.appendChild(article);
+    }
+  }
+
+  async function installCatalogSkill(skill) {
+    if (!skill?.id || installingSkillIds.has(skill.id)) return;
+    const target = skillAssignmentTarget();
+    installingSkillIds.add(skill.id);
+    renderSkills();
+    setStatus($("#skillLibraryStatus"), localized(`「${skill.name}」を追加しています…`, `Adding “${skill.name}”…`));
+    try {
+      const installed = (state.skills?.installed || []).find((item) => item.id === skill.id);
+      if (!installed || installed.health === "missing" || skill.updateAvailable) {
+        state = await api.installSkill({
+          sourceUrl: skill.sourceUrl,
+          expectedCommitSha: skill.commitSha,
+          expectedId: skill.id,
+          assignment: target,
+        });
+      }
+      if (installed && !skillIsAssignedToTarget(skill.id, target)) {
+        state = await api.setSkillAssignment({ skillId: skill.id, scope: target.scope, characterId: target.characterId, enabled: true });
+      }
+      renderSkills();
+      const targetName = target.scope === "all"
+        ? localized("全キャラクター", "all characters")
+        : state.characters.find((character) => character.id === target.characterId)?.name || localized("このキャラクター", "this character");
+      setStatus($("#skillLibraryStatus"), localized(`「${skill.name}」を${targetName}へ追加しました。`, `Added “${skill.name}” for ${targetName}.`));
+    } catch (error) {
+      setStatus($("#skillLibraryStatus"), error.message, true);
+    } finally {
+      installingSkillIds.delete(skill.id);
+      renderSkills();
+    }
+  }
+
+  function renderSkills() {
+    const targetSelect = $("#skillAssignmentTargetSelect");
+    const previousTarget = targetSelect.value || state.characterId;
+    targetSelect.replaceChildren(new Option(localized("全キャラクター", "All characters"), "all"));
+    for (const character of state.characters || []) targetSelect.appendChild(new Option(character.name, character.id));
+    targetSelect.value = [...targetSelect.options].some((option) => option.value === previousTarget) ? previousTarget : state.characterId;
+    const target = skillAssignmentTarget();
+    const targetName = target.scope === "all" ? localized("全キャラクター", "All characters") : state.characters.find((character) => character.id === target.characterId)?.name || localized("このキャラクター", "This character");
+    $("#skillTargetSummary").textContent = targetName;
+    $("#skillAssignmentTargetSelect").disabled = skillEditingLocked() || installingSkillIds.size > 0 || mutatingSkillIds.size > 0;
+    $$("#skillCatalogViews [data-skill-view]").forEach((button) => button.setAttribute("aria-pressed", String(button.dataset.skillView === skillCatalogView)));
+    renderTrustedSkillCatalog();
+  }
+
+  function clearSkillInspection() {
+    inspectedSkill = null;
+    $("#skillInspectionPreview").hidden = true;
+  }
+
+  async function inspectSelectedSkill() {
+    const sourceUrl = $("#skillSourceUrlInput").value.trim();
+    if (!sourceUrl) {
+      setStatus($("#customSkillStatus"), localized("Skillフォルダー、またはSKILL.mdのGitHub URLを入力してください。", "Enter the GitHub URL of a skill folder or SKILL.md."), true);
+      return;
+    }
+    const button = $("#inspectSkillButton");
+    button.disabled = true;
+    clearSkillInspection();
+    setStatus($("#customSkillStatus"), localized("配布元とSKILL.mdを確認しています…", "Inspecting the source and SKILL.md…"));
+    try {
+      inspectedSkill = await api.inspectSkill(sourceUrl);
+      inspectedSkill.requestedUrl = sourceUrl;
+      $("#skillInspectionName").textContent = inspectedSkill.name;
+      $("#skillInspectionDescription").textContent = inspectedSkill.description;
+      $("#skillInspectionMeta").textContent = `${inspectedSkill.repository} · ${inspectedSkill.fileCount} files · ${(inspectedSkill.totalBytes / 1024).toFixed(1)} KB · ${inspectedSkill.license}`;
+      const trust = $("#skillInspectionTrust");
+      trust.textContent = inspectedSkill.trusted ? inspectedSkill.sourceName || localized("公式", "Official") : localized("GitHub・要確認", "GitHub · Review");
+      trust.classList.toggle("is-trusted", Boolean(inspectedSkill.trusted));
+      trust.classList.toggle("is-anthropic", inspectedSkill.sourceKind === "anthropic-official");
+      $("#skillInspectionPreview").hidden = false;
+      setStatus($("#customSkillStatus"), localized("固定コミットまで確認しました。説明と配布元を確認して追加してください。", "Pinned to a commit. Review the description and source before adding."));
+    } catch (error) {
+      setStatus($("#customSkillStatus"), error.message, true);
+    } finally {
+      button.disabled = false;
+    }
+  }
+
+  async function loadTrustedSkills({ force = false } = {}) {
+    if (trustedSkillCatalogLoading || (trustedSkillCatalogLoaded && !force)) return;
+    trustedSkillCatalogLoading = true;
+    if (force) trustedSkillCatalog = [];
+    $("#retrySkillCatalogButton").hidden = true;
+    setStatus($("#skillLibraryStatus"), localized("OpenAI・Anthropic公式カタログを準備しています…", "Loading the OpenAI and Anthropic catalogs…"));
+    renderTrustedSkillCatalog();
+    try {
+      trustedSkillCatalog = (await api.listTrustedSkills()).filter((skill) => !(
+        skill.sourceId === "anthropic" && String(skill.name || "").toLowerCase() === "skill-creator"
+      ));
+      trustedSkillCatalogLoaded = true;
+      const openAiCount = trustedSkillCatalog.filter((skill) => skill.sourceId === "openai").length;
+      const anthropicCount = trustedSkillCatalog.filter((skill) => skill.sourceId === "anthropic").length;
+      setStatus($("#skillLibraryStatus"), localized(`${trustedSkillCatalog.length}件（OpenAI ${openAiCount}・Anthropic ${anthropicCount}）から選べます。`, `${trustedSkillCatalog.length} skills available (${openAiCount} OpenAI, ${anthropicCount} Anthropic).`));
+    } catch (error) {
+      setStatus($("#skillLibraryStatus"), error.message, true);
+      $("#retrySkillCatalogButton").hidden = false;
+    } finally {
+      trustedSkillCatalogLoading = false;
+      renderTrustedSkillCatalog();
+    }
   }
 
   function syncMotionReadouts() {
@@ -1742,9 +2417,18 @@
     const legacy = version === "500m-v3";
     const precision = $("#irodoriPrecisionSelect").value === "int4" ? "int4" : "fp16";
     const quantized = !legacy && precision === "int4";
+    const generationMode = $("#irodoriSamplingModeSelect");
+    const generationSteps = $("#irodoriStepsInput");
+    generationMode.value = state.irodoriSamplingMode || "sway";
+    generationSteps.value = Number(state.irodoriSteps) || 8;
+    $("#irodoriCfgExecutionSelect").value = "sequential";
+    $("#irodoriGenerationHint").textContent = localized(
+      "500M-v3ではSwayによる高速生成を選べます。音質が合わない場合はステップ数を増やすかLinearへ戻してください。",
+      "500M-v3 can use accelerated Sway generation. Increase the steps or switch to Linear if quality is unstable.",
+    );
     $("#irodoriV4Panel").hidden = legacy;
     $("#irodoriV3Panel").hidden = !legacy;
-    $("#irodoriManualModelLabel").textContent = legacy ? "500M-v3 FP16モデル" : `V4 Small ${quantized ? "INT4" : "FP16"}モデル`;
+    $("#irodoriManualModelLabel").textContent = legacy ? "500M-v3 FP16モデル" : `V4.1 Small ${quantized ? "INT4" : "FP16"}モデル`;
     $("#irodoriManualModelHint").textContent = legacy
       ? "irodori-tts-webgpuのルート、onnx_fp16フォルダー、または同じ配置の変換済み500M-v3モデルを選択できます。"
       : "irodori-tts-webgpuのルート、v4-small-unifiedフォルダー、または同じ配置の変換済みV4モデルを選択できます。";
@@ -1764,9 +2448,10 @@
     $("#irodoriVoiceRemoveButton").disabled = !selectedVoice || selectedVoice.builtIn;
     const status = $("#irodoriStatus");
     if (info.webgpuAvailable === false) setStatus(status, "WebGPUを利用できません。GPUドライバーを確認してください。", true);
-    else if (!info.modelReady) setStatus(status, `${legacy ? "Irodori TTS 500M-v3 FP16" : `Irodori TTS v4 Small ${quantized ? "INT4" : "FP16"}`}モデルを導入または選択してください。`);
+    else if (!info.modelReady) setStatus(status, `${legacy ? "Irodori TTS 500M-v3 FP16" : `Irodori TTS v4.1 Small ${quantized ? "INT4" : "FP16"}`}モデルを導入または選択してください。`);
+    else if (!legacy && info.modelOutdated) setStatus(status, localized("旧V4モデルを使用中です。末尾発話を改善したV4.1へ更新してください。", "An older V4 model is in use. Update to V4.1 for the trailing-speech fix."));
     else if (info.referenceRequired && !info.referenceReady) setStatus(status, "本人の許可がある参照音声を追加してください。");
-    else if (info.webgpuAvailable === true) setStatus(status, `${legacy ? "Irodori TTS 500M-v3" : "Irodori TTS v4 Small"}のWebGPU音声合成を利用できます。`);
+    else if (info.webgpuAvailable === true) setStatus(status, `${legacy ? "Irodori TTS 500M-v3" : "Irodori TTS v4.1 Small"}のWebGPU音声合成を利用できます。`);
     else setStatus(status, `${legacy ? "500M-v3" : "V4"}モデルと音声設定を確認しました。初回生成時にWebGPUを確認します。`);
     $("#irodoriReferenceSettings").hidden = !legacy && $("#irodoriModeSelect").value === "design";
     $("#irodoriEmotionStrengthSettings").classList.toggle("is-disabled", !$("#irodoriAutoEmotionToggle").checked);
@@ -1951,6 +2636,7 @@
     $("#remoteEnabledSettings").hidden = !enabled;
     $("#remoteWorkToggle").checked = Boolean(remote.workEnabled);
     $("#remoteTtsToggle").checked = remote.ttsEnabled !== false;
+    $("#remoteStartupGreetingToggle").checked = remote.startupGreetingEnabled !== false;
     $("#remotePcAudioToggle").checked = remote.pcAudioEnabled !== false;
     $("#remoteResponseModeSelect").value = remote.responseMode === "live" ? "live" : "tts";
     const remoteLiveOption = [...$("#remoteResponseModeSelect").options].find((option) => option.value === "live");
@@ -2036,6 +2722,7 @@
         bindAddress: $("#remoteAddressSelect").value,
         workEnabled: $("#remoteWorkToggle").checked,
         ttsEnabled: $("#remoteTtsToggle").checked,
+        startupGreetingEnabled: $("#remoteStartupGreetingToggle").checked,
         pcAudioEnabled: $("#remotePcAudioToggle").checked,
         responseMode: $("#remoteResponseModeSelect").value,
         port: Number($("#remotePortInput").value),
@@ -2078,6 +2765,9 @@
     if (chatHistoryView === "work") renderWorkHistory(workHistoryState);
     renderCharacters();
     syncCharacterEditor();
+    renderSkills();
+    renderChatSelectedSkills();
+    if (!$("#chatAddPopover").hidden) renderChatSkillPicker();
     syncGeneratorUi();
     const backend = $(`input[name="backend"][value="${state.backend}"]`);
     if (backend) backend.checked = true;
@@ -2128,7 +2818,7 @@
     $("#irodoriCaptionInput").value = state.irodoriCaption || "自然で明瞭な日本語。落ち着いた親しみやすい口調で話す。";
     $("#irodoriAutoEmotionToggle").checked = state.irodoriAutoEmotion !== false;
     $("#irodoriEmotionStrengthSelect").value = ["subtle", "natural", "expressive"].includes(state.irodoriEmotionStrength) ? state.irodoriEmotionStrength : "natural";
-    $("#irodoriCfgExecutionSelect").value = state.irodoriCfgExecution || "sequential";
+    $("#irodoriCfgExecutionSelect").value = "sequential";
     $("#irodoriSamplingModeSelect").value = state.irodoriSamplingMode || "sway";
     $("#irodoriStepsInput").value = Number(state.irodoriSteps) || 8;
     $("#irodoriSeedInput").value = Number(state.irodoriSeed) || 0;
@@ -2283,10 +2973,14 @@
       irodoriCaption: $("#irodoriCaptionInput").value,
       irodoriAutoEmotion: $("#irodoriAutoEmotionToggle").checked,
       irodoriEmotionStrength: $("#irodoriEmotionStrengthSelect").value,
-      irodoriCfgExecution: $("#irodoriCfgExecutionSelect").value,
+      irodoriCfgExecution: "sequential",
       irodoriSpeed: Number($("#irodoriSpeedInput").value),
-      irodoriSamplingMode: $("#irodoriSamplingModeSelect").value,
-      irodoriSteps: Number($("#irodoriStepsInput").value),
+      irodoriSamplingMode: $("#irodoriVersionSelect").value === "v4-small"
+        ? state.irodoriSamplingMode
+        : $("#irodoriSamplingModeSelect").value,
+      irodoriSteps: $("#irodoriVersionSelect").value === "v4-small"
+        ? state.irodoriSteps
+        : Number($("#irodoriStepsInput").value),
       irodoriSeed: Number($("#irodoriSeedInput").value),
       sbv2ModelId: $("#sbv2ModelSelect").value,
       sbv2SpeakerId: Number($("#sbv2StyleSelect").value.split(":")[0]) || 0,
@@ -2582,7 +3276,10 @@
       const offer = await peer.createOffer();
       await peer.setLocalDescription(offer);
       if (startGeneration !== realtimeStartGeneration) throw new Error("Live connection was cancelled.");
-      await api.startCodexRealtime({ sdp: peer.localDescription?.sdp || offer.sdp });
+      await api.startCodexRealtime({
+        sdp: peer.localDescription?.sdp || offer.sdp,
+        selectedSkillIds: state?.interactionMode === "work" ? chatSelectedSkillIds : [],
+      });
       if (startGeneration !== realtimeStartGeneration) {
         await api.stopCodexRealtime().catch(() => {});
         throw new Error("Live connection was cancelled.");
@@ -2657,6 +3354,10 @@
           setStatus($("#chatStatus"), "Codex Realtimeから応答しました。");
         }
         realtimeAssistantActive = false;
+        if (state?.interactionMode === "work" && streamingMessage && !streamingMessage.dataset.workRunId) {
+          streamingMessage.classList.remove("is-thinking");
+          finishDetachedRealtimeWork();
+        }
       }
       return;
     }
@@ -2905,11 +3606,16 @@
     $("#sendButton").firstChild.textContent = chatBusy ? localized("差し込む ", "Follow up ") : localized("送信 ", "Send ");
     $("#stopButton").hidden = !chatBusy;
     $("#stopButton").disabled = false;
+    $("#chatContinuationToggle").disabled = chatBusy || Boolean(workHistoryState.activeWorkRunId || realtimePeerConnection || realtimeStarting);
+    $("#continuationModeToggle").disabled = $("#chatContinuationToggle").disabled;
+    $("#saveContinuationButton").disabled = $("#chatContinuationToggle").disabled;
+    $("#clearContinuationButton").disabled = $("#chatContinuationToggle").disabled;
   }
 
   async function sendChat() {
     const input = $("#chatInput");
     const attachments = chatAttachments.map((item) => ({ ...item }));
+    const selectedSkillIds = [...chatSelectedSkillIds];
     const message = input.value.trim() || (attachments.length ? localized("添付したファイルを確認してください。", "Please review the attached files.") : "");
     if (!message) return;
     if (realtimeStarting) {
@@ -2920,11 +3626,18 @@
       setStatus($("#chatStatus"), localized("Live音声を停止してからファイルを送信してください。", "Stop Live voice before sending files."), true);
       return;
     }
+    if (selectedSkillIds.length && realtimePeerConnection && state?.interactionMode !== "work") {
+      setStatus($("#chatStatus"), localized("Skillを指定できるのはLive Workだけです。Workへ切り替えるかLiveを停止してください。", "Selected Skills are available in Live Work only. Switch to Work or stop Live."), true);
+      return;
+    }
     input.value = "";
     chatAttachments = [];
+    chatSelectedSkillIds = [];
     renderChatAttachments();
+    renderChatSelectedSkills();
+    closeChatAddPopover();
     if (chatBusy) {
-      pendingChatFollowUp = { message, attachments };
+      pendingChatFollowUp = { message, attachments, selectedSkillIds };
       setStatus($("#chatStatus"), localized("差し込みを受け付けました。現在の応答を止めています…", "Follow-up queued. Stopping the current response…"));
       $("#stopButton").disabled = true;
       try { await api.interruptChat(); } catch (error) { setStatus($("#chatStatus"), error.message, true); $("#stopButton").disabled = false; }
@@ -2942,8 +3655,9 @@
       realtimePendingTypedText = message;
       setStatus($("#chatStatus"), "Live音声で応答を生成しています…");
       try {
-        const appended = await api.appendCodexRealtimeText(message);
-        if (!appended) throw new Error("Liveセッションへ文字を送信できませんでした。");
+        const route = await api.appendCodexRealtimeText(message, selectedSkillIds);
+        const accepted = typeof route === "object" ? Boolean(route?.accepted) : Boolean(route);
+        if (!accepted) throw new Error("Liveセッションへ文字を送信できませんでした。");
       } catch (error) {
         realtimePendingTypedText = "";
         if (liveWork && streamingMessage) {
@@ -2964,7 +3678,7 @@
     setChatBusy(true);
     setStatus($("#chatStatus"), "応答を待っています…");
     try {
-      const result = await api.sendChat({ message, attachmentPaths: attachments.map((item) => item.path) });
+      const result = await api.sendChat({ message, attachmentPaths: attachments.map((item) => item.path), selectedSkillIds });
       const paragraph = thinking.querySelector("p");
       thinking.classList.remove("is-thinking");
       paragraph.textContent = result.displayText || result.text;
@@ -2984,7 +3698,9 @@
       if (followUp) {
         input.value = followUp.message;
         chatAttachments = followUp.attachments;
+        chatSelectedSkillIds = followUp.selectedSkillIds || [];
         renderChatAttachments();
+        renderChatSelectedSkills();
         queueMicrotask(() => sendChat());
       }
     }
@@ -3002,7 +3718,9 @@
     if (followUp) {
       $("#chatInput").value = followUp.message;
       chatAttachments = followUp.attachments;
+      chatSelectedSkillIds = followUp.selectedSkillIds || [];
       renderChatAttachments();
+      renderChatSelectedSkills();
       queueMicrotask(() => sendChat());
     }
   }
@@ -3042,7 +3760,7 @@
       }
       if (payload?.phase === "done") {
         streamingMessage.classList.remove("is-thinking");
-        paragraph.textContent = String(payload.displayText || payload.text || "");
+        if (!payload?.deferDisplayToRealtime) paragraph.textContent = String(payload.displayText || payload.text || "");
         appendWorkArtifactActions(streamingMessage, payload.artifacts, payload.workRunId);
         if (payload?.realtimeOutput && !payload?.realtimeSpeechPending) finishDetachedRealtimeWork(payload?.workRunId);
       }
@@ -3084,6 +3802,11 @@
         closeRealtimeAudio();
       });
     });
+    api.onCodexRealtimeTurnSkills?.((payload) => {
+      chatSelectedSkillIds = Array.isArray(payload?.selectedSkillIds) ? payload.selectedSkillIds : [];
+      renderChatSelectedSkills();
+      if (!$("#chatAddPopover").hidden) renderChatSkillPicker();
+    });
     api.onRemotePcAudio?.((payload) => {
       // This preference applies to phone-originated responses. A Live session
       // created in this renderer is PC-owned and must remain audible here.
@@ -3091,8 +3814,56 @@
     });
     api.onStopNormalSpeech?.(() => stopSpeechPlayback());
     api.onCharacterGeneration?.((payload) => updateGeneratorProgress(payload));
+    $("#skillAssignmentTargetSelect").addEventListener("change", renderSkills);
+    $$("#skillCatalogViews [data-skill-view]").forEach((button) => button.addEventListener("click", () => {
+      skillCatalogView = button.dataset.skillView || "active";
+      $$("#skillCatalogViews [data-skill-view]").forEach((candidate) => candidate.setAttribute("aria-pressed", String(candidate === button)));
+      renderTrustedSkillCatalog();
+    }));
+    $("#skillCatalogSearchInput").addEventListener("input", (event) => {
+      skillCatalogQuery = event.currentTarget.value;
+      renderTrustedSkillCatalog();
+    });
+    $$("#skillSourceFilters [data-skill-source]").forEach((button) => button.addEventListener("click", () => {
+      skillCatalogSource = button.dataset.skillSource || "all";
+      $$("#skillSourceFilters [data-skill-source]").forEach((candidate) => candidate.setAttribute("aria-pressed", String(candidate === button)));
+      renderTrustedSkillCatalog();
+    }));
+    $("#retrySkillCatalogButton").addEventListener("click", () => loadTrustedSkills({ force: true }));
+    $("#cancelSkillRemoveButton").addEventListener("click", closeSkillRemoveDialog);
+    $("#confirmSkillRemoveButton").addEventListener("click", confirmSkillRemoval);
+    $("#skillRemoveDialog").addEventListener("click", (event) => {
+      if (event.target === event.currentTarget) closeSkillRemoveDialog();
+    });
+    $("#skillSourceUrlInput").addEventListener("input", () => {
+      clearSkillInspection();
+    });
+    $("#inspectSkillButton").addEventListener("click", inspectSelectedSkill);
+    $("#installSkillButton").addEventListener("click", async () => {
+      if (!inspectedSkill?.requestedUrl) return;
+      const button = $("#installSkillButton");
+      button.disabled = true;
+      setStatus($("#customSkillStatus"), localized("Skillを端末へ保存しています…", "Saving the skill on this device…"));
+      try {
+        const target = skillAssignmentTarget();
+        const installedName = inspectedSkill.name;
+        state = await api.installSkill({
+          sourceUrl: inspectedSkill.requestedUrl,
+          expectedCommitSha: inspectedSkill.commitSha,
+          expectedId: inspectedSkill.id,
+          assignment: target,
+        });
+        clearSkillInspection();
+        renderSkills();
+        setStatus($("#customSkillStatus"), localized(`「${installedName}」を追加し、選択中の割り当て先で有効にしました。`, "Skill added and enabled for the selected target."));
+      } catch (error) {
+        setStatus($("#customSkillStatus"), error.message, true);
+      } finally {
+        button.disabled = false;
+      }
+    });
     $("#remoteAccessToggle").addEventListener("change", saveRemoteSettings);
-    ["#remoteAddressSelect", "#remotePortInput", "#remoteSessionSelect", "#remoteResponseModeSelect", "#remoteWorkToggle", "#remoteTtsToggle", "#remotePcAudioToggle", "#remoteTailscaleHttpsPortInput"].forEach((selector) => {
+    ["#remoteAddressSelect", "#remotePortInput", "#remoteSessionSelect", "#remoteResponseModeSelect", "#remoteWorkToggle", "#remoteTtsToggle", "#remoteStartupGreetingToggle", "#remotePcAudioToggle", "#remoteTailscaleHttpsPortInput"].forEach((selector) => {
       $(selector).addEventListener("change", saveRemoteSettings);
     });
     $("#refreshRemoteTailscaleButton").addEventListener("click", async () => {
@@ -3191,6 +3962,7 @@
       button.addEventListener("click", () => {
         showPage(button.dataset.page);
         if (button.dataset.page === "support" && !lastDiagnostics) refreshSupportDiagnostics();
+        if (button.dataset.page === "skills" && !trustedSkillCatalogLoaded) loadTrustedSkills();
       });
       button.addEventListener("keydown", (event) => {
         if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
@@ -3223,17 +3995,62 @@
       setSettingsSearchActive(settingsSearchActiveIndex + (event.key === "ArrowDown" ? 1 : -1));
     });
     document.addEventListener("keydown", (event) => {
+      if (!$("#skillRemoveDialog").hidden && event.key === "Escape") {
+        event.preventDefault();
+        closeSkillRemoveDialog();
+        return;
+      }
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
         event.preventDefault();
         settingsSearchInput.focus();
         settingsSearchInput.select();
       }
     });
+    $("#skillRemoveDialog").addEventListener("keydown", (event) => {
+      if (event.key !== "Tab") return;
+      const focusable = $$("#skillRemoveDialog button:not(:disabled)");
+      if (!focusable.length) return;
+      const first = focusable[0];
+      const last = focusable.at(-1);
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+    });
     document.addEventListener("pointerdown", (event) => {
       if (!event.target.closest(".settings-search")) closeSettingsSearch();
+      if (!event.target.closest("#chatAddPopover, #chatAddButton")) closeChatAddPopover();
     });
     $("#chatForm").addEventListener("submit", (event) => { event.preventDefault(); sendChat(); });
-    $("#chatAttachmentButton").addEventListener("click", () => $("#chatAttachmentInput").click());
+    $("#chatAddButton").addEventListener("click", () => {
+      if (!$("#chatAddPopover").hidden) closeChatAddPopover({ returnFocus: true });
+      else openChatAddPopover();
+    });
+    $("#chatAddFileAction").addEventListener("click", () => {
+      closeChatAddPopover();
+      $("#chatAttachmentInput").click();
+    });
+    $("#chatManageSkillsButton").addEventListener("click", () => {
+      closeChatAddPopover();
+      showPage("skills");
+      requestAnimationFrame(() => jumpToSettingsTarget("#skillAssignmentCard", { highlight: false }));
+    });
+    $("#chatSkillPickerSearch").addEventListener("input", () => {
+      chatSkillPickerIndex = 0;
+      renderChatSkillPicker();
+    });
+    $("#chatSkillPickerSearch").addEventListener("keydown", (event) => {
+      const records = chatSkillRecords(event.currentTarget.value);
+      if (event.key === "Escape") { event.preventDefault(); closeChatAddPopover({ returnFocus: true }); return; }
+      if (["ArrowDown", "ArrowUp"].includes(event.key) && records.length) {
+        event.preventDefault();
+        chatSkillPickerIndex = (chatSkillPickerIndex + (event.key === "ArrowDown" ? 1 : -1) + records.length) % records.length;
+        renderChatSkillPicker();
+        return;
+      }
+      if (event.key === "Enter" && records[chatSkillPickerIndex]) {
+        event.preventDefault();
+        toggleChatSkill(records[chatSkillPickerIndex].id);
+      }
+    });
     $("#chatAttachmentInput").addEventListener("change", (event) => {
       addChatAttachments([...(event.currentTarget.files || [])]);
       event.currentTarget.value = "";
@@ -3280,7 +4097,27 @@
         setStatus($("#chatStatus"), error.message, true);
       }
     });
+    $("#chatInput").addEventListener("input", () => {
+      const trigger = chatSkillTriggerAtCursor();
+      if (trigger) openChatAddPopover({ query: trigger.query, trigger, focusSearch: false });
+      else if (chatSkillTrigger) closeChatAddPopover();
+    });
     $("#chatInput").addEventListener("keydown", (event) => {
+      if (chatSkillTrigger && !$("#chatAddPopover").hidden) {
+        const records = chatSkillRecords(chatSkillTrigger.query);
+        if (event.key === "Escape") { event.preventDefault(); closeChatAddPopover(); return; }
+        if (["ArrowDown", "ArrowUp"].includes(event.key) && records.length) {
+          event.preventDefault();
+          chatSkillPickerIndex = (chatSkillPickerIndex + (event.key === "ArrowDown" ? 1 : -1) + records.length) % records.length;
+          renderChatSkillPicker();
+          return;
+        }
+        if (event.key === "Enter" && !event.shiftKey && records[chatSkillPickerIndex]) {
+          event.preventDefault();
+          toggleChatSkill(records[chatSkillPickerIndex].id);
+          return;
+        }
+      }
       if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) { event.preventDefault(); sendChat(); }
     });
     $("#micLipSyncButton")?.addEventListener("click", toggleLipSync);
@@ -3357,6 +4194,63 @@
         setStatus($("#characterProfileStatus"), `${character.name}のメモリをすべて削除しました。`);
       } catch (error) {
         setStatus($("#characterProfileStatus"), error.message, true);
+      }
+    });
+    const changeContinuationStartupSpeech = async (event) => {
+      const requested = Boolean(event.currentTarget.checked);
+      const toggles = [$("#chatContinuationToggle"), $("#continuationModeToggle")];
+      toggles.forEach((toggle) => { toggle.checked = requested; toggle.disabled = true; });
+      try {
+        state = await api.setContinuationStartupSpeech(requested);
+        syncUi();
+        setStatus($("#continuationStatus"), requested
+          ? localized("起動時の声かけを有効にしました。続きがある場合だけ一度話します。", "Startup greeting is on. It speaks once only when there is something to resume.")
+          : localized("起動時の声かけを停止しました。記憶と作業の続きはそのまま保持します。", "Startup greeting is off. Memories and work continuation remain available."));
+      } catch (error) {
+        toggles.forEach((toggle) => { toggle.checked = state?.continuation?.startupSpeechEnabled !== false; toggle.disabled = false; });
+        setStatus(event.currentTarget.id === "chatContinuationToggle" ? $("#chatStatus") : $("#continuationStatus"), error.message, true);
+      }
+    };
+    $("#chatContinuationToggle").addEventListener("change", changeContinuationStartupSpeech);
+    $("#continuationModeToggle").addEventListener("change", changeContinuationStartupSpeech);
+    $("#saveContinuationButton").addEventListener("click", async () => {
+      const button = $("#saveContinuationButton");
+      button.disabled = true;
+      setStatus($("#continuationStatus"), localized("継続サマリーを確認して保存しています…", "Validating and saving the continuation summary…"));
+      try {
+        state = await api.saveContinuationSummary({
+          goal: $("#continuationGoalInput").value,
+          decisions: $("#continuationDecisionsInput").value,
+          completed: $("#continuationCompletedInput").value,
+          pending: $("#continuationPendingInput").value,
+          nextStep: $("#continuationNextStepInput").value,
+        });
+        renderedContinuationSignature = "";
+        syncUi();
+        setStatus($("#continuationStatus"), localized("このキャラと現在の範囲に保存しました。", "Saved for this character and current scope."));
+      } catch (error) {
+        setStatus($("#continuationStatus"), error.message, true);
+      } finally {
+        button.disabled = Boolean(chatBusy || workHistoryState.activeWorkRunId || realtimePeerConnection || realtimeStarting);
+      }
+    });
+    $("#clearContinuationButton").addEventListener("click", async () => {
+      const scopeLabel = $("#continuationScopeLabel").textContent;
+      if (!window.confirm(localized(
+        `「${scopeLabel}」の継続サマリーを削除しますか？利用者メモリや会話・Work履歴は削除されません。`,
+        `Delete the continuation summary for “${scopeLabel}”? User memory and Chat/Work history are not deleted.`,
+      ))) return;
+      const button = $("#clearContinuationButton");
+      button.disabled = true;
+      try {
+        state = await api.clearContinuationSummary();
+        renderedContinuationSignature = "";
+        syncUi();
+        setStatus($("#continuationStatus"), localized("この範囲の継続サマリーを削除しました。", "Deleted the continuation summary for this scope."));
+      } catch (error) {
+        setStatus($("#continuationStatus"), error.message, true);
+      } finally {
+        button.disabled = Boolean(chatBusy || workHistoryState.activeWorkRunId || realtimePeerConnection || realtimeStarting);
       }
     });
     $("#removeCharacterButton").addEventListener("click", async () => {
@@ -3612,6 +4506,7 @@
     });
     $("#irodoriVersionSelect").addEventListener("change", async () => {
       try {
+        syncIrodoriUi(state.irodori);
         await saveSettings();
         syncIrodoriUi(state.irodori);
       } catch (error) {
@@ -3625,9 +4520,6 @@
       } catch (error) {
         setStatus($("#irodoriStatus"), error.message, true);
       }
-    });
-    $("#irodoriCfgExecutionSelect").addEventListener("change", () => {
-      saveSettings().catch((error) => setStatus($("#irodoriStatus"), error.message, true));
     });
     $("#irodoriVoiceRenameButton").addEventListener("click", async () => {
       const voice = state.irodori?.voices?.find((item) => item.id === state.irodori.voiceId);
@@ -4032,8 +4924,9 @@
     bindEvents();
     syncUi();
     const page = sessionStorage.getItem("charadock.activePage") || "chat";
-    showPage(["chat", "remote", "character", "voice", "connection", "desktop", "support"].includes(page) ? page : "chat");
+    showPage(["chat", "remote", "character", "skills", "voice", "connection", "desktop", "support"].includes(page) ? page : "chat");
     if (page === "support") refreshSupportDiagnostics();
+    if (page === "skills") queueMicrotask(() => loadTrustedSkills());
     refreshCodexAccount();
     refreshCodexModels();
     refreshRealtimeVoices();

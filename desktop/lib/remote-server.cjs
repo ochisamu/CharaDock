@@ -488,7 +488,7 @@ class RemoteCompanionServer {
     this.persistTrustedDevices(true);
     this.rotatePairingToken();
     this.callbacks.onStatus?.(this.status());
-    this.sendJson(response, 200, { csrfToken: session.csrf, state: await this.callbacks.getState?.() }, {
+    this.sendJson(response, 200, { csrfToken: session.csrf, state: await this.callbacks.getState?.({ tokenHash, deviceId: trustedDevice.id, initial: true }) }, {
       "Set-Cookie": `${SESSION_COOKIE}=${encodeURIComponent(sessionToken)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${TRUSTED_DEVICE_DAYS * 24 * 60 * 60}${this.isTrustedTailscaleRequest(request) ? "; Secure" : ""}`,
     });
   }
@@ -548,7 +548,7 @@ class RemoteCompanionServer {
         Connection: "keep-alive",
         "Content-Security-Policy": "default-src 'none'",
       });
-      response.write(`event: state\ndata: ${JSON.stringify(await this.callbacks.getState?.())}\n\n`);
+      response.write(`event: state\ndata: ${JSON.stringify(await this.callbacks.getState?.({ tokenHash: auth.tokenHash, deviceId: auth.session?.id || "", initial: true }))}\n\n`);
       const client = { response, tokenHash: auth.tokenHash };
       this.eventClients.add(client);
       request.on("close", () => {
@@ -560,8 +560,8 @@ class RemoteCompanionServer {
     }
 
     if (request.method === "GET" && url.pathname === "/api/state") {
-      const { session } = this.authenticate(request);
-      return this.sendJson(response, 200, { csrfToken: session.csrf, state: await this.callbacks.getState?.() });
+      const { session, tokenHash } = this.authenticate(request);
+      return this.sendJson(response, 200, { csrfToken: session.csrf, state: await this.callbacks.getState?.({ tokenHash, deviceId: session.id, initial: true }) });
     }
 
     if (request.method === "GET" && url.pathname.startsWith("/api/avatar/")) {

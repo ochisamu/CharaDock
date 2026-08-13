@@ -47,6 +47,11 @@ test("new installs enable onboarding and desktop positioning defaults", () => {
   assert.equal(state.edgeSnap, true);
   assert.equal(state.preferredDisplayId, "");
   assert.equal(state.interactionMode, "chat");
+  assert.equal(state.continuationStartupSpeechEnabled, true);
+  assert.equal(state.continuationSummaries, undefined);
+  assert.equal(state.remoteStartupGreetingEnabled, true);
+  assert.equal(state.managedSkills, undefined);
+  assert.equal(state.skillAssignments, undefined);
   assert.equal(state.ttsProvider, "system");
   assert.equal(state.realtimeVoice, "cove");
   assert.equal(state.styleBertVits2Url, "http://localhost:5000");
@@ -127,6 +132,82 @@ test("new installs enable onboarding and desktop positioning defaults", () => {
     assert.equal(profile.irodoriVersion, "500m-v3");
     assert.equal(profile.irodoriPrecision, "fp16");
   }
+});
+
+test("preferences retain private character and project continuation summaries", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "charadock-prefs-continuation-"));
+  const file = path.join(directory, "preferences.json");
+  fs.writeFileSync(file, JSON.stringify({
+    continuationStartupSpeechEnabled: false,
+    continuationSummaries: {
+      "amber-avatar": {
+        common: {
+          goal: "公開準備を進める",
+          nextStep: "READMEを確認する",
+          createdAt: "2026-08-12T00:00:00.000Z",
+          updatedAt: "2026-08-12T00:00:00.000Z",
+        },
+        "project-1111111111111111": {
+          projectName: "CharaDock",
+          pending: ["Windows版を検証する"],
+          nextStep: "Windows版を検証する",
+          createdAt: "2026-08-12T00:00:00.000Z",
+          updatedAt: "2026-08-12T00:00:00.000Z",
+        },
+        home: {
+          projectName: "キャラクターホーム",
+          pending: ["デモページを完成させる"],
+          nextStep: "表示を確認する",
+          createdAt: "2026-08-12T00:00:00.000Z",
+          updatedAt: "2026-08-12T00:00:00.000Z",
+        },
+      },
+    },
+  }));
+  const preferences = new Preferences(file);
+  assert.equal(preferences.data.continuationStartupSpeechEnabled, false);
+  assert.equal(preferences.data.continuationSummaries["amber-avatar"].common.nextStep, "READMEを確認する");
+  assert.equal(preferences.data.continuationSummaries["amber-avatar"]["project-1111111111111111"].projectName, "CharaDock");
+  assert.equal(preferences.data.continuationSummaries["amber-avatar"].home.nextStep, "表示を確認する");
+  assert.equal(preferences.publicState().continuationSummaries, undefined);
+  fs.rmSync(directory, { recursive: true, force: true });
+});
+
+test("preferences migrate the former continuation toggle to startup speech", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "charadock-prefs-continuation-toggle-"));
+  const file = path.join(directory, "preferences.json");
+  fs.writeFileSync(file, JSON.stringify({ continuationEnabled: false }));
+  const preferences = new Preferences(file);
+  assert.equal(preferences.data.continuationStartupSpeechEnabled, false);
+  assert.equal(preferences.publicState().continuationStartupSpeechEnabled, false);
+  fs.rmSync(directory, { recursive: true, force: true });
+});
+
+test("preferences retain bounded skill metadata and assignments without exposing storage paths", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "charadock-prefs-skills-"));
+  const file = path.join(directory, "preferences.json");
+  fs.writeFileSync(file, JSON.stringify({
+    managedSkills: [{
+      id: "1234567890abcdef12345678",
+      name: "docs",
+      description: "Documentation workflow",
+      repository: "openai/skills",
+      sourceUrl: "https://github.com/openai/skills/tree/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/skills/.curated/docs",
+      commitSha: "a".repeat(40),
+      skillPath: "skills/.curated/docs",
+      sourceKind: "openai-curated",
+      trusted: true,
+      license: "LICENSE",
+      directoryName: "docs-12345678",
+    }],
+    skillAssignments: { all: [], characters: { "amber-avatar": ["1234567890abcdef12345678", "missing"] } },
+  }));
+  const preferences = new Preferences(file);
+  assert.equal(preferences.data.managedSkills.length, 1);
+  assert.deepEqual(preferences.data.skillAssignments.characters["amber-avatar"], ["1234567890abcdef12345678"]);
+  assert.equal(preferences.publicState().managedSkills, undefined);
+  assert.equal(preferences.publicState().skillAssignments, undefined);
+  fs.rmSync(directory, { recursive: true, force: true });
 });
 
 test("Irodori INT4 selection is normalized globally and per character", () => {
@@ -298,6 +379,8 @@ test("preferences promote the former generated Towa to the bundled character", (
     characterProfiles: { "user-avatar-ms5afs58": { name: "トワ改" } },
     characterTtsProfiles: { "user-avatar-ms5afs58": { provider: "kokoro", realtimeVoice: "ember" } },
     characterMemories: { "user-avatar-ms5afs58": [{ id: "memory-towa", category: "preference", content: "工具が好き" }] },
+    managedSkills: [{ id: "skill-demo", name: "demo", directoryName: "demo-skill-demo", sourceKind: "github" }],
+    skillAssignments: { all: [], characters: { "user-avatar-ms5afs58": ["skill-demo"] } },
   }));
   const preferences = new Preferences(file);
   assert.equal(preferences.data.characterId, "towa-avatar");
@@ -305,6 +388,7 @@ test("preferences promote the former generated Towa to the bundled character", (
   assert.equal(preferences.data.characterProfiles["towa-avatar"].name, "トワ改");
   assert.equal(preferences.data.characterTtsProfiles["towa-avatar"].provider, "kokoro");
   assert.equal(preferences.data.characterMemories["towa-avatar"][0].content, "工具が好き");
+  assert.deepEqual(preferences.data.skillAssignments.characters["towa-avatar"], ["skill-demo"]);
   assert.equal(Object.prototype.hasOwnProperty.call(preferences.data.characterProfiles, "user-avatar-ms5afs58"), false);
 });
 
@@ -323,6 +407,8 @@ test("preferences promote the profile AI Nike character to the bundled character
     conversationHistories: { [legacyId]: [{ role: "user", text: "こんにちは" }] },
     characterMemories: { [legacyId]: [{ id: "memory-nike", category: "preference", content: "実例を重視" }] },
     characterWorkspaces: { [legacyId]: { activeProjectId: "home", projects: [] } },
+    managedSkills: [{ id: "skill-demo", name: "demo", directoryName: "demo-skill-demo", sourceKind: "github" }],
+    skillAssignments: { all: [], characters: { [legacyId]: ["skill-demo"] } },
     workHistory: [{ id: "work-nike", request: "調査して", status: "completed", characterId: legacyId, characterName: "AIニケちゃん" }],
   }));
   const preferences = new Preferences(file);
@@ -333,6 +419,7 @@ test("preferences promote the profile AI Nike character to the bundled character
   assert.equal(preferences.data.characterTtsProfiles["nike-avatar"].sbv2ModelId, "sbv2-nike");
   assert.equal(preferences.data.conversationHistories["nike-avatar"][0].text, "こんにちは");
   assert.equal(preferences.data.characterMemories["nike-avatar"][0].content, "実例を重視");
+  assert.deepEqual(preferences.data.skillAssignments.characters["nike-avatar"], ["skill-demo"]);
   assert.equal(preferences.data.workHistory[0].characterId, "nike-avatar");
   assert.equal(Object.prototype.hasOwnProperty.call(preferences.data.characterProfiles, legacyId), false);
 });

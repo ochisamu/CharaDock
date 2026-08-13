@@ -227,7 +227,7 @@ test("setup can be rerun and support diagnostics stay separate from private cont
   assert.match(preload, /support:getDiagnostics/);
   assert.match(preload, /support:exportBundle/);
   assert.match(main, /privacy:[\s\S]*excluded:[\s\S]*"API keys"/);
-  assert.doesNotMatch(main.match(/async function supportDiagnostics\(\)[\s\S]*?\n}\n/)?.[0] || "", /conversationHistory|characterMemories|workHistory/);
+  assert.doesNotMatch(main.match(/async function supportDiagnostics\(\)[\s\S]*?\n}\n/)?.[0] || "", /conversationHistory|characterMemories|continuationSummaries|workHistory/);
 });
 
 test("app updates use the trusted GitHub release flow without automatic execution", () => {
@@ -264,16 +264,46 @@ test("conversation and work surfaces expose history, folder access, interruption
   assert.match(controlPreload, /work:getHistory/);
   assert.match(controlPreload, /work:openDirectory/);
   assert.match(controlPreload, /work:openArtifact/);
-  assert.match(control, /pendingChatFollowUp = \{ message, attachments \}/);
+  assert.match(control, /pendingChatFollowUp = \{ message, attachments, selectedSkillIds \}/);
   assert.match(control, /bindFileDropZone\(\$\("#chatForm"\)/);
   assert.match(control, /appendWorkArtifactActions/);
-  assert.match(mascot, /pendingFollowUpMessage = message/);
+  assert.match(mascot, /pendingFollowUp = \{ message, attachments, selectedSkillIds \}/);
+  assert.match(mascot, /webUtils\.getPathForFile\(file\)/);
+  assert.match(mascot, /id="desktopMascotAttachmentList"/);
+  assert.match(mascot, /fileDrop\.id = "desktopMascotFileDrop"/);
+  assert.match(mascot, /attachmentPaths: attachments\.map/);
+  assert.match(main, /mascotInline:chat[\s\S]{0,500}normalizeLocalAttachments/);
   assert.match(mascot, /mascotInline:previewWorkArtifact/);
   assert.match(mascot, /responseSpeaking[\s\S]*stopTtsPlayback\(\)/);
   assert.match(main, /mascotInline:openWorkDirectory/);
   assert.match(main, /work:openDirectory/);
   assert.match(main, /async function setCharacter\(characterId\) \{[\s\S]*if \(activeWorkRunId\)[\s\S]*Characters cannot be switched while Work is running/);
   assert.match(control, /syncCharacterSwitchAvailability[\s\S]*button\.disabled = workRunning/);
+});
+
+test("chat composers select per-turn Skills from plus, slash, and at shortcuts", () => {
+  const html = fs.readFileSync(path.join(projectRoot, "desktop", "control.html"), "utf8");
+  const control = fs.readFileSync(path.join(projectRoot, "desktop", "control.js"), "utf8");
+  const mascot = fs.readFileSync(path.join(projectRoot, "desktop", "preload-mascot.cjs"), "utf8");
+  const main = fs.readFileSync(path.join(projectRoot, "desktop", "main.cjs"), "utf8");
+  for (const id of ["chatAddButton", "chatAddPopover", "chatSkillPickerSearch", "chatSkillPickerList", "chatSelectedSkillList"]) {
+    assert.match(html, new RegExp(`id="${id}"`));
+  }
+  assert.match(control, /match\(\/(?:[\s\S])*\(\[\/@\]\)/);
+  assert.match(control, /selectedSkillIds: selectedSkillIds|selectedSkillIds \}/);
+  assert.match(mascot, /id="desktopMascotAddPopover"/);
+  assert.match(mascot, /id="desktopMascotSkillPicker"/);
+  assert.match(mascot, /selectedSkillIds,/);
+  assert.match(main, /function explicitTurnSkillItems\(value\)/);
+  assert.match(main, /skillItems: turnSkillItems/);
+  assert.match(main, /function setActiveRealtimeTurnSkills\(value\)/);
+  assert.match(main, /function realtimeWorkSkillContext\(client, selectedSkillIds/);
+  assert.match(main, /function realtimeWorkFrontendContext\(client, selectedSkillIds/);
+  assert.match(main, /initialItems: workMode[\s\S]*realtimeWorkFrontendContext/);
+  assert.match(main, /activeRealtimeTurnSkillIds = \[\]/);
+  assert.match(control, /appendCodexRealtimeText\(message, selectedSkillIds\)/);
+  assert.match(mascot, /mascotInline:realtimeTurnSkills/);
+  assert.match(mascot, /Live Work only/);
 });
 
 test("avatar output buttons open a sandboxed companion preview without covering the mascot", () => {
@@ -289,6 +319,12 @@ test("avatar output buttons open a sandboxed companion preview without covering 
   assert.match(main, /assertTrustedSender\(event, "preview"\)/);
   assert.match(previewPreload, /artifactPreview:getCurrent/);
   assert.match(previewPreload, /artifactPreview:openArtifact/);
+  assert.match(previewPreload, /artifactPreview:revise/);
+  assert.match(previewHtml, /id="revisionForm"/);
+  assert.match(previewHtml, /Workの音声入力/);
+  assert.match(previewRenderer, /api\.revise\(instruction\)/);
+  assert.match(main, /function artifactWorkContext\(target, explicit = false\)/);
+  assert.match(main, /ipcMain\.handle\("artifactPreview:revise"/);
   assert.match(previewHtml, /Content-Security-Policy/);
   assert.match(previewHtml, /vendor\/markdown-it\/14\.3\.0\/markdown-it\.min\.js/);
   assert.match(previewHtml, /vendor\/dompurify\/3\.4\.13\/purify\.min\.js/);
@@ -336,6 +372,8 @@ test("Work voice reports contextual milestones and keeps artifact buttons out of
   assert.match(mascot, /!payload\?\.deferDisplayToRealtime/);
   assert.match(mascot, /if \(payload\?\.realtimeOutput\) \{\s*if \(!payload\?\.realtimeSpeechPending\) finishDetachedRealtimeWork/);
   assert.match(mascot, /renderArtifactActions\(artifactActions, payload\?\.artifacts, payload\?\.workRunId\)/);
+  assert.match(mascot, /setTimeout\(clearBubbleArtifactActions, 20_000\)/);
+  assert.match(mascot, /phase === "realtime-work-complete"[\s\S]*setWorkActivity\(""\)/);
   assert.doesNotMatch(mascot, /renderArtifactActions[\s\S]{0,300}queueStreamSpeech\(payload\?\.artifacts/);
 });
 
@@ -343,6 +381,7 @@ test("mascot Japanese text uses a stable Windows font stack and notices clear th
   const mascot = fs.readFileSync(path.join(projectRoot, "desktop", "preload-mascot.cjs"), "utf8");
   const styles = fs.readFileSync(path.join(projectRoot, "desktop", "mascot-overlay.css"), "utf8");
   assert.match(mascot, /normalizeDisplayText[\s\S]*normalize\("NFC"\)/);
+  assert.match(mascot, /E0100[\s\S]*E01EF/);
   assert.match(mascot, /--mascot-composer-height/);
   assert.match(mascot, /hint\.setAttribute\("role", errorTone \? "alert" : "status"\)/);
   assert.match(styles, /--pet-font-ui: "CharaDock Noto Sans JP", "Noto Sans JP", "Yu Gothic UI"/);
@@ -418,5 +457,35 @@ test("Codex memory tools proactively create and update character memories", () =
   const main = fs.readFileSync(path.join(projectRoot, "desktop", "main.cjs"), "utf8");
   assert.match(main, /name: "memory_save"/);
   assert.match(main, /name: "memory_update"/);
-  assert.match(main, /Evaluate every user message for durable personalization/);
+  assert.match(main, /Evaluate every user message, including ordinary conversation and Work requests/);
+});
+
+test("Character memory and continuation are grouped, scoped, editable, private, and greet by default", () => {
+  const html = fs.readFileSync(path.join(projectRoot, "desktop", "control.html"), "utf8");
+  const control = fs.readFileSync(path.join(projectRoot, "desktop", "control.js"), "utf8");
+  const preload = fs.readFileSync(path.join(projectRoot, "desktop", "preload-control.cjs"), "utf8");
+  const main = fs.readFileSync(path.join(projectRoot, "desktop", "main.cjs"), "utf8");
+  for (const id of ["chatContinuationToggle", "continuationModeToggle", "continuationScopeLabel", "continuationUpdatedAt", "continuationGoalPreview", "continuationNextStepPreview", "continuationDetailCount", "continuationGoalInput", "continuationDecisionsInput", "continuationCompletedInput", "continuationPendingInput", "continuationNextStepInput", "saveContinuationButton", "clearContinuationButton"]) {
+    assert.match(html, new RegExp(`id="${id}"`));
+  }
+  assert.doesNotMatch(html, /id="continuationEditor"[^>]*\sopen(?:\s|>)/);
+  assert.match(html, /class="continuation-advanced"/);
+  assert.match(html, /このキャラが覚えていること/);
+  assert.match(html, /あなたについて/);
+  assert.match(html, /作業の続き/);
+  assert.match(control, /setContinuationStartupSpeech\(requested\)/);
+  assert.match(control, /saveContinuationSummary/);
+  assert.match(control, /clearContinuationSummary/);
+  assert.match(preload, /continuation:setStartupSpeech/);
+  assert.match(preload, /continuation:save/);
+  assert.match(preload, /continuation:clear/);
+  assert.match(main, /function maybeOfferStartupContinuation/);
+  assert.match(main, /preferences\.data\.continuationStartupSpeechEnabled === false/);
+  assert.match(main, /dynamicTools: \[\.\.\.MEMORY_DYNAMIC_TOOLS, \.\.\.CONTINUATION_DYNAMIC_TOOLS, \.\.\.SKILL_CREATOR_DYNAMIC_TOOLS\]/);
+  assert.match(main, /developerInstructions: `\$\{workModeInstructions\(\)\}[\s\S]*MEMORY_TOOL_INSTRUCTIONS/);
+  assert.match(main, /since: appSessionStartedAt/);
+  assert.match(main, /startupContinuationAttempts\.has\(attemptKey\)/);
+  assert.match(main, /project\.id === HOME_PROJECT_ID && preferences\.data\.interactionMode === "work"[\s\S]*HOME_SCOPE_KEY/);
+  assert.match(main, /if \(scopeKey === COMMON_SCOPE_KEY\)[\s\S]{0,500}continuationRecordedAt/);
+  assert.match(main, /\^\(\?:common\|home\|project-/);
 });
