@@ -415,6 +415,10 @@ test("Codex client starts WebRTC realtime and forwards transcript events", async
   };
   client.request = async (method, params) => {
     calls.push({ method, params });
+    if (method === "thread/realtime/start") queueMicrotask(() => client.handleLine(JSON.stringify({
+      method: "thread/realtime/started",
+      params: { threadId: "thread-voice" },
+    })));
     return {};
   };
   const result = await client.startRealtime({
@@ -441,7 +445,7 @@ test("Codex client starts WebRTC realtime and forwards transcript events", async
   assert.equal(calls[0].params.prompt, "日本語");
   assert.deepEqual(calls[0].params.transport, { type: "webrtc", sdp: "v=0\r\n..." });
   client.handleLine(JSON.stringify({ method: "thread/realtime/transcript/delta", params: { threadId: "thread-voice", role: "user", delta: "こんにちは" } }));
-  assert.equal(events[0].params.delta, "こんにちは");
+  assert.equal(events.find((event) => event.method === "thread/realtime/transcript/delta")?.params.delta, "こんにちは");
 });
 
 test("Codex client omits a Realtime prompt so app-server can retain native delegation", async () => {
@@ -454,11 +458,43 @@ test("Codex client omits a Realtime prompt so app-server can retain native deleg
   };
   client.request = async (method, params) => {
     calls.push({ method, params });
+    if (method === "thread/realtime/start") queueMicrotask(() => client.handleLine(JSON.stringify({
+      method: "thread/realtime/started",
+      params: { threadId: "thread-native-handoff" },
+    })));
     return {};
   };
   await client.startRealtime({ sdp: "v=0\r\n...", clientManagedHandoffs: false });
   assert.equal(calls[0].method, "thread/realtime/start");
   assert.equal(Object.hasOwn(calls[0].params, "prompt"), false);
+});
+
+test("Codex client does not expose Realtime until the started notification arrives", async () => {
+  const client = new CodexAppServerClient();
+  client.ensureStarted = async () => {};
+  client.ensureThread = async () => {
+    client.threadId = "thread-ready-gate";
+    return client.threadId;
+  };
+  let requestResolved = false;
+  client.request = async () => {
+    requestResolved = true;
+    return {};
+  };
+  let completed = false;
+  const starting = client.startRealtime({ sdp: "v=0\r\n..." }).then((value) => {
+    completed = true;
+    return value;
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(requestResolved, true);
+  assert.equal(completed, false);
+  client.handleLine(JSON.stringify({
+    method: "thread/realtime/started",
+    params: { threadId: "thread-ready-gate" },
+  }));
+  assert.deepEqual(await starting, { threadId: "thread-ready-gate" });
+  assert.equal(completed, true);
 });
 
 test("Codex client steers an active Realtime Work turn with text and Skills", async () => {
