@@ -1450,9 +1450,14 @@
     }
     if (payload.phase === "done") {
       const value = payload.displayText || payload.text || text("完了したよ。", "Done.");
-      setResponseText(value);
+      if (!payload.deferDisplayToRealtime) setResponseText(value);
       renderArtifacts(payload.artifacts, payload.workRunId);
       if (audioRoute === "mobile-tts") speak(value);
+      if (!payload.realtimeSpeechPending) setBusy(false);
+      setTimeout(refreshState, 80);
+      return;
+    }
+    if (payload.phase === "realtime-work-complete") {
       setBusy(false);
       setTimeout(refreshState, 80);
       return;

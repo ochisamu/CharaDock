@@ -90,6 +90,7 @@ const { REALTIME_VOICES, normalizeRealtimeVoice, normalizeRealtimeVoiceList } = 
 const { normalizeMascotPointerMode, shouldAutoHideMascot } = require("./lib/mascot-pointer-mode.cjs");
 const { localAttachmentInstructions, normalizeLocalAttachments } = require("./lib/local-attachments.cjs");
 const { RealtimeTurnBuffer, normalizedText } = require("./lib/realtime-turn-buffer.cjs");
+const { realtimeDelegationHistoryText, realtimeDelegationInput } = require("./lib/realtime-delegation.cjs");
 const {
   assignedSkillIds,
   createOrUpdateLocalSkill,
@@ -106,7 +107,6 @@ const {
   workAcknowledgementFallback,
 } = require("./lib/work-voice-reporter.cjs");
 const { isSocialConversationTurn } = require("./lib/interaction-intent.cjs");
-const { RealtimeWorkSpeechCoordinator } = require("./lib/realtime-work-speech.cjs");
 const { BeatriceHostClient } = require("./lib/beatrice-host-client.cjs");
 const {
   BEATRICE_BLOCK_SAMPLES,
@@ -4838,6 +4838,13 @@ async function runSmokeTest() {
     const recordRealtimeSamplePath = recordRealtimeSampleArgument
       ? path.resolve(recordRealtimeSampleArgument.slice("--record-realtime-sample=".length))
       : "";
+    const realtimeWorkAudioArgument = process.argv.find((argument) => argument.startsWith("--realtime-work-audio="));
+    const realtimeWorkAudioPath = realtimeWorkAudioArgument
+      ? path.resolve(realtimeWorkAudioArgument.slice("--realtime-work-audio=".length))
+      : "";
+    const realtimeWorkAudioData = realtimeWorkAudioPath && fs.existsSync(realtimeWorkAudioPath)
+      ? fs.readFileSync(realtimeWorkAudioPath).toString("base64")
+      : "";
     const verifyRealtimeWorkMode = process.argv.includes("--verify-realtime-work-mode");
     const previousRealtimeWorkState = {
       interactionMode: preferences.data.interactionMode,
@@ -4854,22 +4861,37 @@ async function runSmokeTest() {
       }
       const realtimeMode = await controlWindow.webContents.executeJavaScript(`(async () => {
       const shouldRecord = ${JSON.stringify(Boolean(recordRealtimeSamplePath))};
+      const verifyWorkMode = ${JSON.stringify(Boolean(verifyRealtimeWorkMode))};
+      const workAudioBase64 = ${JSON.stringify(realtimeWorkAudioData)};
       let peer;
       let stream;
       let context;
       let oscillator;
+      let testAudioSource;
+      let testAudioStarted = false;
       let remoteAudio;
       let recorder;
       const recordedChunks = [];
+      const trace = [];
       let unsubscribe = () => {};
       try {
         context = new AudioContext();
-        oscillator = context.createOscillator();
-        const gain = context.createGain();
         const destination = context.createMediaStreamDestination();
-        gain.gain.value = 0;
-        oscillator.connect(gain).connect(destination);
+        // Keep the synthetic microphone track producing silence before and
+        // after the optional spoken fixture so server-side VAD can commit the
+        // final utterance instead of seeing an abruptly ended source.
+        oscillator = context.createOscillator();
+        const silenceGain = context.createGain();
+        silenceGain.gain.value = 0;
+        oscillator.connect(silenceGain).connect(destination);
         oscillator.start();
+        if (workAudioBase64) {
+          const audioBytes = Uint8Array.from(atob(workAudioBase64), (value) => value.charCodeAt(0));
+          const audioBuffer = await context.decodeAudioData(audioBytes.buffer);
+          testAudioSource = context.createBufferSource();
+          testAudioSource.buffer = audioBuffer;
+          testAudioSource.connect(destination);
+        }
         await context.resume();
         stream = destination.stream;
         peer = new RTCPeerConnection();
@@ -4896,22 +4918,40 @@ async function runSmokeTest() {
             clearTimeout(timer);
             resolve(value);
           };
-          const timer = setTimeout(() => finish({ mode: 'device-fallback', bytes: [] }), 30_000);
+          const timer = setTimeout(() => finish({ mode: 'device-fallback', bytes: [], trace }), verifyWorkMode ? 60_000 : 30_000);
           unsubscribe = window.mascotDesktop.onCodexRealtime(async (message) => {
+            if (verifyWorkMode && !String(message?.method || '').endsWith('/delta')) {
+              trace.push({
+                method: String(message?.method || ''),
+                role: String(message?.params?.role || ''),
+                text: String(message?.params?.text || message?.params?.message || '').slice(0, 300),
+                status: String(message?.params?.turn?.status || ''),
+              });
+              if (trace.length > 40) trace.shift();
+            }
             if (message?.method === 'thread/realtime/sdp') {
               await peer.setRemoteDescription({ type: 'answer', sdp: message.params.sdp });
+              if (testAudioSource && !testAudioStarted) {
+                testAudioStarted = true;
+                testAudioSource.start(context.currentTime + 0.5);
+              }
             }
             if (message?.method === 'thread/realtime/error') {
               finish({ mode: 'device-fallback', bytes: [] });
             }
             if (message?.method === 'thread/realtime/started') {
               try {
-                const appended = await window.mascotDesktop.appendCodexRealtimeSpeech('Realtime音声の再生テストです。こんにちは、今日もよろしくね。');
-                if (!appended) finish({ mode: 'device-fallback', bytes: [] });
-                else if (!shouldRecord) finish({ mode: 'webrtc', bytes: [] });
+                const appended = verifyWorkMode && !workAudioBase64
+                  ? await window.mascotDesktop.appendCodexRealtimeText('Create RESULT.txt in the current workspace containing exactly charadock-realtime-native-handoff-ok followed by a newline. Do not create any other files.')
+                  : verifyWorkMode ? true : await window.mascotDesktop.appendCodexRealtimeSpeech('Realtime音声の再生テストです。こんにちは、今日もよろしくね。');
+                if (!appended) finish({ mode: 'device-fallback', bytes: [], trace });
+                else if (!shouldRecord && !verifyWorkMode) finish({ mode: 'webrtc', bytes: [] });
               } catch {
                 finish({ mode: 'device-fallback', bytes: [] });
               }
+            }
+            if (verifyWorkMode && message?.method === 'turn/completed') {
+              finish({ mode: message.params?.turn?.status === 'completed' ? 'webrtc-work' : 'device-fallback', bytes: [], trace });
             }
             if (shouldRecord && message?.method === 'thread/realtime/transcript/done' && message.params?.role === 'assistant') {
               setTimeout(() => {
@@ -4939,6 +4979,7 @@ async function runSmokeTest() {
         peer?.close();
         for (const track of stream?.getTracks?.() || []) track.stop();
         try { oscillator?.stop(); } catch {}
+        try { testAudioSource?.stop(); } catch {}
         if (context) await context.close().catch(() => {});
       }
     })()`);
@@ -4946,6 +4987,18 @@ async function runSmokeTest() {
         fs.mkdirSync(path.dirname(recordRealtimeSamplePath), { recursive: true });
         fs.writeFileSync(recordRealtimeSamplePath, Buffer.from(realtimeMode.bytes));
         console.log(`codex-realtime-sample: ${recordRealtimeSamplePath}`);
+      }
+      if (verifyRealtimeWorkMode) {
+        const expectedFile = realtimeWorkAudioData ? "VOICE.txt" : "RESULT.txt";
+        const expectedOutput = realtimeWorkAudioData ? "voice test passed\n" : "charadock-realtime-native-handoff-ok\n";
+        const resultPath = path.join(realtimeWorkDirectory, expectedFile);
+        const output = fs.existsSync(resultPath) ? fs.readFileSync(resultPath, "utf8") : "";
+        const outputMatches = realtimeWorkAudioData
+          ? /^voice test passed\.?$/i.test(output.trim())
+          : output === expectedOutput;
+        if (realtimeMode.mode !== "webrtc-work" || !outputMatches) {
+          throw new Error(`native realtime Work handoff did not edit the selected workspace: ${JSON.stringify(realtimeMode)}`);
+        }
       }
       console.log(`${verifyRealtimeWorkMode ? "codex-realtime-work" : "codex-realtime"}: ${realtimeMode.mode}`);
     } finally {
@@ -5525,6 +5578,33 @@ function clearCurrentConversationHistory() {
   publishRemoteState();
 }
 
+function publishChatStream(payload = {}) {
+  if (controlWindow && !controlWindow.isDestroyed()) controlWindow.webContents.send("chat:stream", payload);
+  if (mascotWindow && !mascotWindow.isDestroyed()) mascotWindow.webContents.send("mascot:stream", payload);
+  const visible = remotePublicText(payload.displayText || payload.text || payload.message);
+  if (visible && ["announcement", "activity", "delta", "done", "error"].includes(payload.phase)) remoteLastDisplayText = visible;
+  if (payload.phase === "error" || (payload.phase === "done" && !payload.realtimeSpeechPending)) remoteBusy = false;
+  remoteServer?.publish("stream", {
+    phase: String(payload.phase || ""),
+    mode: payload.mode === "work" ? "work" : "chat",
+    text: remotePublicText(payload.text),
+    displayText: remotePublicText(payload.displayText),
+    message: remotePublicText(payload.message, 1000),
+    workRunId: String(payload.workRunId || "").slice(0, 120),
+    realtimeOutput: Boolean(payload.realtimeOutput),
+    realtimeSpeechPending: Boolean(payload.realtimeSpeechPending),
+    deferDisplayToRealtime: Boolean(payload.deferDisplayToRealtime),
+    audioRoute: payload.realtimeOutput
+      ? "live"
+      : ["announcement", "done"].includes(payload.phase) ? "mobile-tts" : "none",
+    artifacts: (Array.isArray(payload.artifacts) ? payload.artifacts : []).slice(0, 8).map((artifact) => ({
+      path: String(artifact?.path || "").slice(0, 1000),
+      name: String(artifact?.name || "").slice(0, 260),
+      kind: artifact?.kind === "directory" ? "directory" : "file",
+    })),
+  });
+}
+
 function currentRealtimeClient() {
   const clients = [activeRealtimeClient, codexClient, workCodexClient].filter(Boolean);
   return clients.find((client, index) => clients.indexOf(client) === index && client.hasActiveRealtime?.()) || null;
@@ -5532,8 +5612,38 @@ function currentRealtimeClient() {
 
 function publishActiveRealtimeTurnSkills() {
   const payload = { selectedSkillIds: [...activeRealtimeTurnSkillIds] };
-  controlWindow?.webContents.send("audio:realtimeTurnSkills", payload);
-  mascotWindow?.webContents.send("audio:realtimeTurnSkills", payload);
+  if (controlWindow && !controlWindow.isDestroyed()) controlWindow.webContents.send("audio:realtimeTurnSkills", payload);
+  if (mascotWindow && !mascotWindow.isDestroyed()) mascotWindow.webContents.send("audio:realtimeTurnSkills", payload);
+}
+
+function realtimeWorkSkillContext(client, selectedSkillIds = []) {
+  const selected = explicitTurnSkillItems(selectedSkillIds);
+  const enabled = mergeTurnSkillItems(activeCharacterSkillItems(), selected);
+  if (!enabled.length) return "";
+  const selectedNames = new Set(selected.map((skill) => skill.name));
+  const lines = enabled.map((skill) => `- ${skill.name}${selectedNames.has(skill.name) ? " (explicitly selected for the next Work request)" : ""}`);
+  return [
+    "CharaDock Skills available to the delegated Codex Work turn are listed below.",
+    "You are the voice surface and cannot read Skill files yourself. Never say a listed Skill is unavailable or unreadable. Delegate the request; CharaDock attaches the actual Skill files to the Codex turn, where they are read and followed.",
+    ...lines,
+  ].join("\n");
+}
+
+function realtimeWorkFrontendContext(client, selectedSkillIds = []) {
+  return [
+    personaInstructions(),
+    [
+      "CharaDock Live Work execution boundary:",
+      "You are only the realtime conversational surface and do not have file, shell, web, or other execution tools.",
+      "For every request that needs an action, file change, research, generation, or verification, request exactly one Codex delegation/handoff and wait for its output.",
+      "Never claim that work started, changed something, or completed unless that delegated Codex turn supplied the corresponding grounded update or result.",
+      "Do not independently answer an execution request while a delegation is running. Treat delegated progress and the final result as authoritative.",
+      "When you decide to delegate, do not invent or speak your own completion or acknowledgement. Handoff immediately; CharaDock will show grounded progress after the Codex turn actually starts.",
+      "Before turn/completed, never use past-tense completion claims such as done, created, saved, updated, ready, できた, 作った, 保存した, or 更新した.",
+      "Use the language required by the character instructions from the first response. When CharaDock injects a short reaction such as a character-click phrase, speak that text verbatim without translating or adding words.",
+    ].join("\n"),
+    realtimeWorkSkillContext(client, selectedSkillIds),
+  ].filter(Boolean).join("\n\n");
 }
 
 function setActiveRealtimeTurnSkills(value) {
@@ -5544,10 +5654,12 @@ function setActiveRealtimeTurnSkills(value) {
   explicitTurnSkillItems(ids);
   activeRealtimeTurnSkillIds = ids;
   publishActiveRealtimeTurnSkills();
+  activeRealtimeWorkDispatcher?.setSkills?.(ids);
   return { selectedSkillIds: [...ids] };
 }
 
 async function stopActiveRealtime() {
+  activeRealtimeWorkDispatcher?.close?.();
   activeRealtimeWorkDispatcher = null;
   activeRealtimeWorkSpeech?.stop();
   activeRealtimeWorkSpeech = null;
@@ -5578,18 +5690,18 @@ async function appendActiveRealtimeText(text, options = {}) {
   if (!client) return false;
   const normalized = normalizedText(text).slice(0, 1000);
   if (preferences.data.interactionMode === "work" && activeRealtimeWorkDispatcher) {
-    const dispatched = Boolean(activeRealtimeWorkDispatcher.dispatch(normalized, "typed", {
+    const dispatched = activeRealtimeWorkDispatcher.dispatchTyped?.(normalized, {
       artifactTarget: options?.artifactTarget || null,
       selectedSkillIds: options?.selectedSkillIds,
-    }));
-    if (dispatched) return true;
+    });
+    if (dispatched) return { accepted: true, delegated: true };
   }
   let appended = false;
   appended = await client.appendRealtimeText(normalized, "user");
   if (appended) {
     activeRealtimeTurnBuffer?.addTyped(normalized);
   }
-  return appended;
+  return appended ? { accepted: true, delegated: false } : false;
 }
 
 function injectedSpeechComparable(value) {
@@ -5724,9 +5836,6 @@ async function startCodexRealtimeVoice(payload, target = "control") {
   const sharedContext = currentSharedContinuityContext(1_000);
   const realtimeMemoryContext = characterMemoryContext(undefined, 4);
   if (workMode && activeWorkRunId) throw new Error("実行中の作業があります。完了を待つか、中断してください。");
-  // LIVE is the audio/transcript frontend. Work itself always runs through the
-  // normal workspace-scoped worker so completion and artifacts are deterministic.
-  const realtimeClient = codexClient;
   const previousRealtimeClient = currentRealtimeClient();
   if (activeRealtimeStarting
     || activeRealtimeTarget
@@ -5738,6 +5847,11 @@ async function startCodexRealtimeVoice(payload, target = "control") {
         ? mainText("PC側でLiveを停止してからスマートフォンで開始してください。", "Stop Live on the PC before starting it on the phone.")
         : mainText("開始中または接続中のLiveを停止してから、もう一度開始してください。", "Stop the Live session that is starting or connected, then try again."));
   }
+  // Realtime V3 can hand a request to a normal Codex turn by itself. Work must
+  // therefore start on the workspace-scoped client so the native handoff
+  // inherits the same cwd, write permission, persona, and dynamic tools as
+  // standard Work instead of editing from the conversation client's cwd.
+  const realtimeClient = workMode ? ensureWorkClient() : codexClient;
   // Live and normal TTS are exclusive audio routes. Stop any speech still
   // draining in either renderer before the WebRTC answer can become audible.
   if (controlWindow && !controlWindow.isDestroyed()) controlWindow.webContents.send("audio:stopNormalSpeech");
@@ -5751,86 +5865,262 @@ async function startCodexRealtimeVoice(payload, target = "control") {
   activeRealtimeTurnBuffer = realtimeTurnBuffer;
   activeRealtimeInjectedSpeech = [];
   activeRealtimeWorkSpeech?.stop();
-  const realtimeWorkSpeech = workMode
-    ? new RealtimeWorkSpeechCoordinator({
-      appendSpeech: (text) => realtimeClient.appendRealtimeSpeech(text),
-    })
-    : null;
-  activeRealtimeWorkSpeech = realtimeWorkSpeech;
+  activeRealtimeWorkSpeech = null;
   const assistantTranscript = { text: "", active: false };
-  let lastDispatchedWorkRequest = { text: "", at: 0, source: "" };
-  let pendingInterruptedRequest = null;
-  let acknowledgementPrepared = false;
-  const prepareRealtimeWork = () => {
-    if (!workMode || acknowledgementPrepared) return false;
-    acknowledgementPrepared = Boolean(realtimeWorkSpeech?.beginAcknowledgement());
-    return acknowledgementPrepared;
+  let pendingNativeWorkRequest = "";
+  let nativeWorkTurn = null;
+  let nativeWorkTrackingClosed = false;
+  let nativeCompletionAwaitingSpeech = null;
+  let nativeCompletionTimer = null;
+  const clearNativeCompletionTimer = () => {
+    clearTimeout(nativeCompletionTimer);
+    nativeCompletionTimer = null;
   };
-  const dispatchRealtimeWork = (request, source = "voice", options = {}) => {
-    const normalized = String(request || "").trim();
-    if (!workMode || !normalized || isSocialConversationTurn(normalized)) return false;
-    const now = Date.now();
-    if (source === "voice"
-      && lastDispatchedWorkRequest.source === "typed"
-      && normalized === lastDispatchedWorkRequest.text
-      && now - lastDispatchedWorkRequest.at < 15_000) return true;
-    if (source === "voice" && !options.acknowledgementPrepared) prepareRealtimeWork();
-    const requestedSkillIds = Array.isArray(options.selectedSkillIds)
-      ? normalizeTurnSkillIds(options.selectedSkillIds)
-      : [...activeRealtimeTurnSkillIds];
-    if (requestedSkillIds.length) explicitTurnSkillItems(requestedSkillIds);
-    activeRealtimeTurnSkillIds = [];
-    publishActiveRealtimeTurnSkills();
-    if (activeWorkRunId) {
-      pendingInterruptedRequest = { text: normalized, source, artifactTarget: options.artifactTarget || null, selectedSkillIds: requestedSkillIds };
-      realtimeWorkSpeech?.cancelQueued();
-      interruptActiveWork().catch((error) => {
-        pendingInterruptedRequest = null;
-        realtimeWorkSpeech?.cancelAcknowledgement();
-        const message = String(error?.message || error);
-        mascotWindow?.webContents.send("mascot:stream", { phase: "error", message });
-      });
-      return true;
-    }
-    acknowledgementPrepared = false;
-    lastDispatchedWorkRequest = { text: normalized, at: now, source };
-    queueMicrotask(() => {
-      sendChatMessage(normalized, {
-        realtimeOutput: true,
-        workAcknowledged: source === "voice",
-        artifactTarget: options.artifactTarget || null,
-        forceWork: Boolean(options.artifactTarget),
-        selectedSkillIds: requestedSkillIds,
-      })
-        .catch((error) => {
-          if (activeRealtimeWorkDispatcher === realtimeWorkDispatcher && !activeRealtimeTurnSkillIds.length) {
-            activeRealtimeTurnSkillIds = requestedSkillIds;
-            publishActiveRealtimeTurnSkills();
-          }
-          diagnosticLog?.write("warn", "realtime-work-failed", String(error?.message || error));
-        })
-        .finally(() => {
-          const pending = pendingInterruptedRequest;
-          pendingInterruptedRequest = null;
-          if (pending && activeRealtimeWorkDispatcher === realtimeWorkDispatcher) {
-            dispatchRealtimeWork(pending.text, pending.source, { acknowledgementPrepared: true, artifactTarget: pending.artifactTarget, selectedSkillIds: pending.selectedSkillIds });
-          }
-        });
+  const finishNativeRealtimeWork = () => {
+    if (!nativeCompletionAwaitingSpeech) return;
+    const completed = nativeCompletionAwaitingSpeech;
+    nativeCompletionAwaitingSpeech = null;
+    clearNativeCompletionTimer();
+    publishChatStream({
+      phase: "realtime-work-complete",
+      mode: "work",
+      realtimeOutput: true,
+      workRunId: completed.workRunId,
     });
-    diagnosticLog?.write("info", "realtime-work-dispatched", { source, length: normalized.length });
+    remoteBusy = false;
+    publishRemoteState();
+  };
+  const noteNativeWorkRequest = async (request, _source = "voice", options = {}) => {
+    const normalized = String(request || "").trim();
+    if (!workMode || !normalized) return false;
+    if (!isSocialConversationTurn(normalized)) {
+      pendingNativeWorkRequest = normalized;
+      if (nativeWorkTurn?.run && ["Liveで依頼された作業", "Work requested in Live"].includes(nativeWorkTurn.run.request)) {
+        updateNativeWorkRequest(nativeWorkTurn, normalized);
+      }
+    }
+    if (Array.isArray(options.selectedSkillIds)) {
+      const ids = normalizeTurnSkillIds(options.selectedSkillIds);
+      explicitTurnSkillItems(ids);
+      activeRealtimeTurnSkillIds = ids;
+      publishActiveRealtimeTurnSkills();
+      const skillContext = realtimeWorkSkillContext(realtimeClient, ids);
+      if (skillContext) await realtimeClient.appendRealtimeText(skillContext, "developer");
+    }
     return true;
   };
+  const ensureNativeWorkTurn = (turnId = "") => {
+    if (!workMode || nativeWorkTrackingClosed) return null;
+    if (nativeWorkTurn?.turnId === turnId && nativeWorkTurn.run) return nativeWorkTurn;
+    const request = pendingNativeWorkRequest || mainText("Liveで依頼された作業", "Work requested in Live");
+    pendingNativeWorkRequest = "";
+    const run = beginWorkRun(request);
+    const skillItems = mergeTurnSkillItems(activeCharacterSkillItems(), explicitTurnSkillItems(activeRealtimeTurnSkillIds));
+    nativeWorkTurn = {
+      turnId,
+      run,
+      finalText: "",
+      itemPhases: new Map(),
+      artifactCandidates: [],
+      skillItems,
+      skillSteerText: "",
+    };
+    publishChatStream({
+      phase: "start",
+      character: activeCharacter().name,
+      mode: "work",
+      ttsEnabled: false,
+      realtimeOutput: true,
+      workRunId: run.id,
+    });
+    if (activeRealtimeTurnSkillIds.length) {
+      activeRealtimeTurnSkillIds = [];
+      publishActiveRealtimeTurnSkills();
+      const clearedSkillContext = realtimeWorkSkillContext(realtimeClient, []);
+      if (clearedSkillContext) queueMicrotask(() => realtimeClient.appendRealtimeText(clearedSkillContext, "developer").catch(() => false));
+    }
+    return nativeWorkTurn;
+  };
+  const updateNativeWorkRequest = (state, request) => {
+    const normalized = realtimeDelegationInput(request);
+    if (!state?.run || !normalized || normalized === state.run.request) return;
+    state.run.request = normalized.slice(0, 12_000);
+    persistWorkHistory();
+    broadcastWorkHistory();
+  };
+  const nativeItemUserText = (item) => (Array.isArray(item?.content) ? item.content : [])
+    .filter((part) => part?.type === "text")
+    .map((part) => String(part.text || ""))
+    .join("\n")
+    .trim();
+  const completeNativeWorkTurn = (message) => {
+    const turn = message?.params?.turn || {};
+    const turnId = String(turn.id || message?.params?.turnId || nativeWorkTurn?.turnId || "");
+    const state = nativeWorkTurn?.turnId === turnId ? nativeWorkTurn : ensureNativeWorkTurn(turnId);
+    if (!state?.run) return;
+    const status = String(turn.status || "completed");
+    if (status !== "completed") {
+      const interrupted = status === "interrupted";
+      const resultText = interrupted
+        ? mainText("ユーザーが作業を中断しました。", "The user stopped the work.")
+        : String(turn.error?.message || mainText("作業を完了できませんでした。", "The work could not be completed."));
+      updateWorkRun(state.run, { status: interrupted ? "interrupted" : "failed", result: resultText, finished: true });
+      publishChatStream({ phase: "error", mode: "work", message: resultText, realtimeOutput: true, workRunId: state.run.id });
+      nativeWorkTurn = null;
+      return;
+    }
+    const resultText = cleanAssistantText(state.finalText).trim();
+    const artifacts = discoverWorkArtifacts(validWorkDirectory(), {
+      eventCandidates: state.artifactCandidates,
+      resultText,
+      runtimeDirectory: realtimeClient.cwd,
+    });
+    const displayText = workCompletionDisplayText(resultText)
+      || mainText("作業が完了したよ。", "The work is complete.");
+    updateWorkRun(state.run, { status: "completed", result: resultText || displayText, artifacts, finished: true });
+    publishChatStream({
+      phase: "done",
+      mode: "work",
+      text: resultText || displayText,
+      displayText,
+      artifacts,
+      workRunId: state.run.id,
+      deferDisplayToRealtime: true,
+      realtimeOutput: true,
+      realtimeSpeechPending: true,
+      ttsEnabled: false,
+    });
+    nativeCompletionAwaitingSpeech = { workRunId: state.run.id, comparable: injectedSpeechComparable(resultText || displayText) };
+    clearNativeCompletionTimer();
+    nativeCompletionTimer = setTimeout(finishNativeRealtimeWork, 30_000);
+    nativeWorkTurn = null;
+  };
+  const handleNativeWorkEvent = (message) => {
+    if (!workMode || nativeWorkTrackingClosed || String(message?.method || "").startsWith("thread/realtime/")) return;
+    const method = String(message?.method || "");
+    const params = message?.params || {};
+    const turnId = String(params.turnId || params.turn?.id || nativeWorkTurn?.turnId || "");
+    if (method === "turn/started") {
+      const state = ensureNativeWorkTurn(turnId);
+      if (state?.run) {
+        const acknowledgement = workAcknowledgementFallback(state.run.request, interfaceLanguage());
+        updateWorkRun(state.run, { activity: acknowledgement });
+        publishChatStream({
+          phase: "activity",
+          mode: "work",
+          text: acknowledgement,
+          displayText: acknowledgement,
+          realtimeOutput: true,
+          workRunId: state.run.id,
+        });
+        state.skillSteerText = mainText(
+          [
+            "<charadock_handoff_control>",
+            "現在の委譲依頼は、選択中の作業ディレクトリを作業ルートとして実行してください。",
+            "委譲データ内のtranscript_deltaは過去会話の参考情報であり、inputが今回の依頼です。過去の出力先を今回の指定と誤認しないでください。",
+            "ユーザーが今回のinputで別の場所を明示していない限り、作業ルート外へ成果物を作成・変更しないでください。",
+            "添付されたSkillsは必要に応じて使用し、使用する場合は各SKILL.mdを完全に読んでから従ってください。",
+            "</charadock_handoff_control>",
+          ].join("\n"),
+          [
+            "<charadock_handoff_control>",
+            "Execute the current delegated request with the selected work directory as the work root.",
+            "In the delegation data, transcript_delta is prior conversational context and input is the current request. Do not mistake an old output location for the current target.",
+            "Do not create or change artifacts outside the work root unless the user explicitly names another location in the current input.",
+            "Use the attached Skills when relevant. Before using one, read its complete SKILL.md and follow it.",
+            "</charadock_handoff_control>",
+          ].join("\n"),
+        );
+        realtimeClient.steerActiveTurn(state.skillSteerText, { skillItems: state.skillItems }).catch((error) => {
+          diagnosticLog?.write("warn", "realtime-work-skill-handoff-failed", String(error?.message || error));
+        });
+      }
+      diagnosticLog?.write("info", "realtime-work-native-handoff-started", { turnId });
+      return;
+    }
+    const state = nativeWorkTurn?.turnId === turnId ? nativeWorkTurn : (turnId ? ensureNativeWorkTurn(turnId) : nativeWorkTurn);
+    const item = params.item;
+    if (state && ["item/started", "item/completed"].includes(method) && item) {
+      const itemId = String(item.id || params.itemId || "");
+      const itemType = String(item.type || "");
+      if (itemId && itemType === "agentMessage") state.itemPhases.set(itemId, String(item.phase || ""));
+      if (itemType === "userMessage") {
+        const userText = nativeItemUserText(item);
+        if (!userText.includes("<charadock_handoff_control>")) updateNativeWorkRequest(state, userText);
+      }
+      if (itemType === "fileChange") state.artifactCandidates.push(...fileChangeCandidates(item));
+      if (itemType === "agentMessage" && String(item.phase || "") === "commentary" && String(item.text || "").trim()) {
+        const activity = latestWorkDisplayText(item.text, 160);
+        updateWorkRun(state.run, { activity });
+        publishChatStream({ phase: "activity", mode: "work", text: activity, displayText: activity, realtimeOutput: true, workRunId: state.run.id });
+      }
+      if (method === "item/completed" && itemType === "agentMessage" && String(item.phase || "") !== "commentary" && String(item.text || "").trim()) {
+        state.finalText = String(item.text);
+      }
+      const activity = itemType === "commandExecution" ? mainText("コマンドを実行中…", "Running a command…")
+        : itemType === "fileChange" ? mainText("ファイルを更新中…", "Updating files…")
+          : itemType === "webSearch" ? mainText("情報を確認中…", "Checking information…") : "";
+      if (method === "item/started" && activity) {
+        updateWorkRun(state.run, { activity });
+        publishChatStream({ phase: "activity", mode: "work", text: activity, displayText: activity, realtimeOutput: true, workRunId: state.run.id });
+      }
+    }
+    if (state && method === "item/agentMessage/delta") {
+      const itemId = String(params.itemId || "");
+      if (state.itemPhases.get(itemId) !== "commentary") state.finalText += String(params.delta || "");
+    }
+    if (method === "turn/completed") completeNativeWorkTurn(message);
+  };
   const realtimeWorkDispatcher = {
-    prepare(request) {
+    noteRequest: noteNativeWorkRequest,
+    dispatchTyped(request, options = {}) {
       const normalized = String(request || "").trim();
-      if (!workMode || !normalized || activeWorkRunId) return false;
-      return prepareRealtimeWork();
+      if (!workMode || !normalized || (isSocialConversationTurn(normalized) && !options.artifactTarget)) return false;
+      const requestedSkillIds = Array.isArray(options.selectedSkillIds)
+        ? normalizeTurnSkillIds(options.selectedSkillIds)
+        : [...activeRealtimeTurnSkillIds];
+      const skillItems = mergeTurnSkillItems(activeCharacterSkillItems(), explicitTurnSkillItems(requestedSkillIds));
+      noteNativeWorkRequest(normalized, "typed", options);
+      const operation = realtimeClient.hasActiveTurn?.()
+        ? realtimeClient.steerActiveTurn(normalized, { skillItems })
+        : realtimeClient.sendMessage(normalized, { skillItems });
+      Promise.resolve(operation).catch((error) => {
+        diagnosticLog?.write("warn", "realtime-work-typed-handoff-failed", String(error?.message || error));
+        if (!nativeWorkTurn && !nativeCompletionAwaitingSpeech) {
+          publishChatStream({
+            phase: "error",
+            mode: "work",
+            message: mainText("Live Workを開始できませんでした。もう一度送ってください。", "Live Work could not start. Please send it again."),
+            realtimeOutput: true,
+          });
+        }
+      });
+      diagnosticLog?.write("info", "realtime-work-typed-handoff", {
+        mode: realtimeClient.hasActiveTurn?.() ? "steer" : "turn",
+        length: normalized.length,
+      });
+      return true;
     },
-    cancelPreparation() {
-      acknowledgementPrepared = false;
-      realtimeWorkSpeech?.cancelAcknowledgement();
+    setSkills(ids) {
+      const skillContext = realtimeWorkSkillContext(realtimeClient, ids);
+      if (!skillContext) return;
+      realtimeClient.appendRealtimeText(skillContext, "developer").catch((error) => {
+        diagnosticLog?.write("warn", "realtime-work-skill-context-failed", String(error?.message || error));
+      });
     },
-    dispatch: dispatchRealtimeWork,
+    close() {
+      if (nativeCompletionAwaitingSpeech) finishNativeRealtimeWork();
+      nativeWorkTrackingClosed = true;
+      clearNativeCompletionTimer();
+      if (nativeWorkTurn?.run?.status === "running") {
+        updateWorkRun(nativeWorkTurn.run, {
+          status: "interrupted",
+          result: mainText("Live接続が終了したため作業を中断しました。", "Work stopped because the Live session ended."),
+          finished: true,
+        });
+      }
+      nativeWorkTurn = null;
+    },
   };
   activeRealtimeWorkDispatcher = workMode ? realtimeWorkDispatcher : null;
   publishActiveRealtimeTurnSkills();
@@ -5838,14 +6128,24 @@ async function startCodexRealtimeVoice(payload, target = "control") {
     const result = await realtimeClient.startRealtime({
       sdp,
       voice: characterTtsSettings().realtimeVoice,
+      // Work deliberately omits `prompt`: app-server then supplies its built-in
+      // Realtime V3 prompt, which owns the decision to converse or delegate a
+      // real task. The Work thread's developer instructions, persona, cwd,
+      // permissions, memories, and startup context remain available to it.
       prompt: workMode
-        ? [personaInstructions(), mainText(
-          "あなたはWorkの音声フロントです。挨拶、感謝、謝罪、短い相槌だけなら、作業を始めるとは言わず自然な会話として短く返してください。実際の依頼なら内容に合わせ、30文字前後の自然な一文だけで着手を確認してください。言い換えや補足を重ねないでください。作業の実行、委譲、推測での完了報告はしないでください。進捗と検証済みの完了結果はアプリから別途与えられます。その場合は語句を足したり言い換えたりせず、与えられた一文をそのまま読み上げてください。",
-          "You are the voice frontend for Work. If the user only greets, thanks, apologizes, or gives a brief acknowledgement, reply naturally and never imply that work is starting. For an actual request, acknowledge its specific content in exactly one natural sentence of roughly 12 words. Do not add a paraphrase or follow-up sentence. Do not execute or delegate the task, and never infer or claim completion. The app will separately provide progress and the verified final result. When it does, repeat that single sentence verbatim without adding or rephrasing any words.",
-        ), realtimeMemoryContext, sharedContext].filter(Boolean).join("\n\n")
+        ? undefined
         : [personaInstructions(), mainText("日本語の自然な短い音声会話として応答してください。", "Respond as a natural, concise spoken conversation in English."), realtimeMemoryContext, sharedContext].filter(Boolean).join("\n\n"),
-      clientManagedHandoffs: workMode,
+      clientManagedHandoffs: false,
+      codexResponseHandoffMode: workMode ? "thinking" : "bemTags",
       delegationAckFiller: workMode ? false : undefined,
+      // The Work thread retains executor instructions, cwd, permissions, and
+      // tools for the delegated Codex turn. Do not also expose that executor
+      // startup context to the voice model: it has no file tools and may
+      // otherwise claim it performed work instead of requesting a handoff.
+      includeStartupContext: !workMode,
+      initialItems: workMode
+        ? [{ role: "developer", text: realtimeWorkFrontendContext(realtimeClient, initialTurnSkillIds) }]
+        : [],
       onEvent: (message) => {
         let forwarded = message;
         if (message?.method === "thread/realtime/error") {
@@ -5865,6 +6165,7 @@ async function startCodexRealtimeVoice(payload, target = "control") {
         if (target === "remote") remoteServer?.publish("live", forwarded);
       const method = String(message?.method || "");
       const params = message?.params || {};
+      handleNativeWorkEvent(message);
       if (method === "thread/realtime/started" && target === "remote") {
         const remoteTokenHash = String(payload?.remoteTokenHash || "");
         const startupGreeting = pendingRemoteLiveGreetings.get(remoteTokenHash);
@@ -5933,8 +6234,12 @@ async function startCodexRealtimeVoice(payload, target = "control") {
             final: true,
           });
           if (!workMode) remoteBusy = false;
-          const coordinatedSpeech = realtimeWorkSpeech?.assistantTranscriptDone(assistantTranscript.text) || null;
-          const injectedSpeech = coordinatedSpeech || consumeRealtimeInjectedAssistant(assistantTranscript.text);
+          const injectedSpeech = consumeRealtimeInjectedAssistant(assistantTranscript.text);
+          if (workMode && nativeCompletionAwaitingSpeech) {
+            const spoken = injectedSpeechComparable(assistantTranscript.text);
+            const expected = nativeCompletionAwaitingSpeech.comparable;
+            if (!expected || !spoken || expected.includes(spoken) || spoken.includes(expected)) finishNativeRealtimeWork();
+          }
           if (!workMode) {
             mascotWindow?.webContents.send("mascot:stream", {
               phase: "done",
@@ -5964,15 +6269,19 @@ async function startCodexRealtimeVoice(payload, target = "control") {
           if (completedTurn) rememberConversationTurn(completedTurn.user, completedTurn.assistant);
         }
         if (workMode && request) {
-          dispatchRealtimeWork(request, "voice");
+          noteNativeWorkRequest(request, "voice").catch((error) => {
+            diagnosticLog?.write("warn", "realtime-work-request-context-failed", String(error?.message || error));
+          });
         }
       }
       if (["thread/realtime/error", "thread/realtime/closed"].includes(method)) {
         if (assistantTranscript.active && !workMode) mascotWindow?.webContents.send("mascot:stream", { phase: "done", text: assistantTranscript.text });
         assistantTranscript.active = false;
-        if (activeRealtimeWorkDispatcher === realtimeWorkDispatcher) activeRealtimeWorkDispatcher = null;
-        if (activeRealtimeWorkSpeech === realtimeWorkSpeech) activeRealtimeWorkSpeech = null;
-        realtimeWorkSpeech?.stop();
+        if (activeRealtimeWorkDispatcher === realtimeWorkDispatcher) {
+          realtimeWorkDispatcher.close();
+          activeRealtimeWorkDispatcher = null;
+        }
+        activeRealtimeWorkSpeech = null;
         stopBeatriceHost();
         if (activeRealtimeClient === realtimeClient) {
           activeRealtimeClient = null;
@@ -5998,9 +6307,11 @@ async function startCodexRealtimeVoice(payload, target = "control") {
     if (activeRealtimeClient === realtimeClient) activeRealtimeStarting = false;
     return result;
   } catch (error) {
-    if (activeRealtimeWorkDispatcher === realtimeWorkDispatcher) activeRealtimeWorkDispatcher = null;
-    if (activeRealtimeWorkSpeech === realtimeWorkSpeech) activeRealtimeWorkSpeech = null;
-    realtimeWorkSpeech?.stop();
+    if (activeRealtimeWorkDispatcher === realtimeWorkDispatcher) {
+      realtimeWorkDispatcher.close();
+      activeRealtimeWorkDispatcher = null;
+    }
+    activeRealtimeWorkSpeech = null;
     if (activeRealtimeClient === realtimeClient) {
       activeRealtimeClient = null;
       activeRealtimeTarget = "";
@@ -8624,32 +8935,7 @@ async function sendChatMessage(message, {
     workRunId: workRun?.id || "",
   });
   localServer.pushInput({ ...currentCursorInput(), ...messageExpression(requestText) });
-  const sendStream = (payload) => {
-    controlWindow?.webContents.send("chat:stream", payload);
-    mascotWindow?.webContents.send("mascot:stream", payload);
-    const visible = remotePublicText(payload.displayText || payload.text || payload.message);
-    if (visible && ["announcement", "activity", "delta", "done", "error"].includes(payload.phase)) remoteLastDisplayText = visible;
-    if (["done", "error"].includes(payload.phase)) remoteBusy = false;
-    remoteServer?.publish("stream", {
-      phase: String(payload.phase || ""),
-      mode: payload.mode === "work" ? "work" : "chat",
-      text: remotePublicText(payload.text),
-      displayText: remotePublicText(payload.displayText),
-      message: remotePublicText(payload.message, 1000),
-      workRunId: String(payload.workRunId || "").slice(0, 120),
-      realtimeOutput: Boolean(payload.realtimeOutput),
-      realtimeSpeechPending: Boolean(payload.realtimeSpeechPending),
-      deferDisplayToRealtime: Boolean(payload.deferDisplayToRealtime),
-      audioRoute: payload.realtimeOutput
-        ? "live"
-        : ["announcement", "done"].includes(payload.phase) ? "mobile-tts" : "none",
-      artifacts: (Array.isArray(payload.artifacts) ? payload.artifacts : []).slice(0, 8).map((artifact) => ({
-        path: String(artifact?.path || "").slice(0, 1000),
-        name: String(artifact?.name || "").slice(0, 260),
-        kind: artifact?.kind === "directory" ? "directory" : "file",
-      })),
-    });
-  };
+  const sendStream = publishChatStream;
   const activeTtsProvider = characterTtsSettings().provider;
   const speechSegmenter = new StreamingTextSegmenter({
     maxLength: activeTtsProvider === "irodori-webgpu" ? IRODORI_CHUNK_LENGTH + IRODORI_CHUNK_OVERFLOW : 64,
@@ -9202,7 +9488,14 @@ async function boot() {
   repairCharacterWorkspaceSelection(initialCharacter);
   preferences.patch({ workDirectory: selectedWorkspaceDirectory(initialCharacter) });
   conversationHistory = conversationHistoryForCharacter(preferences.data.characterId);
-  workHistory = Array.isArray(preferences.data.workHistory) ? preferences.data.workHistory.map((run) => ({ ...run, activities: [...(run.activities || [])] })) : [];
+  workHistory = Array.isArray(preferences.data.workHistory) ? preferences.data.workHistory.map((run) => ({
+    ...run,
+    request: realtimeDelegationHistoryText(
+      run?.request,
+      mainText("Liveで依頼された作業", "Work requested in Live"),
+    ),
+    activities: [...(run.activities || [])],
+  })) : [];
   for (const run of workHistory) recordContinuationForWorkRun(run);
   registerArtifactPreviewProtocol();
   persistWorkHistory();

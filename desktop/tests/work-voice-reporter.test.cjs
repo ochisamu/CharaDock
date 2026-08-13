@@ -56,6 +56,7 @@ test("work acknowledgements are content-aware", () => {
   assert.notEqual(nagoya, osaka);
   assert.equal(workAcknowledgementFallback("これって何？"), "内容を確認して答えるね。");
   assert.doesNotMatch(workAcknowledgementFallback("ありがとう"), /取りかか/);
+  assert.equal(workAcknowledgementFallback("ニュースをマークダウンにしといて"), "ニュースをマークダウンにしておくね。");
 });
 
 test("work announcements never speak links, paths, or code fences", () => {

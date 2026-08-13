@@ -474,10 +474,13 @@ class CodexAppServerClient {
 
   async startRealtime({
     sdp,
-    prompt = "",
+    prompt,
     voice = "",
     clientManagedHandoffs = false,
+    codexResponseHandoffMode = "bemTags",
     delegationAckFiller,
+    includeStartupContext = true,
+    initialItems = [],
     onEvent,
   } = {}) {
     if (!String(sdp || "").startsWith("v=0")) throw new Error("WebRTCの音声接続情報が正しくありません。");
@@ -501,13 +504,22 @@ class CodexAppServerClient {
         threadId,
         outputModality: "audio",
         version: "v3",
-        codexResponseHandoffMode: "bemTags",
-        prompt: String(prompt || "").slice(0, 4000),
-        includeStartupContext: true,
+        codexResponseHandoffMode: codexResponseHandoffMode === "thinking" ? "thinking" : "bemTags",
+        includeStartupContext: includeStartupContext !== false,
         clientManagedHandoffs: Boolean(clientManagedHandoffs),
         flushTranscriptTailOnSessionEnd: true,
         transport: { type: "webrtc", sdp: String(sdp) },
       };
+      // Omission and an empty value have intentionally different meanings in
+      // app-server. Omit the field to retain Codex's built-in Realtime prompt
+      // (including native delegation); an explicit value replaces it.
+      if (prompt !== undefined) params.prompt = prompt === null ? null : String(prompt).slice(0, 4000);
+      const normalizedInitialItems = (Array.isArray(initialItems) ? initialItems : []).slice(0, 8).flatMap((item) => {
+        const role = ["user", "developer", "assistant"].includes(item?.role) ? item.role : "";
+        const text = String(item?.text || "").trim().slice(0, 12_000);
+        return role && text ? [{ role, text }] : [];
+      });
+      if (normalizedInitialItems.length) params.initialItems = normalizedInitialItems;
       if (typeof delegationAckFiller === "boolean") params.delegationAckFiller = delegationAckFiller;
       if (voice) params.voice = String(voice);
       await Promise.race([this.request("thread/realtime/start", params, 60_000), startupFailure]);
@@ -547,6 +559,22 @@ class CodexAppServerClient {
     const normalizedRole = ["user", "developer", "assistant"].includes(role) ? role : "user";
     if (!normalized || !threadId || !this.realtimeHandlers.has(threadId)) return false;
     await this.request("thread/realtime/appendText", { threadId, text: normalized, role: normalizedRole }, 30_000);
+    return true;
+  }
+
+  async steerActiveTurn(message, { skillItems = null } = {}) {
+    const threadId = this.threadId;
+    const turnId = this.activeTurnId;
+    const normalized = String(message || "").trim();
+    if (!threadId || !turnId || !normalized) return false;
+    const input = [{ type: "text", text: normalized }];
+    const turnSkills = Array.isArray(skillItems) ? skillItems : [];
+    for (const skill of turnSkills) {
+      if (skill && typeof skill === "object" && String(skill.name || "").trim()) {
+        input.push({ type: "skill", name: String(skill.name), path: String(this.pathMapper(skill.path || "")) });
+      }
+    }
+    await this.request("turn/steer", { threadId, expectedTurnId: turnId, input }, 30_000);
     return true;
   }
 

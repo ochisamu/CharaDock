@@ -3354,6 +3354,10 @@
           setStatus($("#chatStatus"), "Codex Realtimeから応答しました。");
         }
         realtimeAssistantActive = false;
+        if (state?.interactionMode === "work" && streamingMessage && !streamingMessage.dataset.workRunId) {
+          streamingMessage.classList.remove("is-thinking");
+          finishDetachedRealtimeWork();
+        }
       }
       return;
     }
@@ -3651,8 +3655,9 @@
       realtimePendingTypedText = message;
       setStatus($("#chatStatus"), "Live音声で応答を生成しています…");
       try {
-        const appended = await api.appendCodexRealtimeText(message, selectedSkillIds);
-        if (!appended) throw new Error("Liveセッションへ文字を送信できませんでした。");
+        const route = await api.appendCodexRealtimeText(message, selectedSkillIds);
+        const accepted = typeof route === "object" ? Boolean(route?.accepted) : Boolean(route);
+        if (!accepted) throw new Error("Liveセッションへ文字を送信できませんでした。");
       } catch (error) {
         realtimePendingTypedText = "";
         if (liveWork && streamingMessage) {
@@ -3755,7 +3760,7 @@
       }
       if (payload?.phase === "done") {
         streamingMessage.classList.remove("is-thinking");
-        paragraph.textContent = String(payload.displayText || payload.text || "");
+        if (!payload?.deferDisplayToRealtime) paragraph.textContent = String(payload.displayText || payload.text || "");
         appendWorkArtifactActions(streamingMessage, payload.artifacts, payload.workRunId);
         if (payload?.realtimeOutput && !payload?.realtimeSpeechPending) finishDetachedRealtimeWork(payload?.workRunId);
       }

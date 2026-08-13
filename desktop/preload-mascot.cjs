@@ -207,6 +207,7 @@ window.addEventListener("DOMContentLoaded", () => {
   let lastStreamPulseAt = 0;
   let workActivityTimer;
   let workActivityElapsedTimer;
+  let artifactActionTimer;
   let workActivityStartedAt = 0;
   let workActivityMessage = "";
   let streamWorkMode = false;
@@ -297,6 +298,17 @@ window.addEventListener("DOMContentLoaded", () => {
       });
       container.appendChild(button);
     }
+  };
+  const clearBubbleArtifactActions = () => {
+    clearTimeout(artifactActionTimer);
+    artifactActionTimer = null;
+    renderArtifactActions(artifactActions, [], "");
+  };
+  const scheduleBubbleArtifactActionsClear = () => {
+    clearTimeout(artifactActionTimer);
+    artifactActionTimer = artifactActions.hidden
+      ? null
+      : setTimeout(clearBubbleArtifactActions, 20_000);
   };
   const renderWorkHistory = (payload = workHistoryState) => {
     historyTitle.textContent = "Work履歴";
@@ -1284,7 +1296,7 @@ window.addEventListener("DOMContentLoaded", () => {
   const speakSystemText = (text, language, expression, spokenText) => playStandaloneSpeech(text, "system", language, expression, spokenText);
   const showSpeech = (payload) => {
     clearPermission();
-    renderArtifactActions(artifactActions, [], "");
+    clearBubbleArtifactActions();
     clearTimeout(hideTimer);
     streamFullText = "";
     streamCurrentSpeechText = "";
@@ -1419,9 +1431,10 @@ window.addEventListener("DOMContentLoaded", () => {
     setStatus(useActiveRealtime ? "Live音声で応答を生成…" : appState?.interactionMode === "work" ? "作業を開始…" : "考え中…", 30_000);
     try {
       if (useActiveRealtime) {
-        const appended = await ipcRenderer.invoke("mascotInline:realtimeAppendText", { text: message, selectedSkillIds });
-        if (!appended) throw new Error("Liveセッションへ文字を送信できませんでした。");
-        streamOwnsBusyState = appState?.interactionMode === "work";
+        const route = await ipcRenderer.invoke("mascotInline:realtimeAppendText", { text: message, selectedSkillIds });
+        const accepted = typeof route === "object" ? Boolean(route?.accepted) : Boolean(route);
+        if (!accepted) throw new Error("Liveセッションへ文字を送信できませんでした。");
+        streamOwnsBusyState = appState?.interactionMode === "work" && Boolean(route?.delegated);
         detachedRealtimeWorkBusy = streamOwnsBusyState;
         setStatus("Liveへ文字を送信しました", 5000);
         return;
@@ -1491,6 +1504,7 @@ window.addEventListener("DOMContentLoaded", () => {
       ? uiText("添付したファイルを確認してください。", "Please review the attached files.")
       : "");
     if (!message) return;
+    clearBubbleArtifactActions();
     if (realtimeSessionState === "connecting") {
       setStatus("Liveへの接続が完了してから送信してください", 5000);
       return;
@@ -2373,7 +2387,7 @@ window.addEventListener("DOMContentLoaded", () => {
   ipcRenderer.on("mascot:stream", (_event, payload) => {
     if (payload?.phase === "start") {
       clearPermission();
-      renderArtifactActions(artifactActions, [], "");
+      clearBubbleArtifactActions();
       stopTtsPlayback();
       bubblePersistent = true;
       streamFullText = "";
@@ -2458,6 +2472,12 @@ window.addEventListener("DOMContentLoaded", () => {
     }
     if (payload?.phase === "realtime-work-complete") {
       finishDetachedRealtimeWork(payload?.workRunId);
+      if (streamFullText && !bubble.classList.contains("is-expanded")) {
+        bubbleText.textContent = normalizeDisplayText(streamFullText);
+        syncBubbleOverflow();
+      }
+      setWorkActivity("");
+      setStatus(appState?.language === "en" ? "Work complete" : "作業が完了しました", 5000);
       return;
     }
     if (payload?.phase === "done") {
@@ -2473,6 +2493,7 @@ window.addEventListener("DOMContentLoaded", () => {
       bubblePersistent = true;
       queueStreamSpeech(payload?.speechSegments);
       renderArtifactActions(artifactActions, payload?.artifacts, payload?.workRunId);
+      scheduleBubbleArtifactActionsClear();
       if (!streamTtsConfig.enabled || (!streamTtsDraining && !streamTtsQueue.length)) {
         streamCurrentSpeechText = "";
         if (!payload?.deferDisplayToRealtime && !bubble.classList.contains("is-expanded") && streamFullText) bubbleText.textContent = normalizeDisplayText(streamFullText);
@@ -2528,6 +2549,13 @@ window.addEventListener("DOMContentLoaded", () => {
       bubblePersistent = true;
       bubble.classList.add("is-visible");
       setWorkActivity(appState?.language === "en" ? "Thinking" : "考えています", { trackElapsed: true });
+      return;
+    }
+    if (method === "thread/realtime/transcript/done" && params.role === "assistant") {
+      if (!detachedRealtimeWorkBusy) {
+        setWorkActivity("");
+        setStatus(appState?.language === "en" ? "Listening…" : "話してください…", 30_000);
+      }
       return;
     }
     if (method === "thread/realtime/error") {

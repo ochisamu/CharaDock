@@ -297,7 +297,9 @@ test("chat composers select per-turn Skills from plus, slash, and at shortcuts",
   assert.match(main, /function explicitTurnSkillItems\(value\)/);
   assert.match(main, /skillItems: turnSkillItems/);
   assert.match(main, /function setActiveRealtimeTurnSkills\(value\)/);
-  assert.match(main, /selectedSkillIds: requestedSkillIds/);
+  assert.match(main, /function realtimeWorkSkillContext\(client, selectedSkillIds/);
+  assert.match(main, /function realtimeWorkFrontendContext\(client, selectedSkillIds/);
+  assert.match(main, /initialItems: workMode[\s\S]*realtimeWorkFrontendContext/);
   assert.match(main, /activeRealtimeTurnSkillIds = \[\]/);
   assert.match(control, /appendCodexRealtimeText\(message, selectedSkillIds\)/);
   assert.match(mascot, /mascotInline:realtimeTurnSkills/);
@@ -370,6 +372,8 @@ test("Work voice reports contextual milestones and keeps artifact buttons out of
   assert.match(mascot, /!payload\?\.deferDisplayToRealtime/);
   assert.match(mascot, /if \(payload\?\.realtimeOutput\) \{\s*if \(!payload\?\.realtimeSpeechPending\) finishDetachedRealtimeWork/);
   assert.match(mascot, /renderArtifactActions\(artifactActions, payload\?\.artifacts, payload\?\.workRunId\)/);
+  assert.match(mascot, /setTimeout\(clearBubbleArtifactActions, 20_000\)/);
+  assert.match(mascot, /phase === "realtime-work-complete"[\s\S]*setWorkActivity\(""\)/);
   assert.doesNotMatch(mascot, /renderArtifactActions[\s\S]{0,300}queueStreamSpeech\(payload\?\.artifacts/);
 });
 
