@@ -8,6 +8,7 @@ const OPENAI_SKILLS_REPOSITORY = "openai/skills";
 const OPENAI_CURATED_PATH = "skills/.curated";
 const ANTHROPIC_SKILLS_REPOSITORY = "anthropics/skills";
 const ANTHROPIC_SKILLS_PATH = "skills";
+const RESTRICTED_ANTHROPIC_SKILLS = new Set(["docx", "pdf", "pptx", "xlsx"]);
 const TRUSTED_SKILL_SOURCES = Object.freeze([
   Object.freeze({ id: "openai", name: "OpenAI", repository: OPENAI_SKILLS_REPOSITORY, path: OPENAI_CURATED_PATH, sourceKind: "openai-curated" }),
   Object.freeze({ id: "anthropic", name: "Anthropic", repository: ANTHROPIC_SKILLS_REPOSITORY, path: ANTHROPIC_SKILLS_PATH, sourceKind: "anthropic-official" }),
@@ -91,7 +92,7 @@ function skillIdentity(repository, skillPath) {
 
 function skillContentSha(files) {
   const signature = (Array.isArray(files) ? files : [])
-    .map((file) => `${String(file.path || file.sourcePath || "")}:${String(file.sha || "")}:${Number(file.size) || 0}`)
+    .map((file) => `${String(file.sourcePath || file.path || "")}:${String(file.sha || "")}:${Number(file.size) || 0}`)
     .sort()
     .join("\n");
   return crypto.createHash("sha256").update(signature).digest("hex");
@@ -145,10 +146,15 @@ function trustedSourceFor(repository, skillPath) {
     && (skillPath === source.path || skillPath.startsWith(`${source.path}/`))) || null;
 }
 
+function isRestrictedAnthropicSkill(repository, skillPath) {
+  return String(repository || "").toLowerCase() === ANTHROPIC_SKILLS_REPOSITORY
+    && RESTRICTED_ANTHROPIC_SKILLS.has(String(skillPath || "").split("/").at(-1)?.toLowerCase());
+}
+
 function skillLicenseLabel(repository, skillPath, licenseFile = null) {
   const normalizedRepository = String(repository || "").toLowerCase();
   const skillName = String(skillPath || "").split("/").at(-1);
-  if (normalizedRepository === OPENAI_SKILLS_REPOSITORY) return "Apache-2.0";
+  if (normalizedRepository === OPENAI_SKILLS_REPOSITORY) return licenseFile ? "Apache-2.0" : "未確認";
   if (normalizedRepository === ANTHROPIC_SKILLS_REPOSITORY) {
     if (["docx", "pdf", "pptx", "xlsx"].includes(skillName)) return "Anthropic Terms";
     return licenseFile ? "Apache-2.0" : "未確認";
@@ -184,6 +190,9 @@ async function resolveSkillSource(input, fetchImpl = globalThis.fetch) {
   const skillPath = String(source.skillPath || "").replace(/^\/+|\/+$/g, "");
   const repository = `${owner}/${repo}`;
   const trustedSource = trustedSourceFor(repository, skillPath);
+  if (isRestrictedAnthropicSkill(repository, skillPath)) {
+    throw new Error("このAnthropic Skillは独自利用条件のため、CharaDockからインストールできません。");
+  }
   const commit = await githubJson(fetchImpl, `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/commits/${encodeURIComponent(ref)}`);
   const commitSha = String(commit?.sha || "");
   if (!/^[a-f0-9]{40}$/i.test(commitSha)) throw new Error("Skillsの固定コミットを確認できませんでした。");
@@ -196,12 +205,18 @@ async function resolveSkillSource(input, fetchImpl = globalThis.fetch) {
   if (entries.some((entry) => entry.type === "commit" || entry.mode === "120000" || entry.mode === "160000")) {
     throw new Error("シンボリックリンクまたはサブモジュールを含むSkillsは追加できません。");
   }
-  const files = entries.filter((entry) => entry.type === "blob").map((entry) => ({
+  const skillFiles = entries.filter((entry) => entry.type === "blob").map((entry) => ({
     path: entry.path.slice(prefix.length),
     sourcePath: entry.path,
     size: Number(entry.size) || 0,
     sha: String(entry.sha || ""),
   }));
+  const allEntries = Array.isArray(tree?.tree) ? tree.tree : [];
+  const licenseFile = allEntries.find((entry) => entry.type === "blob"
+    && new RegExp(`^${skillPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/(?:LICENSE|LICENSE\\.md|LICENSE\\.txt)$`, "i").test(String(entry.path || "")));
+  if (trustedSource && !licenseFile) throw new Error("公式Skillのライセンス文書を確認できないためインストールできません。");
+  const license = skillLicenseLabel(repository, skillPath, licenseFile);
+  const files = skillFiles;
   const totalBytes = files.reduce((sum, file) => sum + file.size, 0);
   const maxFiles = trustedSource ? MAX_TRUSTED_SKILL_FILES : MAX_SKILL_FILES;
   if (!files.length || files.length > maxFiles || totalBytes > MAX_SKILL_BYTES || files.some((file) => file.size > MAX_SINGLE_FILE_BYTES)) {
@@ -214,8 +229,6 @@ async function resolveSkillSource(input, fetchImpl = globalThis.fetch) {
   const metadata = parseSkillFrontmatter(skillText);
   const trusted = Boolean(trustedSource);
   const canonicalUrl = `https://github.com/${owner}/${repo}/tree/${commitSha}/${skillPath}`;
-  const licenseFile = (Array.isArray(tree?.tree) ? tree.tree : []).find((entry) => entry.type === "blob"
-    && new RegExp(`^(?:${skillPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/)?(?:LICENSE|LICENSE\\.md|LICENSE\\.txt)$`, "i").test(String(entry.path || "")));
   const id = skillIdentity(repository, skillPath);
   return {
     id,
@@ -231,7 +244,7 @@ async function resolveSkillSource(input, fetchImpl = globalThis.fetch) {
     sourceKind: trustedSource?.sourceKind || "github",
     sourceName: trustedSource?.name || repository,
     category: skillCategory(metadata.name, metadata.description),
-    license: skillLicenseLabel(repository, skillPath, licenseFile),
+    license,
     files,
     totalBytes,
     skillText,
@@ -254,7 +267,8 @@ async function trustedSourceCatalog(source, fetchImpl) {
   const skillPattern = new RegExp(`^${source.path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/([^/]+)/SKILL\\.md$`);
   const candidates = allEntries.flatMap((entry) => {
     const match = entry?.type === "blob" ? String(entry.path || "").match(skillPattern) : null;
-    return match ? [{ directoryName: match[1], skillPath: entry.path.slice(0, -"/SKILL.md".length) }] : [];
+    const skillPath = match ? entry.path.slice(0, -"/SKILL.md".length) : "";
+    return match && !isRestrictedAnthropicSkill(source.repository, skillPath) ? [{ directoryName: match[1], skillPath }] : [];
   });
   const rawBase = `https://raw.githubusercontent.com/${owner}/${repo}/${commitSha}`;
   const cards = await Promise.all(candidates.map(async (candidate) => {
@@ -263,9 +277,11 @@ async function trustedSourceCatalog(source, fetchImpl) {
     let metadata;
     try { metadata = parseSkillFrontmatter(await response.text()); } catch { return null; }
     const prefix = `${candidate.skillPath}/`;
-    const files = allEntries.filter((entry) => entry.type === "blob" && String(entry.path || "").startsWith(prefix));
-    const licenseFile = files.find((entry) => /\/(?:LICENSE|LICENSE\.md|LICENSE\.txt)$/i.test(String(entry.path || "")))
-      || allEntries.find((entry) => entry.type === "blob" && /^(?:LICENSE|LICENSE\.md|LICENSE\.txt)$/i.test(String(entry.path || "")));
+    const skillFiles = allEntries.filter((entry) => entry.type === "blob" && String(entry.path || "").startsWith(prefix));
+    const licenseFile = skillFiles.find((entry) => /\/(?:LICENSE|LICENSE\.md|LICENSE\.txt)$/i.test(String(entry.path || "")));
+    if (!licenseFile) return null;
+    const license = skillLicenseLabel(source.repository, candidate.skillPath, licenseFile);
+    const files = skillFiles;
     return {
       id: skillIdentity(source.repository, candidate.skillPath),
       name: metadata.name,
@@ -279,7 +295,7 @@ async function trustedSourceCatalog(source, fetchImpl) {
       commitSha,
       contentSha: skillContentSha(files),
       trusted: true,
-      license: skillLicenseLabel(source.repository, candidate.skillPath, licenseFile),
+      license,
       fileCount: files.length,
       totalBytes: files.reduce((sum, file) => sum + (Number(file.size) || 0), 0),
     };
@@ -366,7 +382,8 @@ async function installResolvedSkill(resolved, rootDirectory, fetchImpl = globalT
       const target = path.resolve(temporary, file.path);
       if (!target.startsWith(`${temporary}${path.sep}`)) throw new Error("Skills内に不正なパスがあります。");
       await fs.promises.mkdir(path.dirname(target), { recursive: true, mode: 0o700 });
-      const url = `${resolved.rawBase}/${resolved.skillPath.split("/").map(encodeURIComponent).join("/")}/${file.path.split("/").map(encodeURIComponent).join("/")}`;
+      const sourcePath = String(file.sourcePath || `${resolved.skillPath}/${file.path}`);
+      const url = `${resolved.rawBase}/${sourcePath.split("/").map(encodeURIComponent).join("/")}`;
       const response = await fetchImpl(url, { redirect: "error" });
       if (!response.ok) throw new Error(`Skillsファイルを取得できませんでした: ${file.path}`);
       const buffer = Buffer.from(await response.arrayBuffer());
