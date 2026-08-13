@@ -8,6 +8,11 @@ const test = require("node:test");
 const projectRoot = path.resolve(__dirname, "../..");
 const packageJson = JSON.parse(fs.readFileSync(path.join(projectRoot, "package.json"), "utf8"));
 
+test("main-process libraries are production dependencies included in packaged apps", () => {
+  assert.equal(packageJson.dependencies["js-yaml"], "4.3.1");
+  assert.equal(packageJson.devDependencies["js-yaml"], undefined);
+});
+
 test("desktop distribution contains only approved character, voice, and interface assets", () => {
   const files = packageJson.build.files;
   const assetEntries = files.filter((entry) => entry.startsWith("assets/"));
