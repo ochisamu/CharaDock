@@ -83,7 +83,8 @@ contextBridge.exposeInMainWorld("mascotDesktop", {
   removeSbv2Model: (id) => ipcRenderer.invoke("tts:sbv2RemoveModel", id),
   normalizeTtsText: (text) => ipcRenderer.invoke("tts:normalizeText", text),
   startCodexRealtime: (payload) => ipcRenderer.invoke("audio:realtimeStart", payload),
-  appendCodexRealtimeText: (text) => ipcRenderer.invoke("audio:realtimeAppendText", text),
+  appendCodexRealtimeText: (text, selectedSkillIds = []) => ipcRenderer.invoke("audio:realtimeAppendText", { text, selectedSkillIds }),
+  setCodexRealtimeTurnSkills: (selectedSkillIds = []) => ipcRenderer.invoke("audio:realtimeTurnSkills", selectedSkillIds),
   appendCodexRealtimeSpeech: (text) => ipcRenderer.invoke("audio:realtimeAppendSpeech", text),
   stopCodexRealtime: () => ipcRenderer.invoke("audio:realtimeStop"),
   getBeatriceStatus: () => ipcRenderer.invoke("beatrice:status"),
@@ -133,6 +134,11 @@ contextBridge.exposeInMainWorld("mascotDesktop", {
     const listener = (_event, payload) => callback(payload);
     ipcRenderer.on("audio:realtimeEvent", listener);
     return () => ipcRenderer.removeListener("audio:realtimeEvent", listener);
+  },
+  onCodexRealtimeTurnSkills: (callback) => {
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on("audio:realtimeTurnSkills", listener);
+    return () => ipcRenderer.removeListener("audio:realtimeTurnSkills", listener);
   },
   onRemotePcAudio: (callback) => {
     const listener = (_event, payload) => callback(payload);

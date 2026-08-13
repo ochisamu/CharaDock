@@ -296,6 +296,12 @@ test("chat composers select per-turn Skills from plus, slash, and at shortcuts",
   assert.match(mascot, /selectedSkillIds,/);
   assert.match(main, /function explicitTurnSkillItems\(value\)/);
   assert.match(main, /skillItems: turnSkillItems/);
+  assert.match(main, /function setActiveRealtimeTurnSkills\(value\)/);
+  assert.match(main, /selectedSkillIds: requestedSkillIds/);
+  assert.match(main, /activeRealtimeTurnSkillIds = \[\]/);
+  assert.match(control, /appendCodexRealtimeText\(message, selectedSkillIds\)/);
+  assert.match(mascot, /mascotInline:realtimeTurnSkills/);
+  assert.match(mascot, /Live Work only/);
 });
 
 test("avatar output buttons open a sandboxed companion preview without covering the mascot", () => {

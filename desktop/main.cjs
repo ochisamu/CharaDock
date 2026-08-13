@@ -341,6 +341,7 @@ let activeRealtimeTurnBuffer = null;
 let activeRealtimeInjectedSpeech = [];
 let activeRealtimeWorkDispatcher = null;
 let activeRealtimeWorkSpeech = null;
+let activeRealtimeTurnSkillIds = [];
 let lastRealtimePetSpeechAt = 0;
 let beatriceHostClient = null;
 let beatriceAudioOwner = null;
@@ -5529,10 +5530,29 @@ function currentRealtimeClient() {
   return clients.find((client, index) => clients.indexOf(client) === index && client.hasActiveRealtime?.()) || null;
 }
 
+function publishActiveRealtimeTurnSkills() {
+  const payload = { selectedSkillIds: [...activeRealtimeTurnSkillIds] };
+  controlWindow?.webContents.send("audio:realtimeTurnSkills", payload);
+  mascotWindow?.webContents.send("audio:realtimeTurnSkills", payload);
+}
+
+function setActiveRealtimeTurnSkills(value) {
+  if (!currentRealtimeClient() || !activeRealtimeWorkDispatcher || preferences.data.interactionMode !== "work") {
+    throw new Error(mainText("Skillは接続中のLive Workで指定できます。", "Skills can be selected while Live Work is connected."));
+  }
+  const ids = normalizeTurnSkillIds(value);
+  explicitTurnSkillItems(ids);
+  activeRealtimeTurnSkillIds = ids;
+  publishActiveRealtimeTurnSkills();
+  return { selectedSkillIds: [...ids] };
+}
+
 async function stopActiveRealtime() {
   activeRealtimeWorkDispatcher = null;
   activeRealtimeWorkSpeech?.stop();
   activeRealtimeWorkSpeech = null;
+  activeRealtimeTurnSkillIds = [];
+  publishActiveRealtimeTurnSkills();
   const client = currentRealtimeClient();
   let stopped = false;
   try {
@@ -5560,6 +5580,7 @@ async function appendActiveRealtimeText(text, options = {}) {
   if (preferences.data.interactionMode === "work" && activeRealtimeWorkDispatcher) {
     const dispatched = Boolean(activeRealtimeWorkDispatcher.dispatch(normalized, "typed", {
       artifactTarget: options?.artifactTarget || null,
+      selectedSkillIds: options?.selectedSkillIds,
     }));
     if (dispatched) return true;
   }
@@ -5698,6 +5719,8 @@ async function startCodexRealtimeVoice(payload, target = "control") {
   const sdp = String(payload?.sdp || "");
   if (!sdp.startsWith("v=0") || sdp.length > 300_000) throw new Error("音声接続情報が正しくありません。");
   const workMode = preferences.data.interactionMode === "work";
+  const initialTurnSkillIds = workMode ? normalizeTurnSkillIds(payload?.selectedSkillIds) : [];
+  if (initialTurnSkillIds.length) explicitTurnSkillItems(initialTurnSkillIds);
   const sharedContext = currentSharedContinuityContext(1_000);
   const realtimeMemoryContext = characterMemoryContext(undefined, 4);
   if (workMode && activeWorkRunId) throw new Error("実行中の作業があります。完了を待つか、中断してください。");
@@ -5722,6 +5745,7 @@ async function startCodexRealtimeVoice(payload, target = "control") {
   activeRealtimeStarting = true;
   activeRealtimeClient = realtimeClient;
   activeRealtimeTarget = target;
+  activeRealtimeTurnSkillIds = initialTurnSkillIds;
   publishRemoteState();
   const realtimeTurnBuffer = new RealtimeTurnBuffer();
   activeRealtimeTurnBuffer = realtimeTurnBuffer;
@@ -5751,8 +5775,14 @@ async function startCodexRealtimeVoice(payload, target = "control") {
       && normalized === lastDispatchedWorkRequest.text
       && now - lastDispatchedWorkRequest.at < 15_000) return true;
     if (source === "voice" && !options.acknowledgementPrepared) prepareRealtimeWork();
+    const requestedSkillIds = Array.isArray(options.selectedSkillIds)
+      ? normalizeTurnSkillIds(options.selectedSkillIds)
+      : [...activeRealtimeTurnSkillIds];
+    if (requestedSkillIds.length) explicitTurnSkillItems(requestedSkillIds);
+    activeRealtimeTurnSkillIds = [];
+    publishActiveRealtimeTurnSkills();
     if (activeWorkRunId) {
-      pendingInterruptedRequest = { text: normalized, source, artifactTarget: options.artifactTarget || null };
+      pendingInterruptedRequest = { text: normalized, source, artifactTarget: options.artifactTarget || null, selectedSkillIds: requestedSkillIds };
       realtimeWorkSpeech?.cancelQueued();
       interruptActiveWork().catch((error) => {
         pendingInterruptedRequest = null;
@@ -5770,15 +5800,20 @@ async function startCodexRealtimeVoice(payload, target = "control") {
         workAcknowledged: source === "voice",
         artifactTarget: options.artifactTarget || null,
         forceWork: Boolean(options.artifactTarget),
+        selectedSkillIds: requestedSkillIds,
       })
         .catch((error) => {
+          if (activeRealtimeWorkDispatcher === realtimeWorkDispatcher && !activeRealtimeTurnSkillIds.length) {
+            activeRealtimeTurnSkillIds = requestedSkillIds;
+            publishActiveRealtimeTurnSkills();
+          }
           diagnosticLog?.write("warn", "realtime-work-failed", String(error?.message || error));
         })
         .finally(() => {
           const pending = pendingInterruptedRequest;
           pendingInterruptedRequest = null;
           if (pending && activeRealtimeWorkDispatcher === realtimeWorkDispatcher) {
-            dispatchRealtimeWork(pending.text, pending.source, { acknowledgementPrepared: true, artifactTarget: pending.artifactTarget });
+            dispatchRealtimeWork(pending.text, pending.source, { acknowledgementPrepared: true, artifactTarget: pending.artifactTarget, selectedSkillIds: pending.selectedSkillIds });
           }
         });
     });
@@ -5798,6 +5833,7 @@ async function startCodexRealtimeVoice(payload, target = "control") {
     dispatch: dispatchRealtimeWork,
   };
   activeRealtimeWorkDispatcher = workMode ? realtimeWorkDispatcher : null;
+  publishActiveRealtimeTurnSkills();
   try {
     const result = await realtimeClient.startRealtime({
       sdp,
@@ -5946,6 +5982,8 @@ async function startCodexRealtimeVoice(payload, target = "control") {
         if (activeRealtimeTurnBuffer === realtimeTurnBuffer) activeRealtimeTurnBuffer = null;
         realtimeTurnBuffer.clear();
         activeRealtimeInjectedSpeech = [];
+        activeRealtimeTurnSkillIds = [];
+        publishActiveRealtimeTurnSkills();
         remoteBusy = false;
         remoteServer?.publish("stream", {
           phase: method.endsWith("error") ? "error" : "done",
@@ -5971,6 +6009,8 @@ async function startCodexRealtimeVoice(payload, target = "control") {
     if (activeRealtimeTurnBuffer === realtimeTurnBuffer) activeRealtimeTurnBuffer = null;
     realtimeTurnBuffer.clear();
     activeRealtimeInjectedSpeech = [];
+    activeRealtimeTurnSkillIds = [];
+    publishActiveRealtimeTurnSkills();
     remoteBusy = false;
     publishRemoteState();
     const message = userFacingRealtimeError(error);
@@ -6578,9 +6618,15 @@ function registerIpc() {
     assertTrustedSender(event, "mascot");
     return stopActiveRealtime();
   });
-  ipcMain.handle("mascotInline:realtimeAppendText", async (event, text) => {
+  ipcMain.handle("mascotInline:realtimeAppendText", async (event, payload) => {
     assertTrustedSender(event, "mascot");
-    return appendActiveRealtimeText(String(text || ""));
+    const text = typeof payload === "object" && payload ? payload.text : payload;
+    const selectedSkillIds = typeof payload === "object" && payload ? normalizeTurnSkillIds(payload.selectedSkillIds) : undefined;
+    return appendActiveRealtimeText(String(text || ""), { selectedSkillIds });
+  });
+  ipcMain.handle("mascotInline:realtimeTurnSkills", (event, selectedSkillIds) => {
+    assertTrustedSender(event, "mascot");
+    return setActiveRealtimeTurnSkills(selectedSkillIds);
   });
   ipcMain.handle("mascotInline:synthesizeTts", (event, text) => {
     assertTrustedSender(event, "mascot");
@@ -7625,9 +7671,15 @@ function registerIpc() {
     assertTrustedSender(event);
     return appendRealtimeOutputSpeech(String(text || ""), "manual");
   });
-  ipcMain.handle("audio:realtimeAppendText", async (event, text) => {
+  ipcMain.handle("audio:realtimeAppendText", async (event, payload) => {
     assertTrustedSender(event);
-    return appendActiveRealtimeText(String(text || ""));
+    const text = typeof payload === "object" && payload ? payload.text : payload;
+    const selectedSkillIds = typeof payload === "object" && payload ? normalizeTurnSkillIds(payload.selectedSkillIds) : undefined;
+    return appendActiveRealtimeText(String(text || ""), { selectedSkillIds });
+  });
+  ipcMain.handle("audio:realtimeTurnSkills", (event, selectedSkillIds) => {
+    assertTrustedSender(event);
+    return setActiveRealtimeTurnSkills(selectedSkillIds);
   });
   ipcMain.handle("audio:realtimeStop", async (event) => {
     assertTrustedSender(event);

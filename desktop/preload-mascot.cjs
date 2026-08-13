@@ -559,7 +559,9 @@ window.addEventListener("DOMContentLoaded", () => {
       description.textContent = skill.description || skill.sourceName || uiText("端末に追加済み", "Installed");
       copy.append(name, description);
       const status = document.createElement("em");
-      status.textContent = selected ? uiText("選択中", "Selected") : skill.active ? uiText("使用中", "Active") : uiText("今回のみ", "This turn");
+      status.textContent = realtimePeer && appState?.interactionMode !== "work"
+        ? uiText("Live Workのみ", "Live Work only")
+        : selected ? uiText("選択中", "Selected") : skill.active ? uiText("使用中", "Active") : uiText("今回のみ", "This turn");
       button.append(icon, copy, status);
       button.addEventListener("pointermove", () => {
         if (mascotSkillPickerIndex === index) return;
@@ -586,7 +588,12 @@ window.addEventListener("DOMContentLoaded", () => {
     if (focusSearch) requestAnimationFrame(() => skillSearch.focus({ preventScroll: true }));
   };
   const toggleMascotSkill = (skillId) => {
-    if (mascotSelectedSkillIds.includes(skillId)) mascotSelectedSkillIds = mascotSelectedSkillIds.filter((id) => id !== skillId);
+    const removing = mascotSelectedSkillIds.includes(skillId);
+    if (!removing && realtimePeer && appState?.interactionMode !== "work") {
+      setStatus(uiText("LiveでSkillを指定できるのはWorkモードだけです", "Skills can be selected in Live Work only"), 5000);
+      return;
+    }
+    if (removing) mascotSelectedSkillIds = mascotSelectedSkillIds.filter((id) => id !== skillId);
     else if (mascotSelectedSkillIds.length >= 8) { setStatus(uiText("1回に指定できるSkillは8件までです", "You can select up to 8 Skills per turn"), 5000); return; }
     else mascotSelectedSkillIds.push(skillId);
     if (mascotSkillTrigger) {
@@ -597,6 +604,9 @@ window.addEventListener("DOMContentLoaded", () => {
     }
     renderMascotSelectedSkills();
     renderMascotSkillPicker();
+    if (realtimePeer && appState?.interactionMode === "work") {
+      ipcRenderer.invoke("mascotInline:realtimeTurnSkills", mascotSelectedSkillIds).catch((error) => setStatus(error.message, 5000));
+    }
   };
   const mascotSkillTriggerAtCursor = () => {
     const cursor = input.selectionStart;
@@ -805,9 +815,7 @@ window.addEventListener("DOMContentLoaded", () => {
   selectedSkillList.addEventListener("click", (event) => {
     const remove = event.target.closest("button[data-skill-id]");
     if (!remove) return;
-    mascotSelectedSkillIds = mascotSelectedSkillIds.filter((id) => id !== remove.dataset.skillId);
-    renderMascotSelectedSkills();
-    renderMascotSkillPicker();
+    toggleMascotSkill(remove.dataset.skillId);
     input.focus({ preventScroll: true });
   });
   attachButton.addEventListener("click", () => {
@@ -1411,7 +1419,7 @@ window.addEventListener("DOMContentLoaded", () => {
     setStatus(useActiveRealtime ? "Live音声で応答を生成…" : appState?.interactionMode === "work" ? "作業を開始…" : "考え中…", 30_000);
     try {
       if (useActiveRealtime) {
-        const appended = await ipcRenderer.invoke("mascotInline:realtimeAppendText", message);
+        const appended = await ipcRenderer.invoke("mascotInline:realtimeAppendText", { text: message, selectedSkillIds });
         if (!appended) throw new Error("Liveセッションへ文字を送信できませんでした。");
         streamOwnsBusyState = appState?.interactionMode === "work";
         detachedRealtimeWorkBusy = streamOwnsBusyState;
@@ -1491,8 +1499,8 @@ window.addEventListener("DOMContentLoaded", () => {
       setStatus(uiText("ファイル添付はLiveを停止してから送信してください", "Stop Live before sending file attachments"), 6000);
       return;
     }
-    if (realtimePeer && selectedSkillIds.length) {
-      setStatus(uiText("Skillを指定した送信はLiveを停止してから行ってください", "Stop Live before sending with selected Skills"), 6000);
+    if (realtimePeer && selectedSkillIds.length && appState?.interactionMode !== "work") {
+      setStatus(uiText("Skillを指定できるのはLive Workだけです", "Selected Skills are available in Live Work only"), 6000);
       return;
     }
     clearAutoSendCountdown();
@@ -2266,7 +2274,10 @@ window.addEventListener("DOMContentLoaded", () => {
     });
     const offer = await realtimePeer.createOffer();
     await realtimePeer.setLocalDescription(offer);
-    await ipcRenderer.invoke("mascotInline:realtimeStart", { sdp: realtimePeer.localDescription?.sdp || offer.sdp });
+    await ipcRenderer.invoke("mascotInline:realtimeStart", {
+      sdp: realtimePeer.localDescription?.sdp || offer.sdp,
+      selectedSkillIds: appState?.interactionMode === "work" ? mascotSelectedSkillIds : [],
+    });
     micButton.setAttribute("aria-pressed", "true");
     setStatus("Codex Realtimeへ接続中…", 30_000);
   };
@@ -2546,6 +2557,11 @@ window.addEventListener("DOMContentLoaded", () => {
     appState = { ...appState, ...state };
     applyInterfaceLanguage(appState.language);
     applyInteractionMode(appState);
+    renderMascotSelectedSkills();
+    if (!addPopover.hidden) renderMascotSkillPicker();
+  });
+  ipcRenderer.on("audio:realtimeTurnSkills", (_event, payload = {}) => {
+    mascotSelectedSkillIds = Array.isArray(payload.selectedSkillIds) ? payload.selectedSkillIds : [];
     renderMascotSelectedSkills();
     if (!addPopover.hidden) renderMascotSkillPicker();
   });

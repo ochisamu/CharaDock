@@ -235,9 +235,7 @@
       remove.setAttribute("aria-label", localized(`${skill.name}を今回の送信から外す`, `Remove ${skill.name} from this turn`));
       remove.innerHTML = '<span class="ui-symbol ui-symbol-close" aria-hidden="true"></span>';
       remove.addEventListener("click", () => {
-        chatSelectedSkillIds = chatSelectedSkillIds.filter((skillId) => skillId !== id);
-        renderChatSelectedSkills();
-        renderChatSkillPicker();
+        toggleChatSkill(id);
       });
       chip.append(icon, name, remove);
       list.appendChild(chip);
@@ -274,7 +272,9 @@
       description.textContent = skill.description || skill.sourceName || localized("端末に追加済み", "Installed on this device");
       copy.append(name, description);
       const status = document.createElement("em");
-      status.textContent = selected ? localized("選択中", "Selected") : skill.active ? localized("使用中", "Active") : localized("今回のみ", "This turn");
+      status.textContent = realtimePeerConnection && state?.interactionMode !== "work"
+        ? localized("Live Workのみ", "Live Work only")
+        : selected ? localized("選択中", "Selected") : skill.active ? localized("使用中", "Active") : localized("今回のみ", "This turn");
       button.append(icon, copy, status);
       button.addEventListener("pointermove", () => {
         if (chatSkillPickerIndex === index) return;
@@ -287,7 +287,12 @@
   }
 
   function toggleChatSkill(skillId) {
-    if (chatSelectedSkillIds.includes(skillId)) {
+    const removing = chatSelectedSkillIds.includes(skillId);
+    if (!removing && realtimePeerConnection && state?.interactionMode !== "work") {
+      setStatus($("#chatStatus"), localized("LiveでSkillを指定できるのはWorkモードだけです。", "Skills can be selected in Live Work only."), true);
+      return;
+    }
+    if (removing) {
       chatSelectedSkillIds = chatSelectedSkillIds.filter((id) => id !== skillId);
     } else if (chatSelectedSkillIds.length >= 8) {
       setStatus($("#chatStatus"), localized("1回に指定できるSkillは8件までです。", "You can select up to 8 Skills per turn."), true);
@@ -305,6 +310,11 @@
     }
     renderChatSelectedSkills();
     renderChatSkillPicker();
+    if (realtimePeerConnection && state?.interactionMode === "work") {
+      api.setCodexRealtimeTurnSkills(chatSelectedSkillIds).catch((error) => {
+        setStatus($("#chatStatus"), error.message, true);
+      });
+    }
   }
 
   function closeChatAddPopover({ returnFocus = false } = {}) {
@@ -3266,7 +3276,10 @@
       const offer = await peer.createOffer();
       await peer.setLocalDescription(offer);
       if (startGeneration !== realtimeStartGeneration) throw new Error("Live connection was cancelled.");
-      await api.startCodexRealtime({ sdp: peer.localDescription?.sdp || offer.sdp });
+      await api.startCodexRealtime({
+        sdp: peer.localDescription?.sdp || offer.sdp,
+        selectedSkillIds: state?.interactionMode === "work" ? chatSelectedSkillIds : [],
+      });
       if (startGeneration !== realtimeStartGeneration) {
         await api.stopCodexRealtime().catch(() => {});
         throw new Error("Live connection was cancelled.");
@@ -3609,8 +3622,8 @@
       setStatus($("#chatStatus"), localized("Live音声を停止してからファイルを送信してください。", "Stop Live voice before sending files."), true);
       return;
     }
-    if (selectedSkillIds.length && realtimePeerConnection) {
-      setStatus($("#chatStatus"), localized("Skillを指定した送信はLiveを停止してから行ってください。", "Stop Live before sending with selected Skills."), true);
+    if (selectedSkillIds.length && realtimePeerConnection && state?.interactionMode !== "work") {
+      setStatus($("#chatStatus"), localized("Skillを指定できるのはLive Workだけです。Workへ切り替えるかLiveを停止してください。", "Selected Skills are available in Live Work only. Switch to Work or stop Live."), true);
       return;
     }
     input.value = "";
@@ -3638,7 +3651,7 @@
       realtimePendingTypedText = message;
       setStatus($("#chatStatus"), "Live音声で応答を生成しています…");
       try {
-        const appended = await api.appendCodexRealtimeText(message);
+        const appended = await api.appendCodexRealtimeText(message, selectedSkillIds);
         if (!appended) throw new Error("Liveセッションへ文字を送信できませんでした。");
       } catch (error) {
         realtimePendingTypedText = "";
@@ -3783,6 +3796,11 @@
         setStatus($("#chatStatus"), `音声イベント: ${error.message}`, true);
         closeRealtimeAudio();
       });
+    });
+    api.onCodexRealtimeTurnSkills?.((payload) => {
+      chatSelectedSkillIds = Array.isArray(payload?.selectedSkillIds) ? payload.selectedSkillIds : [];
+      renderChatSelectedSkills();
+      if (!$("#chatAddPopover").hidden) renderChatSkillPicker();
     });
     api.onRemotePcAudio?.((payload) => {
       // This preference applies to phone-originated responses. A Live session
