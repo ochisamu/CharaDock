@@ -491,10 +491,16 @@ class CodexAppServerClient {
     // Reusing a text task can be rejected even when voice is enabled for the account.
     this.threadId = null;
     const threadId = await this.ensureThread();
+    let resolveStartup;
     let rejectStartup;
-    const startupFailure = new Promise((_, reject) => { rejectStartup = reject; });
+    const startupReady = new Promise((resolve, reject) => {
+      resolveStartup = resolve;
+      rejectStartup = reject;
+    });
+    const startupTimer = setTimeout(() => rejectStartup(new Error("Codex Realtime音声接続の開始確認がタイムアウトしました。")), 20_000);
     this.realtimeHandlers.set(threadId, (message) => {
       onEvent?.(message);
+      if (message?.method === "thread/realtime/started") resolveStartup();
       if (message?.method === "thread/realtime/error") {
         rejectStartup(new Error(message.params?.message || "Codex Realtime音声接続を開始できませんでした。"));
       }
@@ -522,11 +528,20 @@ class CodexAppServerClient {
       if (normalizedInitialItems.length) params.initialItems = normalizedInitialItems;
       if (typeof delegationAckFiller === "boolean") params.delegationAckFiller = delegationAckFiller;
       if (voice) params.voice = String(voice);
-      await Promise.race([this.request("thread/realtime/start", params, 60_000), startupFailure]);
+      // The JSON-RPC response only means the SDP was accepted. Text appended
+      // in the short gap before `thread/realtime/started` is acknowledged by
+      // app-server but can be dropped without producing a reply. Do not expose
+      // the session to callers until the transport is actually ready.
+      await Promise.all([
+        this.request("thread/realtime/start", params, 60_000),
+        startupReady,
+      ]);
       return { threadId };
     } catch (error) {
       this.realtimeHandlers.delete(threadId);
       throw error;
+    } finally {
+      clearTimeout(startupTimer);
     }
   }
 

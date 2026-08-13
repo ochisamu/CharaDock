@@ -39,7 +39,7 @@ test("Realtime sessions start only from voice input, accept typed turns, and kee
   assert.match(control, /maple: \{ impression: "女性寄り", description: "陽気で率直" \}/);
   assert.match(control, /arbor: \{ impression: "中性的", description: "気さくで万能" \}/);
   assert.match(main, /const realtimeClient = workMode \? ensureWorkClient\(\) : codexClient/);
-  assert.match(main, /clientManagedHandoffs: false/);
+  assert.match(main, /clientManagedHandoffs: !workMode/);
   assert.match(main, /codexResponseHandoffMode: workMode \? "thinking" : "bemTags"/);
   assert.match(main, /delegationAckFiller: workMode \? false : undefined/);
   assert.match(main, /includeStartupContext: !workMode/);
@@ -59,7 +59,8 @@ test("Realtime sessions start only from voice input, accept typed turns, and kee
   assert.match(mascot, /streamOwnsBusyState = appState\?\.interactionMode === "work" && Boolean\(route\?\.delegated\)/);
   assert.match(main, /realtimeClient\.sendMessage\(normalized, \{ skillItems \}\)/);
   assert.match(main, /realtimeClient\.steerActiveTurn\(normalized, \{ skillItems \}\)/);
-  assert.match(main, /appendRealtimeText\(normalized, "user"\)/);
+  assert.match(main, /Realtime V3 appendText is context-only[\s\S]*await client\.sendMessage\(normalized\)/);
+  assert.match(main, /appendRealtimeOutputSpeechDirect\(answer, "chat"\)/);
   assert.match(main, /sandbox: "workspace-write"/);
   assert.match(main, /await stopActiveRealtime\(\)\.catch/);
   assert.match(preload, /audio:realtimeStart/);

@@ -6,6 +6,7 @@
   let csrfToken = "";
   let eventSource = null;
   let currentMode = "chat";
+  let modeInitialized = false;
   let busy = false;
   let audioEnabled = localStorage.getItem("charadock.remote.audio") !== "0";
   let audioContext = null;
@@ -39,6 +40,8 @@
   let wakeLockSentinel = null;
   let livePeer = null;
   let liveInputStream = null;
+  let liveSyntheticInputContext = null;
+  let liveSyntheticInputOscillator = null;
   let liveStarting = false;
   let liveSessionId = "";
   let liveAudioContext = null;
@@ -103,12 +106,31 @@
   }
 
   async function request(path, options = {}) {
-    const headers = { "Content-Type": "application/json", ...(options.headers || {}) };
-    if (csrfToken && options.method === "POST") headers["X-CharaDock-CSRF"] = csrfToken;
-    const response = await fetch(path, { credentials: "same-origin", cache: "no-store", ...options, headers });
-    const body = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(body.error || `HTTP ${response.status}`);
-    return body;
+    const { timeoutMs = 0, ...fetchOptions } = options;
+    const headers = { "Content-Type": "application/json", ...(fetchOptions.headers || {}) };
+    if (csrfToken && fetchOptions.method === "POST") headers["X-CharaDock-CSRF"] = csrfToken;
+    const controller = timeoutMs > 0 ? new AbortController() : null;
+    let timeout = 0;
+    if (controller) timeout = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetch(path, {
+        credentials: "same-origin",
+        cache: "no-store",
+        ...fetchOptions,
+        headers,
+        signal: controller?.signal || fetchOptions.signal,
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.error || `HTTP ${response.status}`);
+      return body;
+    } catch (error) {
+      if (controller?.signal.aborted) {
+        throw new Error(text("接続がタイムアウトしました。もう一度試してください。", "The connection timed out. Please try again."));
+      }
+      throw error;
+    } finally {
+      clearTimeout(timeout);
+    }
   }
 
   async function registerPwa() {
@@ -608,6 +630,10 @@
   function closeRemoteLivePeer() {
     try { livePeer?.close(); } catch {}
     for (const track of liveInputStream?.getTracks?.() || []) track.stop();
+    try { liveSyntheticInputOscillator?.stop(); } catch {}
+    liveSyntheticInputOscillator = null;
+    liveSyntheticInputContext?.close().catch(() => {});
+    liveSyntheticInputContext = null;
     const audio = $("#remoteLiveAudio");
     audio.pause();
     audio.srcObject = null;
@@ -860,13 +886,12 @@
     const remoteOwnsLive = voice.liveConnected && voice.liveOwner === "remote";
     const pcOwnsLive = voice.liveConnected && voice.liveOwner !== "remote";
     const button = $("#microphoneButton");
-    button.disabled = liveStarting || pcOwnsLive
-      || (!liveMode && !dictationArmed && busy)
+    button.disabled = (!liveMode && !dictationArmed && busy)
       || (!liveMode && !microphoneAvailable() && !microphoneHandoffAvailable());
-    button.classList.toggle("is-live", Boolean(livePeer && remoteOwnsLive));
+    button.classList.toggle("is-live", Boolean(livePeer && (remoteOwnsLive || liveStarting)));
     button.classList.toggle("is-listening", Boolean(dictationArmed));
     button.title = liveMode
-      ? remoteOwnsLive ? text("Liveを停止", "Stop Live") : pcOwnsLive ? text("PC側のLiveが使用中", "Live is active on the PC") : text("この端末でLiveを開始", "Start Live on this phone")
+      ? liveStarting ? text("Live接続を中止", "Cancel Live connection") : remoteOwnsLive ? text("Liveを停止", "Stop Live") : pcOwnsLive ? text("PC側のLiveからこの端末へ切り替え", "Move Live from the PC to this phone") : text("この端末でLiveを開始", "Start Live on this phone")
       : dictationArmed
         ? text("連続音声入力を停止", "Stop continuous dictation")
         : microphoneAvailable()
@@ -905,7 +930,28 @@
         liveInputStream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }, video: false });
         for (const track of liveInputStream.getAudioTracks()) peer.addTrack(track, liveInputStream);
       } else {
-        peer.addTransceiver("audio", { direction: "recvonly" });
+        // Frameless Live expects an input-audio media section even when the
+        // turn begins from typed text. A local zero-gain WebAudio track keeps
+        // that route active without requesting microphone permission; the
+        // actual Codex answer can then be appended and spoken normally.
+        try {
+          liveSyntheticInputContext = new AudioContext({ latencyHint: "interactive" });
+          const oscillator = liveSyntheticInputContext.createOscillator();
+          const silence = liveSyntheticInputContext.createGain();
+          const destination = liveSyntheticInputContext.createMediaStreamDestination();
+          silence.gain.value = 0;
+          oscillator.connect(silence).connect(destination);
+          oscillator.start();
+          await liveSyntheticInputContext.resume();
+          liveSyntheticInputOscillator = oscillator;
+          liveInputStream = destination.stream;
+          for (const track of liveInputStream.getAudioTracks()) peer.addTrack(track, liveInputStream);
+        } catch {
+          liveSyntheticInputContext?.close().catch(() => {});
+          liveSyntheticInputContext = null;
+          liveSyntheticInputOscillator = null;
+          peer.addTransceiver("audio", { direction: "recvonly" });
+        }
       }
       peer.createDataChannel("oai-events");
       peer.addEventListener("track", (event) => {
@@ -930,7 +976,15 @@
       await peer.setLocalDescription(offer);
       await waitForIceGatheringComplete(peer);
       const localSdp = peer.localDescription?.sdp || offer.sdp;
-      const started = await request("/api/live/start", { method: "POST", body: JSON.stringify({ sdp: localSdp, mode: currentMode }) });
+      const started = await request("/api/live/start", {
+        method: "POST",
+        body: JSON.stringify({
+          sdp: localSdp,
+          mode: currentMode,
+          takeover: appState?.voice?.liveConnected && appState.voice.liveOwner !== "remote",
+        }),
+        timeoutMs: 70_000,
+      });
       if (livePeer !== peer) {
         if (started?.liveSessionId) request("/api/live/stop", { method: "POST", body: JSON.stringify({ liveSessionId: started.liveSessionId }) }).catch(() => {});
         throw new Error(text("Live接続が中断されました。", "Live connection was interrupted."));
@@ -945,7 +999,10 @@
       }
       return true;
     } catch (error) {
-      if (livePeer === peer) closeRemoteLivePeer();
+      if (livePeer === peer) {
+        closeRemoteLivePeer();
+        request("/api/live/stop", { method: "POST", body: "{}", timeoutMs: 5_000 }).catch(() => {});
+      }
       throw error;
     } finally {
       liveStarting = false;
@@ -955,10 +1012,18 @@
 
   async function stopRemoteLive() {
     const stoppedSessionId = liveSessionId;
+    const shouldStopServer = Boolean(stoppedSessionId || liveStarting || appState?.voice?.liveOwner === "remote");
+    closeRemoteLivePeer();
     try {
-      if (stoppedSessionId) await request("/api/live/stop", { method: "POST", body: JSON.stringify({ liveSessionId: stoppedSessionId }) });
+      if (shouldStopServer) {
+        await request("/api/live/stop", {
+          method: "POST",
+          body: JSON.stringify({ liveSessionId: stoppedSessionId || undefined }),
+          timeoutMs: 10_000,
+        });
+      }
     }
-    finally { closeRemoteLivePeer(); }
+    finally { syncMicrophoneButton(); }
   }
 
   async function handleLiveEvent(message = {}) {
@@ -1144,6 +1209,10 @@
     const changedCharacter = appState?.character?.id !== nextState.character?.id || appState?.character?.assetVersion !== nextState.character?.assetVersion;
     observeStateTransitions(nextState);
     appState = nextState;
+    if (!modeInitialized || appState?.voice?.liveConnected) {
+      currentMode = appState.interactionMode === "work" && appState.workAllowed ? "work" : "chat";
+      modeInitialized = true;
+    }
     document.documentElement.lang = appState.language === "en" ? "en" : "ja";
     $("#pairingView").hidden = true;
     $("#companionView").hidden = false;
@@ -1275,7 +1344,9 @@
     renderArtifacts([], "");
     setBusy(true);
     try {
-      if (appState?.voice?.responseMode === "live" && !appState.voice.liveConnected) {
+      if (appState?.voice?.responseMode === "live"
+        && (!livePeer || !appState.voice.liveConnected || appState.voice.liveOwner !== "remote")) {
+        if (appState.voice.liveConnected && appState.voice.liveOwner === "remote") await stopRemoteLive();
         await startRemoteLive({ microphone: false });
       }
       await request("/api/message", { method: "POST", body: JSON.stringify({ message: normalized, mode: currentMode }) });
@@ -1405,7 +1476,7 @@
         return;
       }
       if (voice.responseMode === "live") {
-        if (voice.liveConnected || livePeer) await stopRemoteLive();
+        if (livePeer || (voice.liveConnected && voice.liveOwner === "remote")) await stopRemoteLive();
         else await startRemoteLive({ microphone: true });
       } else {
         if (dictationArmed) stopDictation();

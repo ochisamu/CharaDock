@@ -162,10 +162,10 @@ test("remote server requires pairing, same-origin CSRF, and strips token from th
   assert.deepEqual(approvals, [{ id: "screen-1", action: "approve" }]);
 
   const liveHeaders = { "Content-Type": "application/json", Origin: origin, Cookie: cookie, "X-CharaDock-CSRF": payload.csrfToken };
-  assert.equal((await fetch(`${origin}/api/live/start`, { method: "POST", headers: liveHeaders, body: JSON.stringify({ sdp: "v=0\r\n...", mode: "chat" }) })).status, 200);
+  assert.equal((await fetch(`${origin}/api/live/start`, { method: "POST", headers: liveHeaders, body: JSON.stringify({ sdp: "v=0\r\n...", mode: "chat", takeover: true }) })).status, 200);
   assert.equal(liveStarts.length, 1);
   assert.match(liveStarts[0].remoteTokenHash, /^[a-f0-9]{64}$/);
-  assert.deepEqual({ ...liveStarts[0], remoteTokenHash: "[token]" }, { sdp: "v=0\r\n...", mode: "chat", remoteTokenHash: "[token]" });
+  assert.deepEqual({ ...liveStarts[0], remoteTokenHash: "[token]" }, { sdp: "v=0\r\n...", mode: "chat", takeover: true, remoteTokenHash: "[token]" });
   const audio = Buffer.alloc(480 * 4).toString("base64");
   assert.equal((await fetch(`${origin}/api/live/beatrice/audio`, { method: "POST", headers: liveHeaders, body: JSON.stringify({ audio, sessionId: "beatrice-session" }) })).status, 200);
   assert.equal(beatriceAudio.length, 1);
@@ -175,7 +175,11 @@ test("remote server requires pairing, same-origin CSRF, and strips token from th
   assert.equal((await fetch(`${origin}/api/live/beatrice/stop`, { method: "POST", headers: liveHeaders, body: JSON.stringify({ sessionId: "beatrice-session" }) })).status, 200);
   assert.deepEqual(beatriceStops, [{ sessionId: "beatrice-session", remoteTokenHash: liveStarts[0].remoteTokenHash }]);
   assert.equal((await fetch(`${origin}/api/live/stop`, { method: "POST", headers: liveHeaders, body: JSON.stringify({ liveSessionId: "live-session" }) })).status, 200);
-  assert.deepEqual(liveStops, [{ liveSessionId: "live-session", remoteTokenHash: liveStarts[0].remoteTokenHash }]);
+  assert.equal((await fetch(`${origin}/api/live/stop`, { method: "POST", headers: liveHeaders, body: "{}" })).status, 200);
+  assert.deepEqual(liveStops, [
+    { liveSessionId: "live-session", remoteTokenHash: liveStarts[0].remoteTokenHash },
+    { liveSessionId: undefined, remoteTokenHash: liveStarts[0].remoteTokenHash },
+  ]);
 
   const handoff = await fetch(`${origin}/api/secure-handoff`, { method: "POST", headers: liveHeaders, body: "{}" });
   assert.equal(handoff.status, 200);

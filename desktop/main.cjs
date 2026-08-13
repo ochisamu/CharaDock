@@ -351,6 +351,7 @@ let remoteBeatriceOutputFrames = [];
 let remoteBeatriceOutputSamples = 0;
 let remoteBeatriceOutputTimer = null;
 let remoteRealtimeSessionId = "";
+let remoteRealtimeOwnerHash = "";
 let remoteBeatriceSessionId = "";
 let remoteRealtimeStartReservation = "";
 let pendingScreenShare = null;
@@ -1702,6 +1703,7 @@ async function sendRemoteMessage(payload = {}) {
   }
   const liveMode = preferences.data.remoteResponseMode === "live";
   if (liveMode) {
+    diagnosticLog?.write("info", "remote-live-text-requested", { mode, length: message.length });
     if (!currentRealtimeClient()) throw new Error(mainText("先にスマートフォンのマイクボタンからLiveを開始してください。", "Start Live with the microphone button on this phone first."));
     if (activeRealtimeTarget !== "remote") throw new Error(mainText("PC側のLiveが使用中です。PCで停止してからスマートフォンのLiveを開始してください。", "Live is currently owned by the PC. Stop it there before starting Live on this phone."));
     if (mode !== preferences.data.interactionMode) throw new Error(mainText("Live接続中はPCと同じChat / Workを選んでください。", "While Live is connected, choose the same Chat / Work mode as the PC."));
@@ -1709,13 +1711,22 @@ async function sendRemoteMessage(payload = {}) {
     remoteLastDisplayText = mainText("Liveへ送信したよ。", "Sent to Live.");
     publishRemoteState();
     controlWindow?.webContents.send("remote:pcAudio", { enabled: preferences.data.remotePcAudioEnabled !== false });
-    const appended = await appendActiveRealtimeText(message);
+    let appended;
+    try {
+      appended = await appendActiveRealtimeText(message);
+    } catch (error) {
+      remoteBusy = false;
+      publishRemoteState();
+      diagnosticLog?.write("warn", "remote-live-text-failed", String(error?.message || error));
+      throw error;
+    }
     if (!appended) {
       remoteBusy = false;
       publishRemoteState();
       throw new Error(mainText("Liveへメッセージを送信できませんでした。接続し直してください。", "The message could not be sent to Live. Reconnect and try again."));
     }
-    return { accepted: true, realtime: true };
+    diagnosticLog?.write("info", "remote-live-text-accepted", { mode, delegated: appended?.delegated === true });
+    return { accepted: true, realtime: true, delegated: appended?.delegated === true };
   }
   if (currentRealtimeClient()) throw new Error(mainText("通常TTSで送るにはPC側のLiveを停止してください。", "Stop Live on the PC to use standard TTS."));
   if (mode !== preferences.data.interactionMode) await setInteractionMode(mode);
@@ -1746,6 +1757,17 @@ async function startRemoteRealtime(payload = {}) {
   if (mode === "work" && !(preferences.data.remoteWorkEnabled && preferences.data.backend === "codex" && validWorkDirectory())) {
     throw new Error(mainText("スマートフォンからのWorkが許可されていないか、作業先がありません。", "Phone Work is not allowed or no work folder is selected."));
   }
+  const requestedTakeover = payload.takeover === true;
+  if (requestedTakeover && activeRealtimeTarget && activeRealtimeTarget !== "remote" && currentRealtimeClient()) {
+    diagnosticLog?.write("info", "remote-live-takeover-requested");
+    const stopped = await stopActiveRealtime();
+    if (!stopped || currentRealtimeClient()) {
+      throw new Error(mainText("PC側のLiveを停止できませんでした。PCで停止してからもう一度試してください。", "The PC Live session could not be stopped. Stop it on the PC and try again."));
+    }
+    activeRealtimeClient = null;
+    activeRealtimeTarget = "";
+    activeRealtimeStarting = false;
+  }
   if (activeRealtimeStarting || activeRealtimeTarget || currentRealtimeClient()) {
     throw new Error(activeRealtimeTarget === "remote"
       ? mainText("このスマートフォンのLiveを一度停止してから接続し直してください。", "Stop this phone's current Live session before reconnecting.")
@@ -1758,10 +1780,17 @@ async function startRemoteRealtime(payload = {}) {
   }
   const startReservation = randomBytes(18).toString("base64url");
   remoteRealtimeStartReservation = startReservation;
+  remoteRealtimeOwnerHash = remoteTokenHash;
+  diagnosticLog?.write("info", "remote-live-start-requested", { mode });
   try {
     if (mode !== preferences.data.interactionMode) await setInteractionMode(mode);
+    if (remoteRealtimeStartReservation !== startReservation) {
+      throw Object.assign(new Error(mainText("Live接続を中止しました。", "Live connection was cancelled.")), { statusCode: 409 });
+    }
   } catch (error) {
     if (remoteRealtimeStartReservation === startReservation) remoteRealtimeStartReservation = "";
+    if (remoteRealtimeOwnerHash === remoteTokenHash) remoteRealtimeOwnerHash = "";
+    diagnosticLog?.write("warn", "remote-live-start-failed", String(error?.message || error));
     throw error;
   }
   remoteBusy = true;
@@ -1790,6 +1819,17 @@ async function startRemoteRealtime(payload = {}) {
       }
     }
     const result = await startCodexRealtimeVoice({ sdp: payload.sdp, remoteTokenHash }, "remote");
+    // A successful SDP exchange is enough to make the companion usable. Do
+    // not leave it in the pre-connection busy state if the started event was
+    // delivered before the phone's event stream was ready (or was delayed).
+    if (remoteRealtimeSessionId === liveSessionId && activeRealtimeTarget === "remote") {
+      remoteBusy = false;
+      if (/Live(?:へ)?接続中|Connecting to Live/i.test(remoteLastDisplayText)) {
+        remoteLastDisplayText = mainText("つながったよ。そのまま話してね。", "Connected. Go ahead and speak.");
+      }
+      publishRemoteState();
+    }
+    diagnosticLog?.write("info", "remote-live-started", { mode });
     return {
       accepted: true,
       ...result,
@@ -1801,8 +1841,10 @@ async function startRemoteRealtime(payload = {}) {
   } catch (error) {
     if (beatriceAudioOwner === remoteTokenHash) stopBeatriceHost();
     if (remoteRealtimeSessionId === liveSessionId) remoteRealtimeSessionId = "";
+    if (remoteRealtimeOwnerHash === remoteTokenHash) remoteRealtimeOwnerHash = "";
     remoteBusy = false;
     publishRemoteState();
+    diagnosticLog?.write("warn", "remote-live-start-failed", String(error?.message || error));
     throw error;
   } finally {
     if (remoteRealtimeStartReservation === startReservation) remoteRealtimeStartReservation = "";
@@ -1810,15 +1852,39 @@ async function startRemoteRealtime(payload = {}) {
 }
 
 async function stopRemoteRealtime(payload = {}) {
-  if (!currentRealtimeClient()) return { stopped: false };
-  if (activeRealtimeTarget !== "remote") throw new Error(mainText("PC側で開始したLiveはPCから停止してください。", "Stop a PC-owned Live session from the PC."));
-  if (!payload.liveSessionId || payload.liveSessionId !== remoteRealtimeSessionId) {
+  const remoteTokenHash = String(payload.remoteTokenHash || "");
+  if (!remoteTokenHash || remoteRealtimeOwnerHash !== remoteTokenHash) {
+    throw Object.assign(new Error("This device does not own the active Live session."), { statusCode: 403 });
+  }
+  if (activeRealtimeTarget && activeRealtimeTarget !== "remote") throw new Error(mainText("PC側で開始したLiveはPCから停止してください。", "Stop a PC-owned Live session from the PC."));
+  if (payload.liveSessionId && payload.liveSessionId !== remoteRealtimeSessionId) {
     throw Object.assign(new Error("This Live session is no longer active."), { statusCode: 409 });
   }
-  if (typeof beatriceAudioOwner === "string" && payload.remoteTokenHash && beatriceAudioOwner !== payload.remoteTokenHash) {
+  if (typeof beatriceAudioOwner === "string" && beatriceAudioOwner !== remoteTokenHash) {
     throw Object.assign(new Error("This device does not own the active Beatrice session."), { statusCode: 403 });
   }
-  return { stopped: await stopActiveRealtime() };
+  // The phone can be reloaded while its WebRTC start request is still in
+  // flight. Clearing the reservation lets that same paired device cancel the
+  // orphaned startup without needing the not-yet-returned session id.
+  if (!currentRealtimeClient() && remoteRealtimeStartReservation) {
+    remoteRealtimeStartReservation = "";
+    remoteRealtimeOwnerHash = "";
+    remoteRealtimeSessionId = "";
+    remoteBusy = false;
+    publishRemoteState();
+    diagnosticLog?.write("info", "remote-live-start-cancelled");
+    return { stopped: true, cancelled: true };
+  }
+  if (!currentRealtimeClient()) {
+    remoteRealtimeOwnerHash = "";
+    remoteRealtimeSessionId = "";
+    remoteBusy = false;
+    publishRemoteState();
+    return { stopped: false };
+  }
+  const stopped = await stopActiveRealtime();
+  diagnosticLog?.write("info", "remote-live-stopped", { stopped });
+  return { stopped };
 }
 
 function applyRemoteTtsModelSetting(setting = {}) {
@@ -5676,7 +5742,10 @@ async function stopActiveRealtime() {
     // audio owner alive. Keeping the route closed is safer than allowing a
     // later normal-TTS turn to overlap it.
     stopBeatriceHost();
-    remoteRealtimeSessionId = "";
+    if (client) {
+      remoteRealtimeSessionId = "";
+      remoteRealtimeOwnerHash = "";
+    }
     activeRealtimeTurnBuffer?.clear();
     activeRealtimeTurnBuffer = null;
     activeRealtimeInjectedSpeech = [];
@@ -5689,19 +5758,33 @@ async function appendActiveRealtimeText(text, options = {}) {
   const client = currentRealtimeClient();
   if (!client) return false;
   const normalized = normalizedText(text).slice(0, 1000);
+  if (!normalized) return false;
   if (preferences.data.interactionMode === "work" && activeRealtimeWorkDispatcher) {
     const dispatched = activeRealtimeWorkDispatcher.dispatchTyped?.(normalized, {
       artifactTarget: options?.artifactTarget || null,
       selectedSkillIds: options?.selectedSkillIds,
     });
     if (dispatched) return { accepted: true, delegated: true };
+    // Social conversation in Work should stay conversational instead of
+    // creating a fake Work run. A normal Codex turn grounds the answer, then
+    // appendSpeech routes that one final answer through the Live voice.
+    const answer = await activeRealtimeWorkDispatcher.dispatchConversation?.(normalized);
+    if (!answer) return false;
+    rememberConversationTurn(normalized, answer);
+    const spoken = await appendRealtimeOutputSpeechDirect(answer, "chat");
+    return spoken ? { accepted: true, delegated: true, conversation: true } : false;
   }
-  let appended = false;
-  appended = await client.appendRealtimeText(normalized, "user");
-  if (appended) {
-    activeRealtimeTurnBuffer?.addTyped(normalized);
-  }
-  return appended ? { accepted: true, delegated: false } : false;
+  // Realtime V3 appendText is context-only and does not start a response.
+  // Start a Codex turn on the same thread instead, then hand its one final
+  // answer to appendSpeech for Live audio and captions. Normal TTS stays out
+  // of the route, so it cannot produce a second, different answer.
+  const result = await client.sendMessage(normalized);
+  const answer = cleanAssistantText(result?.text || "").trim();
+  if (!answer) return false;
+  rememberConversationTurn(normalized, answer);
+  const spoken = await appendRealtimeOutputSpeechDirect(answer, "chat");
+  diagnosticLog?.write(spoken ? "info" : "warn", "realtime-typed-chat-routed", { target: activeRealtimeTarget || "unknown", answerLength: answer.length, spoken: Boolean(spoken) });
+  return spoken ? { accepted: true, delegated: true, conversation: true } : false;
 }
 
 function injectedSpeechComparable(value) {
@@ -5712,10 +5795,15 @@ function consumeRealtimeInjectedAssistant(text) {
   const cutoff = Date.now() - 30_000;
   activeRealtimeInjectedSpeech = activeRealtimeInjectedSpeech.filter((entry) => entry.createdAt >= cutoff);
   const comparable = injectedSpeechComparable(text);
-  const index = activeRealtimeInjectedSpeech.findIndex((entry) => {
+  let index = activeRealtimeInjectedSpeech.findIndex((entry) => {
     const pending = injectedSpeechComparable(entry.text);
     return pending && comparable && (pending === comparable || pending.includes(comparable) || comparable.includes(pending));
   });
+  // Frameless may naturally rephrase a client-selected Chat utterance. It is
+  // still the audio presentation of the already persisted Codex answer, not a
+  // second conversation turn. Consume the oldest pending Chat speech even
+  // when punctuation/wording differs so history never records two replies.
+  if (index < 0) index = activeRealtimeInjectedSpeech.findIndex((entry) => entry.kind === "chat");
   if (index < 0) return null;
   return activeRealtimeInjectedSpeech.splice(index, 1)[0] || null;
 }
@@ -5869,6 +5957,8 @@ async function startCodexRealtimeVoice(payload, target = "control") {
   const assistantTranscript = { text: "", active: false };
   let pendingNativeWorkRequest = "";
   let nativeWorkTurn = null;
+  const pendingNativeConversationTurns = [];
+  const nativeConversationTurnIds = new Set();
   let nativeWorkTrackingClosed = false;
   let nativeCompletionAwaitingSpeech = null;
   let nativeCompletionTimer = null;
@@ -6000,6 +6090,17 @@ async function startCodexRealtimeVoice(payload, target = "control") {
     const method = String(message?.method || "");
     const params = message?.params || {};
     const turnId = String(params.turnId || params.turn?.id || nativeWorkTurn?.turnId || "");
+    if (method === "turn/started" && pendingNativeConversationTurns.length) {
+      const pending = pendingNativeConversationTurns.shift();
+      pending.turnId = turnId;
+      if (turnId) nativeConversationTurnIds.add(turnId);
+      diagnosticLog?.write("info", "realtime-work-conversation-handoff-started", { turnId });
+      return;
+    }
+    if (turnId && nativeConversationTurnIds.has(turnId)) {
+      if (method === "turn/completed") nativeConversationTurnIds.delete(turnId);
+      return;
+    }
     if (method === "turn/started") {
       const state = ensureNativeWorkTurn(turnId);
       if (state?.run) {
@@ -6101,6 +6202,20 @@ async function startCodexRealtimeVoice(payload, target = "control") {
       });
       return true;
     },
+    async dispatchConversation(request) {
+      const normalized = String(request || "").trim();
+      if (!workMode || !normalized) return false;
+      const pending = { turnId: "" };
+      pendingNativeConversationTurns.push(pending);
+      try {
+        const result = await realtimeClient.sendMessage(normalized);
+        return cleanAssistantText(result?.text || "").trim();
+      } finally {
+        const pendingIndex = pendingNativeConversationTurns.indexOf(pending);
+        if (pendingIndex >= 0) pendingNativeConversationTurns.splice(pendingIndex, 1);
+        if (pending.turnId) nativeConversationTurnIds.delete(pending.turnId);
+      }
+    },
     setSkills(ids) {
       const skillContext = realtimeWorkSkillContext(realtimeClient, ids);
       if (!skillContext) return;
@@ -6120,6 +6235,8 @@ async function startCodexRealtimeVoice(payload, target = "control") {
         });
       }
       nativeWorkTurn = null;
+      pendingNativeConversationTurns.length = 0;
+      nativeConversationTurnIds.clear();
     },
   };
   activeRealtimeWorkDispatcher = workMode ? realtimeWorkDispatcher : null;
@@ -6135,7 +6252,10 @@ async function startCodexRealtimeVoice(payload, target = "control") {
       prompt: workMode
         ? undefined
         : [personaInstructions(), mainText("日本語の自然な短い音声会話として応答してください。", "Respond as a natural, concise spoken conversation in English."), realtimeMemoryContext, sharedContext].filter(Boolean).join("\n\n"),
-      clientManagedHandoffs: false,
+      // Work relies on app-server's native delegation stream. Chat keeps that
+      // stream client-managed so a typed Codex turn is delivered exactly once
+      // through the explicit appendSpeech route below.
+      clientManagedHandoffs: !workMode,
       codexResponseHandoffMode: workMode ? "thinking" : "bemTags",
       delegationAckFiller: workMode ? false : undefined,
       // The Work thread retains executor instructions, cwd, permissions, and
@@ -6151,6 +6271,7 @@ async function startCodexRealtimeVoice(payload, target = "control") {
         if (message?.method === "thread/realtime/error") {
           const original = String(message.params?.message || "");
           if (original) console.warn("Codex Realtime:", original);
+          diagnosticLog?.write("warn", "realtime-event-error", original || "Unknown Realtime error");
           forwarded = {
             ...message,
             params: {
@@ -6165,6 +6286,9 @@ async function startCodexRealtimeVoice(payload, target = "control") {
         if (target === "remote") remoteServer?.publish("live", forwarded);
       const method = String(message?.method || "");
       const params = message?.params || {};
+      if (target === "remote" && (method.startsWith("thread/realtime/transcript/") || ["thread/realtime/started", "thread/realtime/closed", "thread/realtime/error"].includes(method))) {
+        diagnosticLog?.write("info", "remote-live-event", { method, role: String(params.role || "") });
+      }
       handleNativeWorkEvent(message);
       if (method === "thread/realtime/started" && target === "remote") {
         const remoteTokenHash = String(payload?.remoteTokenHash || "");
@@ -6283,6 +6407,9 @@ async function startCodexRealtimeVoice(payload, target = "control") {
         }
         activeRealtimeWorkSpeech = null;
         stopBeatriceHost();
+        remoteRealtimeSessionId = "";
+        remoteRealtimeOwnerHash = "";
+        remoteRealtimeStartReservation = "";
         if (activeRealtimeClient === realtimeClient) {
           activeRealtimeClient = null;
           activeRealtimeTarget = "";
