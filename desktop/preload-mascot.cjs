@@ -1509,6 +1509,34 @@ window.addEventListener("DOMContentLoaded", () => {
       setStatus("Liveへの接続が完了してから送信してください", 5000);
       return;
     }
+    const shouldAutoStartLive = !realtimePeer
+      && appState?.backend === "codex"
+      && appState?.speechInputProvider === "realtime"
+      && appState?.realtimeAutoStartOnText !== false;
+    if (shouldAutoStartLive) {
+      if (attachments.length) {
+        setStatus(uiText("ファイル添付を外すか、Liveの「テキスト送信で開始」をOFFにしてください", "Remove the attachment or turn off “Start when sending text” for Live"), 7000);
+        return;
+      }
+      if (selectedSkillIds.length && appState?.interactionMode !== "work") {
+        setStatus(uiText("Skillを指定したLive送信はWorkで利用してください", "Use Work to send selected Skills through Live"), 7000);
+        return;
+      }
+      if (realtimeUnavailable) {
+        setStatus(uiText("Liveを開始できません。設定を確認してください", "Live cannot start. Check the settings"), 6000);
+        return;
+      }
+      setStatus(uiText("マイクを有効にしてLiveへ接続しています…", "Enabling the microphone and connecting to Live…"), 30_000);
+      try {
+        await startRealtime();
+      } catch (error) {
+        ipcRenderer.invoke("mascotInline:realtimeStop").catch(() => {});
+        closeRealtime();
+        realtimeUnavailable ||= /まだ提供されていません/.test(error.message);
+        setStatus(uiText(`Liveを開始できません: ${error.message}`, `Could not start Live: ${error.message}`), 7000);
+        return;
+      }
+    }
     if (realtimePeer && attachments.length) {
       setStatus(uiText("ファイル添付はLiveを停止してから送信してください", "Stop Live before sending file attachments"), 6000);
       return;
@@ -1662,8 +1690,32 @@ window.addEventListener("DOMContentLoaded", () => {
     }
     const zone = event.clientY < window.innerHeight * .5 ? "head" : "body";
     try {
+      const shouldAutoStartLive = !realtimePeer
+        && appState?.backend === "codex"
+        && appState?.speechInputProvider === "realtime"
+        && appState?.realtimeAutoStartOnPet === true;
+      if (realtimeSessionState === "connecting") {
+        setStatus("Liveへの接続が完了してから、もう一度タップしてください", 5000);
+        return;
+      }
+      if (shouldAutoStartLive) {
+        if (realtimeUnavailable) {
+          setStatus("Liveを開始できません。設定を確認してください", 6000);
+          return;
+        }
+        setStatus("マイクを有効にしてLiveへ接続しています…", 30_000);
+        try {
+          await startRealtime();
+        } catch (error) {
+          ipcRenderer.invoke("mascotInline:realtimeStop").catch(() => {});
+          closeRealtime();
+          realtimeUnavailable ||= /まだ提供されていません/.test(error.message);
+          setStatus(`Liveを開始できません: ${error.message}`, 7000);
+          return;
+        }
+      }
       const result = await ipcRenderer.invoke("mascotInline:pet", { zone });
-      showSpeech(result);
+      if (!result?.deferDisplayToRealtime) showSpeech(result);
       if (result?.realtimeSpeechError) setStatus(`Realtime音声: ${result.realtimeSpeechError}`, 5000);
     } catch (error) {
       setStatus(`クリック反応: ${error.message}`, 5000);

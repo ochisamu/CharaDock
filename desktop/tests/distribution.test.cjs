@@ -208,6 +208,7 @@ test("voice input UI requires one explicit supported provider", () => {
 
 test("desktop exposes three pointer modes and cancellable voice auto-send", () => {
   const html = fs.readFileSync(path.join(projectRoot, "desktop", "control.html"), "utf8");
+  const control = fs.readFileSync(path.join(projectRoot, "desktop", "control.js"), "utf8");
   const mascot = fs.readFileSync(path.join(projectRoot, "desktop", "preload-mascot.cjs"), "utf8");
   for (const mode of ["interactive", "auto-hide", "click-through"]) {
     assert.match(html, new RegExp(`name="mascotPointerMode" value="${mode}"`));
@@ -217,6 +218,11 @@ test("desktop exposes three pointer modes and cancellable voice auto-send", () =
   assert.match(mascot, /data-countdown-action="send"/);
   assert.match(mascot, /data-countdown-action="cancel"/);
   assert.match(mascot, /mascotInline:interactionHold/);
+  for (const id of ["realtimeAutoStartSettings", "realtimeAutoStartOnTextToggle", "realtimeAutoStartOnPetToggle"]) assert.match(html, new RegExp(`id="${id}"`));
+  assert.match(control, /shouldAutoStartLive[\s\S]*state\?\.realtimeAutoStartOnText !== false[\s\S]*await startCodexRealtimeVoice\(\)/);
+  assert.match(mascot, /shouldAutoStartLive[\s\S]*appState\?\.realtimeAutoStartOnText !== false[\s\S]*await startRealtime\(\)/);
+  assert.match(mascot, /appState\?\.realtimeAutoStartOnPet === true[\s\S]*await startRealtime\(\)[\s\S]*mascotInline:pet/);
+  assert.match(mascot, /if \(!result\?\.deferDisplayToRealtime\) showSpeech\(result\)/);
 });
 
 test("setup can be rerun and support diagnostics stay separate from private content", () => {
@@ -304,7 +310,7 @@ test("chat composers select per-turn Skills from plus, slash, and at shortcuts",
   assert.match(main, /function setActiveRealtimeTurnSkills\(value\)/);
   assert.match(main, /function realtimeWorkSkillContext\(client, selectedSkillIds/);
   assert.match(main, /function realtimeWorkFrontendContext\(client, selectedSkillIds/);
-  assert.match(main, /initialItems: workMode[\s\S]*realtimeWorkFrontendContext/);
+  assert.match(main, /initialItems: \[\{[\s\S]*realtimeWorkFrontendContext[\s\S]*realtimeChatFrontendContext/);
   assert.match(main, /activeRealtimeTurnSkillIds = \[\]/);
   assert.match(control, /appendCodexRealtimeText\(message, selectedSkillIds\)/);
   assert.match(mascot, /mascotInline:realtimeTurnSkills/);
@@ -437,6 +443,15 @@ test("remote access exposes compact avatar dialogue, device controls, and Live r
   assert.doesNotMatch(remoteJs, /button\.disabled = liveStarting \|\| pcOwnsLive/);
   assert.match(remoteJs, /PC側のLiveからこの端末へ切り替え/);
   assert.match(remoteJs, /takeover:\s*appState\?\.voice\?\.liveConnected/);
+  const remoteTapHandler = remoteJs.match(/async function tapCharacter\(event\) \{[\s\S]*?\n  \}\n\n  async function openArtifact/)?.[0] || "";
+  assert.match(remoteTapHandler, /voice\.responseMode === "live" && !livePeer/);
+  assert.match(remoteTapHandler, /!microphoneAvailable\(\)[\s\S]*タップからLiveを始めるにはHTTPS/);
+  assert.match(remoteTapHandler, /voice\.liveOwner !== "remote"[\s\S]*PC側のLiveが使用中/);
+  assert.match(remoteTapHandler, /await startRemoteLive\(\{ microphone: true \}\)[\s\S]*request\("\/api\/pet"/);
+  assert.doesNotMatch(remoteTapHandler, /startRemoteLive\(\{ microphone: false \}\)/);
+  const remoteTextHandler = remoteJs.match(/async function sendRemoteText\(message\) \{[\s\S]*?\n  \}\n\n  async function flushPendingRemoteFollowUp/)?.[0] || "";
+  assert.match(remoteTextHandler, /responseMode === "live"[\s\S]*await startRemoteLive\(\{ microphone: true \}\)[\s\S]*request\("\/api\/message"/);
+  assert.doesNotMatch(remoteTextHandler, /startRemoteLive\(\{ microphone: false \}\)/);
   assert.match(remoteJs, /!modeInitialized \|\| appState\?\.voice\?\.liveConnected/);
   assert.match(remoteJs, /liveSessionId: stoppedSessionId \|\| undefined/);
   assert.match(remoteJs, /charadock\.remote\.audio"\) !== "0"/);
@@ -453,11 +468,22 @@ test("remote access exposes compact avatar dialogue, device controls, and Live r
   assert.match(main, /requestedTakeover[\s\S]*remote-live-takeover-requested/);
   assert.match(main, /realtime:\s*true,\s*delegated:\s*appended\?\.delegated === true/);
   assert.match(main, /Realtime V3 appendText is context-only[\s\S]*await client\.sendMessage\(normalized\)/);
-  assert.match(main, /clientManagedHandoffs:\s*!workMode/);
+  assert.match(main, /prompt: undefined,[\s\S]*clientManagedHandoffs:\s*false/);
+  assert.match(main, /Chat is conversational and strictly read-only/);
   assert.match(main, /const answer = cleanAssistantText\(result\?\.text \|\| ""\)\.trim\(\)/);
   assert.match(main, /realtime-work-conversation-handoff-started/);
   assert.match(main, /async dispatchConversation\(request\)/);
   assert.match(main, /remoteRealtimeSessionId === liveSessionId && activeRealtimeTarget === "remote"[\s\S]*remoteBusy = false/);
+  assert.doesNotMatch(main, /remoteLastDisplayText = mainText\("Liveへ送信したよ。"/);
+  assert.doesNotMatch(main, /remoteLastDisplayText = mainText\("Liveへ接続中…"/);
+  assert.doesNotMatch(remoteJs, /setResponseText\(text\("Liveへ接続中…"/);
+  assert.match(remoteJs, /setConnection\(false, text\("Live接続中…", "Connecting to Live…"\)\)/);
+  assert.doesNotMatch(remoteJs, /setResponseText\(text\("つながったよ。そのまま話してね。"/);
+  assert.doesNotMatch(main, /startupGreeting\?\.text \|\| mainText\("つながったよ。そのまま話してね。"/);
+  assert.match(main, /if \(startupGreeting\?\.text\) remoteLastDisplayText = startupGreeting\.text/);
+  assert.match(main, /deferDisplayToRealtime: Boolean\(realtimeSpeech\.spoken\)/);
+  assert.match(main, /if \(!result\.deferDisplayToRealtime\) remoteLastDisplayText = result\.text/);
+  assert.match(remoteJs, /if \(!result\?\.deferDisplayToRealtime\) setResponseText\(result\?\.text\)/);
   assert.match(remoteHtml, /PCでも音を出す<\/strong><small>初期状態はOFF/);
   assert.match(remoteHtml, /この端末で回答音声を再生<\/strong><small>初期状態はON/);
 });

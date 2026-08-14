@@ -541,6 +541,12 @@
                 <h3>GPT-Live / Codex Voice</h3>
                 <label>Realtimeの声<select id="realtimeVoiceSelect"><option value="cove">Cove（標準）</option></select></label>
                 <p id="realtimeVoiceStatus" class="hint">Realtime用の音声一覧を確認しています…</p>
+                <fieldset id="realtimeAutoStartSettings" class="nested-settings live-auto-start-settings">
+                  <legend>PCでのLive自動開始</legend>
+                  <label class="switch-row"><span><strong>テキスト送信で開始</strong><small>送信時にマイクを有効にし、Liveの声で返します</small></span><input id="realtimeAutoStartOnTextToggle" type="checkbox" /><i></i></label>
+                  <label class="switch-row"><span><strong>キャラクターのタップで開始</strong><small>タップ時にマイクを有効にし、Liveの声で反応します</small></span><input id="realtimeAutoStartOnPetToggle" type="checkbox" /><i></i></label>
+                  <p class="hint">自動開始するとLive接続を維持します。終了するときは音声ボタンを押してください。OFFの操作は、Live未接続時のみ通常TTSを使います。</p>
+                </fieldset>
                 <div class="tts-provider-settings beatrice-settings">
                   <label>Realtime声変換<select id="realtimeVoiceConversionSelect"><option value="none">変換しない</option><option value="beatrice-v2">Beatrice 2（ネイティブ）</option></select></label>
                   <div id="beatriceCharacterSettings" class="beatrice-character-settings" hidden>
@@ -581,7 +587,7 @@
                     <div class="beatrice-character-footer"><p id="beatriceStatus" class="hint">Beatrice 2を確認しています…</p><button id="beatriceResetButton" class="button button-quiet" type="button">標準値に戻す</button></div>
                   </div>
                 </div>
-                <p class="hint">男性寄り・女性寄り・中性的は聞こえ方の目安です。OpenAI公式の性別分類ではなく、言語や話し方でも印象は変わります。Realtimeセッションは録音ボタンからのみ開始し、キャラクタークリックは表情と吹き出しだけで反応します。</p>
+                <p class="hint">男性寄り・女性寄り・中性的は聞こえ方の目安です。OpenAI公式の性別分類ではなく、言語や話し方でも印象は変わります。</p>
               </div>
               <fieldset id="standardTtsSettings" class="voice-mode-panel standard-tts-settings">
               <label class="switch-row"><span><strong>AIの返答を音声で読み上げる</strong><small>読み上げのON/OFFは全キャラクター共通です</small></span><input id="ttsToggle" type="checkbox" /><i></i></label>

@@ -1708,7 +1708,6 @@ async function sendRemoteMessage(payload = {}) {
     if (activeRealtimeTarget !== "remote") throw new Error(mainText("PC側のLiveが使用中です。PCで停止してからスマートフォンのLiveを開始してください。", "Live is currently owned by the PC. Stop it there before starting Live on this phone."));
     if (mode !== preferences.data.interactionMode) throw new Error(mainText("Live接続中はPCと同じChat / Workを選んでください。", "While Live is connected, choose the same Chat / Work mode as the PC."));
     remoteBusy = true;
-    remoteLastDisplayText = mainText("Liveへ送信したよ。", "Sent to Live.");
     publishRemoteState();
     controlWindow?.webContents.send("remote:pcAudio", { enabled: preferences.data.remotePcAudioEnabled !== false });
     let appended;
@@ -1794,7 +1793,6 @@ async function startRemoteRealtime(payload = {}) {
     throw error;
   }
   remoteBusy = true;
-  remoteLastDisplayText = mainText("Liveへ接続中…", "Connecting to Live…");
   publishRemoteState();
   // No live client is active here (checked above), so an existing host can
   // only be residue from an interrupted startup and must not be reused.
@@ -1824,9 +1822,6 @@ async function startRemoteRealtime(payload = {}) {
     // delivered before the phone's event stream was ready (or was delayed).
     if (remoteRealtimeSessionId === liveSessionId && activeRealtimeTarget === "remote") {
       remoteBusy = false;
-      if (/Live(?:へ)?接続中|Connecting to Live/i.test(remoteLastDisplayText)) {
-        remoteLastDisplayText = mainText("つながったよ。そのまま話してね。", "Connected. Go ahead and speak.");
-      }
       publishRemoteState();
     }
     diagnosticLog?.write("info", "remote-live-started", { mode });
@@ -2468,6 +2463,8 @@ async function supportDiagnostics() {
       interactionMode: state.interactionMode,
       continuationStartupSpeechEnabled: state.continuationStartupSpeechEnabled,
       speechInputProvider: state.speechInputProvider,
+      realtimeAutoStartOnText: state.realtimeAutoStartOnText,
+      realtimeAutoStartOnPet: state.realtimeAutoStartOnPet,
       voiceActivationMode: state.voiceActivationMode,
       vadSensitivity: state.vadSensitivity,
       voiceAutoSend: state.voiceAutoSend,
@@ -3043,6 +3040,8 @@ function broadcastAppState() {
   });
   mascotWindow?.webContents.send("mascot:voiceInputSettings", {
     speechInputProvider: state.speechInputProvider,
+    realtimeAutoStartOnText: state.realtimeAutoStartOnText,
+    realtimeAutoStartOnPet: state.realtimeAutoStartOnPet,
     voiceActivationMode: state.voiceActivationMode,
     vadSensitivity: state.vadSensitivity,
     voiceAutoSend: state.voiceAutoSend,
@@ -5712,6 +5711,25 @@ function realtimeWorkFrontendContext(client, selectedSkillIds = []) {
   ].filter(Boolean).join("\n\n");
 }
 
+function realtimeChatFrontendContext(realtimeMemoryContext = "", sharedContext = "") {
+  return [
+    personaInstructions(),
+    [
+      "CharaDock Live Chat capability boundary:",
+      "Chat is conversational and strictly read-only. You may answer directly when no external information or tool is needed.",
+      "For current information, web research, verification, or read-only inspection, request exactly one Codex delegation/handoff and wait for its grounded result.",
+      "Before a handoff, never repeat, quote, or paraphrase the user's request as assistant dialogue. This can reverse the speaker roles—for example, the assistant must not echo a request ending in '教えて'.",
+      "When a short acknowledgement is useful, speak only from the assistant's own perspective, such as '確認してみるね', then hand off. Ask the user a question only when clarification is genuinely required.",
+      "Never create, edit, rename, move, or delete files; never run a command or operate the browser/computer in a way that changes external state.",
+      "If the user asks for a change, briefly explain that Work is required. Do not claim that the change started or completed.",
+      "Do not stop after an acknowledgement such as 'I am checking'. Treat the delegated final result as the answer and present it naturally in the character's language and style.",
+      "Use the language required by the character instructions from the first response.",
+    ].join("\n"),
+    realtimeMemoryContext,
+    sharedContext,
+  ].filter(Boolean).join("\n\n");
+}
+
 function setActiveRealtimeTurnSkills(value) {
   if (!currentRealtimeClient() || !activeRealtimeWorkDispatcher || preferences.data.interactionMode !== "work") {
     throw new Error(mainText("Skillは接続中のLive Workで指定できます。", "Skills can be selected while Live Work is connected."));
@@ -5775,16 +5793,15 @@ async function appendActiveRealtimeText(text, options = {}) {
     return spoken ? { accepted: true, delegated: true, conversation: true } : false;
   }
   // Realtime V3 appendText is context-only and does not start a response.
-  // Start a Codex turn on the same thread instead, then hand its one final
-  // answer to appendSpeech for Live audio and captions. Normal TTS stays out
-  // of the route, so it cannot produce a second, different answer.
+  // Start a read-only Codex turn on the same Live thread. With native
+  // handoffs enabled, app-server owns the single final voice response; do not
+  // also appendSpeech here or typed Chat would be spoken twice.
   const result = await client.sendMessage(normalized);
   const answer = cleanAssistantText(result?.text || "").trim();
   if (!answer) return false;
   rememberConversationTurn(normalized, answer);
-  const spoken = await appendRealtimeOutputSpeechDirect(answer, "chat");
-  diagnosticLog?.write(spoken ? "info" : "warn", "realtime-typed-chat-routed", { target: activeRealtimeTarget || "unknown", answerLength: answer.length, spoken: Boolean(spoken) });
-  return spoken ? { accepted: true, delegated: true, conversation: true } : false;
+  diagnosticLog?.write("info", "realtime-typed-chat-routed", { target: activeRealtimeTarget || "unknown", answerLength: answer.length, route: "native-handoff" });
+  return { accepted: true, delegated: true, conversation: true };
 }
 
 function injectedSpeechComparable(value) {
@@ -5894,6 +5911,10 @@ async function characterPetResponse(payload = {}, options = {}) {
     realtimeSpeech: realtimeSpeech.spoken,
     realtimeSpeechBusy: realtimeSpeech.busy,
     realtimeSpeechError,
+    // appendSpeech first accepts this phrase as an instruction, then Live
+    // publishes the phrase it actually spoke as a transcript. Let that one
+    // transcript own the bubble so a tap never appears as two replies.
+    deferDisplayToRealtime: Boolean(realtimeSpeech.spoken),
   };
 }
 
@@ -5906,7 +5927,7 @@ async function remoteCharacterPet(payload = {}) {
       && preferences.data.remoteResponseMode === "live"
       && activeRealtimeTarget === "remote",
   });
-  remoteLastDisplayText = result.text;
+  if (!result.deferDisplayToRealtime) remoteLastDisplayText = result.text;
   if (result.ttsEnabled && !currentRealtimeClient() && preferences.data.remotePcAudioEnabled !== false && mascotWindow && !mascotWindow.isDestroyed()) {
     mascotWindow.webContents.send("mascot:speech", result);
   }
@@ -5959,6 +5980,7 @@ async function startCodexRealtimeVoice(payload, target = "control") {
   let nativeWorkTurn = null;
   const pendingNativeConversationTurns = [];
   const nativeConversationTurnIds = new Set();
+  const nativeChatTurnIds = new Set();
   let nativeWorkTrackingClosed = false;
   let nativeCompletionAwaitingSpeech = null;
   let nativeCompletionTimer = null;
@@ -5966,11 +5988,29 @@ async function startCodexRealtimeVoice(payload, target = "control") {
     clearTimeout(nativeCompletionTimer);
     nativeCompletionTimer = null;
   };
-  const finishNativeRealtimeWork = () => {
+  const finishNativeRealtimeWork = ({ revealFallback = false } = {}) => {
     if (!nativeCompletionAwaitingSpeech) return;
     const completed = nativeCompletionAwaitingSpeech;
     nativeCompletionAwaitingSpeech = null;
     clearNativeCompletionTimer();
+    if (revealFallback) {
+      // The delegated Codex turn completed, but its final Live transcript did
+      // not arrive. Keep the verified result visible instead of leaving the
+      // acknowledgement in the bubble forever. This is display-only: never
+      // start normal TTS while Live owns the voice route.
+      publishChatStream({
+        phase: "done",
+        mode: "work",
+        text: completed.resultText,
+        displayText: completed.displayText,
+        artifacts: completed.artifacts,
+        workRunId: completed.workRunId,
+        deferDisplayToRealtime: false,
+        realtimeOutput: true,
+        realtimeSpeechPending: false,
+        ttsEnabled: false,
+      });
+    }
     publishChatStream({
       phase: "realtime-work-complete",
       mode: "work",
@@ -5979,6 +6019,21 @@ async function startCodexRealtimeVoice(payload, target = "control") {
     });
     remoteBusy = false;
     publishRemoteState();
+  };
+  const recoverNativeRealtimeWorkSpeech = async () => {
+    const completed = nativeCompletionAwaitingSpeech;
+    if (!completed) return;
+    clearNativeCompletionTimer();
+    const accepted = await appendRealtimeOutputSpeechDirect(completed.displayText, "completion").catch(() => false);
+    if (nativeCompletionAwaitingSpeech !== completed) return;
+    if (!accepted) {
+      finishNativeRealtimeWork({ revealFallback: true });
+      return;
+    }
+    // appendSpeech was accepted, so keep Live as the only audio route. If the
+    // service still omits its transcript, reveal the verified text rather
+    // than leaving the UI busy indefinitely.
+    nativeCompletionTimer = setTimeout(() => finishNativeRealtimeWork({ revealFallback: true }), 12_000);
   };
   const noteNativeWorkRequest = async (request, _source = "voice", options = {}) => {
     const normalized = String(request || "").trim();
@@ -6080,9 +6135,15 @@ async function startCodexRealtimeVoice(payload, target = "control") {
       realtimeSpeechPending: true,
       ttsEnabled: false,
     });
-    nativeCompletionAwaitingSpeech = { workRunId: state.run.id, comparable: injectedSpeechComparable(resultText || displayText) };
+    nativeCompletionAwaitingSpeech = {
+      workRunId: state.run.id,
+      comparable: injectedSpeechComparable(resultText || displayText),
+      resultText: resultText || displayText,
+      displayText,
+      artifacts,
+    };
     clearNativeCompletionTimer();
-    nativeCompletionTimer = setTimeout(finishNativeRealtimeWork, 30_000);
+    nativeCompletionTimer = setTimeout(recoverNativeRealtimeWorkSpeech, 6_000);
     nativeWorkTurn = null;
   };
   const handleNativeWorkEvent = (message) => {
@@ -6172,6 +6233,32 @@ async function startCodexRealtimeVoice(payload, target = "control") {
     }
     if (method === "turn/completed") completeNativeWorkTurn(message);
   };
+  const handleNativeChatEvent = (message) => {
+    if (workMode || String(message?.method || "").startsWith("thread/realtime/")) return;
+    const method = String(message?.method || "");
+    const turn = message?.params?.turn || {};
+    const turnId = String(turn.id || message?.params?.turnId || "");
+    if (method === "turn/started" && turnId) {
+      nativeChatTurnIds.add(turnId);
+      remoteBusy = true;
+      publishRemoteState();
+      diagnosticLog?.write("info", "realtime-chat-native-handoff-started", { turnId });
+      return;
+    }
+    if (method !== "turn/completed") return;
+    if (turnId) nativeChatTurnIds.delete(turnId);
+    if (String(turn.status || "completed") !== "completed") {
+      publishChatStream({
+        phase: "error",
+        mode: "chat",
+        message: String(turn.error?.message || mainText("Chatの確認を完了できませんでした。", "Chat could not complete the lookup.")),
+        realtimeOutput: true,
+      });
+    }
+    remoteBusy = nativeChatTurnIds.size > 0;
+    publishRemoteState();
+    diagnosticLog?.write("info", "realtime-chat-native-handoff-completed", { turnId, status: String(turn.status || "completed") });
+  };
   const realtimeWorkDispatcher = {
     noteRequest: noteNativeWorkRequest,
     dispatchTyped(request, options = {}) {
@@ -6224,7 +6311,7 @@ async function startCodexRealtimeVoice(payload, target = "control") {
       });
     },
     close() {
-      if (nativeCompletionAwaitingSpeech) finishNativeRealtimeWork();
+      if (nativeCompletionAwaitingSpeech) finishNativeRealtimeWork({ revealFallback: true });
       nativeWorkTrackingClosed = true;
       clearNativeCompletionTimer();
       if (nativeWorkTurn?.run?.status === "running") {
@@ -6245,27 +6332,25 @@ async function startCodexRealtimeVoice(payload, target = "control") {
     const result = await realtimeClient.startRealtime({
       sdp,
       voice: characterTtsSettings().realtimeVoice,
-      // Work deliberately omits `prompt`: app-server then supplies its built-in
-      // Realtime V3 prompt, which owns the decision to converse or delegate a
-      // real task. The Work thread's developer instructions, persona, cwd,
-      // permissions, memories, and startup context remain available to it.
-      prompt: workMode
-        ? undefined
-        : [personaInstructions(), mainText("日本語の自然な短い音声会話として応答してください。", "Respond as a natural, concise spoken conversation in English."), realtimeMemoryContext, sharedContext].filter(Boolean).join("\n\n"),
-      // Work relies on app-server's native delegation stream. Chat keeps that
-      // stream client-managed so a typed Codex turn is delivered exactly once
-      // through the explicit appendSpeech route below.
-      clientManagedHandoffs: !workMode,
-      codexResponseHandoffMode: workMode ? "thinking" : "bemTags",
+      // Keep app-server's built-in Realtime prompt in both modes so it can
+      // decide when a grounded Codex handoff is required. Chat delegates to
+      // the read-only conversation client; Work delegates to the
+      // workspace-write client selected above.
+      prompt: undefined,
+      clientManagedHandoffs: false,
+      codexResponseHandoffMode: "thinking",
       delegationAckFiller: workMode ? false : undefined,
       // The Work thread retains executor instructions, cwd, permissions, and
       // tools for the delegated Codex turn. Do not also expose that executor
       // startup context to the voice model: it has no file tools and may
       // otherwise claim it performed work instead of requesting a handoff.
       includeStartupContext: !workMode,
-      initialItems: workMode
-        ? [{ role: "developer", text: realtimeWorkFrontendContext(realtimeClient, initialTurnSkillIds) }]
-        : [],
+      initialItems: [{
+        role: "developer",
+        text: workMode
+          ? realtimeWorkFrontendContext(realtimeClient, initialTurnSkillIds)
+          : realtimeChatFrontendContext(realtimeMemoryContext, sharedContext),
+      }],
       onEvent: (message) => {
         let forwarded = message;
         if (message?.method === "thread/realtime/error") {
@@ -6290,12 +6375,16 @@ async function startCodexRealtimeVoice(payload, target = "control") {
         diagnosticLog?.write("info", "remote-live-event", { method, role: String(params.role || "") });
       }
       handleNativeWorkEvent(message);
+      handleNativeChatEvent(message);
       if (method === "thread/realtime/started" && target === "remote") {
         const remoteTokenHash = String(payload?.remoteTokenHash || "");
         const startupGreeting = pendingRemoteLiveGreetings.get(remoteTokenHash);
         if (startupGreeting) pendingRemoteLiveGreetings.delete(remoteTokenHash);
         remoteBusy = false;
-        remoteLastDisplayText = startupGreeting?.text || mainText("つながったよ。そのまま話してね。", "Connected. Go ahead and speak.");
+        // A transport becoming ready is UI state, not character dialogue.
+        // Only a real, grounded startup greeting is allowed to replace the
+        // conversation bubble here.
+        if (startupGreeting?.text) remoteLastDisplayText = startupGreeting.text;
         publishRemoteState();
         if (startupGreeting?.text) {
           queueMicrotask(() => appendRealtimeOutputSpeechDirect(startupGreeting.text, "startup").catch((error) => {
@@ -6357,7 +6446,7 @@ async function startCodexRealtimeVoice(payload, target = "control") {
             realtimeOutput: true,
             final: true,
           });
-          if (!workMode) remoteBusy = false;
+          if (!workMode && !nativeChatTurnIds.size) remoteBusy = false;
           const injectedSpeech = consumeRealtimeInjectedAssistant(assistantTranscript.text);
           if (workMode && nativeCompletionAwaitingSpeech) {
             const spoken = injectedSpeechComparable(assistantTranscript.text);
@@ -6419,6 +6508,7 @@ async function startCodexRealtimeVoice(payload, target = "control") {
         realtimeTurnBuffer.clear();
         activeRealtimeInjectedSpeech = [];
         activeRealtimeTurnSkillIds = [];
+        nativeChatTurnIds.clear();
         publishActiveRealtimeTurnSkills();
         remoteBusy = false;
         remoteServer?.publish("stream", {
@@ -6448,6 +6538,7 @@ async function startCodexRealtimeVoice(payload, target = "control") {
     realtimeTurnBuffer.clear();
     activeRealtimeInjectedSpeech = [];
     activeRealtimeTurnSkillIds = [];
+    nativeChatTurnIds.clear();
     publishActiveRealtimeTurnSkills();
     remoteBusy = false;
     publishRemoteState();
@@ -7280,6 +7371,8 @@ function registerIpc() {
       englishPronunciationEnabled: patch?.englishPronunciationEnabled !== false,
       englishPronunciationDictionary: String(patch?.englishPronunciationDictionary || "").slice(0, 12_000),
       speechInputProvider,
+      realtimeAutoStartOnText: patch?.realtimeAutoStartOnText !== false,
+      realtimeAutoStartOnPet: patch?.realtimeAutoStartOnPet === true,
       sherpaModelId,
       speechLanguage: String(patch?.speechLanguage || "ja-JP").slice(0, 32),
       voiceActivationMode,
@@ -7324,6 +7417,8 @@ function registerIpc() {
     mascotWindow?.webContents.send("mascot:tts", { enabled: allowed.ttsEnabled, provider: characterTtsSettings().provider });
     mascotWindow?.webContents.send("mascot:voiceInputSettings", {
       speechInputProvider: allowed.speechInputProvider,
+      realtimeAutoStartOnText: allowed.realtimeAutoStartOnText,
+      realtimeAutoStartOnPet: allowed.realtimeAutoStartOnPet,
       voiceActivationMode: allowed.voiceActivationMode,
       vadSensitivity: allowed.vadSensitivity,
       voiceAutoSend: allowed.voiceAutoSend,

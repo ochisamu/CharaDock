@@ -839,6 +839,9 @@ input[type="range"]:active::-webkit-slider-thumb { transform: scale(1.16); box-s
 .nested-settings { display: grid; gap: 12px; margin-top: -4px; padding: 13px; border: 1px solid var(--line); border-radius: 12px; background: color-mix(in srgb, var(--field) 74%, transparent); transition: opacity 140ms ease; }
 .nested-settings.is-disabled { opacity: .45; }
 .nested-settings .switch-row { min-height: 32px; }
+.live-auto-start-settings { margin-top: 6px; }
+.live-auto-start-settings legend { padding: 0 5px; color: var(--text-secondary); font-size: 11px; font-weight: 680; letter-spacing: .01em; }
+.live-auto-start-settings .hint { margin: 0; line-height: 1.55; }
 .remote-status-badge { align-self: center; padding: 6px 10px; color: var(--muted); background: var(--surface-soft); border: 1px solid var(--line); border-radius: 999px; font-size: 9px; font-weight: 750; }
 .remote-status-badge.is-active { color: var(--success); border-color: color-mix(in srgb, var(--success) 34%, var(--line)); background: color-mix(in srgb, var(--success) 9%, transparent); }
 .remote-access-card { gap: 0; overflow: hidden; padding: 0; }

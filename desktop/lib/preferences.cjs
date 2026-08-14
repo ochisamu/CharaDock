@@ -83,6 +83,8 @@ const DEFAULTS = Object.freeze({
   englishPronunciationEnabled: true,
   englishPronunciationDictionary: "",
   speechInputProvider: "browser",
+  realtimeAutoStartOnText: true,
+  realtimeAutoStartOnPet: false,
   sherpaModelId: "reazonspeech-ja-int8",
   speechLanguage: "ja-JP",
   voiceActivationMode: "vad",
@@ -312,6 +314,8 @@ class Preferences {
         && typeof parsed.continuationEnabled === "boolean") {
         this.data.continuationStartupSpeechEnabled = parsed.continuationEnabled;
       }
+      if (typeof this.data.realtimeAutoStartOnText !== "boolean") this.data.realtimeAutoStartOnText = true;
+      if (typeof this.data.realtimeAutoStartOnPet !== "boolean") this.data.realtimeAutoStartOnPet = false;
       if (!["ja", "en"].includes(this.data.language)) this.data.language = "ja";
       if (!["manual", "vad"].includes(this.data.voiceActivationMode)) this.data.voiceActivationMode = "vad";
       if (!["low", "normal", "high"].includes(this.data.vadSensitivity)) this.data.vadSensitivity = "normal";

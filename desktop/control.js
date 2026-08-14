@@ -779,15 +779,26 @@
     $("#voiceRoutingTitle").textContent = live
       ? `GPT-Live · ${(state.realtimeVoice || "cove").replace(/^./, (value) => value.toUpperCase())}${state.realtimeVoiceConversion === "beatrice-v2" ? " → Beatrice 2" : ""}`
       : `${providerNames[state.ttsProvider] || "通常TTS"}${state.ttsEnabled ? " · 読み上げON" : " · 読み上げOFF"}`;
+    const liveTextAutoStart = state.realtimeAutoStartOnText !== false;
+    const livePetAutoStart = state.realtimeAutoStartOnPet === true;
     $("#voiceRoutingDescription").textContent = live
-      ? "録音ボタンでLive接続中は、音声入力も文字入力もこの声で返します。通常TTSは使いません。"
-      : "通常会話の返答を選択中の音声合成で読み上げます。GPT-Liveの声は使いません。";
+      ? liveTextAutoStart && livePetAutoStart
+        ? localized("テキスト送信またはキャラタップでマイク付きLiveを開始し、この声で返します。", "Sending text or tapping the character starts Live with the microphone and replies in this voice.")
+        : liveTextAutoStart
+          ? localized("テキスト送信でマイク付きLiveを開始します。タップは未接続時のみ通常TTSです。", "Sending text starts Live with the microphone. Taps use standard TTS only while disconnected.")
+          : livePetAutoStart
+            ? localized("キャラタップでマイク付きLiveを開始します。テキストは未接続時のみ通常TTSです。", "Tapping the character starts Live with the microphone. Text uses standard TTS only while disconnected.")
+            : localized("音声ボタンでLiveを開始します。未接続時のテキストとタップは通常TTSです。", "Use the voice button to start Live. Text and taps use standard TTS while disconnected.")
+      : localized("通常会話の返答を選択中の音声合成で読み上げます。GPT-Liveの声は使いません。", "Normal replies use the selected speech synthesizer. The GPT-Live voice is not used.");
     realtimePanel.classList.toggle("is-active", live);
     realtimePanel.classList.toggle("is-inactive", !live);
     standardPanel.classList.toggle("is-active", !live);
     standardPanel.classList.toggle("is-inactive", live);
     standardPanel.disabled = live;
     $("#realtimeVoiceSelect").disabled = !live;
+    $("#realtimeAutoStartSettings").classList.toggle("is-disabled", !live);
+    $("#realtimeAutoStartOnTextToggle").disabled = !live;
+    $("#realtimeAutoStartOnPetToggle").disabled = !live;
   }
 
   async function refreshRealtimeVoices() {
@@ -2827,6 +2838,8 @@
     $("#englishPronunciationToggle").checked = state.englishPronunciationEnabled !== false;
     $("#englishPronunciationDictionaryInput").value = state.englishPronunciationDictionary || "";
     $("#speechInputProviderSelect").value = state.speechInputProvider || "browser";
+    $("#realtimeAutoStartOnTextToggle").checked = state.realtimeAutoStartOnText !== false;
+    $("#realtimeAutoStartOnPetToggle").checked = state.realtimeAutoStartOnPet === true;
     $("#sherpaOnnxSettings").hidden = $("#speechInputProviderSelect").value !== "sherpa-onnx";
     const recordedSpeechSelected = ["sherpa-onnx", "openai"].includes($("#speechInputProviderSelect").value);
     $("#voiceActivationSettings").hidden = !recordedSpeechSelected;
@@ -2991,6 +3004,8 @@
       englishPronunciationEnabled: $("#englishPronunciationToggle").checked,
       englishPronunciationDictionary: $("#englishPronunciationDictionaryInput").value,
       speechInputProvider: $("#speechInputProviderSelect").value,
+      realtimeAutoStartOnText: $("#realtimeAutoStartOnTextToggle").checked,
+      realtimeAutoStartOnPet: $("#realtimeAutoStartOnPetToggle").checked,
       sherpaModelId: $("#sherpaModelSelect").value || state?.sherpaModelId,
       speechLanguage: state?.speechLanguage || "ja-JP",
       voiceActivationMode: $("#voiceActivationModeSelect").value,
@@ -3621,6 +3636,34 @@
     if (realtimeStarting) {
       setStatus($("#chatStatus"), localized("Liveへの接続が完了してから送信してください。", "Wait for Live to finish connecting before sending."), true);
       return;
+    }
+    const shouldAutoStartLive = !realtimePeerConnection
+      && state?.backend === "codex"
+      && state?.speechInputProvider === "realtime"
+      && state?.realtimeAutoStartOnText !== false;
+    if (shouldAutoStartLive) {
+      if (attachments.length) {
+        setStatus($("#chatStatus"), localized("ファイル添付を外すか、Liveの「テキスト送信で開始」をOFFにしてください。", "Remove the attachment or turn off “Start when sending text” for Live."), true);
+        return;
+      }
+      if (selectedSkillIds.length && state?.interactionMode !== "work") {
+        setStatus($("#chatStatus"), localized("Skillを指定したLive送信はWorkで利用してください。", "Use Work to send selected Skills through Live."), true);
+        return;
+      }
+      if (realtimeUnavailable) {
+        setStatus($("#chatStatus"), localized("Liveを開始できません。設定を確認するか通常の音声入力へ変更してください。", "Live cannot start. Check the settings or choose another voice input method."), true);
+        return;
+      }
+      setStatus($("#chatStatus"), localized("マイクを有効にしてLiveへ接続しています…", "Enabling the microphone and connecting to Live…"));
+      try {
+        await startCodexRealtimeVoice();
+      } catch (error) {
+        api.stopCodexRealtime().catch(() => {});
+        closeRealtimeAudio();
+        realtimeUnavailable ||= /まだ提供されていません/.test(error.message);
+        setStatus($("#chatStatus"), localized(`Liveを開始できません: ${error.message}`, `Could not start Live: ${error.message}`), true);
+        return;
+      }
     }
     if (attachments.length && realtimePeerConnection) {
       setStatus($("#chatStatus"), localized("Live音声を停止してからファイルを送信してください。", "Stop Live voice before sending files."), true);
@@ -4641,6 +4684,9 @@
       saveSettings().catch((error) => setStatus($("#ttsStatus"), error.message, true));
     });
     ["#voiceActivationModeSelect", "#vadSensitivitySelect", "#voiceAutoSendToggle", "#voiceAutoSendCountdownToggle", "#voiceAutoSendDelaySelect"].forEach((selector) => $(selector).addEventListener("change", () => {
+      saveSettings().catch((error) => setStatus($("#connectionStatus"), error.message, true));
+    }));
+    ["#realtimeAutoStartOnTextToggle", "#realtimeAutoStartOnPetToggle"].forEach((selector) => $(selector).addEventListener("change", () => {
       saveSettings().catch((error) => setStatus($("#connectionStatus"), error.message, true));
     }));
     $("#sherpaModelDownloadButton").addEventListener("click", async () => {

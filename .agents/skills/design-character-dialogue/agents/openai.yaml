@@ -1,0 +1,4 @@
+interface:
+  display_name: "CharaDock Experience Design"
+  short_description: "Apply Apple principles to character-first CharaDock UX"
+  default_prompt: "Use $design-character-dialogue to design or review this CharaDock experience across dialogue, UI state, audio, and avatar behavior."

@@ -63,6 +63,8 @@ test("new installs enable onboarding and desktop positioning defaults", () => {
   assert.equal(state.englishPronunciationEnabled, true);
   assert.equal(state.englishPronunciationDictionary, "");
   assert.equal(state.speechInputProvider, "browser");
+  assert.equal(state.realtimeAutoStartOnText, true);
+  assert.equal(state.realtimeAutoStartOnPet, false);
   assert.equal(state.sherpaModelId, "reazonspeech-ja-int8");
   assert.equal(state.supertonicVoice, "F1");
   assert.equal(state.supertonicSpeed, 1);
@@ -259,6 +261,19 @@ test("preferences migrate legacy click-through and clamp voice countdown delay",
   assert.equal(state.mascotPointerMode, "click-through");
   assert.equal(state.clickThrough, true);
   assert.equal(state.voiceAutoSendDelayMs, 5000);
+});
+
+test("preferences preserve only explicit boolean Live auto-start choices", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "charadock-prefs-"));
+  const file = path.join(directory, "preferences.json");
+  fs.writeFileSync(file, JSON.stringify({ realtimeAutoStartOnText: false, realtimeAutoStartOnPet: true }));
+  let state = new Preferences(file).publicState();
+  assert.equal(state.realtimeAutoStartOnText, false);
+  assert.equal(state.realtimeAutoStartOnPet, true);
+  fs.writeFileSync(file, JSON.stringify({ realtimeAutoStartOnText: "yes", realtimeAutoStartOnPet: 1 }));
+  state = new Preferences(file).publicState();
+  assert.equal(state.realtimeAutoStartOnText, true);
+  assert.equal(state.realtimeAutoStartOnPet, false);
 });
 
 test("preferences persist only supported interface languages", () => {

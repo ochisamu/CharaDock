@@ -921,7 +921,10 @@
     primeAudioOutput().catch(() => {});
     liveStarting = true;
     syncMicrophoneButton();
-    setResponseText(text("Liveへ接続中…", "Connecting to Live…"));
+    // Connection progress is app chrome, not something the character said.
+    // Keep the previous conversation in the bubble while the status chip
+    // explains the temporary transport state.
+    setConnection(false, text("Live接続中…", "Connecting to Live…"));
     const peer = new RTCPeerConnection();
     livePeer = peer;
     try {
@@ -1006,6 +1009,7 @@
       throw error;
     } finally {
       liveStarting = false;
+      if (!livePeer) setConnection(true);
       syncMicrophoneButton();
     }
   }
@@ -1036,7 +1040,6 @@
     if (method === "thread/realtime/started") {
       setConnection(true, "Live");
       $("#microphoneButton").classList.add("is-live");
-      setResponseText(text("つながったよ。そのまま話してね。", "Connected. Go ahead and speak."));
       return;
     }
     if (method === "thread/realtime/error") {
@@ -1347,7 +1350,11 @@
       if (appState?.voice?.responseMode === "live"
         && (!livePeer || !appState.voice.liveConnected || appState.voice.liveOwner !== "remote")) {
         if (appState.voice.liveConnected && appState.voice.liveOwner === "remote") await stopRemoteLive();
-        await startRemoteLive({ microphone: false });
+        // Auto-started Live uses the same real microphone route as the mic
+        // button. Never show an active microphone state for a silent synthetic
+        // input track; startRemoteLive will fail closed on an insecure origin
+        // or denied permission instead of silently changing the voice route.
+        await startRemoteLive({ microphone: true });
       }
       await request("/api/message", { method: "POST", body: JSON.stringify({ message: normalized, mode: currentMode }) });
     } catch (error) {
@@ -1693,10 +1700,45 @@
     petRequestInFlight = true;
     $("#avatarTapTarget").setAttribute("aria-busy", "true");
     try {
+      const voice = appState?.voice || {};
+      if (voice.responseMode === "live" && !livePeer) {
+        if (liveStarting) {
+          $("#composerHint").textContent = text("Liveへ接続しています…", "Connecting to Live…");
+          return;
+        }
+        if (voice.liveConnected && voice.liveOwner !== "remote") {
+          $("#composerHint").textContent = text(
+            "PC側のLiveが使用中です。マイクボタンでこの端末へ切り替えられます",
+            "Live is active on the PC. Use the microphone button to move it to this device",
+          );
+          syncMicrophoneButton();
+          return;
+        }
+        if (!microphoneAvailable()) {
+          $("#composerHint").textContent = microphoneHandoffAvailable()
+            ? text(
+              "タップからLiveを始めるにはHTTPSが必要です。マイクボタンで安全な接続へ切り替えてください",
+              "Starting Live by tapping requires HTTPS. Use the microphone button to switch to a secure connection",
+            )
+            : text(
+              "タップからLiveを始めるにはHTTPS接続とマイク権限が必要です",
+              "Starting Live by tapping requires an HTTPS connection and microphone permission",
+            );
+          syncMicrophoneButton();
+          return;
+        }
+        // A stale server-owned session can survive a browser-side disconnect.
+        // Reconnect it with a real microphone track before asking for the pet
+        // reaction so Live remains the only voice and transcript source.
+        if (voice.liveConnected && voice.liveOwner === "remote") await stopRemoteLive();
+        await startRemoteLive({ microphone: true });
+      }
       const result = await request("/api/pet", { method: "POST", body: JSON.stringify({ zone }) });
       if (result?.busy) return;
       applyPetReaction(result);
-      setResponseText(result?.text);
+      // Live may phrase the requested reaction naturally. Its transcript is
+      // the single source of truth for both the bubble and the spoken reply.
+      if (!result?.deferDisplayToRealtime) setResponseText(result?.text);
       if (result?.realtimeSpeechError) {
         $("#composerHint").textContent = text(`Live音声: ${result.realtimeSpeechError}`, `Live voice: ${result.realtimeSpeechError}`);
       } else if (result?.realtimeSpeechBusy) {

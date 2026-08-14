@@ -80,6 +80,17 @@ test("Irodori V4 presents its fixed generation profile without hiding V3 tuning"
   assert.equal((control.match(/id="irodoriStepsInput"/g) || []).length, 1);
 });
 
+test("Live automatic-start controls explain microphone behavior in English", () => {
+  const labels = new Map([
+    ["PCでのLive自動開始", "Automatic Live start on this PC"],
+    ["テキスト送信で開始", "Start when sending text"],
+    ["送信時にマイクを有効にし、Liveの声で返します", "Enables the microphone when you send and replies with the Live voice"],
+    ["キャラクターのタップで開始", "Start when tapping the character"],
+    ["タップ時にマイクを有効にし、Liveの声で反応します", "Enables the microphone on tap and reacts with the Live voice"],
+  ]);
+  for (const [japanese, english] of labels) assert.equal(translateText(japanese, "en"), english, japanese);
+});
+
 test("control and mascot pages load the shared language runtime", () => {
   const control = fs.readFileSync(path.join(desktopRoot, "control.html"), "utf8");
   const mascot = fs.readFileSync(path.join(projectRoot, "index.html"), "utf8");
