@@ -25,6 +25,15 @@ The default command uses the persistent isolated profile at `%LOCALAPPDATA%\Char
 
    The batch file also fetches the matching `sherpa-onnx-win-x64` tarball with `npm pack` when WSL's shared `node_modules` contains only the Linux native addon, then extracts only that package. Do not use `npm install` from Windows against the mapped WSL repository: it can prune Linux dependencies and unrelated workspace files.
 
+   For a Microsoft Store submission package, pass `store` to the same script:
+
+   ```bash
+   skill_script_win=$(wslpath -w "$PWD/.agents/skills/build-windows-binaries/scripts/build-windows.cmd")
+   (cd /mnt/c && cmd.exe /d /c "$skill_script_win" store)
+   ```
+
+   This creates `dist/store/CharaDock-<version>-store-x64-unsigned.msix`. The Store signs submitted packages, so the local artifact intentionally remains unsigned. Before delivery, inspect `AppxManifest.xml` and require the Partner Center identity values configured in `package.json#build.appx`; the desktop `appId` is not the Store package identity.
+
 3. Require both fresh artifacts:
    - `dist/CharaDock Setup 0.1.0.exe`
    - `dist/CharaDock 0.1.0.exe`

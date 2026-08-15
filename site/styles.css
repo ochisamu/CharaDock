@@ -203,6 +203,34 @@ html[lang="en"] .hero h1 { max-width: 1080px; font-size: clamp(50px, 6.3vw, 82px
 .button-secondary:hover { border-color: color-mix(in srgb, var(--accent) 60%, var(--line)); }
 .release-note { margin: 16px 0 0; color: var(--muted); font-size: 11px; }
 
+.policy-header { grid-template-columns: 1fr auto; }
+.policy-shell { width: min(880px, calc(100vw - 48px)); margin: 0 auto; padding: 72px 0 110px; }
+.policy-hero { padding: 0 0 46px; border-bottom: 1px solid var(--line); }
+.policy-hero h1 { max-width: 760px; font-size: clamp(42px, 7vw, 72px); }
+.policy-hero > p:not(.eyebrow) { max-width: 700px; margin: 24px 0 0; color: var(--muted); font-size: 17px; line-height: 1.9; }
+.policy-meta { display: flex; flex-wrap: wrap; gap: 8px 22px; margin-top: 24px; color: var(--muted); font-size: 12px; }
+.policy-language-link { display: inline-flex; margin-top: 24px; padding: 9px 13px; border: 1px solid var(--line); border-radius: 11px; background: var(--surface); font-size: 12px; font-weight: 700; }
+.policy-content { padding-top: 44px; }
+.policy-content h2, .policy-content h3 { margin: 42px 0 14px; letter-spacing: -.025em; }
+.policy-content > h2:first-child, .policy-content > .eyebrow + h2 { margin-top: 0; }
+.policy-content h2 { font-size: clamp(25px, 3vw, 34px); }
+.policy-content h3 { font-size: 22px; }
+.policy-content p, .policy-content li { color: var(--muted); font-size: 15px; line-height: 1.95; }
+.policy-content p { margin: 0 0 18px; }
+.policy-content ul { margin: 14px 0 24px; padding-left: 1.35em; }
+.policy-content li + li { margin-top: 10px; }
+.policy-content strong { color: var(--ink); }
+.policy-content a { color: var(--accent-deep); text-decoration: underline; text-decoration-thickness: .08em; text-underline-offset: .18em; }
+.policy-divider { margin: 76px 0 24px; border: 0; border-top: 1px solid var(--line); }
+.policy-footer { width: min(880px, calc(100vw - 48px)); }
+
+@media (max-width: 680px) {
+  .policy-header { min-height: 68px; padding-inline: 18px; }
+  .policy-shell { width: min(100% - 36px, 880px); padding-top: 48px; }
+  .policy-hero h1 { font-size: 40px; }
+  .policy-content p, .policy-content li { font-size: 14px; }
+}
+
 .hero-visual {
   position: relative;
   margin: 0;

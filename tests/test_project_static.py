@@ -445,6 +445,20 @@ class ProjectStaticTests(unittest.TestCase):
         self.assertIn('<a href="./README.ja.md">日本語</a>', readme)
         self.assertIn('<a href="./README.md">English</a>', readme_ja)
 
+    def test_privacy_policy_is_public_bilingual_and_linked_from_the_app(self) -> None:
+        policy = self.read_text("site/privacy.html")
+        self.assertIn("プライバシーポリシー", policy)
+        self.assertIn("CharaDock Privacy Policy", policy)
+        self.assertIn("GPT-Live", policy)
+        self.assertIn("MediaPipe", policy)
+        self.assertIn("Tailscale", policy)
+        self.assertIn("reviewed, edited, and deleted", policy)
+        self.assertIn('./privacy.html', self.read_text("site/index.html"))
+        self.assertIn('./privacy.html', self.read_text("site/ja.html"))
+        self.assertIn("https://ochisamu.github.io/CharaDock/privacy.html", self.read_text("desktop/control.html"))
+        self.assertIn("https://ochisamu.github.io/CharaDock/privacy.html", self.read_text("README.md"))
+        self.assertIn("https://ochisamu.github.io/CharaDock/privacy.html", self.read_text("README.ja.md"))
+
     def test_public_character_previews_include_hair_layers(self) -> None:
         readme = self.read_text("README.md")
         site_builder = self.read_text("scripts/build_site.mjs")

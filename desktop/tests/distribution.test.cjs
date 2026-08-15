@@ -114,6 +114,27 @@ test("Windows package metadata identifies ochisamu as the publisher", () => {
   assert.match(packageJson.build.copyright, /ochisamu/);
 });
 
+test("Microsoft Store package uses the reserved Partner Center identity", () => {
+  assert.equal(packageJson.build.appId, "jp.ochisamu.charadock.desktop");
+  assert.deepEqual(packageJson.build.appx, {
+    identityName: "ochisamu.CharaDock",
+    publisher: "CN=69C091B3-AED2-456C-BF7B-A39616771379",
+    publisherDisplayName: "ochisamu",
+    applicationId: "CharaDock",
+    displayName: "CharaDock",
+    languages: ["ja-JP", "en-US"],
+    capabilities: ["internetClient", "privateNetworkClientServer", "microphone", "webcam", "runFullTrust"],
+    artifactName: "CharaDock-${version}-store-${arch}-unsigned.msix",
+  });
+  assert.match(packageJson.scripts["dist:win:store"], /build-windows\.cmd store/);
+  const windowsBuildScript = fs.readFileSync(path.join(projectRoot, ".agents", "skills", "build-windows-binaries", "scripts", "build-windows.cmd"), "utf8");
+  assert.match(windowsBuildScript, /@microsoft\/winappcli@0\.6\.0 package/);
+  const storeManifest = fs.readFileSync(path.join(projectRoot, "packaging", "windows-store", "AppxManifest.xml"), "utf8");
+  assert.match(storeManifest, /Name="ochisamu\.CharaDock"/);
+  assert.match(storeManifest, /Publisher="CN=69C091B3-AED2-456C-BF7B-A39616771379"/);
+  assert.match(storeManifest, /Version="0\.2\.1\.0"/);
+});
+
 test("Beatrice integration packages only CharaDock's host helper", () => {
   assert.equal(packageJson.build.extraResources, undefined);
   assert.deepEqual(packageJson.build.win.extraResources, [{

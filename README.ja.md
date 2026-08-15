@@ -191,6 +191,8 @@ macOS対応は未署名・実験用のarm64プレビューで、Windows版のリ
 
 ## AI接続とプライバシー
 
+ローカル保存、外部AI・音声サービス、端末権限、リモート接続、保存期間、削除手段の詳細は[CharaDockプライバシーポリシー](https://ochisamu.github.io/CharaDock/privacy.html)をご確認ください。
+
 ### Codex app-server
 
 アプリはローカルの`codex app-server --stdio`を起動します。ChatGPTの認証トークンはCodexが管理し、CharaDockは受け取りません。app-serverから取得したモデル一覧をプルダウン表示し、会話と作業で別々にモデルとreasoning effortを設定できます。

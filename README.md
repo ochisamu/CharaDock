@@ -191,6 +191,8 @@ Browser actions run in a visible, dedicated window and support navigation, links
 
 ## AI connections and privacy
 
+See the [CharaDock Privacy Policy](https://ochisamu.github.io/CharaDock/privacy.html) for the complete description of local storage, external AI and speech services, device permissions, remote access, retention, and deletion controls.
+
 ### Codex app-server
 
 CharaDock starts the local `codex app-server --stdio` process. Codex manages the ChatGPT authentication token; CharaDock never receives it. Models returned by app-server appear in a dropdown, and conversation and work can use separate models and reasoning-effort settings.

@@ -19,6 +19,7 @@
     "dist": "electron-builder --dir",
     "dist:win": "electron-builder --win --dir",
     "dist:win:installer": "electron-builder --win nsis portable",
+    "dist:win:store": ".agents\\skills\\build-windows-binaries\\scripts\\build-windows.cmd store",
     "dist:mac:arm64": "electron-builder --mac dmg zip --arm64 --publish never"
   },
   "devDependencies": {
@@ -153,6 +154,25 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true
+    },
+    "appx": {
+      "identityName": "ochisamu.CharaDock",
+      "publisher": "CN=69C091B3-AED2-456C-BF7B-A39616771379",
+      "publisherDisplayName": "ochisamu",
+      "applicationId": "CharaDock",
+      "displayName": "CharaDock",
+      "languages": [
+        "ja-JP",
+        "en-US"
+      ],
+      "capabilities": [
+        "internetClient",
+        "privateNetworkClientServer",
+        "microphone",
+        "webcam",
+        "runFullTrust"
+      ],
+      "artifactName": "CharaDock-${version}-store-${arch}-unsigned.msix"
     }
   },
   "dependencies": {
