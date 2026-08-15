@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="CharaDockのプライバシーポリシー。保存する情報、外部サービスへの送信、利用者の選択肢を説明します。">
+  <meta name="theme-color" content="#f4f2ed" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#151514" media="(prefers-color-scheme: dark)">
+  <title>プライバシーポリシー — CharaDock</title>
+  <link rel="icon" href="./assets/favicon.ico" sizes="any">
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body data-character="sage" class="policy-page">
+  <a class="skip-link" href="#main">本文へ移動</a>
+  <header class="site-header policy-header">
+    <a class="wordmark" href="./ja.html" aria-label="CharaDock ホーム">
+      <img class="wordmark-mark" src="./assets/app-icon.png" alt="" width="42" height="42">
+      <span><strong>CharaDock</strong><small>PRIVACY</small></span>
+    </a>
+    <a class="header-cta" href="./ja.html">ホームへ戻る</a>
+  </header>
+
+  <main id="main" class="policy-shell">
+    <header class="policy-hero">
+      <p class="eyebrow">Privacy policy</p>
+      <h1>プライバシーポリシー</h1>
+      <p>CharaDockが端末内で扱う情報、外部サービスへ送る情報、利用者が管理できる範囲を説明します。</p>
+      <div class="policy-meta"><span>運営者: ochisamu</span><span>制定・最終更新: 2026年8月15日</span></div>
+      <a class="policy-language-link" href="#english" lang="en">Read in English</a>
+    </header>
+
+    <article class="policy-content" aria-labelledby="policy-ja">
+      <h2 id="policy-ja">1. 適用範囲と基本方針</h2>
+      <p>本ポリシーは、デスクトップアプリ「CharaDock」と、同アプリから利用するスマートフォン向けリモート画面に適用されます。CharaDockはローカル処理とローカル保存を基本とするオープンソースアプリです。運営者は、CharaDock独自の利用者アカウント、広告、行動分析またはテレメトリー収集サーバーを運用しておらず、アプリ内の会話、音声、ファイルまたは画像を自動的に受領しません。</p>
+
+      <h2>2. 端末内に保存する情報</h2>
+      <p>利用者の操作や設定に応じ、次の情報をCharaDockのアプリデータ領域または利用者が選択したフォルダーへ保存します。</p>
+      <ul>
+        <li>アプリ設定、選択したキャラクター、音声・モデル設定、ユーザー辞書</li>
+        <li>会話履歴、Work履歴、キャラクターメモリ、継続サマリー</li>
+        <li>追加したキャラクター、参照音声、音声モデル、Skillとその割り当て</li>
+        <li>選択した作業フォルダー、キャラクターホーム、成果物への参照</li>
+        <li>リモート接続の設定、ペアリング済み端末の識別情報、最終接続時刻と有効期限</li>
+        <li>障害調査に必要な限定的なアプリログとモデル導入状況</li>
+      </ul>
+      <p>キャラクターメモリと継続情報は、設定画面から確認、編集、削除できます。診断ZIPは利用者が明示的に保存した場合だけ作成され、APIキー、会話、メモリ、作業内容、添付ファイル、ユーザー辞書、完全なローカルパスを除外する設計です。</p>
+
+      <h2>3. 外部へ送信される情報</h2>
+      <p>CharaDockは、利用者が選択・実行した機能に必要な場合だけ、次の情報を外部サービスへ送信します。</p>
+      <ul>
+        <li><strong>Codex / OpenAI:</strong> 入力した文章、関連する履歴・メモリ・継続サマリー、添付ファイル、選択した作業フォルダー内でタスクに必要なファイル内容、ツール結果、許可後のスクリーンショット。GPT-LiveまたはOpenAI文字起こしを選んだ場合はマイク音声も送信します。</li>
+        <li><strong>利用者が設定したAI・音声サービス:</strong> API方式の会話、文字起こしまたは音声合成を選んだ場合、その処理に必要な文章または音声を指定先へ送信します。ローカルURLを指定したサービスは指定した端末・サーバーとの通信になります。</li>
+        <li><strong>GitHub / Hugging Face等:</strong> アプリ更新の確認、利用者が選んだSkillや音声モデルの取得時に通常のHTTPSリクエストを行います。</li>
+        <li><strong>Webサイト:</strong> Web検索、専用ブラウザーまたは成果物プレビューが外部通信を行う場合、アクセス先サイトへ通常のWebリクエストが送られます。</li>
+      </ul>
+      <p>CodexのChatGPT認証情報はCodexが管理し、CharaDockは受け取りません。OpenAI APIキーを直接設定する場合、OSの暗号化機能が利用可能な端末では暗号化して保存し、利用できない場合はセッション中だけ保持します。</p>
+
+      <h2>4. マイク、カメラ、画面、ファイルとリモート接続</h2>
+      <ul>
+        <li><strong>マイク:</strong> 音声入力またはGPT-Liveを開始したときに利用します。sherpa-onnx等のローカル方式では端末内で処理し、GPT-Liveまたは外部文字起こしを選んだ場合だけ該当サービスへ送信します。</li>
+        <li><strong>カメラ:</strong> 顔トラッキングを利用者が開始した場合に使います。映像フレームは端末内のMediaPipeで解析し、CharaDockは保存または外部送信しません。</li>
+        <li><strong>画面・ブラウザー・コンピューター操作:</strong> 会話内で許可を確認してから開始します。処理に必要なスクリーンショットはAIサービスへ送られる場合があり、一時ファイルは回答後に削除します。</li>
+        <li><strong>ファイル:</strong> Workは利用者が選択したキャラクターホームまたは作業フォルダーを対象とします。添付またはタスクに必要な内容は選択中のAIサービスへ送られる場合があります。</li>
+        <li><strong>リモート接続:</strong> 初期状態では無効です。有効にすると、信頼できるローカルLANまたは利用者が設定したTailscale Serve経由で、ペアリングした端末と会話、音声、アバター状態、操作要求を送受信します。通常LANはHTTPのため、信頼できるネットワークでのみ利用してください。</li>
+      </ul>
+
+      <h2>5. 第三者サービス</h2>
+      <p>外部サービスへ送られた情報は、各提供者の規約とプライバシーポリシーに従って処理されます。主な接続先には <a href="https://openai.com/policies/privacy-policy/">OpenAI</a>、<a href="https://docs.github.com/en/site-policy/privacy-policies/github-general-privacy-statement">GitHub</a>、<a href="https://huggingface.co/privacy">Hugging Face</a>、任意利用の <a href="https://tailscale.com/privacy-policy">Tailscale</a>、利用者が設定した音声・AIサービスおよびアクセス先Webサイトが含まれます。保持期間、学習利用、地域、削除手段は各提供者と利用プランによって異なります。</p>
+
+      <h2>6. 保存期間、確認、削除</h2>
+      <p>端末内データは、利用者がアプリ内で削除するか、CharaDockのアプリデータを削除するまで保持されます。履歴、メモリ、継続情報、ペアリング端末、追加キャラクター、音声、モデル、Skillは対応する設定画面から個別に管理できます。アプリ外の作業フォルダーや、利用者が書き出したファイルはCharaDockの設定削除やアンインストールでは削除しません。外部サービス上のデータについては各提供者の管理画面または問い合わせ窓口を利用してください。</p>
+
+      <h2>7. セキュリティ</h2>
+      <p>CharaDockは、レンダラーから秘密情報を分離し、利用可能な場合はOSの暗号化ストレージを利用し、リモート機能を初期状態で無効にし、操作権限を期限付きかつ目的単位に制限します。ただし、通信・端末・外部サービスに関するすべてのリスクを完全に排除することはできません。秘密情報や高度に機微な個人情報を、会話、添付、作業ファイルまたは公開Issueへ入力しないでください。</p>
+
+      <h2>8. 子どもの利用</h2>
+      <p>CharaDockは子どもを対象として個人情報を収集するサービスではありません。居住地域の法令上、保護者の同意が必要な年齢の利用者は、保護者の確認と同意のもとで利用してください。</p>
+
+      <h2>9. 変更と問い合わせ</h2>
+      <p>機能や法令の変更に応じて本ポリシーを更新し、更新日を本ページに表示します。一般的な問い合わせは <a href="https://github.com/ochisamu/CharaDock/issues">CharaDockのGitHub Issues</a> で受け付けます。Issueは公開されるため、個人情報、秘密情報、会話本文、APIキーを記載しないでください。</p>
+    </article>
+
+    <hr class="policy-divider">
+
+    <article class="policy-content" id="english" lang="en" aria-labelledby="policy-en">
+      <p class="eyebrow">English</p>
+      <h2 id="policy-en">CharaDock Privacy Policy</h2>
+      <p><strong>Operator:</strong> ochisamu<br><strong>Effective and last updated:</strong> August 15, 2026</p>
+
+      <h3>1. Scope and approach</h3>
+      <p>This policy applies to the CharaDock desktop application and its companion remote interface. CharaDock is an open-source application designed around local processing and local storage. The operator does not run CharaDock-specific user accounts, advertising, behavioral analytics, or telemetry collection servers and does not automatically receive your conversations, audio, files, or images.</p>
+
+      <h3>2. Information stored on your device</h3>
+      <p>Depending on the features you use, CharaDock stores application and voice settings, user dictionaries, conversation and Work history, character memory, continuation summaries, imported characters and voices, downloaded models and Skills, workspace references, paired-device records, and limited diagnostic logs in the application data area or a folder you choose. Character memory and continuation records can be reviewed, edited, and deleted in Settings. A support ZIP is created only when you request it and is designed to exclude API keys, conversations, memory, work content, attachments, user dictionaries, and complete local paths.</p>
+
+      <h3>3. Information sent outside your device</h3>
+      <p>CharaDock transmits information only when required by a feature you select:</p>
+      <ul>
+        <li><strong>Codex / OpenAI:</strong> prompts, relevant history and saved context, attachments, task-relevant content from the selected workspace, tool results, approved screenshots, and microphone audio when GPT-Live or OpenAI transcription is selected.</li>
+        <li><strong>User-configured AI or speech services:</strong> text or audio required by the configured conversation, transcription, or TTS endpoint.</li>
+        <li><strong>GitHub, Hugging Face, and similar hosts:</strong> ordinary HTTPS requests when checking for updates or downloading a Skill or model you select.</li>
+        <li><strong>Websites:</strong> ordinary network requests made by web search, the dedicated browser, or a previewed project.</li>
+      </ul>
+      <p>Codex manages ChatGPT authentication; CharaDock does not receive that token. If you configure an OpenAI API key directly, it is stored using OS encryption when available and otherwise retained only for the current session.</p>
+
+      <h3>4. Microphone, camera, screen, files, and remote access</h3>
+      <ul>
+        <li><strong>Microphone:</strong> used only after voice input or GPT-Live is started. Local engines process audio on-device; GPT-Live and external transcription send audio to the selected provider.</li>
+        <li><strong>Camera:</strong> used only after you start face tracking. Frames are analyzed locally with MediaPipe and are not saved or transmitted by CharaDock.</li>
+        <li><strong>Screen, browser, and computer control:</strong> begin after an in-conversation approval. Required screenshots may be sent to the AI provider and temporary files are deleted after the response.</li>
+        <li><strong>Files:</strong> Work is scoped to the selected Character Home or workspace. Attached or task-relevant content may be sent to the selected AI provider.</li>
+        <li><strong>Remote access:</strong> off by default. When enabled, paired devices exchange conversations, audio, avatar state, and operation requests over a trusted local network or optional Tailscale Serve route. Plain LAN access uses HTTP and should only be used on trusted networks.</li>
+      </ul>
+
+      <h3>5. Third-party services</h3>
+      <p>Information sent to an external service is governed by that provider's terms and privacy policy. Relevant providers may include <a href="https://openai.com/policies/privacy-policy/">OpenAI</a>, <a href="https://docs.github.com/en/site-policy/privacy-policies/github-general-privacy-statement">GitHub</a>, <a href="https://huggingface.co/privacy">Hugging Face</a>, optional <a href="https://tailscale.com/privacy-policy">Tailscale</a>, user-configured AI or speech providers, and websites you access. Retention, model-training use, processing location, and deletion controls vary by provider and plan.</p>
+
+      <h3>6. Retention, access, and deletion</h3>
+      <p>Local data remains until you remove it in CharaDock or delete the application's data. Settings provides controls for histories, memory, continuation records, paired devices, added characters and voices, models, and Skills. Files in an external workspace or files you exported are not removed when CharaDock settings are cleared or the app is uninstalled. Use each external provider's controls for information held by that provider.</p>
+
+      <h3>7. Security</h3>
+      <p>CharaDock separates secrets from renderer processes, uses OS-provided encrypted storage when available, keeps remote access off by default, and scopes operation permissions by purpose and time. No system can eliminate every risk. Do not place secrets or highly sensitive personal information in conversations, attachments, work files, or public issues.</p>
+
+      <h3>8. Children</h3>
+      <p>CharaDock is not a service designed to collect personal information from children. Where local law requires parental consent, use it only with a parent or guardian's review and consent.</p>
+
+      <h3>9. Changes and contact</h3>
+      <p>This policy may be updated as features or legal requirements change. The revision date will be shown on this page. For general inquiries, use the <a href="https://github.com/ochisamu/CharaDock/issues">CharaDock GitHub Issues</a>. Issues are public; do not include personal information, secrets, conversation content, or API keys.</p>
+    </article>
+  </main>
+
+  <footer class="policy-footer">
+    <a class="wordmark" href="./ja.html"><img class="wordmark-mark" src="./assets/app-icon.png" alt="" width="42" height="42"><span><strong>CharaDock</strong><small>DESKTOP COMPANION</small></span></a>
+    <p><a href="https://github.com/ochisamu/CharaDock">Source</a> · <a href="https://github.com/ochisamu/CharaDock/issues">Contact</a></p>
+  </footer>
+</body>
+</html>

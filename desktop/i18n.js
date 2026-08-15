@@ -14,6 +14,7 @@
     "AI接続": "AI Connection",
     "デスクトップ": "Desktop",
     "サポート": "Support",
+    "プライバシーポリシーを確認": "View privacy policy",
     "リモート": "Remote",
     "リモートアクセス": "Remote access",
     "停止中": "Off",
