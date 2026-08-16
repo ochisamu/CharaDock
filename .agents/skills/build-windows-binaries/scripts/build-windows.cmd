@@ -29,6 +29,18 @@ if not exist "node_modules\electron-builder\out\cli\cli.js" (
   popd
   exit /b 1
 )
+if not exist "node_modules\typescript\bin\tsc" (
+  echo TypeScript is missing. Run npm install in WSL first. 1>&2
+  popd
+  exit /b 1
+)
+
+echo Building the typed CharaDock runtime...
+"%CHARADOCK_NODE%" node_modules\typescript\bin\tsc -p tsconfig.runtime.json
+if errorlevel 1 (
+  popd
+  exit /b 1
+)
 
 if not exist "node_modules\sherpa-onnx-win-x64\sherpa-onnx.node" (
   if not defined CHARADOCK_NPM (

@@ -125,6 +125,10 @@ test("new installs enable onboarding and desktop positioning defaults", () => {
   assert.equal(preferences.data.characterTtsProfiles["amber-avatar"].irodoriVoiceId, "builtin-kohaku");
   assert.equal(preferences.data.characterTtsProfiles["amber-avatar"].styleBertVits2ModelId, 0);
   assert.equal(preferences.data.characterTtsProfiles["towa-avatar"].irodoriVoiceId, "builtin-hiro");
+  assert.match(preferences.data.characterTtsProfiles["amber-avatar"].irodoriCaption, /好奇心/);
+  assert.match(preferences.data.characterTtsProfiles["bronze-avatar"].irodoriCaption, /落ち着いた/);
+  assert.match(preferences.data.characterTtsProfiles["towa-avatar"].irodoriCaption, /道具/);
+  assert.match(preferences.data.characterTtsProfiles["sage-avatar"].irodoriCaption, /知的/);
   for (const [id, profile] of Object.entries(preferences.data.characterTtsProfiles)) {
     if (id === "nike-avatar") {
       assert.equal(profile.irodoriVersion, "v4-small");

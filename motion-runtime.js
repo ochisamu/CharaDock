@@ -36,8 +36,9 @@
     let startedAt = 0;
     let endsAt = 0;
     let fading = false;
+    let intensity = 1;
 
-    function trigger(nextKind, nowMs = 0, durationMs = null) {
+    function trigger(nextKind, nowMs = 0, durationMs = null, nextIntensity = 1) {
       kind = normalizeReactionKind(nextKind);
       preset = REACTION_PRESETS[kind];
       startedAt = Number(nowMs) || 0;
@@ -47,6 +48,7 @@
         : preset.durationMs;
       endsAt = startedAt + duration;
       fading = false;
+      intensity = clamp(Number(nextIntensity) || 1, 0.55, 1.2);
       return kind;
     }
 
@@ -63,6 +65,7 @@
       const attack = smoothstep((now - startedAt) / 150);
       const fade = fading ? 1 - smoothstep((now - endsAt) / Math.max(120, preset.fadeMs)) : 1;
       const weight = clamp(attack * fade, 0, 1);
+      const motionWeight = weight * intensity;
       const impulseAge = Math.max(0, (now - startedAt) / 1000);
       const impulseDecay = Math.exp(-impulseAge * 5.4) * weight;
       const bounce = -(preset.bounce || 0) * Math.sin(Math.min(Math.PI, impulseAge * 8.4)) * impulseDecay;
@@ -73,12 +76,12 @@
         kind,
         active: weight > 0.001,
         weight,
-        offsetY: (preset.offsetY || 0) * weight + bounce,
-        tilt: (preset.tilt || 0) * weight + tiltKick,
-        scale: 1 + (preset.scale || 0) * weight + scalePop,
-        shakeX: shake,
-        idleAmplitudeScale: mix(1, preset.idleAmplitude ?? 1, weight),
-        idleSpeedScale: mix(1, preset.idleSpeed ?? 1, weight),
+        offsetY: (preset.offsetY || 0) * motionWeight + bounce * intensity,
+        tilt: (preset.tilt || 0) * motionWeight + tiltKick * intensity,
+        scale: 1 + (preset.scale || 0) * motionWeight + scalePop * intensity,
+        shakeX: shake * intensity,
+        idleAmplitudeScale: mix(1, preset.idleAmplitude ?? 1, motionWeight),
+        idleSpeedScale: mix(1, preset.idleSpeed ?? 1, motionWeight),
       };
     }
 

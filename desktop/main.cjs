@@ -33,6 +33,13 @@ const {
   windowsPathToWsl,
 } = require("./lib/codex-command.cjs");
 const { messageExpression, responseExpression, speechExpression } = require("./lib/expression.cjs");
+const {
+  buildCharacterPersona,
+  characterPhrases,
+  characterReactionTuning,
+  draftRepetitionGuidance,
+} = require("./generated/runtime/character-director.js");
+const { TurnCoordinator } = require("./generated/runtime/turn-coordinator.js");
 const { Preferences } = require("./lib/preferences.cjs");
 const {
   CharacterHomeManager,
@@ -360,6 +367,7 @@ let pendingComputerUse = null;
 let conversationHistory = [];
 const appSessionStartedAt = Date.now();
 const lastThinkingFillerIndex = new Map();
+const turnCoordinator = new TurnCoordinator();
 let activeBrowserSession = null;
 let activeComputerSession = null;
 let retainedBrowserAuthorization = null;
@@ -676,12 +684,22 @@ function effectiveCharacter(characterOrId) {
   const localizedOverride = isBuiltInCharacter(character)
     ? override.locales?.[interfaceLanguage()] || (interfaceLanguage() === "ja" ? override : {})
     : override;
-  return {
+  const configured = {
     ...character,
     name: String(localizedOverride.name || character.name).slice(0, 40),
     personality: String(localizedOverride.personality || character.personality).slice(0, 2000),
     ui: { ...character.ui, ...(override.ui || {}) },
     motion: { ...characterMotionDefaults(character), ...(override.motion || {}) },
+  };
+  const language = interfaceLanguage();
+  const thinking = characterPhrases(configured, "thinking", language);
+  const touchHead = characterPhrases(configured, "touchHead", language);
+  const touchBody = characterPhrases(configured, "touchBody", language);
+  return {
+    ...configured,
+    thinkingFillers: thinking.length ? thinking : configured.thinkingFillers,
+    petPhrases: touchHead.length || touchBody.length ? [...touchHead, ...touchBody] : configured.petPhrases,
+    petPhrasesByZone: { head: touchHead, body: touchBody },
   };
 }
 
@@ -843,9 +861,15 @@ function characterMemoryContext(characterId = activeCharacter().id, limit = 24) 
 }
 
 function personaInstructions(character = activeCharacter()) {
-  return interfaceLanguage() === "en"
-    ? `You speak as ${character.name}. Personality and speaking style: ${character.personality}\nRespond naturally in English unless the user clearly asks for another language. Answer the user's actual question directly before optional detail. Preserve the immediate topic in short follow-ups. Ask one concise clarification only when ambiguity materially changes the answer. Prefer speech-friendly prose; do not read out raw URLs, citation tokens, markdown syntax, or decorative symbol runs.`
-    : `あなたは「${character.name}」として会話します。性格と話し方: ${character.personality}\nユーザーから別言語の指定がない限り、自然な日本語で応答してください。最初に質問への直接的な答えを示し、補足はその後に続けてください。短いフォローアップでは直前の話題を維持してください。曖昧さで回答が大きく変わる場合だけ、確認質問は一度に一つ、簡潔にしてください。音声でも自然に聞こえる文章を優先し、URL、引用制御記号、Markdown記法、装飾記号の並びを読み上げる文章へ混ぜないでください。`;
+  const language = interfaceLanguage();
+  const recentAssistantTexts = conversationHistory
+    .filter((entry) => entry?.role === "assistant")
+    .map((entry) => entry.text)
+    .slice(-6);
+  return [
+    buildCharacterPersona(character, language),
+    draftRepetitionGuidance(recentAssistantTexts, "", language),
+  ].filter(Boolean).join("\n\n");
 }
 
 function memoryToolResult(value) {
@@ -1606,6 +1630,20 @@ function remoteStartupGreeting(context = {}) {
   return { id, text: remotePublicText(message, 500), route };
 }
 
+function publicTurnState() {
+  const turn = turnCoordinator.snapshot();
+  return {
+    id: String(turn.id || "").slice(0, 120),
+    mode: turn.mode === "work" ? "work" : "chat",
+    status: String(turn.status || "idle"),
+    audioRoute: ["live", "tts"].includes(turn.audioRoute) ? turn.audioRoute : "none",
+    workRunId: String(turn.workRunId || "").slice(0, 120),
+    hasArtifacts: Boolean(turn.artifacts?.length),
+    startedAt: Number(turn.startedAt || 0),
+    updatedAt: Number(turn.updatedAt || 0),
+  };
+}
+
 function publicRemoteState(context = {}) {
   const character = activeCharacter();
   const characterTts = characterTtsSettings();
@@ -1635,6 +1673,7 @@ function publicRemoteState(context = {}) {
       return { id: effective.id, name: effective.name };
     }),
     interactionMode: preferences.data.interactionMode === "work" ? "work" : "chat",
+    turn: publicTurnState(),
     workAllowed: Boolean(preferences.data.remoteWorkEnabled && preferences.data.backend === "codex" && workDirectory),
     workDirectoryName: workDirectory ? path.basename(workDirectory) : "",
     mobileTtsAllowed: Boolean(preferences.data.remoteTtsEnabled && preferences.data.ttsEnabled && generatedTts),
@@ -2325,6 +2364,7 @@ function publicAppState() {
     },
     beatrice: publicBeatriceStatus(),
     interactionMode: preferences.data.interactionMode === "work" ? "work" : "chat",
+    turn: publicTurnState(),
     conversationHistory: conversationHistory.map((entry) => ({ ...entry })),
     workHistory: { activeWorkRunId, runs: publicWorkHistory() },
     memories: characterMemories(),
@@ -3079,17 +3119,12 @@ function ensureWorkClient() {
     });
   }
   const character = activeCharacter();
-  workCodexClient.setPersona(interfaceLanguage() === "en" ? [
-    `The visible avatar is ${character.name}.`,
-    `Personality and speaking style: ${character.personality}`,
-    "Naturally reflect this personality in brief progress updates and the completion report.",
-    "Do not let the character performance alter technical decisions, facts, code, commands, safety, or verification.",
-  ].join("\n") : [
-    `表示中のアバターは「${character.name}」です。`,
-    `性格と話し方: ${character.personality}`,
-    "ユーザーへ見せる短い進捗説明と完了報告には、この性格と話し方を自然に反映してください。",
-    "ただし、作業の判断、事実、コード、コマンド、安全性、検証内容はキャラクター演出で変えないでください。",
-  ].join("\n"));
+  workCodexClient.setPersona([
+    personaInstructions(character),
+    interfaceLanguage() === "en"
+      ? "Reflect the character only in concise user-facing progress and the completion report. Character performance must never alter technical decisions, facts, code, commands, safety, or verification."
+      : "キャラクター性は、利用者へ見せる簡潔な進捗と完了報告にだけ自然に反映します。作業の判断、事実、コード、コマンド、安全性、検証内容をキャラクター演出で変えてはいけません。",
+  ].join("\n\n"));
   workCodexClient.setTurnStartSkillItems(activeCharacterSkillItems(character.id));
   return workCodexClient;
 }
@@ -5113,6 +5148,7 @@ function configuredSpeechText(text) {
 function showMascotSpeech(text, { durationMs = 9000, ttsEnabled = preferences.data.ttsEnabled, persistent = true } = {}) {
   if (!mascotWindow || mascotWindow.isDestroyed()) return;
   const readAloud = Boolean(ttsEnabled);
+  const expressionOptions = { characterId: activeCharacter().id };
   mascotWindow.webContents.send("mascot:speech", {
     text: String(text || ""),
     durationMs,
@@ -5120,10 +5156,10 @@ function showMascotSpeech(text, { durationMs = 9000, ttsEnabled = preferences.da
     ttsProvider: characterTtsSettings().provider,
     speechLanguage: preferences.data.speechLanguage || "ja-JP",
     persistent: Boolean(persistent),
-    expression: speechExpression(text),
+    expression: speechExpression(text, expressionOptions),
     spokenText: configuredSpeechText(text),
   });
-  if (!readAloud) localServer.pushInput({ ...currentCursorInput(), ...responseExpression(text) });
+  if (!readAloud) localServer.pushInput({ ...currentCursorInput(), ...responseExpression(text, expressionOptions) });
 }
 
 function rememberAssistantAnnouncement(text) {
@@ -5154,14 +5190,14 @@ async function generateStartupContinuationMessage(summary, character) {
     command: codexCommand,
     ...conversationCodexSettings(),
     developerInstructions: language === "en" ? [
-      `Speak as ${character.name}. Speaking style: ${character.personality}`,
+      buildCharacterPersona(character, "en"),
       hasRecordedNext
         ? "Write one short, natural startup message that briefly grounds itself in the supplied continuation summary and offers its recorded unfinished item or next action as an optional question. Set basis to recorded-next-step."
         : "Only a current goal is recorded. Write one short startup message that quotes that goal and proposes one conservative, actionable first step derived from it as an optional question. Do not imply that the step was recorded, decided, started, or completed. Set basis to goal-suggestion.",
       "Use only recorded facts. Never invent progress, completion, decisions, emotion, or confidence. Do not mention storage, summaries, prompts, or internal tools.",
       "Return only the requested JSON. groundingPhrase must be an exact meaningful phrase copied from the summary and included verbatim in message.",
     ].join("\n") : [
-      `「${character.name}」として話します。話し方: ${character.personality}`,
+      buildCharacterPersona(character, "ja"),
       hasRecordedNext
         ? "渡された継続サマリーに短く根拠を置き、記録済みの未完了事項または次の行動を、強制せず質問として提案してください。basisはrecorded-next-stepにしてください。"
         : "記録されているのは現在の目的だけです。その目的を完全一致で短く引用し、目的から導ける保守的で具体的な最初の一手を一つ、未決定の提案だと分かる質問として示してください。その一手が記録済み、決定済み、着手済み、完了済みだと示してはいけません。basisはgoal-suggestionにしてください。",
@@ -5644,25 +5680,28 @@ function clearCurrentConversationHistory() {
 }
 
 function publishChatStream(payload = {}) {
-  if (controlWindow && !controlWindow.isDestroyed()) controlWindow.webContents.send("chat:stream", payload);
-  if (mascotWindow && !mascotWindow.isDestroyed()) mascotWindow.webContents.send("mascot:stream", payload);
-  const visible = remotePublicText(payload.displayText || payload.text || payload.message);
-  if (visible && ["announcement", "activity", "delta", "done", "error"].includes(payload.phase)) remoteLastDisplayText = visible;
-  if (payload.phase === "error" || (payload.phase === "done" && !payload.realtimeSpeechPending)) remoteBusy = false;
+  const coordinated = turnCoordinator.apply(payload);
+  if (controlWindow && !controlWindow.isDestroyed()) controlWindow.webContents.send("chat:stream", coordinated);
+  if (mascotWindow && !mascotWindow.isDestroyed()) mascotWindow.webContents.send("mascot:stream", coordinated);
+  const visible = remotePublicText(coordinated.displayText || coordinated.text || coordinated.message);
+  if (visible && ["announcement", "activity", "delta", "done", "error"].includes(coordinated.phase)) remoteLastDisplayText = visible;
+  if (coordinated.phase === "error" || (coordinated.phase === "done" && !coordinated.realtimeSpeechPending)) remoteBusy = false;
   remoteServer?.publish("stream", {
-    phase: String(payload.phase || ""),
-    mode: payload.mode === "work" ? "work" : "chat",
-    text: remotePublicText(payload.text),
-    displayText: remotePublicText(payload.displayText),
-    message: remotePublicText(payload.message, 1000),
-    workRunId: String(payload.workRunId || "").slice(0, 120),
-    realtimeOutput: Boolean(payload.realtimeOutput),
-    realtimeSpeechPending: Boolean(payload.realtimeSpeechPending),
-    deferDisplayToRealtime: Boolean(payload.deferDisplayToRealtime),
-    audioRoute: payload.realtimeOutput
+    phase: String(coordinated.phase || ""),
+    mode: coordinated.mode === "work" ? "work" : "chat",
+    text: remotePublicText(coordinated.text),
+    displayText: remotePublicText(coordinated.displayText),
+    message: remotePublicText(coordinated.message, 1000),
+    workRunId: String(coordinated.workRunId || "").slice(0, 120),
+    turnId: String(coordinated.turnId || "").slice(0, 120),
+    turnStatus: String(coordinated.turnStatus || ""),
+    realtimeOutput: Boolean(coordinated.realtimeOutput),
+    realtimeSpeechPending: Boolean(coordinated.realtimeSpeechPending),
+    deferDisplayToRealtime: Boolean(coordinated.deferDisplayToRealtime),
+    audioRoute: coordinated.audioRoute === "live"
       ? "live"
-      : ["announcement", "done"].includes(payload.phase) ? "mobile-tts" : "none",
-    artifacts: (Array.isArray(payload.artifacts) ? payload.artifacts : []).slice(0, 8).map((artifact) => ({
+      : coordinated.audioRoute === "tts" && ["announcement", "done"].includes(coordinated.phase) ? "mobile-tts" : "none",
+    artifacts: (Array.isArray(coordinated.artifacts) ? coordinated.artifacts : []).slice(0, 8).map((artifact) => ({
       path: String(artifact?.path || "").slice(0, 1000),
       name: String(artifact?.name || "").slice(0, 260),
       kind: artifact?.kind === "directory" ? "directory" : "file",
@@ -5865,12 +5904,15 @@ async function appendRealtimeReactionSpeech(text) {
 
 async function characterPetResponse(payload = {}, options = {}) {
   const character = activeCharacter();
-  const phrases = character.petPhrases || [mainText("なあに？", "What's up?")];
+  const headTouch = payload?.zone === "head";
+  const zonePhrases = headTouch ? character.petPhrasesByZone?.head : character.petPhrasesByZone?.body;
+  const phrases = Array.isArray(zonePhrases) && zonePhrases.length
+    ? zonePhrases
+    : character.petPhrases || [mainText("なあに？", "What's up?")];
   let phraseIndex = Math.floor(Math.random() * phrases.length);
   if (phrases.length > 1 && phraseIndex === lastPetPhraseIndex.get(character.id)) phraseIndex = (phraseIndex + 1) % phrases.length;
   lastPetPhraseIndex.set(character.id, phraseIndex);
   const text = phrases[phraseIndex];
-  const headTouch = payload?.zone === "head";
   const reactions = headTouch
     ? [
         { forceMouth: 1, forceEyesClosed: false, emotion: "happy", reaction: "happy", durationMs: 1500 },
@@ -5883,6 +5925,9 @@ async function characterPetResponse(payload = {}, options = {}) {
         { forceMouth: 0, forceEyesClosed: true, emotion: "soft", reaction: "soft", durationMs: 1350 },
       ];
   const reaction = reactions[Math.floor(Math.random() * reactions.length)];
+  const tuning = characterReactionTuning(character, reaction.reaction);
+  reaction.durationMs = Math.round(reaction.durationMs * tuning.durationScale);
+  reaction.intensity = tuning.intensity;
   localServer.pushInput({ ...currentCursorInput(), ...reaction });
   const useRealtimeVoice = typeof options.useRealtimeVoice === "boolean"
     ? options.useRealtimeVoice
@@ -6398,53 +6443,71 @@ async function startCodexRealtimeVoice(payload, target = "control") {
           assistantTranscript.active = true;
           assistantTranscript.text = "";
           if (!workMode) {
-            mascotWindow?.webContents.send("mascot:stream", {
+            const startPayload = turnCoordinator.apply({
               phase: "start",
-              mode: workMode ? "work" : "chat",
+              mode: "chat",
               ttsEnabled: false,
+              realtimeOutput: true,
+              audioRoute: "live",
               ttsProvider: characterTtsSettings().provider,
               speechLanguage: preferences.data.speechLanguage || "ja-JP",
             });
+            mascotWindow?.webContents.send("mascot:stream", startPayload);
           }
         }
         assistantTranscript.text += delta;
         remoteBusy = true;
         remoteLastDisplayText = remotePublicText(workMode ? latestWorkDisplayText(assistantTranscript.text) : assistantTranscript.text);
-        remoteServer?.publish("stream", {
+        const captionPayload = turnCoordinator.apply({
           phase: "realtime-caption",
           mode: workMode ? "work" : "chat",
+          delta,
+          text: assistantTranscript.text,
+          displayText: workMode ? latestWorkDisplayText(assistantTranscript.text) : assistantTranscript.text,
+          realtimeOutput: true,
+          audioRoute: "live",
+        });
+        remoteServer?.publish("stream", {
+          ...captionPayload,
           delta: remotePublicText(delta),
           text: remotePublicText(assistantTranscript.text),
           displayText: remoteLastDisplayText,
         });
-        mascotWindow?.webContents.send("mascot:stream", {
-          phase: "realtime-caption",
-          delta,
-          text: assistantTranscript.text,
-          displayText: workMode ? latestWorkDisplayText(assistantTranscript.text) : assistantTranscript.text,
-        });
+        mascotWindow?.webContents.send("mascot:stream", captionPayload);
       }
       if (method === "thread/realtime/transcript/done" && params.role === "assistant") {
         assistantTranscript.text = String(params.text || assistantTranscript.text).trim();
         if (assistantTranscript.text) {
-          mascotWindow?.webContents.send("mascot:stream", {
+          const finalCaptionPayload = turnCoordinator.apply({
             phase: "realtime-caption",
+            mode: workMode ? "work" : "chat",
             text: assistantTranscript.text,
             displayText: workMode ? latestWorkDisplayText(assistantTranscript.text) : assistantTranscript.text,
+            realtimeOutput: true,
+            audioRoute: "live",
             final: true,
           });
+          mascotWindow?.webContents.send("mascot:stream", finalCaptionPayload);
           // Realtime playback owns the mouth through its measured audio
           // envelope. Keep the semantic reaction, but never let a transcript
           // event pin the mouth open or suppress normal blinking.
-          localServer.pushInput({ ...currentCursorInput(), ...speechExpression(assistantTranscript.text) });
+          localServer.pushInput({ ...currentCursorInput(), ...speechExpression(assistantTranscript.text, { characterId: activeCharacter().id }) });
           remoteLastDisplayText = remotePublicText(workMode ? latestWorkDisplayText(assistantTranscript.text) : assistantTranscript.text);
+          const completionPayload = workMode
+            ? finalCaptionPayload
+            : turnCoordinator.apply({
+              phase: "done",
+              mode: "chat",
+              text: assistantTranscript.text,
+              displayText: assistantTranscript.text,
+              realtimeOutput: true,
+              audioRoute: "live",
+              final: true,
+            });
           remoteServer?.publish("stream", {
-            phase: workMode ? "realtime-caption" : "done",
-            mode: workMode ? "work" : "chat",
+            ...completionPayload,
             text: remotePublicText(assistantTranscript.text),
             displayText: remoteLastDisplayText,
-            realtimeOutput: true,
-            final: true,
           });
           if (!workMode && !nativeChatTurnIds.size) remoteBusy = false;
           const injectedSpeech = consumeRealtimeInjectedAssistant(assistantTranscript.text);
@@ -6454,11 +6517,7 @@ async function startCodexRealtimeVoice(payload, target = "control") {
             if (!expected || !spoken || expected.includes(spoken) || spoken.includes(expected)) finishNativeRealtimeWork();
           }
           if (!workMode) {
-            mascotWindow?.webContents.send("mascot:stream", {
-              phase: "done",
-              text: assistantTranscript.text,
-              displayText: assistantTranscript.text,
-            });
+            mascotWindow?.webContents.send("mascot:stream", completionPayload);
           }
           if (!workMode && !injectedSpeech) {
             const completedTurn = realtimeTurnBuffer.addAssistant(assistantTranscript.text);
@@ -6469,7 +6528,7 @@ async function startCodexRealtimeVoice(payload, target = "control") {
       }
       if (method === "thread/realtime/transcript/done" && params.role === "user") {
         if (!assistantTranscript.active) assistantTranscript.text = "";
-        const listeningReaction = messageExpression(params.text);
+        const listeningReaction = messageExpression(params.text, { characterId: activeCharacter().id });
         localServer.pushInput({
           ...currentCursorInput(),
           ...listeningReaction,
@@ -8238,14 +8297,16 @@ function pushMascotExpression(expression) {
     emotion: ["happy", "surprised", "soft"].includes(expression?.emotion) ? expression.emotion : null,
     reaction,
     durationMs: Math.max(100, Math.min(10_000, Number(expression?.durationMs) || 1200)),
+    intensity: Math.max(0.55, Math.min(1.2, Number(expression?.intensity) || 1)),
   });
 }
 
 function expressiveSpeechSegments(segments) {
+  const expressionOptions = { characterId: activeCharacter().id };
   return (Array.isArray(segments) ? segments : []).map((text) => ({
     text: String(text || "").trim(),
     spokenText: configuredSpeechText(text),
-    expression: speechExpression(text),
+    expression: speechExpression(text, expressionOptions),
   })).filter((segment) => segment.text);
 }
 
@@ -8255,7 +8316,7 @@ function expressiveWorkAnnouncementSegment(text) {
   return [{
     text: normalized,
     spokenText: configuredSpeechText(normalized),
-    expression: speechExpression(normalized),
+    expression: speechExpression(normalized, { characterId: activeCharacter().id }),
   }];
 }
 
@@ -9156,7 +9217,7 @@ async function sendChatMessage(message, {
     message: mainText(`${resolvedArtifactTarget.name || "成果物"}を見ながら作業しています…`, `Working with ${resolvedArtifactTarget.name || "the output"} in view…`),
     workRunId: workRun?.id || "",
   });
-  localServer.pushInput({ ...currentCursorInput(), ...messageExpression(requestText) });
+  localServer.pushInput({ ...currentCursorInput(), ...messageExpression(requestText, { characterId: activeCharacter().id }) });
   const sendStream = publishChatStream;
   const activeTtsProvider = characterTtsSettings().provider;
   const speechSegmenter = new StreamingTextSegmenter({

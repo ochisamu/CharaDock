@@ -32,6 +32,9 @@ mirror_wsl="$(wslpath -u "$mirror_windows")"
 launcher_windows="${mirror_windows}\\scripts\\windows-dev.cmd"
 dependency_stamp="$mirror_wsl/.charadock-dev-dependencies.sha256"
 
+echo "Building the typed CharaDock runtime..."
+(cd "$project_root" && npm run runtime:build)
+
 mkdir -p "$mirror_wsl"
 echo "Syncing CharaDock source to $mirror_windows"
 rsync -a --delete \

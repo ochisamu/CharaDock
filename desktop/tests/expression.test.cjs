@@ -33,3 +33,13 @@ test("spoken expressions leave mouth and blinking under live audio control", () 
 test("longer speech segments retain their expression for longer", () => {
   assert.ok(estimatedSpeechDurationMs("少し長めの文章をゆっくり読み上げます。") > estimatedSpeechDurationMs("短いよ。"));
 });
+
+test("built-in characters tune the same semantic reaction differently", () => {
+  const kohaku = speechExpression("できた！ありがとう。", { characterId: "amber-avatar" });
+  const sepia = speechExpression("できた！ありがとう。", { characterId: "bronze-avatar" });
+  assert.equal(kohaku.emotion, "happy");
+  assert.equal(sepia.emotion, "happy");
+  assert.ok(kohaku.intensity > sepia.intensity);
+  assert.ok(sepia.durationMs > kohaku.durationMs);
+  assert.equal(kohaku.forceMouth, null);
+});

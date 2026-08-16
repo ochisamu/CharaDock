@@ -104,6 +104,9 @@ test("built-in characters provide localized English identities", () => {
   for (const name of ["Kohaku", "Sepia", "Towa", "Sage", "AI Nike-chan"]) assert.match(main, new RegExp(`name: "${name}"`));
   assert.match(main, /https:\/\/x\.com\/tegnike/);
   assert.match(main, /https:\/\/nikechan\.com\//);
-  assert.match(main, /Respond naturally in English/);
+  assert.match(main, /buildCharacterPersona\(character, language\)/);
+  const director = fs.readFileSync(path.join(desktopRoot, "runtime", "character-director.ts"), "utf8");
+  assert.match(director, /Speak as \$\{name\}/);
+  assert.match(director, /Answer the user's actual question directly/);
   assert.match(main, /Before using tools, send one brief commentary acknowledgement that names the request-specific subject and action/);
 });

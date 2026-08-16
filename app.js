@@ -6914,7 +6914,12 @@
             obsExternalInput.emotion = ["happy", "surprised", "soft"].includes(data.emotion) ? data.emotion : null;
             obsExternalInput.reaction = ["neutral", "listening", "thinking", "soft", "sad", "happy", "surprised", "angry"].includes(data.reaction) ? data.reaction : "neutral";
             obsExternalInput.expressionUntil = performance.now() + clamp(Number(data.durationMs) || 1200, 100, 10000);
-            reactionMotion.trigger(obsExternalInput.reaction, performance.now(), clamp(Number(data.durationMs) || 1200, 100, 10000));
+            reactionMotion.trigger(
+              obsExternalInput.reaction,
+              performance.now(),
+              clamp(Number(data.durationMs) || 1200, 100, 10000),
+              clamp(Number(data.intensity) || 1, 0.55, 1.2),
+            );
           }
           obsExternalInput.updatedAt = performance.now();
           obsExternalInput.connected = true;

@@ -25,3 +25,15 @@ test("quiet idle gaze waits, turns gently, holds, and returns", () => {
   assert.equal(settled.justSettled, true);
   assert.ok(settled.gaze > 0.5 && settled.gaze < 1);
 });
+
+test("character reaction intensity changes motion without changing its semantic kind", () => {
+  const restrained = createReactionController();
+  const expressive = createReactionController();
+  restrained.trigger("happy", 1000, 1000, 0.7);
+  expressive.trigger("happy", 1000, 1000, 1.15);
+  const restrainedFrame = restrained.update(1120);
+  const expressiveFrame = expressive.update(1120);
+  assert.equal(restrainedFrame.kind, "happy");
+  assert.equal(expressiveFrame.kind, "happy");
+  assert.ok(expressiveFrame.scale > restrainedFrame.scale);
+});

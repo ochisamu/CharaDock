@@ -23,6 +23,7 @@ htmlcov/
 # Build / distribution
 build/
 dist/
+desktop/generated/
 site-dist/
 out/
 release/
