@@ -771,10 +771,10 @@ body.is-work-mode #desktopMascotInput { min-height: 42px; max-height: 78px; padd
   -webkit-app-region: no-drag;
   position: fixed;
   z-index: 998;
-  left: var(--mascot-pet-left, 0%);
-  top: var(--mascot-pet-top, 27%);
-  width: var(--mascot-pet-width, 56%);
-  height: var(--mascot-pet-height, 42%);
+  left: var(--mascot-character-touch-left, var(--mascot-pet-left, 0%));
+  top: var(--mascot-character-touch-top, var(--mascot-pet-top, 27%));
+  width: var(--mascot-character-touch-width, var(--mascot-pet-width, 56%));
+  height: var(--mascot-character-touch-height, var(--mascot-pet-height, 42%));
   border-radius: 46% 54% 42% 48%;
   cursor: grab;
   touch-action: none;

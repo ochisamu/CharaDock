@@ -1696,7 +1696,9 @@
       return;
     }
     const bounds = $("#avatarTapTarget").getBoundingClientRect();
-    const zone = event.clientY < bounds.top + bounds.height * .52 ? "head" : "body";
+    const yRatio = bounds.height > 0
+      ? Math.max(0, Math.min(1, (event.clientY - bounds.top) / bounds.height))
+      : .5;
     petRequestInFlight = true;
     $("#avatarTapTarget").setAttribute("aria-busy", "true");
     try {
@@ -1733,7 +1735,7 @@
         if (voice.liveConnected && voice.liveOwner === "remote") await stopRemoteLive();
         await startRemoteLive({ microphone: true });
       }
-      const result = await request("/api/pet", { method: "POST", body: JSON.stringify({ zone }) });
+      const result = await request("/api/pet", { method: "POST", body: JSON.stringify({ yRatio }) });
       if (result?.busy) return;
       applyPetReaction(result);
       // Live may phrase the requested reaction naturally. Its transcript is

@@ -4,6 +4,7 @@ const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
 const test = require("node:test");
+const { PNG } = require("pngjs");
 
 const projectRoot = path.resolve(__dirname, "../..");
 const packageJson = JSON.parse(fs.readFileSync(path.join(projectRoot, "package.json"), "utf8"));
@@ -132,7 +133,61 @@ test("Microsoft Store package uses the reserved Partner Center identity", () => 
   const storeManifest = fs.readFileSync(path.join(projectRoot, "packaging", "windows-store", "AppxManifest.xml"), "utf8");
   assert.match(storeManifest, /Name="ochisamu\.CharaDock"/);
   assert.match(storeManifest, /Publisher="CN=69C091B3-AED2-456C-BF7B-A39616771379"/);
-  assert.match(storeManifest, /Version="0\.2\.1\.0"/);
+  assert.equal(packageJson.storePackageVersion, "0.2.2.0");
+  const storeVersionParts = packageJson.storePackageVersion.split(".").map(Number);
+  assert.equal(storeVersionParts.length, 4);
+  assert.equal(storeVersionParts[3], 0, "Microsoft Store reserves the revision component and requires zero");
+  assert.match(storeManifest, new RegExp(`Version="${packageJson.storePackageVersion.replaceAll(".", "\\.")}"`));
+});
+
+test("Microsoft Store tiles use distinctive CharaDock artwork in every declared size", () => {
+  const assetDirectory = path.join(projectRoot, "packaging", "windows-store", "Assets");
+  const expectedDimensions = {
+    "StoreLogo.png": [50, 50],
+    "StoreLogo.scale-200.png": [100, 100],
+    "AppList.png": [44, 44],
+    "AppList.scale-200.png": [88, 88],
+    "SmallTile.png": [71, 71],
+    "SmallTile.scale-200.png": [142, 142],
+    "MedTile.png": [150, 150],
+    "MedTile.scale-200.png": [300, 300],
+    "LargeTile.png": [310, 310],
+    "LargeTile.scale-200.png": [620, 620],
+    "WideTile.png": [310, 150],
+    "WideTile.scale-200.png": [620, 300],
+  };
+  for (const [fileName, [width, height]] of Object.entries(expectedDimensions)) {
+    const image = PNG.sync.read(fs.readFileSync(path.join(assetDirectory, fileName)));
+    assert.deepEqual([image.width, image.height], [width, height], `${fileName} dimensions`);
+    let opaquePixels = 0;
+    let chromaticPixels = 0;
+    const quantizedColors = new Set();
+    for (let offset = 0; offset < image.data.length; offset += 4) {
+      const red = image.data[offset];
+      const green = image.data[offset + 1];
+      const blue = image.data[offset + 2];
+      const alpha = image.data[offset + 3];
+      if (alpha <= 8) continue;
+      opaquePixels += 1;
+      if (Math.max(red, green, blue) - Math.min(red, green, blue) > 20) chromaticPixels += 1;
+      quantizedColors.add(`${red >> 4},${green >> 4},${blue >> 4},${alpha >> 4}`);
+    }
+    assert.ok(opaquePixels >= image.width * image.height * 0.25, `${fileName} must be visible`);
+    assert.ok(chromaticPixels >= image.width * image.height * 0.03, `${fileName} must not be a neutral placeholder`);
+    assert.ok(quantizedColors.size >= 24, `${fileName} must contain distinctive artwork`);
+  }
+
+  const manifest = fs.readFileSync(path.join(projectRoot, "packaging", "windows-store", "AppxManifest.xml"), "utf8");
+  for (const [attribute, fileName] of [
+    ["Square44x44Logo", "AppList.png"],
+    ["Square71x71Logo", "SmallTile.png"],
+    ["Square150x150Logo", "MedTile.png"],
+    ["Wide310x150Logo", "WideTile.png"],
+    ["Square310x310Logo", "LargeTile.png"],
+  ]) assert.match(manifest, new RegExp(`${attribute}="Assets\\\\${fileName.replace(".", "\\.")}"`));
+
+  const windowsBuildScript = fs.readFileSync(path.join(projectRoot, ".agents", "skills", "build-windows-binaries", "scripts", "build-windows.cmd"), "utf8");
+  assert.match(windowsBuildScript, /scripts\\build_windows_store_assets\.cjs/);
 });
 
 test("Beatrice integration packages only CharaDock's host helper", () => {
@@ -250,12 +305,18 @@ test("setup can be rerun and support diagnostics stay separate from private cont
   const html = fs.readFileSync(path.join(projectRoot, "desktop", "control.html"), "utf8");
   const control = fs.readFileSync(path.join(projectRoot, "desktop", "control.js"), "utf8");
   const preload = fs.readFileSync(path.join(projectRoot, "desktop", "preload-control.cjs"), "utf8");
+  const mascot = fs.readFileSync(path.join(projectRoot, "desktop", "preload-mascot.cjs"), "utf8");
   const main = fs.readFileSync(path.join(projectRoot, "desktop", "main.cjs"), "utf8");
-  assert.equal((html.match(/data-onboarding-step="\d"/g) || []).length, 5);
-  for (const id of ["reopenOnboardingButton", "onboardingBackendSelect", "onboardingSpeechInputProviderSelect", "onboardingTtsProviderSelect", "exportSupportBundleButton"]) {
+  assert.equal((html.match(/data-onboarding-step="\d"/g) || []).length, 3);
+  for (const id of ["reopenOnboardingButton", "onboardingCodexStatus", "onboardingCharacterGrid", "onboardingFirstWorkGoal", "exportSupportBundleButton"]) {
     assert.match(html, new RegExp(`id="${id}"`));
   }
   assert.match(control, /completeOnboarding\(false\)/);
+  assert.match(control, /startOnboardingFirstWork\(\{ goal, theme, delivery \}\)/);
+  assert.match(preload, /codex:detect/);
+  assert.match(preload, /onboarding:startFirstWork/);
+  assert.match(mascot, /suppressPcAudio: !realtimePeer/);
+  assert.match(main, /nextPreferences\.speechInputProvider = "realtime"/);
   assert.match(preload, /support:getDiagnostics/);
   assert.match(preload, /support:exportBundle/);
   assert.match(main, /privacy:[\s\S]*excluded:[\s\S]*"API keys"/);
@@ -282,6 +343,38 @@ test("settings conversation stays text-only and character voice routing is expli
   for (const id of ["characterVoiceMount", "voiceRoutingSummary", "realtimeVoiceSettings", "standardTtsSettings"]) {
     assert.match(html, new RegExp(`id="${id}"`));
   }
+});
+
+test("detailed character identity is exposed only through the trusted settings bridge", () => {
+  const html = fs.readFileSync(path.join(projectRoot, "desktop", "control.html"), "utf8");
+  const control = fs.readFileSync(path.join(projectRoot, "desktop", "control.js"), "utf8");
+  const preload = fs.readFileSync(path.join(projectRoot, "desktop", "preload-control.cjs"), "utf8");
+  const main = fs.readFileSync(path.join(projectRoot, "desktop", "main.cjs"), "utf8");
+  for (const id of ["characterDirectorDialog", "characterDirectorRoleInput", "characterDirectorThinkingInput", "saveCharacterDirectorButton"]) {
+    assert.match(html, new RegExp(`id="${id}"`));
+  }
+  assert.match(control, /api\.configureCharacterDirector\(/);
+  assert.match(preload, /configureCharacterDirector: \(profile\) => ipcRenderer\.invoke\("character:configureDirector", profile\)/);
+  const handler = main.match(/ipcMain\.handle\("character:configureDirector"[\s\S]*?\n  \}\);/)?.[0] || "";
+  assert.match(handler, /assertTrustedSender\(event\)/);
+  assert.match(handler, /characterDirectorDifference/);
+  const profileHandler = main.match(/ipcMain\.handle\("character:configure"[\s\S]*?\n  \}\);/)?.[0] || "";
+  assert.match(profileHandler, /previous\.locales\?\.\[language\]/, "saving the basic profile must preserve the detailed localized identity");
+});
+
+test("desktop and remote avatar taps distinguish head and body across the rendered character", () => {
+  const readSource = (file) => fs.readFileSync(path.join(projectRoot, file), "utf8");
+  const appSource = readSource("app.js");
+  const mascotCss = readSource("desktop/mascot-overlay.css");
+  const mascotPreload = readSource("desktop/preload-mascot.cjs");
+  const remote = readSource("desktop/remote/remote.js");
+  const main = readSource("desktop/main.cjs");
+  assert.match(appSource, /function syncDesktopMascotTouchBounds\(transform\)/);
+  assert.match(appSource, /--mascot-character-touch-height/);
+  assert.match(mascotCss, /var\(--mascot-character-touch-height/);
+  assert.match(mascotPreload, /\(event\.clientY - petBounds\.top\) \/ petBounds\.height/);
+  assert.match(remote, /\(event\.clientY - bounds\.top\) \/ bounds\.height/);
+  assert.match(main, /resolvePetTouchZone\(payload, character\.touchHeadRatio\)/);
 });
 
 test("conversation and work surfaces expose history, folder access, interruption, and follow-up UX", () => {

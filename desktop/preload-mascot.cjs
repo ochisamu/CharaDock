@@ -1424,7 +1424,7 @@ window.addEventListener("DOMContentLoaded", () => {
       setStatus("自動送信を取り消しました。内容を編集できます", 4200);
     }
   });
-  const sendMascotMessage = async (message, attachments = [], selectedSkillIds = []) => {
+  const sendMascotMessage = async (message, attachments = [], selectedSkillIds = [], deliveryOptions = {}) => {
     setSendingControls(true);
     const useActiveRealtime = Boolean(realtimePeer);
     let streamOwnsBusyState = false;
@@ -1443,6 +1443,8 @@ window.addEventListener("DOMContentLoaded", () => {
         message,
         attachmentPaths: attachments.map((item) => item.path),
         selectedSkillIds,
+        suppressPcAudio: Boolean(deliveryOptions.suppressPcAudio),
+        forceWork: Boolean(deliveryOptions.forceWork),
       });
       if (["screen", "browser", "computer"].includes(result.permissionRequest?.type)) {
         showPermission(result);
@@ -1688,7 +1690,10 @@ window.addEventListener("DOMContentLoaded", () => {
       }
       return;
     }
-    const zone = event.clientY < window.innerHeight * .5 ? "head" : "body";
+    const petBounds = petZone.getBoundingClientRect();
+    const yRatio = petBounds.height > 0
+      ? Math.max(0, Math.min(1, (event.clientY - petBounds.top) / petBounds.height))
+      : .5;
     try {
       const shouldAutoStartLive = !realtimePeer
         && appState?.backend === "codex"
@@ -1714,7 +1719,7 @@ window.addEventListener("DOMContentLoaded", () => {
           return;
         }
       }
-      const result = await ipcRenderer.invoke("mascotInline:pet", { zone });
+      const result = await ipcRenderer.invoke("mascotInline:pet", { yRatio });
       if (!result?.deferDisplayToRealtime) showSpeech(result);
       if (result?.realtimeSpeechError) setStatus(`Realtime音声: ${result.realtimeSpeechError}`, 5000);
     } catch (error) {
@@ -2426,6 +2431,37 @@ window.addEventListener("DOMContentLoaded", () => {
 
   ipcRenderer.on("mascot:speech", (_event, payload) => {
     showSpeech(payload);
+  });
+  let onboardingFirstWorkRunning = false;
+  ipcRenderer.on("mascot:onboardingFirstWork", async (_event, payload = {}) => {
+    const message = String(payload.message || "").trim();
+    if (!message || onboardingFirstWorkRunning) return;
+    onboardingFirstWorkRunning = true;
+    appState = await ipcRenderer.invoke("mascotInline:getState").catch(() => appState);
+    setOpen(true, { focus: true, temporaryInteraction: true });
+    input.value = message;
+    resizeInput();
+    try {
+      if (payload.delivery === "live") {
+        setStatus(uiText("マイクを有効にして最初のLiveへ接続しています…", "Enabling the microphone for your first Live session…"), 30_000);
+        try {
+          if (!realtimePeer) await startRealtime();
+        } catch (error) {
+          await ipcRenderer.invoke("mascotInline:realtimeStop").catch(() => {});
+          closeRealtime();
+          realtimeUnavailable ||= /まだ提供されていません/.test(String(error.message || ""));
+          setStatus(uiText("Liveへ接続できなかったため、文字だけで仕事を始めます", "Live could not connect, so the task will continue silently in text"), 7000);
+        }
+      }
+      input.value = "";
+      resizeInput();
+      await sendMascotMessage(message, [], [], {
+        suppressPcAudio: !realtimePeer,
+        forceWork: true,
+      });
+    } finally {
+      onboardingFirstWorkRunning = false;
+    }
   });
   ipcRenderer.on("audio:stopNormalSpeech", () => stopTtsPlayback());
   ipcRenderer.on("mascot:workHistory", (_event, payload) => {

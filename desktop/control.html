@@ -210,7 +210,7 @@
             <div class="generator-form">
               <label>キャラクター名（任意）<input id="generatedCharacterNameInput" type="text" maxlength="40" placeholder="空欄なら画像から提案" /></label>
               <label>性格・話し方（任意）<textarea id="generatedCharacterPersonalityInput" rows="3" maxlength="2000" placeholder="例：明るく好奇心旺盛。短く親しみやすく話す。空欄なら画像から提案"></textarea></label>
-              <div class="generator-notes"><span class="ui-symbol ui-symbol-sparkle" aria-hidden="true"></span><p>名前や性格が空欄の場合だけ、元絵の雰囲気から提案します。生成中はCodexの利用枠を消費し、数分かかることがあります。</p></div>
+              <div class="generator-notes"><span class="ui-symbol ui-symbol-sparkle" aria-hidden="true"></span><p>名前・性格が空欄なら元絵から提案し、役割・価値観・話し方・反応まで自動で整えます。生成後はキャラクター設定から直せます。</p></div>
               <label class="rights-confirm"><input id="avatarRightsConfirm" type="checkbox" /><span>この画像をアップロード・加工・利用する権利があります</span></label>
               <button id="generateCharacterButton" class="button button-primary" type="button" disabled>CodexでPuruPuru化</button>
               <div id="generatorProgress" class="generator-progress" aria-live="polite">
@@ -229,6 +229,16 @@
             <label>名前<input id="characterNameInput" type="text" maxlength="40" /></label>
             <label class="profile-personality">性格・話し方<textarea id="characterPersonalityInput" rows="4" maxlength="2000"></textarea></label>
           </div>
+          <section class="character-director-summary" aria-labelledby="characterDirectorSummaryTitle">
+            <span class="character-director-symbol"><span class="ui-symbol ui-symbol-character" aria-hidden="true"></span></span>
+            <div>
+              <small>Character identity</small>
+              <h3 id="characterDirectorSummaryTitle">キャラクター性</h3>
+              <p id="characterDirectorRoleSummary"></p>
+              <span id="characterDirectorCustomizationBadge" class="character-director-badge">標準プロフィール</span>
+            </div>
+            <button id="openCharacterDirectorButton" class="button button-secondary" type="button">詳しく編集</button>
+          </section>
           <section id="characterCredit" class="character-credit" aria-labelledby="characterCreditTitle" hidden>
             <div><h3 id="characterCreditTitle">キャラクタークレジット</h3><p id="characterCreditText"></p></div>
             <div id="characterCreditLinks" class="character-credit-links"></div>
@@ -885,6 +895,43 @@
     </header>
     <div id="artifactPreviewBody" class="artifact-preview-body"></div>
   </aside>
+  <section id="characterDirectorDialog" class="character-director-overlay" role="dialog" aria-modal="true" aria-labelledby="characterDirectorTitle" hidden>
+    <div class="character-director-sheet">
+      <header>
+        <div><p class="eyebrow">Character identity</p><h2 id="characterDirectorTitle">キャラクター性を編集</h2><p>会話、Work、Live、考え中とタップ時の反応に同じ人物像を反映します。</p></div>
+        <button id="closeCharacterDirectorButton" class="character-director-close" type="button" aria-label="キャラクター性の編集を閉じる"><span class="ui-symbol ui-symbol-close" aria-hidden="true"></span></button>
+      </header>
+      <div class="character-director-scroll">
+        <section class="character-director-group" aria-labelledby="characterDirectorCoreTitle">
+          <div class="character-director-group-heading"><span>1</span><div><h3 id="characterDirectorCoreTitle">人物像の核</h3><p>キャラクターが何者で、利用者とどう関わるかを定めます。</p></div></div>
+          <div class="character-director-fields">
+            <label>役割<textarea id="characterDirectorRoleInput" rows="2" maxlength="500"></textarea></label>
+            <label>利用者との関係<textarea id="characterDirectorRelationshipInput" rows="3" maxlength="700"></textarea></label>
+            <label>大切にする価値観<textarea id="characterDirectorValuesInput" rows="4" maxlength="2400" placeholder="1行に1件"></textarea><small>判断や提案の基準になります。1行に1件入力します。</small></label>
+            <label>話し方<textarea id="characterDirectorSpeechStyleInput" rows="3" maxlength="700"></textarea></label>
+          </div>
+        </section>
+        <details id="characterDirectorAdvanced" class="character-director-advanced">
+          <summary><span><strong>言葉と反応を詳しく調整</strong><small>必要なときだけ編集</small></span></summary>
+          <div class="character-director-fields is-advanced">
+            <label>自然に使える表現<textarea id="characterDirectorPreferredInput" rows="3" maxlength="2000" placeholder="1行に1件"></textarea></label>
+            <label>避ける表現・振る舞い<textarea id="characterDirectorAvoidInput" rows="3" maxlength="2400" placeholder="1行に1件"></textarea></label>
+            <label>考え中のひとこと<textarea id="characterDirectorThinkingInput" rows="4" maxlength="3000" placeholder="1行に1件"></textarea><small>固定の口癖にならないよう、複数あると自然です。</small></label>
+            <div class="character-director-touch-grid">
+              <label>頭をタップしたとき<textarea id="characterDirectorTouchHeadInput" rows="4" maxlength="2200" placeholder="1行に1件"></textarea></label>
+              <label>体をタップしたとき<textarea id="characterDirectorTouchBodyInput" rows="4" maxlength="2200" placeholder="1行に1件"></textarea></label>
+            </div>
+          </div>
+        </details>
+      </div>
+      <footer>
+        <p id="characterDirectorStatus" class="inline-status" role="status">変更はこのキャラクターだけに保存されます。</p>
+        <button id="resetCharacterDirectorButton" class="button button-quiet" type="button">標準に戻す</button>
+        <button id="cancelCharacterDirectorButton" class="button button-secondary" type="button">キャンセル</button>
+        <button id="saveCharacterDirectorButton" class="button button-primary" type="button">キャラクター性を保存</button>
+      </footer>
+    </div>
+  </section>
   <section id="skillRemoveDialog" class="confirmation-overlay" role="dialog" aria-modal="true" aria-labelledby="skillRemoveTitle" hidden>
     <div class="confirmation-sheet">
       <span class="confirmation-icon is-danger"><span class="ui-symbol ui-symbol-trash" aria-hidden="true"></span></span>
@@ -895,21 +942,32 @@
   <section id="onboarding" class="onboarding" role="dialog" aria-modal="true" aria-labelledby="onboardingTitle" hidden>
     <div class="onboarding-window">
       <header class="onboarding-header">
-        <div><p class="eyebrow">はじめに</p><h1 id="onboardingTitle">最初の3分セットアップ</h1></div>
+        <div><p class="eyebrow">はじめに</p><h1 id="onboardingTitle">キャラクターと始める</h1></div>
         <button id="onboardingSkipButton" class="button button-quiet" type="button">あとで設定</button>
       </header>
-      <div class="onboarding-progress" aria-label="進行状況"><i></i><i></i><i></i><i></i><i></i></div>
+      <div class="onboarding-progress" aria-label="進行状況"><i></i><i></i><i></i></div>
       <div class="onboarding-step is-active" data-onboarding-step="0">
         <span class="onboarding-step-icon"><span class="ui-symbol ui-symbol-connection" aria-hidden="true"></span></span>
-        <div><p class="eyebrow">1 · AI接続</p><h2>AIと接続</h2><p>ChatGPTログインを使うCodex app-server、または自分のOpenAI APIキーを選べます。</p></div>
-        <div class="onboarding-choice-card">
-          <label>AI接続<select id="onboardingBackendSelect"><option value="codex">Codex app-server</option><option value="openai">OpenAI API</option></select></label>
-          <div class="onboarding-action-card">
-            <strong id="onboardingAccountState">ログイン状態を確認しています…</strong>
-            <button id="onboardingLoginButton" class="button button-secondary" type="button">ChatGPTでログイン</button>
-          </div>
-          <button id="onboardingOpenConnectionButton" class="button button-quiet" type="button">詳しいAI接続設定</button>
+        <div><p class="eyebrow">1 · Codex</p><h2>仕事を任せる準備</h2><p>CharaDockは端末のCodexを使います。見つからない場合は、公式アプリまたはCLIを先に準備します。</p></div>
+        <div id="onboardingCodexStatus" class="onboarding-codex-status" role="status" aria-live="polite">
+          <span class="onboarding-status-icon"><span class="ui-symbol ui-symbol-connection" aria-hidden="true"></span></span>
+          <span><strong id="onboardingAccountState">Codexを確認しています…</strong><small id="onboardingCodexDetail">この画面で自動検出します</small></span>
+          <button id="onboardingLoginButton" class="button button-secondary" type="button">再確認</button>
         </div>
+        <div id="onboardingInstallChoices" class="onboarding-install-choices">
+          <article class="onboarding-install-card is-recommended">
+            <span class="onboarding-recommended-badge">おすすめ</span>
+            <span class="ui-symbol ui-symbol-desktop" aria-hidden="true"></span>
+            <div><strong>ChatGPT Windowsアプリ</strong><p>Microsoft Storeから公式アプリを導入します。インストール後、この画面へ戻るだけです。</p></div>
+            <button id="onboardingInstallDesktopButton" class="button button-primary" type="button">公式アプリを入手</button>
+          </article>
+          <article class="onboarding-install-card">
+            <span class="ui-symbol ui-symbol-work" aria-hidden="true"></span>
+            <div><strong>Codex CLI</strong><p>Node.jsを利用している開発者向けです。</p><code>npm install --global @openai/codex</code></div>
+            <div class="onboarding-install-actions"><button id="onboardingCopyCliButton" class="button button-secondary" type="button">コマンドをコピー</button><button id="onboardingOpenCliGuideButton" class="button button-quiet" type="button">公式ガイド</button></div>
+          </article>
+        </div>
+        <button id="onboardingOpenConnectionButton" class="button button-quiet" type="button">OpenAI APIなど別の接続を設定</button>
       </div>
       <div class="onboarding-step" data-onboarding-step="1">
         <span class="onboarding-step-icon"><span class="ui-symbol ui-symbol-character" aria-hidden="true"></span></span>
@@ -919,52 +977,28 @@
         <p class="onboarding-legal">画像を追加する場合、その画像をアップロード・加工・利用する権利が必要です。生成処理では画像がCodexへ送信されます。</p>
       </div>
       <div class="onboarding-step" data-onboarding-step="2">
-        <span class="onboarding-step-icon"><span class="ui-symbol ui-symbol-microphone" aria-hidden="true"></span></span>
-        <div><p class="eyebrow">3 · 音声入力</p><h2>話しかける方法</h2><p>利用環境に合う認識方式を選び、マイクを使用できるか確認します。</p></div>
-        <div class="onboarding-choice-card">
-          <label>音声入力方式<select id="onboardingSpeechInputProviderSelect">
-            <option value="realtime">GPT-Live / Codex Voice（実験的）</option>
-            <option value="sherpa-onnx">sherpa-onnx（ローカル）</option>
-            <option value="browser">端末音声認識</option>
-            <option value="openai">OpenAI文字起こし</option>
-          </select></label>
-          <p id="onboardingSpeechInputStatus" class="onboarding-readiness" role="status"></p>
-          <div class="size-actions">
-            <button id="onboardingMicrophoneTestButton" class="button button-secondary" type="button">マイクを確認</button>
-            <button class="button button-quiet onboarding-open-voice-settings" type="button">詳しい音声設定</button>
-          </div>
-        </div>
-      </div>
-      <div class="onboarding-step" data-onboarding-step="3">
-        <span class="onboarding-step-icon"><span class="ui-symbol ui-symbol-voice" aria-hidden="true"></span></span>
-        <div><p class="eyebrow">4 · 読み上げ</p><h2>キャラクターの声</h2><p>最初はWindows標準音声をすぐ使えます。ローカル音声モデルは後からダウンロードできます。</p></div>
-        <label class="switch-row onboarding-switch"><span><strong>音声読み上げを使う</strong><small>後からデスクトップ設定で変更できます</small></span><input id="onboardingTtsToggle" type="checkbox" /><i></i></label>
-        <div class="onboarding-choice-card">
-          <label>音声方式<select id="onboardingTtsProviderSelect">
-            <option value="system">Windows標準</option>
-            <option value="style-bert-vits2">Style-Bert-VITS2</option>
-            <option value="sbv2-jp-extra">Style-Bert-VITS2 JP-Extra（WebGPU / CPU）</option>
-            <option value="piper-plus">piper-plus（ローカル）</option>
-            <option value="supertonic-3">Supertonic 3（ローカル）</option>
-            <option value="kokoro">Kokoro（WebGPU / CPU）</option>
-            <option value="irodori-webgpu">Irodori TTS（WebGPU）</option>
-          </select></label>
-          <p id="onboardingTtsStatus" class="onboarding-readiness" role="status"></p>
-          <div class="size-actions">
-            <button id="onboardingAudioTestButton" class="button button-secondary" type="button">音声をテスト</button>
-            <button class="button button-quiet onboarding-open-voice-settings" type="button">モデルと声を設定</button>
-          </div>
-        </div>
-      </div>
-      <div class="onboarding-step" data-onboarding-step="4">
         <span class="onboarding-step-icon"><span class="ui-symbol ui-symbol-sparkle" aria-hidden="true"></span></span>
-        <div><p class="eyebrow">5 · 完了</p><h2>準備できました</h2><p>現在の設定はいつでも変更でき、このセットアップもサポート画面から再実行できます。</p></div>
-        <div class="onboarding-summary" aria-label="セットアップ内容">
-          <div><span class="ui-symbol ui-symbol-connection" aria-hidden="true"></span><span><small>AI接続</small><strong id="onboardingSummaryConnection">確認中</strong></span></div>
-          <div><span class="ui-symbol ui-symbol-character" aria-hidden="true"></span><span><small>キャラクター</small><strong id="onboardingSummaryCharacter">確認中</strong></span></div>
-          <div><span class="ui-symbol ui-symbol-microphone" aria-hidden="true"></span><span><small>音声入力</small><strong id="onboardingSummaryInput">確認中</strong></span></div>
-          <div><span class="ui-symbol ui-symbol-voice" aria-hidden="true"></span><span><small>読み上げ</small><strong id="onboardingSummaryOutput">確認中</strong></span></div>
+        <div><p class="eyebrow">3 · 最初の仕事</p><h2>一緒に最初の成果物を作る</h2><p>いま取り組みたいことをもとに、キャラクターホームへ自分専用のスタートボードを作ります。</p></div>
+        <div class="onboarding-first-work-card">
+          <label for="onboardingFirstWorkGoal">いま取り組みたいこと</label>
+          <textarea id="onboardingFirstWorkGoal" rows="3" maxlength="240" placeholder="例：個人アプリのアイデアを形にしたい"></textarea>
+          <div class="onboarding-goal-suggestions" aria-label="入力例">
+            <button type="button" data-onboarding-goal="新しいアプリのアイデアを形にしたい">アプリを作る</button>
+            <button type="button" data-onboarding-goal="今週やることを整理して進めたい">今週を整理</button>
+            <button type="button" data-onboarding-goal="学びたいテーマの計画を立てたい">学習計画</button>
+          </div>
+          <fieldset class="onboarding-theme-options"><legend>ボードの雰囲気</legend>
+            <label><input type="radio" name="onboardingTheme" value="calm" checked /><span>落ち着く</span></label>
+            <label><input type="radio" name="onboardingTheme" value="bright" /><span>明るい</span></label>
+            <label><input type="radio" name="onboardingTheme" value="minimal" /><span>ミニマル</span></label>
+          </fieldset>
+          <fieldset class="onboarding-delivery-options"><legend>キャラクターとの進め方</legend>
+            <label><input type="radio" name="onboardingDelivery" value="live" checked /><span><strong>GPT-Liveで話しながら</strong><small>マイクとLiveの声を使います</small></span></label>
+            <label><input type="radio" name="onboardingDelivery" value="text" /><span><strong>文字だけで静かに</strong><small>読み上げは行いません</small></span></label>
+          </fieldset>
+          <div class="onboarding-silent-note"><span class="ui-symbol ui-symbol-voice" aria-hidden="true"></span><span><strong id="onboardingDeliveryTitle">ローカル音声モデルは不要</strong><small id="onboardingDeliveryDetail">開始するとマイクを有効にして、キャラクターと話しながら最初の仕事を進めます。</small></span></div>
         </div>
+        <button id="onboardingFinishWithoutMissionButton" class="button button-quiet" type="button">今回は作らずに始める</button>
       </div>
       <footer class="onboarding-footer">
         <button id="onboardingBackButton" class="button button-quiet" type="button">戻る</button>

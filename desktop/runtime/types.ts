@@ -51,10 +51,25 @@ export interface CharacterProfileV2 {
   examples: CharacterDialogueExample[];
 }
 
+export interface CharacterDirectorFields {
+  role: string;
+  relationship: string;
+  values: string[];
+  speechStyle: string;
+  preferredPhrases: string[];
+  avoidPhrases: string[];
+  thinkingPhrases: string[];
+  touchHeadPhrases: string[];
+  touchBodyPhrases: string[];
+}
+
+export type CharacterDirectorOverride = Partial<CharacterDirectorFields>;
+
 export interface CharacterLike {
   id?: unknown;
   name?: unknown;
   personality?: unknown;
+  director?: unknown;
 }
 
 export interface ArtifactReference {

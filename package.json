@@ -1,6 +1,7 @@
 {
   "name": "charadock",
-  "version": "0.2.1",
+  "version": "0.2.2",
+  "storePackageVersion": "0.2.2.0",
   "description": "CharaDock is a transparent Windows desktop companion powered by PuruPuru PNGTuber, Codex app-server, and the OpenAI Responses API.",
   "main": "desktop/main.cjs",
   "author": "ochisamu",
@@ -16,6 +17,7 @@
     "previews:build": "node scripts/build_character_previews.cjs",
     "site:build": "node scripts/build_character_previews.cjs && node scripts/build_site.mjs",
     "assets:clean-alpha": "node scripts/clean_avatar_alpha.cjs assets/amber-avatar assets/bronze-avatar assets/towa-avatar assets/sage-avatar assets/nike-avatar",
+    "assets:windows-store": "node scripts/build_windows_store_assets.cjs",
     "test:desktop": "npm run runtime:build && node --test desktop/tests/*.test.cjs",
     "test": "node tests/js_runtime_checks.mjs && npm run test:desktop && uv run python -m unittest tests.test_project_static",
     "dist": "npm run runtime:build && electron-builder --dir",

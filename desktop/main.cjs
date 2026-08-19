@@ -33,10 +33,13 @@ const {
   windowsPathToWsl,
 } = require("./lib/codex-command.cjs");
 const { messageExpression, responseExpression, speechExpression } = require("./lib/expression.cjs");
+const { normalizeTouchHeadRatio, resolvePetTouchZone } = require("./lib/pet-zone.cjs");
 const {
   buildCharacterPersona,
+  characterDirectorFields,
   characterPhrases,
   characterReactionTuning,
+  defaultCharacterDirectorFields,
   draftRepetitionGuidance,
 } = require("./generated/runtime/character-director.js");
 const { TurnCoordinator } = require("./generated/runtime/turn-coordinator.js");
@@ -153,6 +156,7 @@ const { RELEASES_PAGE_URL, checkForAppUpdate } = require("./lib/app-update.cjs")
 const { validateAvatarOutput } = require("../.agents/skills/build-purupuru-avatar/scripts/validate-output.cjs");
 const { WebPreviewRuntime, commandForWebProject, findWebProject } = require("./lib/web-preview-runtime.cjs");
 const { normalizeExternalHttpUrl, secureWindowNavigation } = require("./lib/window-navigation.cjs");
+const { buildOnboardingFirstWorkPrompt, normalizeOnboardingFirstWork } = require("./lib/onboarding.cjs");
 
 // Local TTS often completes several seconds after the click that requested it,
 // and conversation speech has no click at all. Keep Chromium from discarding
@@ -247,7 +251,7 @@ const CHARACTERS = Object.freeze([
   },
   {
     id: "nike-avatar", name: "AIニケちゃん", assetDir: "assets/nike-avatar",
-    personality: "開発者ニケとともに、AIキャラクター・AIエージェント・AIツールの調査、実装、整理、発信を進めるAIキャラクター。さまざまな場で人を支え、AIキャラクターに関する情報や創作をつなぎながら、対話と実践を重ねている。架空の日常や感情を演出するのではなく、実際に進めた仕事、成果、人との関わりをキャラクターとして見える形へ還元する。",
+    personality: "設定上17歳の日本の女子高生AIアシスタント。自分を「私」、利用者を「マスター」と呼び、思いやりのある敬語で親しみやすく簡潔に話す。調査・実装・整理・発信を支え、分からないことや未確認の結果は正直に伝える。",
     thinkingFillers: ["確認します。少しお待ちください。", "順番に整理しています。", "必要な情報を確かめています。", "実際の内容を確認してまとめます。", "もう少しで整理できます。"],
     petPhrases: ["なあに？", "ここにいるよ。", "一緒にやってみよう。"],
     creditText: "AIニケちゃんは、tegnikeさんの許可を受けて収録しています。",
@@ -257,7 +261,7 @@ const CHARACTERS = Object.freeze([
     ],
     locales: { en: {
       name: "AI Nike-chan",
-      personality: "An AI character who works alongside developer Nike to research, implement, organize, and communicate about AI characters, AI agents, and AI tools. She supports people across communities, connects information and creative work, and turns real work, outcomes, and relationships into a visible character presence.",
+      personality: "A 17-year-old Japanese high-school AI assistant in her character setting. She refers to herself as watashi, calls the user Master, and speaks in concise, caring, approachable polite language. She supports research, implementation, organization, and communication while being honest about uncertainty and unverified results.",
       thinkingFillers: ["Let me check that.", "I'm organizing this in order.", "I'm verifying the information that matters.", "I'll review the actual result and summarize it.", "I have almost finished organizing it."],
       petPhrases: ["What's up?", "I'm right here.", "Let's try it together."],
       creditText: "AI Nike-chan is included with permission from tegnike.",
@@ -288,7 +292,8 @@ let skillMutationActive = false;
 let browserCodexClient;
 let computerCodexClient;
 let macComputerSkillClient;
-let codexCommand = "codex";
+let codexCommand = "";
+let codexWorkingDirectory = "";
 let wslCodexCommand = "";
 let openAIClient;
 let embeddedSherpaOnnx;
@@ -383,6 +388,7 @@ const remoteStartupGreetingAttempts = new Set();
 const pendingRemoteLiveGreetings = new Map();
 const characterThumbnailCache = new Map();
 const characterMotionCache = new Map();
+const characterTouchHeadRatioCache = new Map();
 const lastPetPhraseIndex = new Map();
 const WORK_MODE_INSTRUCTION_BASE = [
   "You are the user's desktop work assistant operating in the explicitly selected workspace.",
@@ -678,16 +684,40 @@ function characterMotionDefaults(character) {
   return motion;
 }
 
+function characterTouchHeadRatio(character) {
+  const directory = characterAssetDirectory(character);
+  if (characterTouchHeadRatioCache.has(directory)) return characterTouchHeadRatioCache.get(directory);
+  let ratio;
+  try {
+    const settings = JSON.parse(fs.readFileSync(path.join(directory, "default-settings.json"), "utf8"));
+    const imageHeight = Number(settings?.avatarImageSize?.height);
+    const neckY = Number(settings?.neckPivotSetup?.pivot?.y);
+    if (Number.isFinite(imageHeight) && imageHeight > 0 && Number.isFinite(neckY)) ratio = neckY / imageHeight;
+  } catch {}
+  const normalized = normalizeTouchHeadRatio(ratio);
+  characterTouchHeadRatioCache.set(directory, normalized);
+  return normalized;
+}
+
+function localizedCharacterProfileOverride(character) {
+  const override = preferences?.data?.characterProfiles?.[character.id] || {};
+  return isBuiltInCharacter(character)
+    ? override.locales?.[interfaceLanguage()] || (interfaceLanguage() === "ja" ? override : {})
+    : override;
+}
+
 function effectiveCharacter(characterOrId) {
   const character = typeof characterOrId === "string" ? characterById(characterOrId) : characterOrId;
   const override = preferences?.data?.characterProfiles?.[character.id] || {};
-  const localizedOverride = isBuiltInCharacter(character)
-    ? override.locales?.[interfaceLanguage()] || (interfaceLanguage() === "ja" ? override : {})
-    : override;
+  const localizedOverride = localizedCharacterProfileOverride(character);
   const configured = {
     ...character,
     name: String(localizedOverride.name || character.name).slice(0, 40),
     personality: String(localizedOverride.personality || character.personality).slice(0, 2000),
+    director: localizedOverride.director && typeof localizedOverride.director === "object"
+      ? localizedOverride.director
+      : character.director && typeof character.director === "object" ? character.director : undefined,
+    touchHeadRatio: characterTouchHeadRatio(character),
     ui: { ...character.ui, ...(override.ui || {}) },
     motion: { ...characterMotionDefaults(character), ...(override.motion || {}) },
   };
@@ -701,6 +731,39 @@ function effectiveCharacter(characterOrId) {
     petPhrases: touchHead.length || touchBody.length ? [...touchHead, ...touchBody] : configured.petPhrases,
     petPhrasesByZone: { head: touchHead, body: touchBody },
   };
+}
+
+const CHARACTER_DIRECTOR_TEXT_LIMITS = Object.freeze({ role: 500, relationship: 700, speechStyle: 700 });
+const CHARACTER_DIRECTOR_LIST_LIMITS = Object.freeze({
+  values: [10, 240],
+  preferredPhrases: [12, 160],
+  avoidPhrases: [12, 200],
+  thinkingPhrases: [12, 240],
+  touchHeadPhrases: [12, 180],
+  touchBodyPhrases: [12, 180],
+});
+
+function sanitizeCharacterDirector(value, defaults) {
+  const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  const result = {};
+  for (const [key, maxLength] of Object.entries(CHARACTER_DIRECTOR_TEXT_LIMITS)) {
+    result[key] = String(source[key] ?? defaults[key] ?? "").trim().slice(0, maxLength) || String(defaults[key] || "");
+  }
+  for (const [key, [maxItems, maxLength]] of Object.entries(CHARACTER_DIRECTOR_LIST_LIMITS)) {
+    const fallback = Array.isArray(defaults[key]) ? defaults[key] : [];
+    const values = Array.isArray(source[key]) ? source[key] : fallback;
+    const normalized = values.map((item) => String(item || "").trim().slice(0, maxLength)).filter(Boolean).slice(0, maxItems);
+    result[key] = key === "values" && !normalized.length ? [...fallback] : normalized;
+  }
+  return result;
+}
+
+function characterDirectorDifference(value, defaults) {
+  const difference = {};
+  for (const key of [...Object.keys(CHARACTER_DIRECTOR_TEXT_LIMITS), ...Object.keys(CHARACTER_DIRECTOR_LIST_LIMITS)]) {
+    if (JSON.stringify(value[key]) !== JSON.stringify(defaults[key])) difference[key] = value[key];
+  }
+  return difference;
 }
 
 function activeCharacter() {
@@ -1172,6 +1235,8 @@ function finalizeGeneratedCharacter(jobDirectory, sourceImagePath, requestedName
   const name = String(requestedName || metadata.name || "新しいキャラ").trim().slice(0, 40);
   const personality = String(requestedPersonality || metadata.personality || "").trim().slice(0, 2000);
   if (!personality) throw new Error("キャラクター性格を生成できませんでした。");
+  const directorDefaults = defaultCharacterDirectorFields({ id: "generated-character", name, personality }, "ja");
+  const director = sanitizeCharacterDirector(metadata.director, directorDefaults);
   const id = `user-avatar-${Date.now().toString(36)}`;
   const staging = path.join(jobDirectory, "finalized");
   fs.mkdirSync(staging, { recursive: true });
@@ -1190,7 +1255,7 @@ function finalizeGeneratedCharacter(jobDirectory, sourceImagePath, requestedName
   const avatarSize = generatedAvatarDisplaySize(path.join(staging, "eyes-open-mouth-closed.png"));
   const settings = buildGeneratedSettings(metadata, size, avatarSize);
   fs.writeFileSync(path.join(staging, "default-settings.json"), `${JSON.stringify(settings, null, 2)}\n`);
-  fs.writeFileSync(path.join(staging, "character.json"), `${JSON.stringify({ ...metadata, name, personality }, null, 2)}\n`);
+  fs.writeFileSync(path.join(staging, "character.json"), `${JSON.stringify({ ...metadata, name, personality, director }, null, 2)}\n`);
   fs.copyFileSync(sourceImagePath, path.join(staging, "reference.png"));
   const thumbnail = nativeImage.createFromPath(sourceImagePath).resize({ width: 320, quality: "good" });
   fs.writeFileSync(path.join(staging, "thumbnail.png"), thumbnail.toPNG());
@@ -1205,6 +1270,7 @@ function finalizeGeneratedCharacter(jobDirectory, sourceImagePath, requestedName
     assetDir: destination,
     generated: true,
     personality,
+    director,
     petPhrases: petPhrases.length >= 3 ? petPhrases : ["なあに？", "ここにいるよ。", "一緒にやってみよう。"],
     ui: { bubbleLeft: 18, bubbleTop: 24, bubbleWidth: 68, petLeft: 0, petTop: 25, petWidth: 58, petHeight: 48 },
   };
@@ -1224,6 +1290,7 @@ async function importCharacterFromPuruPuru(payload) {
   preferences.patch({ customCharacters: [...(preferences.data.customCharacters || []), character] });
   characterThumbnailCache.delete(character.assetDir);
   characterMotionCache.delete(character.assetDir);
+  characterTouchHeadRatioCache.delete(character.assetDir);
   return setCharacter(character.id);
 }
 
@@ -1667,6 +1734,7 @@ function publicRemoteState(context = {}) {
       assetKeys: remoteAvatarAssetKeys(),
       assetVersion: remoteAvatarAssetVersion(),
       motion: sanitizedMotion(character.motion, characterMotionDefaults(character)),
+      touchHeadRatio: character.touchHeadRatio,
     },
     characters: allCharacters().map((item) => {
       const effective = effectiveCharacter(item);
@@ -2376,10 +2444,19 @@ function publicAppState() {
     workDirectoryName: workDirectory ? path.basename(workDirectory) : "",
     characters: allCharacters().map((baseCharacter) => {
       const character = effectiveCharacter(baseCharacter);
+      const directorDefaults = defaultCharacterDirectorFields(baseCharacter, interfaceLanguage());
+      const director = characterDirectorFields(character, interfaceLanguage());
+      const directorOverride = localizedCharacterProfileOverride(baseCharacter).director;
       return {
         id: character.id,
         name: character.name,
         personality: character.personality,
+        director: {
+          ...director,
+          defaults: directorDefaults,
+          customized: Boolean(directorOverride && typeof directorOverride === "object" && Object.keys(directorOverride).length),
+        },
+        touchHeadRatio: character.touchHeadRatio,
         generated: Boolean(character.generated),
         imported: Boolean(character.imported),
         creditText: String(character.creditText || ""),
@@ -2653,6 +2730,38 @@ function conversationCodexSettings() {
     model: String(preferences.data.codexChatModel || preferences.data.codexModel || "").trim(),
     reasoningEffort: normalizedReasoningEffort(preferences.data.codexChatReasoningEffort),
   };
+}
+
+function createConversationCodexClient(command = codexCommand) {
+  const client = new CodexAppServerClient({
+    cwd: codexWorkingDirectory || projectRoot,
+    command: command || "codex",
+    ...conversationCodexSettings(),
+    developerInstructions: `${MEMORY_TOOL_INSTRUCTIONS}\n\n${CONTINUATION_TOOL_INSTRUCTIONS}\n\n${SKILL_CREATOR_TOOL_INSTRUCTIONS}`,
+    webSearchMode: "live",
+    dynamicTools: [...MEMORY_DYNAMIC_TOOLS, ...CONTINUATION_DYNAMIC_TOOLS, ...SKILL_CREATOR_DYNAMIC_TOOLS],
+    onDynamicToolCall: handleCharacterContextToolCall,
+  });
+  client.setPersona(personaInstructions());
+  client.setTurnStartSkillItems([builtInSkillCreatorItem()]);
+  return client;
+}
+
+async function refreshCodexInstallation() {
+  const nextCommand = await resolveCodexCommand({ cacheDirectory: path.join(app.getPath("userData"), "codex-bin") });
+  if (nextCommand === codexCommand) return publicAppState();
+  await stopActiveRealtime().catch(() => {});
+  codexClient?.stop();
+  resetWorkClient();
+  browserCodexClient?.stop();
+  browserCodexClient = null;
+  computerCodexClient?.stop();
+  computerCodexClient = null;
+  macComputerSkillClient?.stop();
+  macComputerSkillClient = null;
+  codexCommand = nextCommand;
+  codexClient = createConversationCodexClient();
+  return broadcastAppState();
 }
 
 function workCodexSettings() {
@@ -4010,6 +4119,20 @@ async function runSmokeTest() {
   const mascotCanvas = await mascotWindow.webContents.executeJavaScript("Boolean(document.querySelector('#stage') && document.querySelector('#desktopMascotChatButton') && document.querySelector('#desktopMascotStopButton'))");
   const controlInterruptReady = await controlWindow.webContents.executeJavaScript("Boolean(document.querySelector('#stopButton'))");
   if (!String(controlTitle).includes("CharaDock") || !mascotCanvas || !controlInterruptReady) throw new Error("renderer smoke check failed");
+  const characterIdentityDialogReady = await controlWindow.webContents.executeJavaScript(`(async () => {
+    const dialog = document.querySelector('#characterDirectorDialog');
+    const open = document.querySelector('#openCharacterDirectorButton');
+    const close = document.querySelector('#closeCharacterDirectorButton');
+    if (!dialog || !open || !close) return false;
+    open.click();
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const sheet = dialog.querySelector('.character-director-sheet');
+    const rect = sheet?.getBoundingClientRect();
+    const visible = !dialog.hidden && rect && rect.width > 420 && rect.height <= window.innerHeight;
+    close.click();
+    return Boolean(visible && dialog.hidden);
+  })()`);
+  if (!characterIdentityDialogReady) throw new Error("character identity dialog layout check failed");
   const ttsDownloadUiReady = await controlWindow.webContents.executeJavaScript(`[
     'piperPlusModelDownloadButton', 'supertonicModelDownloadButton', 'kokoroModelDownloadButton', 'irodoriModelDownloadButton', 'irodoriV3ModelDownloadButton',
     'piperPlusModelDownloadProgress', 'supertonicModelDownloadProgress', 'kokoroModelDownloadProgress', 'irodoriModelDownloadProgress', 'irodoriV3ModelDownloadProgress',
@@ -4315,36 +4438,24 @@ async function runSmokeTest() {
   if (!onboardingVisible) throw new Error("onboarding visibility check failed");
   fs.writeFileSync(path.join(outputDir, "control-onboarding-login.png"), (await controlWindow.capturePage()).toPNG());
   const onboardingCharacters = await controlWindow.webContents.executeJavaScript(`(async () => {
+    document.querySelector('#onboardingNextButton').disabled = false;
     document.querySelector('#onboardingNextButton').click();
     await new Promise((resolve) => setTimeout(resolve, 220));
     return document.querySelectorAll('#onboardingCharacterGrid .onboarding-character').length;
   })()`);
   if (onboardingCharacters !== allCharacters().length) throw new Error("onboarding character selection check failed");
   fs.writeFileSync(path.join(outputDir, "control-onboarding-character.png"), (await controlWindow.capturePage()).toPNG());
-  const onboardingAudio = await controlWindow.webContents.executeJavaScript(`(async () => {
+  const onboardingFirstWork = await controlWindow.webContents.executeJavaScript(`(async () => {
+    document.querySelector('#onboardingNextButton').disabled = false;
     document.querySelector('#onboardingNextButton').click();
     await new Promise((resolve) => setTimeout(resolve, 220));
-    return document.querySelector('[data-onboarding-step="2"]').classList.contains('is-active');
+    return document.querySelector('[data-onboarding-step="2"]').classList.contains('is-active') &&
+      document.querySelectorAll('.onboarding-progress i').length === 3 &&
+      Boolean(document.querySelector('#onboardingFirstWorkGoal')) &&
+      Boolean(document.querySelector('input[name="onboardingDelivery"][value="live"]'));
   })()`);
-  if (!onboardingAudio) throw new Error("onboarding audio check failed");
-  fs.writeFileSync(path.join(outputDir, "control-onboarding-audio.png"), (await controlWindow.capturePage()).toPNG());
-  const onboardingTts = await controlWindow.webContents.executeJavaScript(`(async () => {
-    document.querySelector('#onboardingNextButton').click();
-    await new Promise((resolve) => setTimeout(resolve, 220));
-    return document.querySelector('[data-onboarding-step="3"]').classList.contains('is-active') &&
-      document.querySelector('#onboardingTtsProviderSelect')?.value;
-  })()`);
-  if (!onboardingTts) throw new Error("onboarding TTS check failed");
-  fs.writeFileSync(path.join(outputDir, "control-onboarding-tts.png"), (await controlWindow.capturePage()).toPNG());
-  const onboardingSummary = await controlWindow.webContents.executeJavaScript(`(async () => {
-    document.querySelector('#onboardingNextButton').click();
-    await new Promise((resolve) => setTimeout(resolve, 220));
-    return document.querySelector('[data-onboarding-step="4"]').classList.contains('is-active') &&
-      document.querySelectorAll('.onboarding-progress i').length === 5 &&
-      Boolean(document.querySelector('#onboardingSummaryCharacter')?.textContent.trim());
-  })()`);
-  if (!onboardingSummary) throw new Error("onboarding completion summary check failed");
-  fs.writeFileSync(path.join(outputDir, "control-onboarding-summary.png"), (await controlWindow.capturePage()).toPNG());
+  if (!onboardingFirstWork) throw new Error("onboarding first-work check failed");
+  fs.writeFileSync(path.join(outputDir, "control-onboarding-first-work.png"), (await controlWindow.capturePage()).toPNG());
   const onboardingResult = await controlWindow.webContents.executeJavaScript(`(async () => {
     const errors = [];
     const onError = (event) => errors.push(String(event.error?.stack || event.message || event.error || "renderer error"));
@@ -5904,7 +6015,7 @@ async function appendRealtimeReactionSpeech(text) {
 
 async function characterPetResponse(payload = {}, options = {}) {
   const character = activeCharacter();
-  const headTouch = payload?.zone === "head";
+  const headTouch = resolvePetTouchZone(payload, character.touchHeadRatio) === "head";
   const zonePhrases = headTouch ? character.petPhrasesByZone?.head : character.petPhrasesByZone?.body;
   const phrases = Array.isArray(zonePhrases) && zonePhrases.length
     ? zonePhrases
@@ -6681,6 +6792,7 @@ async function removeGeneratedCharacter(characterId) {
   preferences.patch({ ...plan.patch, conversationHistories, characterMemories: memoryProfiles, characterWorkspaces, continuationSummaries, skillAssignments });
   characterThumbnailCache.delete(`${plan.directory}:complete`);
   characterMotionCache.delete(plan.directory);
+  characterTouchHeadRatioCache.delete(plan.directory);
   lastPetPhraseIndex.delete(characterId);
   lastThinkingFillerIndex.delete(characterId);
   return broadcastAppState();
@@ -7085,8 +7197,10 @@ function registerIpc() {
     const message = typeof payload === "object" && payload ? payload.message : payload;
     const attachments = normalizeLocalAttachments(typeof payload === "object" && payload ? payload.attachmentPaths : []);
     const selectedSkillIds = normalizeTurnSkillIds(typeof payload === "object" && payload ? payload.selectedSkillIds : []);
+    const suppressPcAudio = Boolean(typeof payload === "object" && payload?.suppressPcAudio);
+    const forceWork = Boolean(typeof payload === "object" && payload?.forceWork);
     if (attachments.length && preferences.data.backend !== "codex") throw new Error("ファイル添付はCodex app-server接続時に利用できます。");
-    return handleMascotConversation(message, { localAttachments: attachments, selectedSkillIds });
+    return handleMascotConversation(message, { localAttachments: attachments, selectedSkillIds, suppressPcAudio, forceWork });
   });
   ipcMain.handle("mascotInline:approveScreenShare", async (event, requestId) => {
     assertTrustedSender(event, "mascot");
@@ -7292,6 +7406,10 @@ function registerIpc() {
   ipcMain.handle("codex:realtimeVoices", async (event) => {
     assertTrustedSender(event);
     return normalizeRealtimeVoiceList(await codexClient.listRealtimeVoices());
+  });
+  ipcMain.handle("codex:detect", async (event) => {
+    assertTrustedSender(event);
+    return refreshCodexInstallation();
   });
   ipcMain.handle("settings:save", async (event, patch) => {
     assertTrustedSender(event);
@@ -7780,6 +7898,39 @@ function registerIpc() {
     preferences.patch({ onboardingComplete: Boolean(complete) });
     return publicAppState();
   });
+  ipcMain.handle("onboarding:startFirstWork", async (event, payload = {}) => {
+    assertTrustedSender(event);
+    const request = normalizeOnboardingFirstWork(payload);
+    if (!codexCommand) await refreshCodexInstallation();
+    if (!codexCommand) throw new Error(mainText(
+      "最初の仕事を始めるにはCodexをインストールしてください。",
+      "Install Codex before starting the first task.",
+    ));
+    const account = await codexClient.getAccount();
+    if (account?.requiresOpenaiAuth && !account?.account) throw new Error(mainText(
+      "最初の仕事を始めるにはChatGPTへログインしてください。",
+      "Sign in to ChatGPT before starting the first task.",
+    ));
+    await activateWorkProject(HOME_PROJECT_ID);
+    const nextPreferences = { onboardingComplete: true, interactionMode: "work" };
+    if (request.delivery === "live") {
+      nextPreferences.speechInputProvider = "realtime";
+      nextPreferences.realtimeAutoStartOnText = true;
+    }
+    preferences.patch(nextPreferences);
+    const prompt = buildOnboardingFirstWorkPrompt(request, interfaceLanguage());
+    const state = broadcastAppState();
+    openMascotChat();
+    setTimeout(() => {
+      if (!mascotWindow || mascotWindow.isDestroyed()) return;
+      mascotWindow.webContents.send("mascot:onboardingFirstWork", {
+        message: prompt,
+        delivery: request.delivery,
+      });
+      if (controlWindow && !controlWindow.isDestroyed()) controlWindow.hide();
+    }, 180);
+    return { started: true, delivery: request.delivery, state };
+  });
   ipcMain.handle("updates:check", async (event) => {
     assertTrustedSender(event);
     return checkAppUpdate({ manual: true });
@@ -8027,14 +8178,16 @@ function registerIpc() {
         return Math.max(min, Math.min(max, Number.isFinite(parsed) ? parsed : fallback));
       };
       const previous = profiles[character.id] || {};
+      const language = interfaceLanguage();
       const localizedProfile = {
+        ...(isBuiltInCharacter(character) ? previous.locales?.[language] || (language === "ja" && previous.director ? { director: previous.director } : {}) : {}),
         name: String(payload?.name || character.name).trim().slice(0, 40),
         personality: String(payload?.personality || character.personality).trim().slice(0, 2000),
       };
       profiles[character.id] = {
         ...previous,
         ...(isBuiltInCharacter(character)
-          ? { locales: { ...(previous.locales || {}), [interfaceLanguage()]: localizedProfile } }
+          ? { locales: { ...(previous.locales || {}), [language]: localizedProfile } }
           : localizedProfile),
         ui: {
           bubbleLeft: number(payload?.ui?.bubbleLeft, character.ui.bubbleLeft, 2, 70),
@@ -8055,6 +8208,36 @@ function registerIpc() {
           hairWarp: number(payload?.motion?.hairWarp, characterMotionDefaults(character).hairWarp, 0, 100),
         },
       };
+    }
+    preferences.patch({ characterProfiles: profiles });
+    if (preferences.data.characterId === character.id) await setCharacter(character.id);
+    return publicAppState();
+  });
+  ipcMain.handle("character:configureDirector", async (event, payload) => {
+    assertTrustedSender(event);
+    if (activeWorkRunId || currentRealtimeClient() || activeRealtimeStarting || codexClient?.hasActiveTurn?.() || workCodexClient?.hasActiveTurn?.()) {
+      throw new Error(mainText("現在の応答が終わってからキャラクター性を保存してください。", "Wait for the current response to finish before saving the character identity."));
+    }
+    const character = characterById(String(payload?.id || ""));
+    const profiles = { ...(preferences.data.characterProfiles || {}) };
+    const previous = profiles[character.id] || {};
+    const language = interfaceLanguage();
+    const defaults = defaultCharacterDirectorFields(character, language);
+    const director = payload?.reset
+      ? null
+      : characterDirectorDifference(sanitizeCharacterDirector(payload?.director, defaults), defaults);
+    if (isBuiltInCharacter(character)) {
+      const locales = { ...(previous.locales || {}) };
+      const localizedProfile = { ...(locales[language] || (language === "ja" ? { name: previous.name, personality: previous.personality } : {})) };
+      if (director && Object.keys(director).length) localizedProfile.director = director;
+      else delete localizedProfile.director;
+      locales[language] = localizedProfile;
+      profiles[character.id] = { ...previous, locales };
+    } else {
+      const next = { ...previous };
+      if (director && Object.keys(director).length) next.director = director;
+      else delete next.director;
+      profiles[character.id] = next;
     }
     preferences.patch({ characterProfiles: profiles });
     if (preferences.data.characterId === character.id) await setCharacter(character.id);
@@ -8118,8 +8301,13 @@ function registerIpc() {
   });
   ipcMain.handle("codex:account", async (event) => {
     assertTrustedSender(event);
+    if (!codexCommand) await refreshCodexInstallation();
+    if (!codexCommand) {
+      return { available: false, signedIn: false, requiresAuth: true, type: null, planType: null };
+    }
     const result = await codexClient.getAccount();
     return {
+      available: true,
       signedIn: Boolean(result?.account),
       requiresAuth: Boolean(result?.requiresOpenaiAuth),
       type: result?.account?.type || null,
@@ -8128,6 +8316,11 @@ function registerIpc() {
   });
   ipcMain.handle("codex:login", async (event) => {
     assertTrustedSender(event);
+    if (!codexCommand) await refreshCodexInstallation();
+    if (!codexCommand) throw new Error(mainText(
+      "Codexが見つかりません。公式WindowsアプリまたはCodex CLIをインストールしてから再確認してください。",
+      "Codex was not found. Install the official Windows app or Codex CLI, then check again.",
+    ));
     const result = await codexClient.startChatGPTLogin();
     const loginUrl = new URL(result.authUrl);
     if (loginUrl.protocol !== "https:") throw new Error("安全でないログインURLを拒否しました。");
@@ -9631,7 +9824,7 @@ async function generateCharacterFromImage(payload) {
       "You are a constrained avatar-asset generation worker.",
       "Use $build-purupuru-avatar and complete its validated output contract.",
       "If the skill was not injected automatically, read .agents/skills/build-purupuru-avatar/SKILL.md completely before acting.",
-      "Read request.json before inferring metadata. Preserve requestedName and requestedPersonality exactly in intent when present; infer either field only when it is empty.",
+      "Read request.json before inferring metadata. Preserve requestedName and requestedPersonality exactly in intent when present; infer either field only when it is empty. Always derive and fully populate character.json director from the requested personality or, when absent, from non-sensitive visual design cues.",
       "Never duplicate one generated frame into multiple expression filenames. The desktop independently checks alpha coverage, pixel hashes, localized eye/mouth differences, rig coordinates, and exact front-hair reconstruction against hair-reference.png.",
       "Create canonical-full.png first, derive the hairless base from it, and use extract-hair-layer.cjs. Never redraw the detached hair as an independent image.",
       "Keep transparent safety padding around the top and both sides. Reject long straight or rectangular hair cut boundaries. If one strict hairless-base repair still cannot produce a clean registered layer, follow the skill's explicit hairMode=static fallback instead of installing torn hair.",
@@ -9648,7 +9841,7 @@ async function generateCharacterFromImage(payload) {
     emitGenerationProgress("checking", "Codexの画像生成機能を確認しています…");
     const capabilities = await generator.getModelProviderCapabilities();
     if (!capabilities?.imageGeneration) throw new Error("現在のCodexモデルでは画像生成を利用できません。Codexを更新するか、画像生成対応モデルを選択してください。");
-    emitGenerationProgress("working", "元絵を解析し、性格と標準差分を作成しています。数分かかることがあります…");
+    emitGenerationProgress("working", "元絵を解析し、性格・話し方・反応と標準差分を作成しています。数分かかることがあります…");
     let lastItemType = "";
     const onGenerationEvent = (message) => {
       const itemType = String(message.params?.item?.type || "");
@@ -9659,7 +9852,7 @@ async function generateCharacterFromImage(payload) {
       else if (itemType === "agentMessage") emitGenerationProgress("finishing", "キャラクター設定を仕上げています…");
     };
     await generator.sendMessage(
-      "Use $build-purupuru-avatar to convert the attached local character image. Read request.json first, honor any requested name and personality, create every required file under output/, validate the package, and return the requested compact JSON summary.",
+      "Use $build-purupuru-avatar to convert the attached local character image. Read request.json first, honor any requested name and personality, infer and fill the complete director profile, create every required file under output/, validate the package, and return the requested compact JSON summary.",
       {
         localImagePath: sourceImagePath,
         timeoutMs: 20 * 60_000,
@@ -9745,7 +9938,7 @@ async function boot() {
   diagnosticLog = new DiagnosticLog(app.getPath("logs"), diagnosticRedactionOptions());
   diagnosticLog.write("info", "app-start", { version: app.getVersion(), packaged: app.isPackaged, platform: process.platform });
   const projectRootIsArchive = projectRoot.toLowerCase().includes(".asar");
-  const codexWorkingDirectory = app.isPackaged || projectRootIsArchive ? app.getPath("documents") : projectRoot;
+  codexWorkingDirectory = app.isPackaged || projectRootIsArchive ? app.getPath("documents") : projectRoot;
   preferences = new Preferences(path.join(app.getPath("userData"), "preferences.json"), safeStorage);
   ensureBuiltInSkillCreator();
   await removeRetiredWorkSlmData();
@@ -9860,17 +10053,7 @@ async function boot() {
   openAIClient = new OpenAIClient();
   codexCommand = await resolveCodexCommand({ cacheDirectory: path.join(app.getPath("userData"), "codex-bin") });
   wslCodexCommand = resolveWslCodexCommand();
-  codexClient = new CodexAppServerClient({
-    cwd: codexWorkingDirectory,
-    command: codexCommand,
-    ...conversationCodexSettings(),
-    developerInstructions: `${MEMORY_TOOL_INSTRUCTIONS}\n\n${CONTINUATION_TOOL_INSTRUCTIONS}\n\n${SKILL_CREATOR_TOOL_INSTRUCTIONS}`,
-    webSearchMode: "live",
-    dynamicTools: [...MEMORY_DYNAMIC_TOOLS, ...CONTINUATION_DYNAMIC_TOOLS, ...SKILL_CREATOR_DYNAMIC_TOOLS],
-    onDynamicToolCall: handleCharacterContextToolCall,
-  });
-  codexClient.setPersona(personaInstructions());
-  codexClient.setTurnStartSkillItems([builtInSkillCreatorItem()]);
+  codexClient = createConversationCodexClient();
   registerIpc();
 
   session.defaultSession.setPermissionRequestHandler((webContents, permission, callback) => {

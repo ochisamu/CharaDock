@@ -297,8 +297,9 @@ class ProjectStaticTests(unittest.TestCase):
         self.assertIn('new CodexAppServerClient', main)
         self.assertRegex(
             main,
-            r"codexClient = new CodexAppServerClient\(\{[\s\S]*?webSearchMode: \"live\",[\s\S]*?\}\);",
+            r"function createConversationCodexClient\([\s\S]*?new CodexAppServerClient\(\{[\s\S]*?webSearchMode: \"live\",[\s\S]*?\}\);",
         )
+        self.assertIn("codexClient = createConversationCodexClient();", main)
         self.assertIn('new OpenAIClient', main)
         self.assertIn('contextBridge.exposeInMainWorld("mascotDesktop"', control_preload)
         self.assertNotIn('ipcRenderer.send,', control_preload)

@@ -601,7 +601,11 @@ class RemoteCompanionServer {
       }
       if (url.pathname === "/api/pet") {
         this.enforceRateLimit(request, "pet", 30);
-        return this.sendJson(response, 200, await this.callbacks.pet?.({ zone: body.zone === "head" ? "head" : "body" }));
+        const parsedYRatio = Number(body.yRatio);
+        return this.sendJson(response, 200, await this.callbacks.pet?.({
+          zone: body.zone === "head" ? "head" : "body",
+          yRatio: Number.isFinite(parsedYRatio) ? Math.max(0, Math.min(1, parsedYRatio)) : undefined,
+        }));
       }
       if (url.pathname === "/api/interrupt") return this.sendJson(response, 200, await this.callbacks.interrupt?.());
       if (url.pathname === "/api/settings") return this.sendJson(response, 200, { state: await this.callbacks.setSettings?.(body) });

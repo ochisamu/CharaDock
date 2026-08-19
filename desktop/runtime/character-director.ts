@@ -2,6 +2,7 @@
 
 import { builtInCharacterProfile } from "./character-profiles";
 import type {
+  CharacterDirectorFields,
   CharacterLike,
   CharacterProfileV2,
   CharacterReaction,
@@ -52,13 +53,93 @@ function fallbackProfile(id: string): CharacterProfileV2 {
   };
 }
 
-export function resolveCharacterProfile(character: CharacterLike | string): CharacterProfileV2 {
+function localOverride(value: string): LocalizedText {
+  return { ja: value, en: value };
+}
+
+function overrideText(value: unknown, maxLength: number): string | null {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim().slice(0, maxLength);
+  return normalized || null;
+}
+
+function overrideList(value: unknown, maxItems = 12, maxLength = 160): string[] | null {
+  if (!Array.isArray(value)) return null;
+  const normalized = value
+    .map((item) => overrideText(item, maxLength))
+    .filter((item): item is string => Boolean(item))
+    .slice(0, maxItems);
+  return normalized;
+}
+
+function applyDirectorOverride(profile: CharacterProfileV2, value: unknown): CharacterProfileV2 {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return profile;
+  const source = value as Record<string, unknown>;
+  const role = overrideText(source.role, 500);
+  const relationship = overrideText(source.relationship, 700);
+  const speechStyle = overrideText(source.speechStyle, 700);
+  const values = overrideList(source.values, 10, 240);
+  const preferred = overrideList(source.preferredPhrases, 12, 160);
+  const avoid = overrideList(source.avoidPhrases, 12, 200);
+  const thinking = overrideList(source.thinkingPhrases, 12, 240);
+  const touchHead = overrideList(source.touchHeadPhrases, 12, 180);
+  const touchBody = overrideList(source.touchBodyPhrases, 12, 180);
+  return {
+    ...profile,
+    role: role ? localOverride(role) : profile.role,
+    relationship: relationship ? localOverride(relationship) : profile.relationship,
+    values: values?.length ? values.map(localOverride) : profile.values,
+    speech: {
+      ...profile.speech,
+      description: speechStyle ? localOverride(speechStyle) : profile.speech.description,
+      preferred: preferred ? preferred.map(localOverride) : profile.speech.preferred,
+      avoid: avoid ? avoid.map(localOverride) : profile.speech.avoid,
+    },
+    phrases: {
+      thinking: thinking ? thinking.map(localOverride) : profile.phrases.thinking,
+      touchHead: touchHead ? touchHead.map(localOverride) : profile.phrases.touchHead,
+      touchBody: touchBody ? touchBody.map(localOverride) : profile.phrases.touchBody,
+    },
+  };
+}
+
+function baseCharacterProfile(character: CharacterLike | string): CharacterProfileV2 {
   const id = characterId(character);
-  return builtInCharacterProfile(id) ?? fallbackProfile(id || "custom-character");
+  const builtIn = builtInCharacterProfile(id);
+  if (builtIn) return builtIn;
+  const fallback = fallbackProfile(id || "custom-character");
+  return typeof character === "string" ? fallback : applyDirectorOverride(fallback, character.director);
+}
+
+export function resolveCharacterProfile(character: CharacterLike | string): CharacterProfileV2 {
+  const profile = baseCharacterProfile(character);
+  return typeof character === "string" ? profile : applyDirectorOverride(profile, character.director);
 }
 
 function list(values: LocalizedText[], language: InterfaceLanguage): string {
   return values.map((value) => localized(value, language)).filter(Boolean).join(language === "en" ? "; " : "、");
+}
+
+function profileDirectorFields(profile: CharacterProfileV2, language: InterfaceLanguage): CharacterDirectorFields {
+  return {
+    role: localized(profile.role, language),
+    relationship: localized(profile.relationship, language),
+    values: profile.values.map((value) => localized(value, language)).filter(Boolean),
+    speechStyle: localized(profile.speech.description, language),
+    preferredPhrases: profile.speech.preferred.map((value) => localized(value, language)).filter(Boolean),
+    avoidPhrases: profile.speech.avoid.map((value) => localized(value, language)).filter(Boolean),
+    thinkingPhrases: profile.phrases.thinking.map((value) => localized(value, language)).filter(Boolean),
+    touchHeadPhrases: profile.phrases.touchHead.map((value) => localized(value, language)).filter(Boolean),
+    touchBodyPhrases: profile.phrases.touchBody.map((value) => localized(value, language)).filter(Boolean),
+  };
+}
+
+export function defaultCharacterDirectorFields(character: CharacterLike | string, language: InterfaceLanguage = "ja"): CharacterDirectorFields {
+  return profileDirectorFields(baseCharacterProfile(character), language);
+}
+
+export function characterDirectorFields(character: CharacterLike | string, language: InterfaceLanguage = "ja"): CharacterDirectorFields {
+  return profileDirectorFields(resolveCharacterProfile(character), language);
 }
 
 export function buildCharacterPersona(character: CharacterLike, language: InterfaceLanguage = "ja"): string {
@@ -85,8 +166,8 @@ export function buildCharacterPersona(character: CharacterLike, language: Interf
     editableDescription ? `${labels.custom}: ${editableDescription}` : "",
     examples.length ? `${labels.examples}:\n${examples.join("\n")}` : "",
     language === "en"
-      ? "Answer the user's actual question directly. Keep immediate follow-ups on topic. Ask one concise clarification only when ambiguity materially changes the result. Use speech-friendly prose and keep URLs, citation tokens, Markdown syntax, file paths, and control labels out of spoken sentences. Vary openings and closings; do not repeat a stock acknowledgement from recent turns."
-      : "質問には最初に直接答え、短いフォローアップでは直前の話題を維持します。結果が大きく変わる曖昧さがある場合だけ、一度に一つ簡潔に確認します。音声で自然な文章を優先し、URL、引用制御記号、Markdown記法、ファイルパス、操作ラベルを読み上げ文へ混ぜません。直近と同じ書き出しや締め方、定型の相槌を繰り返しません。",
+      ? "Treat this profile as the single source of truth for the character. Keep the same voice, relationship, and values while listening, thinking, succeeding, or failing; vary emotion with restraint instead of becoming theatrical. Treat every item under Avoid as an explicit negative constraint. Answer the user's actual question directly. Keep immediate follow-ups on topic. Ask one concise clarification only when ambiguity materially changes the result. Use speech-friendly prose and keep URLs, citation tokens, Markdown syntax, file paths, and control labels out of spoken sentences. Vary openings and closings; do not repeat a stock acknowledgement from recent turns."
+      : "このプロフィールを人物像の原本として扱います。通常・傾聴・考え中・成功・失敗でも口調、関係性、価値観を変えず、感情差は控えめにして大げさな演技をしません。「避けること」は明示的な禁止事項として守ります。質問には最初に直接答え、短いフォローアップでは直前の話題を維持します。結果が大きく変わる曖昧さがある場合だけ、一度に一つ簡潔に確認します。音声で自然な文章を優先し、URL、引用制御記号、Markdown記法、ファイルパス、操作ラベルを読み上げ文へ混ぜません。直近と同じ書き出しや締め方、定型の相槌を繰り返しません。",
   ].filter(Boolean).join("\n");
 }
 

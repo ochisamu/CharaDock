@@ -64,6 +64,7 @@
   const mutatingSkillIds = new Set();
   let pendingSkillRemoval = null;
   let skillRemoveFocusReturn = null;
+  let characterDirectorFocusReturn = null;
   let chatBusy = false;
   let pendingChatFollowUp = null;
   let chatAttachments = [];
@@ -93,6 +94,11 @@
   let onboardingStep = 0;
   let onboardingWasOpen = false;
   let onboardingFocusReturn = null;
+  let onboardingMissionStarting = false;
+  let onboardingDeliveryTouched = false;
+  const CODEX_WINDOWS_APP_URL = "https://get.microsoft.com/installer/download/9PLM9XGG6VKS?cid=website_cta_psi";
+  const CODEX_CLI_GUIDE_URL = "https://learn.chatgpt.com/docs/codex/cli";
+  const CODEX_CLI_INSTALL_COMMAND = "npm install --global @openai/codex";
   let lastDiagnostics = null;
   let dismissedUpdateVersion = "";
   let motionPreviewTimer = 0;
@@ -1667,6 +1673,18 @@
     if (!character) return;
     $("#characterNameInput").value = character.name || "";
     $("#characterPersonalityInput").value = character.personality || "";
+    const director = character.director || {};
+    $("#characterDirectorRoleSummary").textContent = director.role || localized("役割はまだ設定されていません。", "No role has been set yet.");
+    $("#characterDirectorCustomizationBadge").textContent = director.customized
+      ? localized("このキャラ用に調整済み", "Customized for this character")
+      : localized("標準プロフィール", "Default profile");
+    $("#characterDirectorCustomizationBadge").classList.toggle("is-customized", Boolean(director.customized));
+    const directorEditingLocked = characterDirectorEditingLocked();
+    $("#saveCharacterDirectorButton").disabled = directorEditingLocked;
+    $("#resetCharacterDirectorButton").disabled = directorEditingLocked;
+    if (!$("#characterDirectorDialog").hidden && directorEditingLocked) {
+      setStatus($("#characterDirectorStatus"), localized("現在の応答が終わると保存できます。", "You can save after the current response finishes."));
+    }
     $("#bubbleLeftInput").value = character.ui?.bubbleLeft ?? 18;
     $("#bubbleTopInput").value = character.ui?.bubbleTop ?? 24;
     $("#bubbleWidthInput").value = character.ui?.bubbleWidth ?? 68;
@@ -1694,6 +1712,102 @@
     renderContinuationEditor();
     syncMotionReadouts();
     setStatus($("#characterProfileStatus"), `${character.name}の設定`);
+  }
+
+  const characterDirectorListFields = Object.freeze({
+    values: "#characterDirectorValuesInput",
+    preferredPhrases: "#characterDirectorPreferredInput",
+    avoidPhrases: "#characterDirectorAvoidInput",
+    thinkingPhrases: "#characterDirectorThinkingInput",
+    touchHeadPhrases: "#characterDirectorTouchHeadInput",
+    touchBodyPhrases: "#characterDirectorTouchBodyInput",
+  });
+
+  const characterDirectorTextFields = Object.freeze({
+    role: "#characterDirectorRoleInput",
+    relationship: "#characterDirectorRelationshipInput",
+    speechStyle: "#characterDirectorSpeechStyleInput",
+  });
+
+  function characterDirectorEditingLocked() {
+    return Boolean(chatBusy || workHistoryState.activeWorkRunId || realtimePeerConnection || realtimeStarting);
+  }
+
+  function populateCharacterDirectorDialog(director = currentCharacter()?.director || {}) {
+    for (const [key, selector] of Object.entries(characterDirectorTextFields)) $(selector).value = director[key] || "";
+    for (const [key, selector] of Object.entries(characterDirectorListFields)) $(selector).value = (director[key] || []).join("\n");
+    $("#characterDirectorTitle").textContent = localized(
+      `${currentCharacter()?.name || "キャラクター"}のキャラクター性`,
+      `${currentCharacter()?.name || "Character"} identity`,
+    );
+    $("#characterDirectorAdvanced")?.removeAttribute?.("open");
+    const editingLocked = characterDirectorEditingLocked();
+    $("#saveCharacterDirectorButton").disabled = editingLocked;
+    $("#resetCharacterDirectorButton").disabled = editingLocked;
+    setStatus($("#characterDirectorStatus"), editingLocked
+      ? localized("現在の応答が終わると保存できます。", "You can save after the current response finishes.")
+      : director.customized
+        ? localized("このキャラクター用の調整が保存されています。", "Custom settings are saved for this character.")
+        : localized("現在は標準プロフィールを使用しています。", "This character currently uses the default profile."));
+  }
+
+  function openCharacterDirectorDialog() {
+    characterDirectorFocusReturn = document.activeElement;
+    populateCharacterDirectorDialog();
+    $("#characterDirectorDialog").hidden = false;
+    requestAnimationFrame(() => $("#characterDirectorRoleInput").focus());
+  }
+
+  function closeCharacterDirectorDialog() {
+    $("#characterDirectorDialog").hidden = true;
+    characterDirectorFocusReturn?.focus?.({ preventScroll: true });
+    characterDirectorFocusReturn = null;
+  }
+
+  function characterDirectorFormValue() {
+    const result = {};
+    for (const [key, selector] of Object.entries(characterDirectorTextFields)) result[key] = $(selector).value.trim();
+    for (const [key, selector] of Object.entries(characterDirectorListFields)) {
+      result[key] = $(selector).value.split(/\r?\n/).map((value) => value.trim()).filter(Boolean);
+    }
+    return result;
+  }
+
+  async function saveCharacterDirector() {
+    const button = $("#saveCharacterDirectorButton");
+    button.disabled = true;
+    $("#resetCharacterDirectorButton").disabled = true;
+    setStatus($("#characterDirectorStatus"), localized("保存しています…", "Saving…"));
+    try {
+      state = await api.configureCharacterDirector({ id: currentCharacter().id, director: characterDirectorFormValue() });
+      syncUi();
+      closeCharacterDirectorDialog();
+      setStatus($("#characterProfileStatus"), localized("キャラクター性を保存し、すべての応答へ反映しました。", "Character identity saved and applied to all responses."));
+    } catch (error) {
+      setStatus($("#characterDirectorStatus"), error.message, true);
+    } finally {
+      button.disabled = characterDirectorEditingLocked();
+      $("#resetCharacterDirectorButton").disabled = characterDirectorEditingLocked();
+    }
+  }
+
+  async function resetCharacterDirector() {
+    if (!window.confirm(localized(
+      "詳しいキャラクター性だけを標準プロフィールへ戻しますか？名前・性格欄・表示位置・音声設定は変わりません。",
+      "Reset only the detailed character identity to its default profile? Name, personality note, layout, and voice settings will not change.",
+    ))) return;
+    const button = $("#resetCharacterDirectorButton");
+    button.disabled = true;
+    try {
+      state = await api.configureCharacterDirector({ id: currentCharacter().id, reset: true });
+      syncUi();
+      populateCharacterDirectorDialog();
+      setStatus($("#characterDirectorStatus"), localized("標準プロフィールへ戻しました。", "Restored the default profile."));
+    } catch (error) {
+      setStatus($("#characterDirectorStatus"), error.message, true);
+    } finally {
+      button.disabled = characterDirectorEditingLocked();
+    }
   }
 
   function skillAssignmentTarget() {
@@ -2156,7 +2270,7 @@
   }
 
   function setOnboardingStep(step) {
-    const nextStep = Math.max(0, Math.min(4, Number(step) || 0));
+    const nextStep = Math.max(0, Math.min(2, Number(step) || 0));
     const modal = $(".onboarding-window");
     modal.dataset.stepDirection = nextStep < onboardingStep ? "back" : "forward";
     onboardingStep = nextStep;
@@ -2167,8 +2281,11 @@
       else item.removeAttribute("aria-current");
     });
     $("#onboardingBackButton").disabled = onboardingStep === 0;
-    $("#onboardingStepLabel").textContent = `${onboardingStep + 1} / 5`;
-    $("#onboardingNextButton").textContent = onboardingStep === 4 ? localized("会話を始める", "Start chatting") : localized("次へ", "Next");
+    $("#onboardingStepLabel").textContent = `${onboardingStep + 1} / 3`;
+    $("#onboardingNextButton").textContent = onboardingStep === 2
+      ? localized("最初の仕事を始める", "Start the first task")
+      : localized("次へ", "Next");
+    syncOnboardingStepAvailability();
     requestAnimationFrame(() => {
       const heading = $(`[data-onboarding-step="${onboardingStep}"] h2`);
       heading?.setAttribute("tabindex", "-1");
@@ -2176,82 +2293,68 @@
     });
   }
 
+  function syncOnboardingStepAvailability() {
+    const next = $("#onboardingNextButton");
+    if (!next) return;
+    const signedIn = Boolean(state?.codexAvailable && codexAccount?.signedIn);
+    const goalReady = Boolean($("#onboardingFirstWorkGoal")?.value.trim());
+    next.disabled = onboardingMissionStarting
+      || (onboardingStep === 0 && !signedIn)
+      || (onboardingStep === 2 && (!signedIn || !goalReady));
+  }
+
+  function syncOnboardingDelivery() {
+    const liveInput = $("input[name='onboardingDelivery'][value='live']");
+    if (!liveInput) return;
+    const liveAvailable = Boolean(state?.codexAvailable && codexAccount?.signedIn);
+    liveInput.disabled = !liveAvailable;
+    if (!liveAvailable && liveInput.checked) {
+      const textInput = $("input[name='onboardingDelivery'][value='text']");
+      if (textInput) textInput.checked = true;
+    } else if (liveAvailable && !onboardingDeliveryTouched) {
+      liveInput.checked = true;
+    }
+    const delivery = $("input[name='onboardingDelivery']:checked")?.value || "text";
+    const live = delivery === "live";
+    $("#onboardingDeliveryTitle").textContent = live
+      ? localized("ローカル音声モデルは不要", "No local voice model required")
+      : localized("最初の仕事は読み上げなし", "The first task stays silent");
+    $("#onboardingDeliveryDetail").textContent = live
+      ? localized("開始するとマイクを有効にして、キャラクターと話しながら最初の仕事を進めます。", "Your microphone turns on and the character guides the first task through GPT-Live.")
+      : localized("音声モデルのダウンロードや読み上げは行いません。音声は後から設定できます。", "No voice model is downloaded and nothing is read aloud. You can configure speech later.");
+  }
+
   function syncOnboardingReadiness() {
     if (!state) return;
-    const codexSelected = state.backend === "codex";
-    $("#onboardingBackendSelect").value = codexSelected ? "codex" : "openai";
-    $("#onboardingLoginButton").hidden = !codexSelected;
-    $("#onboardingAccountState").textContent = codexSelected
-      ? codexAccount?.signedIn
-        ? localized(`ChatGPTログイン済み（${codexAccount.planType || "プラン不明"}）`, `Signed in to ChatGPT (${codexAccount.planType || "unknown plan"})`)
-        : localized("ChatGPTログインを確認してください。", "Check your ChatGPT sign-in.")
-      : state.hasApiKey
-        ? localized("OpenAI APIキーは設定済みです。", "An OpenAI API key is configured.")
-        : localized("AI接続画面でOpenAI APIキーを設定してください。", "Configure an OpenAI API key on the AI Connection page.");
-    const inputNames = {
-      realtime: "GPT-Live / Codex Voice",
-      "sherpa-onnx": "sherpa-onnx",
-      browser: localized("端末音声認識", "System speech recognition"),
-      openai: localized("OpenAI文字起こし", "OpenAI transcription"),
-    };
-    const ttsNames = {
-      system: localized("Windows標準", "Windows system voice"),
-      "style-bert-vits2": "Style-Bert-VITS2",
-      "piper-plus": "piper-plus",
-      "supertonic-3": "Supertonic 3",
-      kokoro: "Kokoro",
-      "irodori-webgpu": "Irodori TTS",
-      "sbv2-jp-extra": "Style-Bert-VITS2 JP-Extra",
-    };
-    const inputProvider = state.speechInputProvider || "browser";
-    const ttsProvider = state.ttsProvider || "system";
-    const inputStatus = $("#onboardingSpeechInputStatus");
-    const ttsStatus = $("#onboardingTtsStatus");
-    let inputReady = true;
-    let inputMessage = localized("端末の音声認識を使用します。マイク権限を確認してください。", "Uses system speech recognition. Check microphone access.");
-    if (inputProvider === "realtime") {
-      inputReady = state.backend === "codex" && Boolean(codexAccount?.signedIn);
-      inputMessage = inputReady
-        ? localized("ChatGPT接続済み。録音ボタンを押している間だけLiveセッションを開始します。", "ChatGPT is connected. A Live session starts only while using the microphone button.")
-        : localized("CodexとChatGPTへの接続が必要です。", "Requires Codex and a ChatGPT sign-in.");
-    } else if (inputProvider === "sherpa-onnx") {
-      inputReady = Boolean(state.sherpaModel?.installed);
-      inputMessage = inputReady
-        ? localized("ローカル日本語モデルを利用できます。音声は端末内で処理されます。", "The local speech model is ready and audio stays on this device.")
-        : localized("音声ページから日本語モデルをダウンロードしてください。", "Download a Japanese model from the Voice page.");
-    } else if (inputProvider === "openai") {
-      inputReady = Boolean(state.hasApiKey);
-      inputMessage = inputReady
-        ? localized("OpenAI APIキーを利用して文字起こしします。", "Transcribes with your OpenAI API key.")
-        : localized("OpenAI APIキーの設定が必要です。", "An OpenAI API key is required.");
+    const available = Boolean(state.codexAvailable);
+    const signedIn = Boolean(available && codexAccount?.signedIn);
+    const status = $("#onboardingCodexStatus");
+    const button = $("#onboardingLoginButton");
+    const detail = $("#onboardingCodexDetail");
+    $("#onboardingInstallChoices").hidden = available;
+    status.classList.toggle("is-ready", signedIn);
+    status.classList.toggle("is-warning", !available);
+    if (signedIn) {
+      $("#onboardingAccountState").textContent = localized(
+        `ChatGPTログイン済み${codexAccount.planType ? ` · ${codexAccount.planType}` : ""}`,
+        `Signed in to ChatGPT${codexAccount.planType ? ` · ${codexAccount.planType}` : ""}`,
+      );
+      detail.textContent = localized("Codexを使う準備ができました。", "Codex is ready to use.");
+      button.textContent = localized("接続済み", "Connected");
+      button.disabled = true;
+    } else if (available) {
+      $("#onboardingAccountState").textContent = localized("Codexを確認しました", "Codex detected");
+      detail.textContent = localized("続けるにはChatGPTへログインしてください。", "Sign in to ChatGPT to continue.");
+      button.textContent = localized("ChatGPTでログイン", "Sign in with ChatGPT");
+      button.disabled = false;
+    } else {
+      $("#onboardingAccountState").textContent = localized("Codexが見つかりません", "Codex was not found");
+      detail.textContent = localized("下から公式アプリまたはCLIを導入し、再確認してください。", "Install the official app or CLI below, then check again.");
+      button.textContent = localized("インストールを再確認", "Check installation again");
+      button.disabled = false;
     }
-    inputStatus.textContent = inputMessage;
-    inputStatus.classList.toggle("is-ready", inputReady);
-    inputStatus.classList.toggle("is-warning", !inputReady);
-
-    let ttsReady = true;
-    if (ttsProvider === "piper-plus") ttsReady = Boolean(state.piperPlus?.ready);
-    else if (ttsProvider === "supertonic-3") ttsReady = Boolean(state.supertonic?.ready);
-    else if (ttsProvider === "kokoro") ttsReady = Boolean(state.kokoro?.ready);
-    else if (ttsProvider === "irodori-webgpu") ttsReady = Boolean(state.irodori?.ready);
-    else if (ttsProvider === "sbv2-jp-extra") ttsReady = Boolean(state.sbv2?.ready);
-    const remoteCheck = ttsProvider === "style-bert-vits2";
-    ttsStatus.textContent = !state.ttsEnabled
-      ? localized("読み上げはOFFです。文字だけで会話できます。", "Read-aloud is off. Text chat remains available.")
-      : remoteCheck
-        ? localized("ローカルAPIへの接続は「音声をテスト」で確認できます。", "Use Test voice to check the local API connection.")
-        : ttsReady
-          ? localized(`${ttsNames[ttsProvider]}を利用できます。`, `${ttsNames[ttsProvider]} is ready.`)
-          : localized("この音声のモデルが未導入です。音声ページからダウンロードするか、Windows標準へ変更してください。", "This voice model is not installed. Download it from Voice, or switch to the system voice.");
-    ttsStatus.classList.toggle("is-ready", !state.ttsEnabled || ttsReady);
-    ttsStatus.classList.toggle("is-warning", state.ttsEnabled && !ttsReady && !remoteCheck);
-
-    $("#onboardingSummaryConnection").textContent = state.backend === "codex"
-      ? codexAccount?.signedIn ? localized("ChatGPT接続済み", "ChatGPT connected") : localized("Codex · 要ログイン確認", "Codex · sign-in needed")
-      : state.hasApiKey ? localized("OpenAI API設定済み", "OpenAI API configured") : localized("OpenAI API · キー未設定", "OpenAI API · key missing");
-    $("#onboardingSummaryCharacter").textContent = currentCharacter()?.name || localized("未選択", "Not selected");
-    $("#onboardingSummaryInput").textContent = inputNames[inputProvider] || inputProvider;
-    $("#onboardingSummaryOutput").textContent = state.ttsEnabled ? (ttsNames[ttsProvider] || ttsProvider) : localized("読み上げOFF", "Read-aloud off");
+    syncOnboardingDelivery();
+    syncOnboardingStepAvailability();
   }
 
   function syncSupportSummary() {
@@ -2367,10 +2470,6 @@
     $(".app-shell").inert = open;
     if (!open && onboardingWasOpen && onboardingFocusReturn?.focus) onboardingFocusReturn.focus({ preventScroll: true });
     onboardingWasOpen = open;
-    $("#onboardingTtsToggle").checked = Boolean(state.ttsEnabled);
-    $("#onboardingBackendSelect").value = state.backend || "codex";
-    $("#onboardingSpeechInputProviderSelect").value = state.speechInputProvider || "browser";
-    $("#onboardingTtsProviderSelect").value = state.ttsProvider || "system";
     renderOnboardingCharacters();
     syncOnboardingReadiness();
     syncSupportSummary();
@@ -2382,6 +2481,29 @@
     syncUi();
     showPage("chat");
     requestAnimationFrame(() => $("#chatInput")?.focus({ preventScroll: true }));
+  }
+
+  async function startOnboardingFirstWork() {
+    const goal = $("#onboardingFirstWorkGoal").value.trim();
+    const theme = $("input[name='onboardingTheme']:checked")?.value || "calm";
+    const delivery = $("input[name='onboardingDelivery']:checked")?.value || "text";
+    if (!goal || onboardingMissionStarting) return;
+    onboardingMissionStarting = true;
+    syncOnboardingStepAvailability();
+    $("#onboardingNextButton").textContent = localized("準備しています…", "Preparing…");
+    try {
+      const result = await api.startOnboardingFirstWork({ goal, theme, delivery });
+      state = result.state || await api.getState();
+      syncUi();
+      showPage("chat");
+    } catch (error) {
+      $("#onboardingFirstWorkGoal").setCustomValidity(error.message);
+      $("#onboardingFirstWorkGoal").reportValidity();
+      $("#onboardingFirstWorkGoal").setCustomValidity("");
+    } finally {
+      onboardingMissionStarting = false;
+      if (!state?.onboardingComplete) setOnboardingStep(2);
+    }
   }
 
   function syncGeneratorUi() {
@@ -2884,6 +3006,7 @@
     try {
       const account = await api.getCodexAccount();
       codexAccount = account;
+      if (typeof account.available === "boolean") state.codexAvailable = account.available;
       button.dataset.action = account.signedIn ? "logout" : "login";
       button.textContent = account.signedIn ? "ChatGPTからログアウト" : "ChatGPTでログイン";
       button.classList.toggle("button-secondary", !account.signedIn);
@@ -3878,6 +4001,14 @@
     $("#skillRemoveDialog").addEventListener("click", (event) => {
       if (event.target === event.currentTarget) closeSkillRemoveDialog();
     });
+    $("#openCharacterDirectorButton").addEventListener("click", openCharacterDirectorDialog);
+    $("#closeCharacterDirectorButton").addEventListener("click", closeCharacterDirectorDialog);
+    $("#cancelCharacterDirectorButton").addEventListener("click", closeCharacterDirectorDialog);
+    $("#saveCharacterDirectorButton").addEventListener("click", saveCharacterDirector);
+    $("#resetCharacterDirectorButton").addEventListener("click", resetCharacterDirector);
+    $("#characterDirectorDialog").addEventListener("click", (event) => {
+      if (event.target === event.currentTarget) closeCharacterDirectorDialog();
+    });
     $("#skillSourceUrlInput").addEventListener("input", () => {
       clearSkillInspection();
     });
@@ -4038,6 +4169,11 @@
       setSettingsSearchActive(settingsSearchActiveIndex + (event.key === "ArrowDown" ? 1 : -1));
     });
     document.addEventListener("keydown", (event) => {
+      if (!$("#characterDirectorDialog").hidden && event.key === "Escape") {
+        event.preventDefault();
+        closeCharacterDirectorDialog();
+        return;
+      }
       if (!$("#skillRemoveDialog").hidden && event.key === "Escape") {
         event.preventDefault();
         closeSkillRemoveDialog();
@@ -4052,6 +4188,15 @@
     $("#skillRemoveDialog").addEventListener("keydown", (event) => {
       if (event.key !== "Tab") return;
       const focusable = $$("#skillRemoveDialog button:not(:disabled)");
+      if (!focusable.length) return;
+      const first = focusable[0];
+      const last = focusable.at(-1);
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+    });
+    $("#characterDirectorDialog").addEventListener("keydown", (event) => {
+      if (event.key !== "Tab") return;
+      const focusable = $$("#characterDirectorDialog button:not(:disabled), #characterDirectorDialog textarea:not(:disabled), #characterDirectorDialog summary");
       if (!focusable.length) return;
       const first = focusable[0];
       const last = focusable.at(-1);
@@ -4783,21 +4928,29 @@
       try {
         if (codexAccount?.signedIn) return;
         $("#onboardingLoginButton").disabled = true;
-        $("#onboardingAccountState").textContent = "ブラウザでログインを開始しています…";
+        if (!state.codexAvailable) {
+          $("#onboardingAccountState").textContent = localized("Codexを再確認しています…", "Checking for Codex again…");
+          state = await api.detectCodex();
+          syncUi();
+          if (!state.codexAvailable) return;
+          if (await refreshCodexAccount()) return;
+        }
+        $("#onboardingAccountState").textContent = localized("ブラウザでログインを開始しています…", "Opening sign-in in your browser…");
         await api.startCodexLogin();
-        $("#onboardingAccountState").textContent = "ブラウザでログインを完了してください。自動で確認します。";
+        $("#onboardingAccountState").textContent = localized("ブラウザでログインを完了してください。自動で確認します。", "Complete sign-in in your browser. This screen will update automatically.");
         waitForCodexLogin();
       } catch (error) {
         $("#onboardingLoginButton").disabled = false;
         $("#onboardingAccountState").textContent = error.message;
       }
     });
-    $("#onboardingBackendSelect").addEventListener("change", async () => {
-      const backend = $("#onboardingBackendSelect").value;
-      const radio = $(`input[name="backend"][value="${backend}"]`);
-      if (radio) radio.checked = true;
-      await saveSettings();
-      syncOnboardingReadiness();
+    $("#onboardingInstallDesktopButton").addEventListener("click", () => api.openExternalUrl(CODEX_WINDOWS_APP_URL));
+    $("#onboardingOpenCliGuideButton").addEventListener("click", () => api.openExternalUrl(CODEX_CLI_GUIDE_URL));
+    $("#onboardingCopyCliButton").addEventListener("click", async () => {
+      await navigator.clipboard.writeText(CODEX_CLI_INSTALL_COMMAND);
+      const button = $("#onboardingCopyCliButton");
+      button.textContent = localized("コピーしました", "Copied");
+      setTimeout(() => { button.textContent = localized("コマンドをコピー", "Copy command"); }, 1800);
     });
     $("#onboardingOpenConnectionButton").addEventListener("click", async () => {
       state = await api.completeOnboarding(true);
@@ -4806,66 +4959,35 @@
     });
     $("#onboardingBackButton").addEventListener("click", () => setOnboardingStep(onboardingStep - 1));
     $("#onboardingNextButton").addEventListener("click", async () => {
-      if (onboardingStep < 4) setOnboardingStep(onboardingStep + 1);
-      else await finishOnboarding();
+      if (onboardingStep < 2) setOnboardingStep(onboardingStep + 1);
+      else await startOnboardingFirstWork();
     });
     $("#onboardingSkipButton").addEventListener("click", finishOnboarding);
+    $("#onboardingFinishWithoutMissionButton").addEventListener("click", finishOnboarding);
     $("#onboardingOpenGeneratorButton").addEventListener("click", async () => {
       state = await api.completeOnboarding(true);
       syncOnboarding();
       showPage("character");
       setTimeout(() => $("#avatarGeneratorCard").scrollIntoView({ behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "start" }), 30);
     });
-    $("#onboardingTtsToggle").addEventListener("change", async () => {
-      $("#ttsToggle").checked = $("#onboardingTtsToggle").checked;
-      await saveSettings();
-    });
-    $("#onboardingSpeechInputProviderSelect").addEventListener("change", async () => {
-      $("#speechInputProviderSelect").value = $("#onboardingSpeechInputProviderSelect").value;
-      await saveSettings();
-      syncOnboardingReadiness();
-    });
-    $("#onboardingTtsProviderSelect").addEventListener("change", async () => {
-      $("#ttsProviderSelect").value = $("#onboardingTtsProviderSelect").value;
-      await saveSettings();
-      syncOnboardingReadiness();
-    });
-    $("#onboardingMicrophoneTestButton").addEventListener("click", async () => {
-      const button = $("#onboardingMicrophoneTestButton");
-      button.disabled = true;
-      $("#onboardingSpeechInputStatus").textContent = localized("マイクの使用許可を確認しています…", "Checking microphone access…");
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-        const label = stream.getAudioTracks()[0]?.label || localized("既定のマイク", "Default microphone");
-        stream.getTracks().forEach((track) => track.stop());
-        $("#onboardingSpeechInputStatus").textContent = localized(`マイクを利用できます · ${label}`, `Microphone is available · ${label}`);
-        $("#onboardingSpeechInputStatus").classList.add("is-ready");
-        $("#onboardingSpeechInputStatus").classList.remove("is-warning");
-      } catch (error) {
-        $("#onboardingSpeechInputStatus").textContent = localized(`マイクを利用できません: ${error.message}`, `Microphone is unavailable: ${error.message}`);
-        $("#onboardingSpeechInputStatus").classList.remove("is-ready");
-        $("#onboardingSpeechInputStatus").classList.add("is-warning");
-      } finally {
-        button.disabled = false;
-      }
-    });
-    $$(".onboarding-open-voice-settings").forEach((button) => button.addEventListener("click", async () => {
-      state = await api.completeOnboarding(true);
-      syncOnboarding();
-      showPage("voice");
+    $("#onboardingFirstWorkGoal").addEventListener("input", syncOnboardingStepAvailability);
+    $$("input[name='onboardingDelivery']").forEach((input) => input.addEventListener("change", () => {
+      onboardingDeliveryTouched = true;
+      syncOnboardingDelivery();
     }));
-    $("#onboardingAudioTestButton").addEventListener("click", () => {
-      if (!state.ttsEnabled) {
-        $("#onboardingTtsToggle").checked = true;
-        $("#ttsToggle").checked = true;
-        saveSettings().then(() => speakResponse("音声テストです。これからよろしくね。"));
-        return;
-      }
-      speakResponse("音声テストです。これからよろしくね。");
-    });
+    $$('[data-onboarding-goal]').forEach((button) => button.addEventListener("click", () => {
+      $("#onboardingFirstWorkGoal").value = localized(button.dataset.onboardingGoal, {
+        "新しいアプリのアイデアを形にしたい": "Turn a new app idea into something concrete",
+        "今週やることを整理して進めたい": "Organize and make progress on this week's work",
+        "学びたいテーマの計画を立てたい": "Plan how to learn a topic",
+      }[button.dataset.onboardingGoal]);
+      syncOnboardingStepAvailability();
+      $("#onboardingFirstWorkGoal").focus();
+    }));
     $("#reopenOnboardingButton").addEventListener("click", async () => {
       state = await api.completeOnboarding(false);
       onboardingStep = 0;
+      onboardingDeliveryTouched = false;
       syncOnboarding();
     });
     $("#refreshDiagnosticsButton").addEventListener("click", refreshSupportDiagnostics);

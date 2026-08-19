@@ -931,6 +931,7 @@
   let activeItemLayerId = null;
   let nextItemLayerId = 1;
   let lastCharacterTransform = null;
+  let desktopMascotTouchBoundsSignature = "";
   let faceTracker = null;
   let lastFaceTrackUiUpdate = 0;
   const hairTintCache = new Map();
@@ -10808,6 +10809,37 @@
     return { centerX, centerY, anchorX, anchorY, pivotX, pivotY, scaleX, scaleY, rotation, drawW, drawH, pyokoVoice, frozenSetup };
   }
 
+  function syncDesktopMascotTouchBounds(transform) {
+    if (!DESKTOP_MASCOT_MODE || !transform) return;
+    const { anchorX, anchorY, pivotX, pivotY, scaleX, scaleY, rotation } = transform;
+    const cosine = Math.cos(rotation);
+    const sine = Math.sin(rotation);
+    const points = [
+      [0, 0], [CROP.w, 0], [CROP.w, CROP.h], [0, CROP.h],
+    ].map(([x, y]) => {
+      const localX = (x - pivotX) * scaleX;
+      const localY = (y - pivotY) * scaleY;
+      return {
+        x: anchorX + localX * cosine - localY * sine,
+        y: anchorY + localX * sine + localY * cosine,
+      };
+    });
+    const padding = 6;
+    const left = Math.max(0, Math.min(...points.map((point) => point.x)) - padding);
+    const top = Math.max(0, Math.min(...points.map((point) => point.y)) - padding);
+    const right = Math.min(stage.w, Math.max(...points.map((point) => point.x)) + padding);
+    const bottom = Math.min(stage.h, Math.max(...points.map((point) => point.y)) + padding);
+    const rounded = [left, top, Math.max(1, right - left), Math.max(1, bottom - top)].map((value) => Math.round(value));
+    const signature = rounded.join(":");
+    if (signature === desktopMascotTouchBoundsSignature) return;
+    desktopMascotTouchBoundsSignature = signature;
+    const root = document.documentElement.style;
+    root.setProperty("--mascot-character-touch-left", `${rounded[0]}px`);
+    root.setProperty("--mascot-character-touch-top", `${rounded[1]}px`);
+    root.setProperty("--mascot-character-touch-width", `${rounded[2]}px`);
+    root.setProperty("--mascot-character-touch-height", `${rounded[3]}px`);
+  }
+
   function clearCharacterCanvas() {
     charCtx.setTransform(1, 0, 0, 1, 0, 0);
     charCtx.globalAlpha = 1;
@@ -12558,6 +12590,7 @@
     }
 
     lastCharacterTransform = computeCharacterTransform();
+    syncDesktopMascotTouchBounds(lastCharacterTransform);
     // A contact shadow looks natural in the editor, but on a transparent
     // desktop it becomes a floating dark smudge around the cutout.
     if (!OBS_TRANSPARENT) {

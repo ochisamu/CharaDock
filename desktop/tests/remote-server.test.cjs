@@ -122,11 +122,11 @@ test("remote server requires pairing, same-origin CSRF, and strips token from th
   const petted = await fetch(`${origin}/api/pet`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Origin: origin, Cookie: cookie, "X-CharaDock-CSRF": payload.csrfToken },
-    body: JSON.stringify({ zone: "head", ignored: "value" }),
+    body: JSON.stringify({ zone: "head", yRatio: 0.31, ignored: "value" }),
   });
   assert.equal(petted.status, 200);
   assert.deepEqual(await petted.json(), { text: "Hello!", emotion: "happy" });
-  assert.deepEqual(pets, [{ zone: "head" }]);
+  assert.deepEqual(pets, [{ zone: "head", yRatio: 0.31 }]);
 
   const configured = await fetch(`${origin}/api/settings`, {
     method: "POST",
