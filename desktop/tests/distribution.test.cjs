@@ -133,7 +133,7 @@ test("Microsoft Store package uses the reserved Partner Center identity", () => 
   const storeManifest = fs.readFileSync(path.join(projectRoot, "packaging", "windows-store", "AppxManifest.xml"), "utf8");
   assert.match(storeManifest, /Name="ochisamu\.CharaDock"/);
   assert.match(storeManifest, /Publisher="CN=69C091B3-AED2-456C-BF7B-A39616771379"/);
-  assert.equal(packageJson.storePackageVersion, "0.2.2.0");
+  assert.equal(packageJson.storePackageVersion, "0.3.0.0");
   const storeVersionParts = packageJson.storePackageVersion.split(".").map(Number);
   assert.equal(storeVersionParts.length, 4);
   assert.equal(storeVersionParts[3], 0, "Microsoft Store reserves the revision component and requires zero");
