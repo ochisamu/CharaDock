@@ -19,6 +19,11 @@ test("interface translator supports exact and dynamic English labels", () => {
   assert.equal(translateText("名前や用途で検索", "en"), "Search by name or purpose");
   assert.equal(translateText("追加して有効化", "en"), "Add and enable");
   assert.equal(translateText("キャラクター設定", "ja"), "キャラクター設定");
+  assert.equal(translateText("外部ネットワーク接続", "en"), "External network access");
+  assert.equal(
+    translateText("WorkからAPI・パッケージ取得・名前解決を利用できます", "en"),
+    "Allow Work to access APIs, download packages, and resolve host names",
+  );
 });
 
 test("first-run setup has complete English labels for Codex and Live", () => {

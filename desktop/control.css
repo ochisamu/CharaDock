@@ -773,6 +773,7 @@ select option { color: #f8f5fa; background: #252229; }
 .speech-input-settings progress { width: 100%; height: 7px; accent-color: var(--accent-strong); }
 .codex-mode-settings { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 12px; background: var(--field); border: 1px solid var(--line); border-radius: 13px; }
 .codex-mode-settings h3 { grid-column: 1 / -1; }
+.codex-mode-settings > .switch-row { grid-column: 1 / -1; margin-top: 2px; padding-top: 10px; border-top: 1px solid var(--line); }
 input[type="range"] {
   --range-progress: 0%;
   width: 100%;

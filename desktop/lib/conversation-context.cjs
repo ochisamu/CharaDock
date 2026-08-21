@@ -28,8 +28,9 @@ function timestamp(value) {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
-function continuityEntries({ conversationHistory = [], workHistory = [], characterId = "", workspaceKey = "", since = 0 } = {}) {
+function continuityEntries({ conversationHistory = [], workHistory = [], characterId = "", workspaceKey = "", since = 0, limit = 10 } = {}) {
   const minimumTimestamp = Math.max(0, Number(since) || 0);
+  const maximumEntries = Math.max(1, Math.min(60, Number(limit) || 10));
   const conversation = (Array.isArray(conversationHistory) ? conversationHistory : []).map((entry, index) => ({
     type: "conversation",
     role: entry?.role === "assistant" ? "assistant" : "user",
@@ -38,6 +39,9 @@ function continuityEntries({ conversationHistory = [], workHistory = [], charact
     order: index,
   })).filter((entry) => entry.text && (!minimumTimestamp || entry.at >= minimumTimestamp));
   const work = (Array.isArray(workHistory) ? workHistory : []).flatMap((run, index) => {
+    // Work is always project-scoped. With no active workspace, returning no
+    // Work is safer than mixing tasks from every project for this character.
+    if (!workspaceKey) return [];
     if (run?.status !== "completed") return [];
     if (characterId && run?.characterId && run.characterId !== characterId) return [];
     if (workspaceKey && run?.workspaceKey !== workspaceKey) return [];
@@ -56,7 +60,25 @@ function continuityEntries({ conversationHistory = [], workHistory = [], charact
   });
   return [...conversation, ...work]
     .sort((left, right) => left.at - right.at || left.order - right.order)
-    .slice(-10);
+    .slice(-maximumEntries);
+}
+
+function searchContinuityEntries(options = {}) {
+  const query = String(options.query || "").replace(/\s+/g, " ").trim().toLocaleLowerCase();
+  const resultLimit = Math.max(1, Math.min(10, Number(options.resultLimit) || 6));
+  const entries = continuityEntries({ ...options, limit: 60 });
+  if (!query) return entries.slice(-resultLimit).reverse();
+  const terms = [...new Set(query.split(/[\s、。,.!?！？/]+/).filter(Boolean))];
+  return entries.map((entry) => {
+    const haystack = (entry.type === "work"
+      ? `${entry.request}\n${entry.result}\n${entry.artifacts.join("\n")}`
+      : entry.text).toLocaleLowerCase();
+    const score = terms.reduce((total, term) => total + (haystack.includes(term) ? 1 : 0), haystack.includes(query) ? 4 : 0);
+    return { entry, score };
+  }).filter((candidate) => candidate.score > 0)
+    .sort((left, right) => right.score - left.score || right.entry.at - left.entry.at)
+    .slice(0, resultLimit)
+    .map((candidate) => candidate.entry);
 }
 
 function sharedContinuityContext(options = {}) {
@@ -93,4 +115,40 @@ function sharedContinuityContext(options = {}) {
   ].join("\n");
 }
 
-module.exports = { boundedConversationHistory, continuityEntries, recentConversationContext, sharedContinuityContext };
+function unfinishedWorkContext(options = {}) {
+  const language = options.language === "en" ? "en" : "ja";
+  const characterId = String(options.characterId || "");
+  const workspaceKey = String(options.workspaceKey || "");
+  if (!workspaceKey) return "";
+  const resumableStatuses = new Set(["running", "stopping", "interrupted"]);
+  const latest = (Array.isArray(options.workHistory) ? options.workHistory : [])
+    .filter((run) => resumableStatuses.has(String(run?.status || "")))
+    .filter((run) => !characterId || !run?.characterId || run.characterId === characterId)
+    .filter((run) => run?.workspaceKey === workspaceKey)
+    .sort((left, right) => timestamp(right?.finishedAt || right?.startedAt) - timestamp(left?.finishedAt || left?.startedAt))[0];
+  if (!latest) return "";
+  const request = String(latest.request || "").replace(/\s+/g, " ").trim().slice(0, 900);
+  if (!request) return "";
+  const latestActivity = String(Array.isArray(latest.activities) ? latest.activities.at(-1) || "" : "")
+    .replace(/\s+/g, " ").trim().slice(0, 240);
+  if (language === "en") return [
+    "The following is the latest unverified Work request from this character in the current workspace. Its previous Live connection ended before completion was verified.",
+    "Use it only to understand references such as 'continue' or 'from before'. Never claim it completed, and do not resume it automatically without the user's request. If resuming, inspect the current files and actual state first.",
+    "<unfinished_work>",
+    `Request: ${request}`,
+    ...(latestActivity ? [`Last observed activity: ${latestActivity}`] : []),
+    "Status: unfinished and unverified",
+    "</unfinished_work>",
+  ].join("\n");
+  return [
+    "同じキャラクター・現在の作業フォルダーに紐づく、直前の未検証Workです。前回のLive接続は完了確認前に終了しました。",
+    "『続き』『さっきの作業』などを解釈する参考にだけ使ってください。完了したとは言わず、ユーザーの依頼なしに自動再開もしないでください。再開時は、現在のファイルと実際の状態を先に確認してください。",
+    "<unfinished_work>",
+    `依頼: ${request}`,
+    ...(latestActivity ? [`最後に確認できた進捗: ${latestActivity}`] : []),
+    "状態: 未完了・未検証",
+    "</unfinished_work>",
+  ].join("\n");
+}
+
+module.exports = { boundedConversationHistory, continuityEntries, recentConversationContext, searchContinuityEntries, sharedContinuityContext, unfinishedWorkContext };

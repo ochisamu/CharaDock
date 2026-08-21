@@ -30,6 +30,7 @@ const DEFAULTS = Object.freeze({
   codexChatReasoningEffort: "",
   codexWorkModel: "",
   codexWorkReasoningEffort: "",
+  workNetworkAccess: false,
   alwaysOnTop: true,
   clickThrough: false,
   mascotPointerMode: "interactive",
@@ -316,6 +317,7 @@ class Preferences {
       }
       if (typeof this.data.realtimeAutoStartOnText !== "boolean") this.data.realtimeAutoStartOnText = true;
       if (typeof this.data.realtimeAutoStartOnPet !== "boolean") this.data.realtimeAutoStartOnPet = false;
+      if (typeof this.data.workNetworkAccess !== "boolean") this.data.workNetworkAccess = false;
       if (!["ja", "en"].includes(this.data.language)) this.data.language = "ja";
       if (!["manual", "vad"].includes(this.data.voiceActivationMode)) this.data.voiceActivationMode = "vad";
       if (!["low", "normal", "high"].includes(this.data.vadSensitivity)) this.data.vadSensitivity = "normal";

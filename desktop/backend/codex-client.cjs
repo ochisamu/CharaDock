@@ -24,12 +24,12 @@ function normalizedWorkspaceRoots(cwd, workspaceRoots = []) {
   return [...new Set([cwd, ...(Array.isArray(workspaceRoots) ? workspaceRoots : [])].map((value) => String(value || "").trim()).filter(Boolean))];
 }
 
-function workspaceSandboxPolicy(sandbox, cwd, workspaceRoots = []) {
+function workspaceSandboxPolicy(sandbox, cwd, workspaceRoots = [], networkAccess = false) {
   if (sandbox !== "workspace-write" || !cwd) return null;
   return {
     type: "workspaceWrite",
     writableRoots: normalizedWorkspaceRoots(cwd, workspaceRoots),
-    networkAccess: false,
+    networkAccess: networkAccess === true,
     excludeTmpdirEnvVar: false,
     excludeSlashTmp: false,
   };
@@ -42,13 +42,18 @@ function permissionProfileForSandbox(sandbox) {
 }
 
 function isBenignCodexStderr(value) {
-  return /failed to load models cache:\s*missing field [`'“”]?base_instructions/i.test(String(value || ""));
+  const lines = String(value || "").split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const knownCacheSchemaWarning = /(?:failed to load models cache|failed to renew cache TTL):\s*missing field [`'“”]?(?:base_instructions|supports_parallel_tool_calls)/i;
+  return lines.length > 0 && lines.every((line) => knownCacheSchemaWarning.test(line));
 }
 
-function appServerArgs(webSearchMode = "", sandbox = "") {
+function appServerArgs(webSearchMode = "", sandbox = "", networkAccess = false) {
   const args = ["app-server", "--stdio", "--enable", "realtime_conversation"];
   if (WEB_SEARCH_MODES.has(webSearchMode)) args.push("-c", `web_search=${JSON.stringify(webSearchMode)}`);
   if (["read-only", "workspace-write"].includes(sandbox)) args.push("-c", `sandbox_mode=${JSON.stringify(sandbox)}`);
+  if (sandbox === "workspace-write" && networkAccess === true) {
+    args.push("-c", "sandbox_workspace_write.network_access=true");
+  }
   return args;
 }
 
@@ -83,6 +88,7 @@ class CodexAppServerClient {
     dynamicTools = [],
     onDynamicToolCall = null,
     workspaceRoots = [],
+    networkAccess = false,
     rejectInteractiveRequests = false,
   } = {}) {
     this.cwd = cwd || process.cwd();
@@ -101,6 +107,7 @@ class CodexAppServerClient {
     this.dynamicTools = Array.isArray(dynamicTools) ? dynamicTools : [];
     this.onDynamicToolCall = typeof onDynamicToolCall === "function" ? onDynamicToolCall : null;
     this.workspaceRoots = normalizedWorkspaceRoots(this.cwd, workspaceRoots);
+    this.networkAccess = networkAccess === true;
     this.rejectInteractiveRequests = rejectInteractiveRequests === true;
     this.persona = "";
     this.proc = null;
@@ -191,7 +198,7 @@ class CodexAppServerClient {
     if (!String(this.command || "").trim()) {
       throw new Error(CODEX_INSTALL_REQUIRED_MESSAGE);
     }
-    const child = spawn(this.command, [...this.commandArgs, ...appServerArgs(this.webSearchMode, this.sandbox)], {
+    const child = spawn(this.command, [...this.commandArgs, ...appServerArgs(this.webSearchMode, this.sandbox, this.networkAccess)], {
       cwd: this.spawnCwd,
       env: process.env,
       stdio: ["pipe", "pipe", "pipe"],
@@ -402,7 +409,7 @@ class CodexAppServerClient {
       serviceName: this.serviceName,
       developerInstructions: [this.developerInstructions, this.persona].filter(Boolean).join("\n\n"),
     };
-    const permissionProfile = permissionProfileForSandbox(this.sandbox);
+    const permissionProfile = this.networkAccess ? "" : permissionProfileForSandbox(this.sandbox);
     if (permissionProfile) params.permissions = permissionProfile;
     else params.sandbox = this.sandbox;
     if (this.sandbox === "workspace-write") params.runtimeWorkspaceRoots = this.workspaceRoots;
@@ -577,11 +584,11 @@ class CodexAppServerClient {
     return true;
   }
 
-  async steerActiveTurn(message, { skillItems = null } = {}) {
+  async steerActiveTurn(message, { skillItems = null, turnId = "" } = {}) {
     const threadId = this.threadId;
-    const turnId = this.activeTurnId;
+    const expectedTurnId = String(turnId || this.activeTurnId || "").trim();
     const normalized = String(message || "").trim();
-    if (!threadId || !turnId || !normalized) return false;
+    if (!threadId || !expectedTurnId || !normalized) return false;
     const input = [{ type: "text", text: normalized }];
     const turnSkills = Array.isArray(skillItems) ? skillItems : [];
     for (const skill of turnSkills) {
@@ -589,7 +596,7 @@ class CodexAppServerClient {
         input.push({ type: "skill", name: String(skill.name), path: String(this.pathMapper(skill.path || "")) });
       }
     }
-    await this.request("turn/steer", { threadId, expectedTurnId: turnId, input }, 30_000);
+    await this.request("turn/steer", { threadId, expectedTurnId, input }, 30_000);
     return true;
   }
 
@@ -615,7 +622,9 @@ class CodexAppServerClient {
       };
       if (this.model) params.model = this.model;
       if (this.reasoningEffort) params.effort = this.reasoningEffort;
-      const sandboxPolicy = this.usesPermissionProfile ? null : workspaceSandboxPolicy(this.sandbox, this.cwd, this.workspaceRoots);
+      const sandboxPolicy = this.usesPermissionProfile
+        ? null
+        : workspaceSandboxPolicy(this.sandbox, this.cwd, this.workspaceRoots, this.networkAccess);
       if (sandboxPolicy) params.sandboxPolicy = sandboxPolicy;
       if (outputSchema) params.outputSchema = outputSchema;
       const result = await this.request("turn/start", params, 60_000);

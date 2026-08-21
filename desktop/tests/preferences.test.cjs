@@ -109,6 +109,7 @@ test("new installs enable onboarding and desktop positioning defaults", () => {
   assert.equal(state.codexChatReasoningEffort, "");
   assert.equal(state.codexWorkModel, "");
   assert.equal(state.codexWorkReasoningEffort, "");
+  assert.equal(state.workNetworkAccess, false);
   assert.equal(state.hasWorkDirectory, false);
   assert.equal(state.workDirectoryName, "");
   assert.deepEqual(preferences.data.irodoriVoices.map((voice) => voice.id), ["builtin-hiro", "builtin-kohaku"]);

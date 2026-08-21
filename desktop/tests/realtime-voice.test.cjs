@@ -57,7 +57,7 @@ test("Realtime sessions start only from voice input, accept typed turns, and kee
   assert.match(main, /handleNativeWorkEvent\(message\)/);
   assert.match(main, /realtime-work-native-handoff-started/);
   assert.match(main, /realtime-work-skill-handoff-failed/);
-  assert.match(main, /steerActiveTurn\(state\.skillSteerText, \{ skillItems: state\.skillItems \}\)/);
+  assert.match(main, /steerActiveTurn\(state\.skillSteerText, \{ skillItems: state\.skillItems, turnId: state\.turnId \}\)/);
   assert.match(main, /cannot read Skill files yourself[\s\S]*attaches the actual Skill files/);
   assert.match(main, /transcript_deltaは過去会話の参考情報[\s\S]*作業ルート外へ成果物を作成・変更しない/);
   assert.match(main, /!userText\.includes\("<charadock_handoff_control>"\)/);
@@ -65,7 +65,13 @@ test("Realtime sessions start only from voice input, accept typed turns, and kee
   assert.match(main, /return \{ accepted: true, delegated: true \}/);
   assert.match(mascot, /streamOwnsBusyState = appState\?\.interactionMode === "work" && Boolean\(route\?\.delegated\)/);
   assert.match(main, /realtimeClient\.sendMessage\(normalized, \{ skillItems \}\)/);
-  assert.match(main, /realtimeClient\.steerActiveTurn\(normalized, \{ skillItems \}\)/);
+  assert.match(main, /realtimeClient\.steerActiveTurn\(normalized, \{ skillItems, turnId: activeTurnId \}\)/);
+  assert.match(main, /dispatchVoiceFollowUp\(request\)/);
+  assert.match(main, /realtime-work-voice-follow-up/);
+  assert.match(main, /appendNativeWorkFollowUp\(state, normalized\)/);
+  assert.match(main, /phase: "follow-up"[\s\S]*statusText[\s\S]*workRunId/);
+  assert.match(control, /liveWorkFollowUp[\s\S]*appendCodexRealtimeText\(message, selectedSkillIds\)[\s\S]*if \(chatBusy\)/);
+  assert.match(mascot, /liveWorkFollowUp[\s\S]*mascotInline:realtimeAppendText[\s\S]*if \(sending\)/);
   assert.match(main, /Realtime V3 appendText is context-only[\s\S]*await client\.sendMessage\(normalized\)/);
   assert.match(main, /route: "native-handoff"/);
   assert.match(main, /sandbox: "workspace-write"/);
@@ -74,6 +80,9 @@ test("Realtime sessions start only from voice input, accept typed turns, and kee
   assert.match(main, /if \(!assistantTranscript\.active\) assistantTranscript\.text = ""/);
   assert.match(main, /new RealtimeTurnBuffer\(\)/);
   assert.match(main, /currentSharedContinuityContext\(1_000\)/);
+  assert.match(main, /realtimeWorkFrontendContext\(realtimeClient, initialTurnSkillIds, realtimeMemoryContext, sharedContext\)/);
+  assert.match(main, /unfinishedWorkContext\(\{[\s\S]*workspaceKey: workDirectoryKey\(\)/);
+  assert.match(main, /短い単一目的[\s\S]*`rm -f`、`rm -rf`/);
   assert.match(main, /realtimeTurnBuffer\.addAssistant\(assistantTranscript\.text\)/);
   assert.match(main, /realtimeTurnBuffer\.addUser\(request\)/);
   assert.match(main, /await appendRealtimeReactionSpeech\(spokenText\)/);

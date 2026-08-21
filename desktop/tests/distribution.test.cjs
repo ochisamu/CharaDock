@@ -386,13 +386,18 @@ test("conversation and work surfaces expose history, folder access, interruption
   for (const id of ["conversationHistoryTab", "workHistoryTab", "openChatWorkDirectoryButton", "chooseChatWorkDirectoryButton"]) {
     assert.match(html, new RegExp(`id="${id}"`));
   }
+  assert.match(html, /id="codexWorkNetworkAccessToggle"/);
+  assert.match(control, /workNetworkAccess: \$\("#codexWorkNetworkAccessToggle"\)\.checked/);
+  assert.match(main, /networkAccess: preferences\.data\.workNetworkAccess === true/);
   assert.match(controlPreload, /work:getHistory/);
   assert.match(controlPreload, /work:openDirectory/);
   assert.match(controlPreload, /work:openArtifact/);
   assert.match(control, /pendingChatFollowUp = \{ message, attachments, selectedSkillIds \}/);
+  assert.ok(control.indexOf("const liveWorkFollowUp = chatBusy") < control.indexOf("pendingChatFollowUp = { message, attachments, selectedSkillIds }"));
   assert.match(control, /bindFileDropZone\(\$\("#chatForm"\)/);
   assert.match(control, /appendWorkArtifactActions/);
   assert.match(mascot, /pendingFollowUp = \{ message, attachments, selectedSkillIds \}/);
+  assert.ok(mascot.indexOf("const liveWorkFollowUp = sending") < mascot.indexOf("pendingFollowUp = { message, attachments, selectedSkillIds }"));
   assert.match(mascot, /webUtils\.getPathForFile\(file\)/);
   assert.match(mascot, /id="desktopMascotAttachmentList"/);
   assert.match(mascot, /fileDrop\.id = "desktopMascotFileDrop"/);
@@ -564,6 +569,7 @@ test("remote access exposes compact avatar dialogue, device controls, and Live r
   assert.match(remoteTapHandler, /await startRemoteLive\(\{ microphone: true \}\)[\s\S]*request\("\/api\/pet"/);
   assert.doesNotMatch(remoteTapHandler, /startRemoteLive\(\{ microphone: false \}\)/);
   const remoteTextHandler = remoteJs.match(/async function sendRemoteText\(message\) \{[\s\S]*?\n  \}\n\n  async function flushPendingRemoteFollowUp/)?.[0] || "";
+  assert.match(remoteTextHandler, /const liveWorkFollowUp = busy[\s\S]*request\("\/api\/message"[\s\S]*if \(busy\)[\s\S]*queueRemoteFollowUp/);
   assert.match(remoteTextHandler, /responseMode === "live"[\s\S]*await startRemoteLive\(\{ microphone: true \}\)[\s\S]*request\("\/api\/message"/);
   assert.doesNotMatch(remoteTextHandler, /startRemoteLive\(\{ microphone: false \}\)/);
   assert.match(remoteJs, /!modeInitialized \|\| appState\?\.voice\?\.liveConnected/);
@@ -648,9 +654,13 @@ test("Character memory and continuation are grouped, scoped, editable, private, 
   assert.match(preload, /continuation:clear/);
   assert.match(main, /function maybeOfferStartupContinuation/);
   assert.match(main, /preferences\.data\.continuationStartupSpeechEnabled === false/);
-  assert.match(main, /dynamicTools: \[\.\.\.MEMORY_DYNAMIC_TOOLS, \.\.\.CONTINUATION_DYNAMIC_TOOLS, \.\.\.SKILL_CREATOR_DYNAMIC_TOOLS\]/);
+  assert.match(main, /dynamicTools: \[\.\.\.MEMORY_DYNAMIC_TOOLS, \.\.\.CONTINUATION_DYNAMIC_TOOLS, \.\.\.HISTORY_DYNAMIC_TOOLS, \.\.\.SKILL_CREATOR_DYNAMIC_TOOLS\]/);
   assert.match(main, /developerInstructions: `\$\{workModeInstructions\(\)\}[\s\S]*MEMORY_TOOL_INSTRUCTIONS/);
-  assert.match(main, /since: appSessionStartedAt/);
+  assert.match(main, /function codexRuntimeMatches\(client, runtime\)/);
+  assert.match(main, /client\.commandArgs[\s\S]{0,300}runtime\.workspaceRoots/);
+  assert.match(main, /wslPathTarget\(directory\)\.distribution \? "wsl" : "auto"/);
+  assert.doesNotMatch(main, /sharedContinuityContext\(\{[\s\S]{0,300}since: appSessionStartedAt/);
+  assert.match(main, /name: "history_search"/);
   assert.match(main, /startupContinuationAttempts\.has\(attemptKey\)/);
   assert.match(main, /project\.id === HOME_PROJECT_ID && preferences\.data\.interactionMode === "work"[\s\S]*HOME_SCOPE_KEY/);
   assert.match(main, /if \(scopeKey === COMMON_SCOPE_KEY\)[\s\S]{0,500}continuationRecordedAt/);

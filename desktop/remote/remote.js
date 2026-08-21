@@ -1339,6 +1339,21 @@
     const normalized = String(message || "").trim();
     if (!normalized) return;
     primeAudioOutput().catch(() => {});
+    const liveWorkFollowUp = busy
+      && currentMode === "work"
+      && appState?.voice?.responseMode === "live"
+      && Boolean(livePeer)
+      && appState?.voice?.liveConnected
+      && appState?.voice?.liveOwner === "remote";
+    if (liveWorkFollowUp) {
+      $("#composerHint").textContent = text("追加の指示を同じ作業へ反映しています…", "Applying the follow-up to the current Work…");
+      try {
+        await request("/api/message", { method: "POST", body: JSON.stringify({ message: normalized, mode: currentMode }) });
+      } catch (error) {
+        $("#composerHint").textContent = error.message;
+      }
+      return;
+    }
     if (busy) {
       await queueRemoteFollowUp(normalized);
       return;
@@ -1508,6 +1523,10 @@
       ? "live"
       : payload.audioRoute === "mobile-tts" ? "mobile-tts" : "none";
     if (audioRoute === "live") stopMobileSpeech();
+    if (payload.phase === "follow-up") {
+      $("#composerHint").textContent = payload.statusText || text("追加の指示を同じ作業へ反映しています…", "Applying the follow-up to the current Work…");
+      return;
+    }
     if (payload.phase === "start") {
       setBusy(true);
       setResponseText(text("考え中…", "Thinking…"));

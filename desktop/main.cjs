@@ -30,7 +30,10 @@ const { OpenAIClient } = require("./backend/openai-client.cjs");
 const {
   resolveCodexCommand,
   resolveWslCodexCommand,
+  wslCommandArgsForPath,
+  wslPathTarget,
   windowsPathToWsl,
+  workspacePathIdentity,
 } = require("./lib/codex-command.cjs");
 const { messageExpression, responseExpression, speechExpression } = require("./lib/expression.cjs");
 const { normalizeTouchHeadRatio, resolvePetTouchZone } = require("./lib/pet-zone.cjs");
@@ -75,7 +78,7 @@ const {
   workCompletionSpeechText,
 } = require("./lib/assistant-text.cjs");
 const { discoverWorkArtifacts, fileChangeCandidates, isArtifactInsideWorkspace } = require("./lib/work-artifacts.cjs");
-const { boundedConversationHistory, sharedContinuityContext } = require("./lib/conversation-context.cjs");
+const { boundedConversationHistory, searchContinuityEntries, sharedContinuityContext, unfinishedWorkContext } = require("./lib/conversation-context.cjs");
 const { clearCharacterMemories, removeCharacterMemory, saveCharacterMemory, updateCharacterMemory } = require("./lib/character-memory.cjs");
 const {
   COMMON_SCOPE_KEY,
@@ -509,6 +512,19 @@ const CONTINUATION_DYNAMIC_TOOLS = Object.freeze([{
     },
   },
 }]);
+const HISTORY_DYNAMIC_TOOLS = Object.freeze([{
+  type: "function",
+  name: "history_search",
+  description: "Search retained Chat, Live, and completed Work records for this character. Work results are restricted to the currently selected workspace. Use when the user refers to an older interaction that is not present in the supplied recent context. This tool is read-only.",
+  inputSchema: {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      query: { type: "string", maxLength: 200 },
+      limit: { type: "integer", minimum: 1, maximum: 10 },
+    },
+  },
+}]);
 const SKILL_CREATOR_DYNAMIC_TOOLS = Object.freeze([{
   type: "function",
   name: "skill_create",
@@ -542,6 +558,11 @@ const CONTINUATION_TOOL_INSTRUCTIONS = [
   "Call it only after the user clearly establishes a durable goal, decision or constraint, explicitly unfinished task, or agreed next step. Do not call it every turn and do not copy the conversation transcript. Set replaceGoal only when the user explicitly replaces the previous goal.",
   "Never use it for inferred completion. Verified Work completion is stored by the app only after the worker finishes successfully.",
   "Do not mention the internal tool unless the user asks about continuation records.",
+].join("\n");
+const HISTORY_TOOL_INSTRUCTIONS = [
+  "You have a read-only history_search tool for retained interactions with the current character. Use it when the user refers to older Chat, Live, remote, or Work context that is not included in the recent shared context.",
+  "Work history is restricted to the currently selected workspace. If no workspace is selected, the tool intentionally returns conversation history only. Never infer another project's state or claim completion beyond a returned verified Work record.",
+  "Search narrowly and summarize only what is relevant. Do not recite a long history unless the user explicitly asks to inspect it.",
 ].join("\n");
 const SKILL_CREATOR_TOOL_INSTRUCTIONS = [
   "Skill Creator is built in. When the user asks to turn the current conversation, approach, or repeated workflow into a Skill, derive only the reusable procedure rather than copying the transcript.",
@@ -630,8 +651,8 @@ function scheduleAppUpdateCheck() {
 
 function workModeInstructions() {
   return `${WORK_MODE_INSTRUCTION_BASE}\n${mainText(
-    "ツールを使う前に、依頼固有の対象と行うことを含む短い着手確認をcommentaryとして一度伝えてください。このcommentaryは画面表示され、通常TTSではキャラクターがほぼそのまま読み上げます。箇条書きやラベルではなく、キャラクターらしい自然な一文にしてください。「内容を確認しているよ」「作業を始めるね」のような汎用文は禁止です。長い作業では、実際に到達した意味のある節目だけを、対象と現在の処理が分かる自然な一文のcommentaryで伝えてください。コマンド、URL、ファイルパス、内部推論は含めないでください。Character Home、継続記録、メモリ管理など内部の継続処理は、ユーザーから明示的に聞かれない限りcommentaryや最終報告へ含めないでください。最後に検証済みの結果を簡潔に報告してください。",
-    "Before using tools, send one brief commentary acknowledgement that names the request-specific subject and action. This commentary is shown in the interface and is spoken nearly verbatim by standard TTS, so write one natural sentence in the selected character's voice rather than a label or list. Generic lines such as 'I'm checking the content' or 'I'm getting started' are not allowed. For longer work, report only meaningful milestones as natural sentences that briefly name the subject and actual current action. Do not include commands, URLs, file paths, or internal reasoning. Never mention internal Character Home, continuity-record, or memory-maintenance steps in commentary or the final report unless the user explicitly asks about them. End with a concise, verified result.",
+    "ツールを使う前に、依頼固有の対象と行うことを含む短い着手確認をcommentaryとして一度伝えてください。このcommentaryは画面表示され、通常TTSではキャラクターがほぼそのまま読み上げます。箇条書きやラベルではなく、キャラクターらしい自然な一文にしてください。「内容を確認しているよ」「作業を始めるね」のような汎用文は禁止です。長い作業では、実際に到達した意味のある節目だけを、対象と現在の処理が分かる自然な一文のcommentaryで伝えてください。コマンド、URL、ファイルパス、内部推論は含めないでください。Character Home、継続記録、メモリ管理など内部の継続処理は、ユーザーから明示的に聞かれない限りcommentaryや最終報告へ含めないでください。シェル操作は短い単一目的のコマンドへ分け、引用符や代入を複雑に連結しないでください。`rm -f`、`rm -rf`などの強制削除は安全ポリシーで拒否されるため使用しないでください。一時ファイルや一時ディレクトリはOSの一時領域へ作り、検証後も強制削除せず残して構いません。検証では、可能な限り実ファイルを変更しない読み取り専用コマンドを優先してください。最後に検証済みの結果を簡潔に報告してください。",
+    "Before using tools, send one brief commentary acknowledgement that names the request-specific subject and action. This commentary is shown in the interface and is spoken nearly verbatim by standard TTS, so write one natural sentence in the selected character's voice rather than a label or list. Generic lines such as 'I'm checking the content' or 'I'm getting started' are not allowed. For longer work, report only meaningful milestones as natural sentences that briefly name the subject and actual current action. Do not include commands, URLs, file paths, or internal reasoning. Never mention internal Character Home, continuity-record, or memory-maintenance steps in commentary or the final report unless the user explicitly asks about them. Keep shell operations short and single-purpose; do not build long command chains with complex quoting or assignments. Forced deletion such as `rm -f` or `rm -rf` is rejected by the safety policy and must not be used. Temporary files and directories may remain in the operating system's temporary area after verification. Prefer read-only verification commands that do not alter real files whenever possible. End with a concise, verified result.",
   )}${characterHomeWorkInstructions()}`;
 }
 
@@ -994,6 +1015,37 @@ async function handleContinuationToolCall(params = {}) {
   return memoryToolResult({ updated: true, scope: scope.type, summary: updated.record });
 }
 
+async function handleHistoryToolCall(params = {}) {
+  const tool = String(params.tool || "").replace(/^history[./]/, "");
+  if (!(tool === "history_search" || tool === "search")) throw new Error(`未対応の履歴操作です: ${params.tool}`);
+  const args = params.arguments && typeof params.arguments === "object" ? params.arguments : {};
+  const workspaceKey = workDirectoryKey();
+  const entries = searchContinuityEntries({
+    conversationHistory,
+    workHistory,
+    characterId: activeCharacter().id,
+    workspaceKey,
+    query: args.query,
+    resultLimit: args.limit,
+  }).map((entry) => entry.type === "work" ? {
+    type: "work",
+    request: entry.request,
+    verifiedResult: entry.result,
+    artifacts: entry.artifacts,
+    at: entry.at,
+  } : {
+    type: "conversation",
+    role: entry.role,
+    text: entry.text,
+    at: entry.at,
+  });
+  return memoryToolResult({
+    character: activeCharacter().name,
+    workspaceScoped: Boolean(workspaceKey),
+    entries,
+  });
+}
+
 async function handleSkillCreatorToolCall(params = {}) {
   const tool = String(params.tool || "").replace(/^skills?[./]/, "");
   if (!(tool === "skill_create" || tool === "create")) throw new Error(`未対応のSkill操作です: ${params.tool}`);
@@ -1046,6 +1098,9 @@ async function handleCharacterContextToolCall(params = {}) {
   }
   if (tool.startsWith("continuation_") || tool.startsWith("continuation.") || params.namespace === "continuation") {
     return handleContinuationToolCall(params);
+  }
+  if (tool === "history_search" || tool.startsWith("history.") || params.namespace === "history") {
+    return handleHistoryToolCall(params);
   }
   return handleMemoryToolCall(params);
 }
@@ -2737,9 +2792,9 @@ function createConversationCodexClient(command = codexCommand) {
     cwd: codexWorkingDirectory || projectRoot,
     command: command || "codex",
     ...conversationCodexSettings(),
-    developerInstructions: `${MEMORY_TOOL_INSTRUCTIONS}\n\n${CONTINUATION_TOOL_INSTRUCTIONS}\n\n${SKILL_CREATOR_TOOL_INSTRUCTIONS}`,
+    developerInstructions: `${MEMORY_TOOL_INSTRUCTIONS}\n\n${CONTINUATION_TOOL_INSTRUCTIONS}\n\n${HISTORY_TOOL_INSTRUCTIONS}\n\n${SKILL_CREATOR_TOOL_INSTRUCTIONS}`,
     webSearchMode: "live",
-    dynamicTools: [...MEMORY_DYNAMIC_TOOLS, ...CONTINUATION_DYNAMIC_TOOLS, ...SKILL_CREATOR_DYNAMIC_TOOLS],
+    dynamicTools: [...MEMORY_DYNAMIC_TOOLS, ...CONTINUATION_DYNAMIC_TOOLS, ...HISTORY_DYNAMIC_TOOLS, ...SKILL_CREATOR_DYNAMIC_TOOLS],
     onDynamicToolCall: handleCharacterContextToolCall,
   });
   client.setPersona(personaInstructions());
@@ -2768,6 +2823,7 @@ function workCodexSettings() {
   return {
     model: String(preferences.data.codexWorkModel || preferences.data.codexModel || "").trim(),
     reasoningEffort: normalizedReasoningEffort(preferences.data.codexWorkReasoningEffort),
+    networkAccess: preferences.data.workNetworkAccess === true,
   };
 }
 
@@ -2775,14 +2831,22 @@ function codexWorkspaceRuntime(directory, additionalDirectories = []) {
   const nativeDirectory = path.resolve(directory);
   const nativeAdditional = [...new Set((Array.isArray(additionalDirectories) ? additionalDirectories : []).filter(Boolean).map((value) => path.resolve(value)))];
   if (process.platform === "win32" && wslCodexCommand) {
-    const cwd = windowsPathToWsl(nativeDirectory);
+    const target = wslPathTarget(nativeDirectory);
+    const cwd = target.path;
+    const workspaceRoots = nativeAdditional.flatMap((value) => {
+      const additionalTarget = wslPathTarget(value);
+      if (additionalTarget.distribution && target.distribution
+        && additionalTarget.distribution.toLowerCase() !== target.distribution.toLowerCase()) return [];
+      return [additionalTarget.path];
+    });
     return {
       cwd,
       spawnCwd: nativeDirectory,
       command: "wsl.exe",
-      commandArgs: ["--cd", cwd, "env", "-u", "CODEX_HOME", wslCodexCommand],
+      commandArgs: wslCommandArgsForPath(nativeDirectory, ["env", "-u", "CODEX_HOME", wslCodexCommand]),
       pathMapper: windowsPathToWsl,
-      workspaceRoots: nativeAdditional.map(windowsPathToWsl),
+      workspaceRoots,
+      wslDistribution: target.distribution,
     };
   }
   return { cwd: nativeDirectory, spawnCwd: nativeDirectory, command: codexCommand, workspaceRoots: nativeAdditional };
@@ -2817,7 +2881,7 @@ function workDirectoryKey(directory = validWorkDirectory()) {
   const source = String(directory || "");
   if (!source) return "";
   const resolved = path.resolve(source);
-  return createHash("sha256").update(process.platform === "win32" ? resolved.toLowerCase() : resolved).digest("hex").slice(0, 24);
+  return createHash("sha256").update(workspacePathIdentity(resolved)).digest("hex").slice(0, 24);
 }
 
 function resolveWorkArtifact(runId, relativePath) {
@@ -2882,6 +2946,8 @@ function webProjectPublicId(directory, relativeDirectory) {
 
 function publicWebProject(project, directory) {
   const id = webProjectPublicId(directory, project.relativeDirectory);
+  const configuredRuntime = preferences.data.webPreviewRuntimes?.[id];
+  const defaultRuntime = process.platform === "win32" && wslPathTarget(directory).distribution ? "wsl" : "auto";
   return {
     id,
     name: project.name,
@@ -2890,7 +2956,7 @@ function publicWebProject(project, directory) {
     scripts: project.scripts.map((script) => script.name),
     preferredScript: project.preferredScript,
     dependenciesReady: project.dependenciesReady,
-    runtime: ["windows", "wsl"].includes(preferences.data.webPreviewRuntimes?.[id]) ? preferences.data.webPreviewRuntimes[id] : "auto",
+    runtime: ["windows", "wsl"].includes(configuredRuntime) ? configuredRuntime : defaultRuntime,
     runtimeOptions: process.platform === "win32" ? ["auto", "windows", ...(wslCodexCommand ? ["wsl"] : [])] : ["auto"],
   };
 }
@@ -2995,8 +3061,8 @@ async function startDynamicWebPreview(payload = {}) {
       const command = commandForWebProject(project, script, port, "linux");
       return {
         executable: "wsl.exe",
-        args: ["--cd", windowsPathToWsl(project.directory), command.executable, ...command.args],
-        label: `WSL · ${command.label}`,
+        args: wslCommandArgsForPath(project.directory, [command.executable, ...command.args]),
+        label: `${wslPathTarget(project.directory).distribution ? `WSL · ${wslPathTarget(project.directory).distribution}` : "WSL"} · ${command.label}`,
         cwd: project.directory,
       };
     }
@@ -3052,11 +3118,16 @@ function currentSharedContinuityContext(maxBodyLength = 2_800) {
     workHistory,
     characterId: activeCharacter().id,
     workspaceKey: workDirectoryKey(),
-    since: appSessionStartedAt,
     language: interfaceLanguage(),
-    maxBodyLength: Math.min(1_200, maxBodyLength),
+    maxBodyLength,
   });
-  return [scopeGuard, durable, recent].filter(Boolean).join("\n\n");
+  const unfinished = unfinishedWorkContext({
+    workHistory,
+    characterId: activeCharacter().id,
+    workspaceKey: workDirectoryKey(),
+    language: interfaceLanguage(),
+  });
+  return [scopeGuard, durable, unfinished, recent].filter(Boolean).join("\n\n");
 }
 
 function broadcastWorkHistory() {
@@ -3208,22 +3279,31 @@ function resetWorkClient() {
   workCodexClient = null;
 }
 
+function codexRuntimeMatches(client, runtime) {
+  if (!client || !runtime) return false;
+  return client.cwd === runtime.cwd
+    && client.spawnCwd === (runtime.spawnCwd || runtime.cwd)
+    && client.command === runtime.command
+    && JSON.stringify(client.commandArgs || []) === JSON.stringify(runtime.commandArgs || [])
+    && JSON.stringify(client.workspaceRoots || []) === JSON.stringify([runtime.cwd, ...(runtime.workspaceRoots || [])].filter((value, index, values) => values.indexOf(value) === index));
+}
+
 function ensureWorkClient() {
   const directory = validWorkDirectory();
   if (!directory) throw new Error("先に作業先フォルダーを選択してください。");
   const runtime = codexWorkspaceRuntime(directory, [activeCharacterHomeDirectory()]);
-  if (workCodexClient?.cwd !== runtime.cwd || workCodexClient?.command !== runtime.command) {
+  if (!codexRuntimeMatches(workCodexClient, runtime)) {
     resetWorkClient();
     workCodexClient = new CodexAppServerClient({
       ...runtime,
       ...workCodexSettings(),
-      developerInstructions: `${workModeInstructions()}\n\n${MEMORY_TOOL_INSTRUCTIONS}\n\n${CONTINUATION_TOOL_INSTRUCTIONS}\n\n${SKILL_CREATOR_TOOL_INSTRUCTIONS}`,
+      developerInstructions: `${workModeInstructions()}\n\n${MEMORY_TOOL_INSTRUCTIONS}\n\n${CONTINUATION_TOOL_INSTRUCTIONS}\n\n${HISTORY_TOOL_INSTRUCTIONS}\n\n${SKILL_CREATOR_TOOL_INSTRUCTIONS}`,
       sandbox: "workspace-write",
       approvalPolicy: "never",
       serviceName: "charadock_worker",
       personality: "friendly",
       webSearchMode: "live",
-      dynamicTools: [...MEMORY_DYNAMIC_TOOLS, ...CONTINUATION_DYNAMIC_TOOLS, ...SKILL_CREATOR_DYNAMIC_TOOLS],
+      dynamicTools: [...MEMORY_DYNAMIC_TOOLS, ...CONTINUATION_DYNAMIC_TOOLS, ...HISTORY_DYNAMIC_TOOLS, ...SKILL_CREATOR_DYNAMIC_TOOLS],
       onDynamicToolCall: handleCharacterContextToolCall,
     });
   }
@@ -5800,6 +5880,7 @@ function publishChatStream(payload = {}) {
   remoteServer?.publish("stream", {
     phase: String(coordinated.phase || ""),
     mode: coordinated.mode === "work" ? "work" : "chat",
+    statusText: remotePublicText(coordinated.statusText, 1000),
     text: remotePublicText(coordinated.text),
     displayText: remotePublicText(coordinated.displayText),
     message: remotePublicText(coordinated.message, 1000),
@@ -5844,7 +5925,7 @@ function realtimeWorkSkillContext(client, selectedSkillIds = []) {
   ].join("\n");
 }
 
-function realtimeWorkFrontendContext(client, selectedSkillIds = []) {
+function realtimeWorkFrontendContext(client, selectedSkillIds = [], realtimeMemoryContext = "", sharedContext = "") {
   return [
     personaInstructions(),
     [
@@ -5857,6 +5938,8 @@ function realtimeWorkFrontendContext(client, selectedSkillIds = []) {
       "Before turn/completed, never use past-tense completion claims such as done, created, saved, updated, ready, できた, 作った, 保存した, or 更新した.",
       "Use the language required by the character instructions from the first response. When CharaDock injects a short reaction such as a character-click phrase, speak that text verbatim without translating or adding words.",
     ].join("\n"),
+    realtimeMemoryContext,
+    sharedContext,
     realtimeWorkSkillContext(client, selectedSkillIds),
   ].filter(Boolean).join("\n\n");
 }
@@ -6195,8 +6278,8 @@ async function startCodexRealtimeVoice(payload, target = "control") {
     const normalized = String(request || "").trim();
     if (!workMode || !normalized) return false;
     if (!isSocialConversationTurn(normalized)) {
-      pendingNativeWorkRequest = normalized;
-      if (nativeWorkTurn?.run && ["Liveで依頼された作業", "Work requested in Live"].includes(nativeWorkTurn.run.request)) {
+      if (!nativeWorkTurn?.run) pendingNativeWorkRequest = normalized;
+      else if (["Liveで依頼された作業", "Work requested in Live"].includes(nativeWorkTurn.run.request)) {
         updateNativeWorkRequest(nativeWorkTurn, normalized);
       }
     }
@@ -6248,6 +6331,26 @@ async function startCodexRealtimeVoice(payload, target = "control") {
     state.run.request = normalized.slice(0, 12_000);
     persistWorkHistory();
     broadcastWorkHistory();
+  };
+  const appendNativeWorkFollowUp = (state, request) => {
+    const normalized = realtimeDelegationInput(request);
+    if (!state?.run || !normalized) return;
+    const label = mainText("追加入力", "Follow-up");
+    const addition = `${label}: ${normalized}`;
+    if (state.run.request.split("\n").includes(addition)) return;
+    state.run.request = `${state.run.request}\n${addition}`.slice(0, 12_000);
+    persistWorkHistory();
+    broadcastWorkHistory();
+  };
+  const publishNativeWorkFollowUpStatus = (state) => {
+    const statusText = mainText("追加の指示を同じ作業へ反映しています…", "Applying the follow-up to the current Work…");
+    publishChatStream({
+      phase: "follow-up",
+      mode: "work",
+      statusText,
+      realtimeOutput: true,
+      workRunId: state?.run?.id || "",
+    });
   };
   const nativeItemUserText = (item) => (Array.isArray(item?.content) ? item.content : [])
     .filter((part) => part?.type === "text")
@@ -6349,7 +6452,7 @@ async function startCodexRealtimeVoice(payload, target = "control") {
             "</charadock_handoff_control>",
           ].join("\n"),
         );
-        realtimeClient.steerActiveTurn(state.skillSteerText, { skillItems: state.skillItems }).catch((error) => {
+        realtimeClient.steerActiveTurn(state.skillSteerText, { skillItems: state.skillItems, turnId: state.turnId }).catch((error) => {
           diagnosticLog?.write("warn", "realtime-work-skill-handoff-failed", String(error?.message || error));
         });
       }
@@ -6424,9 +6527,18 @@ async function startCodexRealtimeVoice(payload, target = "control") {
         ? normalizeTurnSkillIds(options.selectedSkillIds)
         : [...activeRealtimeTurnSkillIds];
       const skillItems = mergeTurnSkillItems(activeCharacterSkillItems(), explicitTurnSkillItems(requestedSkillIds));
-      noteNativeWorkRequest(normalized, "typed", options);
-      const operation = realtimeClient.hasActiveTurn?.()
-        ? realtimeClient.steerActiveTurn(normalized, { skillItems })
+      const activeState = nativeWorkTurn?.run?.status === "running" && nativeWorkTurn?.turnId
+        ? nativeWorkTurn
+        : null;
+      if (activeState) {
+        appendNativeWorkFollowUp(activeState, normalized);
+        publishNativeWorkFollowUpStatus(activeState);
+      } else {
+        noteNativeWorkRequest(normalized, "typed", options);
+      }
+      const activeTurnId = String(activeState?.turnId || realtimeClient.activeTurnId || "");
+      const operation = activeTurnId
+        ? realtimeClient.steerActiveTurn(normalized, { skillItems, turnId: activeTurnId })
         : realtimeClient.sendMessage(normalized, { skillItems });
       Promise.resolve(operation).catch((error) => {
         diagnosticLog?.write("warn", "realtime-work-typed-handoff-failed", String(error?.message || error));
@@ -6440,9 +6552,31 @@ async function startCodexRealtimeVoice(payload, target = "control") {
         }
       });
       diagnosticLog?.write("info", "realtime-work-typed-handoff", {
-        mode: realtimeClient.hasActiveTurn?.() ? "steer" : "turn",
+        mode: activeTurnId ? "steer" : "turn",
         length: normalized.length,
       });
+      return true;
+    },
+    dispatchVoiceFollowUp(request) {
+      const normalized = String(request || "").trim();
+      const state = nativeWorkTurn;
+      if (!workMode || !normalized || isSocialConversationTurn(normalized)
+        || !state?.run || state.run.status !== "running" || !state.turnId) return false;
+      appendNativeWorkFollowUp(state, normalized);
+      publishNativeWorkFollowUpStatus(state);
+      Promise.resolve(realtimeClient.steerActiveTurn(normalized, { skillItems: state.skillItems, turnId: state.turnId })).then((accepted) => {
+        if (!accepted) throw new Error(mainText("実行中のWorkが見つかりませんでした。", "The active Work turn was not found."));
+      }).catch((error) => {
+        diagnosticLog?.write("warn", "realtime-work-voice-follow-up-failed", String(error?.message || error));
+        publishChatStream({
+          phase: "error",
+          mode: "work",
+          message: mainText("音声の追加入力を作業へ反映できませんでした。もう一度伝えてください。", "The spoken follow-up could not be added to Work. Please say it again."),
+          realtimeOutput: true,
+          workRunId: state.run.id,
+        });
+      });
+      diagnosticLog?.write("info", "realtime-work-voice-follow-up", { length: normalized.length, workRunId: state.run.id });
       return true;
     },
     async dispatchConversation(request) {
@@ -6504,7 +6638,7 @@ async function startCodexRealtimeVoice(payload, target = "control") {
       initialItems: [{
         role: "developer",
         text: workMode
-          ? realtimeWorkFrontendContext(realtimeClient, initialTurnSkillIds)
+          ? realtimeWorkFrontendContext(realtimeClient, initialTurnSkillIds, realtimeMemoryContext, sharedContext)
           : realtimeChatFrontendContext(realtimeMemoryContext, sharedContext),
       }],
       onEvent: (message) => {
@@ -6652,9 +6786,12 @@ async function startCodexRealtimeVoice(payload, target = "control") {
           if (completedTurn) rememberConversationTurn(completedTurn.user, completedTurn.assistant);
         }
         if (workMode && request) {
-          noteNativeWorkRequest(request, "voice").catch((error) => {
-            diagnosticLog?.write("warn", "realtime-work-request-context-failed", String(error?.message || error));
-          });
+          const followedUp = realtimeWorkDispatcher.dispatchVoiceFollowUp(request);
+          if (!followedUp) {
+            noteNativeWorkRequest(request, "voice").catch((error) => {
+              diagnosticLog?.write("warn", "realtime-work-request-context-failed", String(error?.message || error));
+            });
+          }
         }
       }
       if (["thread/realtime/error", "thread/realtime/closed"].includes(method)) {
@@ -7415,6 +7552,7 @@ function registerIpc() {
     assertTrustedSender(event);
     const previousBackend = preferences.data.backend;
     const previousLanguage = interfaceLanguage();
+    const previousWorkNetworkAccess = preferences.data.workNetworkAccess === true;
     const previousMouseFollow = Boolean(preferences.data.mouseFollow);
     const previousPointerMode = normalizeMascotPointerMode(preferences.data.mascotPointerMode);
     const previousDisplayId = String(preferences.data.preferredDisplayId || "");
@@ -7437,6 +7575,13 @@ function registerIpc() {
     const mascotPointerMode = normalizeMascotPointerMode(patch?.mascotPointerMode, preferences.data.mascotPointerMode);
     const codexChatReasoningEffort = normalizedReasoningEffort(patch?.codexChatReasoningEffort ?? preferences.data.codexChatReasoningEffort);
     const codexWorkReasoningEffort = normalizedReasoningEffort(patch?.codexWorkReasoningEffort ?? preferences.data.codexWorkReasoningEffort);
+    const workNetworkAccess = patch?.workNetworkAccess === true;
+    if (workNetworkAccess !== previousWorkNetworkAccess && (activeWorkRunId || currentRealtimeClient() || activeRealtimeStarting)) {
+      throw new Error(mainText(
+        "外部ネットワーク設定は、現在のWorkまたはLiveが終わってから変更してください。",
+        "Change external network access after the current Work or Live session finishes.",
+      ));
+    }
     const activeCharacterId = preferences.data.characterId;
     const previousRealtimeSettings = characterTtsSettings(activeCharacterId);
     const supertonicVoice = /^[FM][1-5]$/.test(String(patch?.supertonicVoice || "")) ? String(patch.supertonicVoice) : "F1";
@@ -7508,6 +7653,7 @@ function registerIpc() {
       codexChatReasoningEffort,
       codexWorkModel: String(patch?.codexWorkModel ?? preferences.data.codexWorkModel).trim().slice(0, 120),
       codexWorkReasoningEffort,
+      workNetworkAccess,
       alwaysOnTop: Boolean(patch?.alwaysOnTop),
       clickThrough: mascotPointerMode === "click-through",
       mascotPointerMode,
@@ -7581,7 +7727,9 @@ function registerIpc() {
     if (allowed.backend !== "codex" && preferences.data.interactionMode === "work") {
       preferences.patch({ interactionMode: "chat" });
     }
-    if (allowed.backend !== previousBackend || allowed.language !== previousLanguage) resetWorkClient();
+    if (allowed.backend !== previousBackend
+      || allowed.language !== previousLanguage
+      || allowed.workNetworkAccess !== previousWorkNetworkAccess) resetWorkClient();
     if (allowed.language !== previousLanguage) {
       codexClient?.reset();
       openAIClient?.reset();
@@ -10052,7 +10200,7 @@ async function boot() {
   }
   openAIClient = new OpenAIClient();
   codexCommand = await resolveCodexCommand({ cacheDirectory: path.join(app.getPath("userData"), "codex-bin") });
-  wslCodexCommand = resolveWslCodexCommand();
+      wslCodexCommand = resolveWslCodexCommand({ cacheDirectory: path.join(app.getPath("userData"), "codex-bin") });
   codexClient = createConversationCodexClient();
   registerIpc();
 

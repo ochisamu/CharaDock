@@ -454,8 +454,9 @@
               <label>推論の深さ<select id="codexWorkReasoningEffortSelect">
                 <option value="">Codex既定</option><option value="none">なし</option><option value="minimal">最小</option><option value="low">低</option><option value="medium">中</option><option value="high">高</option><option value="xhigh">非常に高い</option><option value="max">最大</option><option value="ultra">Ultra</option>
               </select></label>
+              <label class="switch-row"><span><strong>外部ネットワーク接続</strong><small>WorkからAPI・パッケージ取得・名前解決を利用できます</small></span><input id="codexWorkNetworkAccessToggle" type="checkbox" /><i></i></label>
             </div>
-            <p class="hint">深くするほど応答に時間がかかる場合があります。利用できる値はモデルによって異なります。</p>
+            <p class="hint">深くするほど応答に時間がかかる場合があります。外部接続は安全のため初期状態ではOFFです。ONにすると、作業先のコードも外部へ通信できるようになります。</p>
             <div class="stack-actions">
               <button id="codexLoginButton" class="button button-secondary" type="button">ChatGPTでログイン</button>
               <p id="codexAccountState" class="hint">アカウント状態を確認しています…</p>

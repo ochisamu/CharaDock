@@ -1555,6 +1555,24 @@ window.addEventListener("DOMContentLoaded", () => {
     renderMascotSelectedSkills();
     closeMascotAddPopover();
     resizeInput();
+    const liveWorkFollowUp = sending && Boolean(realtimePeer) && appState?.interactionMode === "work";
+    if (liveWorkFollowUp) {
+      setStatus(uiText("追加の指示を同じ作業へ反映しています…", "Applying the follow-up to the current Work…"), 7000);
+      try {
+        const route = await ipcRenderer.invoke("mascotInline:realtimeAppendText", { text: message, selectedSkillIds });
+        const accepted = typeof route === "object" ? Boolean(route?.accepted) : Boolean(route);
+        if (!accepted) throw new Error(uiText("実行中のWorkへ追加できませんでした。", "The follow-up could not be added to the current Work."));
+      } catch (error) {
+        input.value = message;
+        mergeMascotAttachments(attachments);
+        mascotSelectedSkillIds = [...new Set([...mascotSelectedSkillIds, ...selectedSkillIds])];
+        renderMascotSelectedSkills();
+        resizeInput();
+        setStatus(error.message, 5000);
+      }
+      input.focus();
+      return;
+    }
     if (sending) {
       pendingFollowUp = { message, attachments, selectedSkillIds };
       stopTtsPlayback();
@@ -2473,6 +2491,12 @@ window.addEventListener("DOMContentLoaded", () => {
     if (workPanel.classList.contains("is-open") && appState?.interactionMode !== "work") renderConversationHistory(chatHistoryState);
   });
   ipcRenderer.on("mascot:stream", (_event, payload) => {
+    if (payload?.phase === "follow-up") {
+      const statusText = String(payload.statusText || uiText("追加の指示を同じ作業へ反映しています…", "Applying the follow-up to the current Work…"));
+      setWorkActivity(statusText, { trackElapsed: true });
+      setStatus(statusText, 7000);
+      return;
+    }
     if (payload?.phase === "start") {
       clearPermission();
       clearBubbleArtifactActions();

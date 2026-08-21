@@ -2910,6 +2910,8 @@
     $("#codexChatReasoningEffortSelect").value = state.codexChatReasoningEffort || "";
     setCodexModelOptions($("#codexWorkModelInput"), state.codexWorkModel || state.codexModel || "");
     $("#codexWorkReasoningEffortSelect").value = state.codexWorkReasoningEffort || "";
+    $("#codexWorkNetworkAccessToggle").checked = state.workNetworkAccess === true;
+    $("#codexWorkNetworkAccessToggle").disabled = Boolean(chatBusy || workHistoryState.activeWorkRunId || realtimePeerConnection || realtimeStarting);
     $("#languageSelect").value = state.language || "ja";
     $("#alwaysOnTopToggle").checked = Boolean(state.alwaysOnTop);
     const pointerMode = state.mascotPointerMode || (state.clickThrough ? "click-through" : "interactive");
@@ -3075,6 +3077,7 @@
       codexChatReasoningEffort: $("#codexChatReasoningEffortSelect").value,
       codexWorkModel: $("#codexWorkModelInput").value.trim(),
       codexWorkReasoningEffort: $("#codexWorkReasoningEffortSelect").value,
+      workNetworkAccess: $("#codexWorkNetworkAccessToggle").checked,
       alwaysOnTop: $("#alwaysOnTopToggle").checked,
       mascotPointerMode: $('input[name="mascotPointerMode"]:checked')?.value || "interactive",
       mouseFollow: $("#mouseFollowToggle").checked,
@@ -3748,6 +3751,7 @@
     $("#continuationModeToggle").disabled = $("#chatContinuationToggle").disabled;
     $("#saveContinuationButton").disabled = $("#chatContinuationToggle").disabled;
     $("#clearContinuationButton").disabled = $("#chatContinuationToggle").disabled;
+    $("#codexWorkNetworkAccessToggle").disabled = chatBusy || Boolean(workHistoryState.activeWorkRunId || realtimePeerConnection || realtimeStarting);
   }
 
   async function sendChat() {
@@ -3802,6 +3806,28 @@
     renderChatAttachments();
     renderChatSelectedSkills();
     closeChatAddPopover();
+    const liveWorkFollowUp = chatBusy && Boolean(realtimePeerConnection) && state?.interactionMode === "work";
+    if (liveWorkFollowUp) {
+      appendMessage("user", message);
+      realtimePendingTypedText = message;
+      setStatus($("#chatStatus"), localized("追加の指示を同じ作業へ反映しています…", "Applying the follow-up to the current Work…"));
+      try {
+        const route = await api.appendCodexRealtimeText(message, selectedSkillIds);
+        const accepted = typeof route === "object" ? Boolean(route?.accepted) : Boolean(route);
+        if (!accepted) throw new Error(localized("実行中のWorkへ追加できませんでした。", "The follow-up could not be added to the current Work."));
+        realtimePendingTypedText = "";
+      } catch (error) {
+        realtimePendingTypedText = "";
+        input.value = message;
+        chatAttachments = attachments;
+        chatSelectedSkillIds = selectedSkillIds;
+        renderChatAttachments();
+        renderChatSelectedSkills();
+        setStatus($("#chatStatus"), error.message, true);
+      }
+      input.focus();
+      return;
+    }
     if (chatBusy) {
       pendingChatFollowUp = { message, attachments, selectedSkillIds };
       setStatus($("#chatStatus"), localized("差し込みを受け付けました。現在の応答を止めています…", "Follow-up queued. Stopping the current response…"));
@@ -3907,6 +3933,10 @@
       setStatus($("#beatriceStatus"), message);
     });
     api.onChatStream?.((payload) => {
+      if (payload?.phase === "follow-up") {
+        setStatus($("#chatStatus"), String(payload.statusText || localized("追加の指示を同じ作業へ反映しています…", "Applying the follow-up to the current Work…")));
+        return;
+      }
       if (!streamingMessage && payload?.phase === "start" && payload?.realtimeOutput && payload?.mode === "work") {
         streamingMessage = appendMessage("assistant", localized("考え中", "Thinking"), true);
         streamingMessage.dataset.realtimeWork = "true";
@@ -4867,7 +4897,7 @@
       sessionStorage.setItem("charadock.activePage", "character");
       saveSettings().catch((error) => setStatus($("#characterProfileStatus"), error.message, true));
     });
-    ["#openaiModelInput", "#transcriptionModelInput", "#codexChatModelInput", "#codexChatReasoningEffortSelect", "#codexWorkModelInput", "#codexWorkReasoningEffortSelect"]
+    ["#openaiModelInput", "#transcriptionModelInput", "#codexChatModelInput", "#codexChatReasoningEffortSelect", "#codexWorkModelInput", "#codexWorkReasoningEffortSelect", "#codexWorkNetworkAccessToggle"]
       .forEach((selector) => $(selector).addEventListener("change", saveSettings));
     $("#displaySelect").addEventListener("change", saveSettings);
     motionFields.forEach((key) => $(`#${key}Input`).addEventListener("input", () => {

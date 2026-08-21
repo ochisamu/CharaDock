@@ -15,6 +15,9 @@ const {
 
 test("Codex client suppresses only the known non-fatal models cache warning", () => {
   assert.equal(isBenignCodexStderr("failed to load models cache: missing field `base_instructions` at line 94"), true);
+  assert.equal(isBenignCodexStderr("failed to renew cache TTL: missing field `supports_parallel_tool_calls` at line 97"), true);
+  assert.equal(isBenignCodexStderr("failed to renew cache TTL: missing field `unknown_field` at line 97"), false);
+  assert.equal(isBenignCodexStderr("failed to renew cache TTL: missing field `supports_parallel_tool_calls`\nauthentication failed"), false);
   assert.equal(isBenignCodexStderr("authentication failed"), false);
 });
 
@@ -25,6 +28,11 @@ test("Codex work client can explicitly enable live web search", () => {
   assert.deepEqual(appServerArgs("live", "workspace-write"), [
     "app-server", "--stdio", "--enable", "realtime_conversation",
     "-c", 'web_search="live"', "-c", 'sandbox_mode="workspace-write"',
+  ]);
+  assert.deepEqual(appServerArgs("live", "workspace-write", true), [
+    "app-server", "--stdio", "--enable", "realtime_conversation",
+    "-c", 'web_search="live"', "-c", 'sandbox_mode="workspace-write"',
+    "-c", "sandbox_workspace_write.network_access=true",
   ]);
   assert.deepEqual(appServerArgs("invalid"), ["app-server", "--stdio", "--enable", "realtime_conversation"]);
   assert.deepEqual(appServerArgs("disabled"), [
@@ -51,6 +59,13 @@ test("Codex workspace-write client scopes writes to the selected folder", async 
     excludeTmpdirEnvVar: false,
     excludeSlashTmp: false,
   });
+  assert.deepEqual(workspaceSandboxPolicy("workspace-write", cwd, [home], true), {
+    type: "workspaceWrite",
+    writableRoots: [cwd, home],
+    networkAccess: true,
+    excludeTmpdirEnvVar: false,
+    excludeSlashTmp: false,
+  });
   assert.equal(workspaceSandboxPolicy("read-only", cwd), null);
   assert.equal(permissionProfileForSandbox("workspace-write"), ":workspace");
   assert.equal(permissionProfileForSandbox("read-only"), ":read-only");
@@ -67,6 +82,25 @@ test("Codex workspace-write client scopes writes to the selected folder", async 
   assert.deepEqual(threadParams.runtimeWorkspaceRoots, [cwd, home]);
   assert.equal(threadParams.permissions, ":workspace");
   assert.equal(Object.prototype.hasOwnProperty.call(threadParams, "sandbox"), false);
+
+  const networkClient = new CodexAppServerClient({
+    cwd,
+    sandbox: "workspace-write",
+    workspaceRoots: [home],
+    networkAccess: true,
+  });
+  networkClient.ensureStarted = async () => {};
+  let networkThreadParams;
+  networkClient.request = async (method, params) => {
+    assert.equal(method, "thread/start");
+    networkThreadParams = params;
+    return { thread: { id: "thread-network" } };
+  };
+  await networkClient.ensureThread();
+  assert.deepEqual(networkThreadParams.runtimeWorkspaceRoots, [cwd, home]);
+  assert.equal(networkThreadParams.sandbox, "workspace-write");
+  assert.equal(Object.prototype.hasOwnProperty.call(networkThreadParams, "permissions"), false);
+  assert.equal(networkClient.usesPermissionProfile, false);
 });
 
 test("Codex client registers and answers app-server dynamic tools", async () => {
@@ -235,6 +269,40 @@ test("Codex client sends per-turn model and reasoning effort overrides", async (
     { type: "localAudio", path: "/mapped/voice.webm" },
   ]);
   await pending;
+});
+
+test("Codex Work sends the explicit outbound-network policy only when enabled", async () => {
+  const client = new CodexAppServerClient({
+    cwd: "/workspace/project",
+    sandbox: "workspace-write",
+    networkAccess: true,
+  });
+  client.ensureStarted = async () => {};
+  client.ensureThread = async () => "thread-network-work";
+  let turnParams;
+  client.request = async (method, params) => {
+    if (method !== "turn/start") return {};
+    turnParams = params;
+    setImmediate(() => {
+      client.handleLine(JSON.stringify({
+        method: "item/agentMessage/delta",
+        params: { turnId: "turn-network-work", delta: "ok" },
+      }));
+      client.handleLine(JSON.stringify({
+        method: "turn/completed",
+        params: { turn: { id: "turn-network-work", status: "completed" } },
+      }));
+    });
+    return { turn: { id: "turn-network-work" } };
+  };
+  await client.sendMessage("外部APIを確認して");
+  assert.deepEqual(turnParams.sandboxPolicy, {
+    type: "workspaceWrite",
+    writableRoots: ["/workspace/project"],
+    networkAccess: true,
+    excludeTmpdirEnvVar: false,
+    excludeSlashTmp: false,
+  });
 });
 
 test("Codex client returns the final agent answer without replaying commentary", async () => {
@@ -520,6 +588,26 @@ test("Codex client steers an active Realtime Work turn with text and Skills", as
       ],
     },
   });
+});
+
+test("Codex client can steer a tracked Work turn by explicit id during an active-id race", async () => {
+  const calls = [];
+  const client = new CodexAppServerClient();
+  client.threadId = "thread-live-work";
+  client.activeTurnId = "";
+  client.request = async (method, params) => {
+    calls.push({ method, params });
+    return {};
+  };
+  assert.equal(await client.steerActiveTurn("同じ作業に追記して", { turnId: "turn-tracked-work" }), true);
+  assert.deepEqual(calls, [{
+    method: "turn/steer",
+    params: {
+      threadId: "thread-live-work",
+      expectedTurnId: "turn-tracked-work",
+      input: [{ type: "text", text: "同じ作業に追記して" }],
+    },
+  }]);
 });
 
 test("Codex client surfaces realtime startup notification errors immediately", async () => {
