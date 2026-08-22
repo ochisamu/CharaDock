@@ -153,6 +153,65 @@
     element.classList.toggle("is-error", Boolean(error));
   }
 
+  function friendlyTtsErrorMessage(error) {
+    const detail = String(error?.message || error || "")
+      .replace(/^Error invoking remote method ['"][^'"]+['"]:\s*/i, "")
+      .replace(/^Error:\s*/i, "")
+      .split(/\r?\n/, 1)[0]
+      .trim();
+    if (/WebGPU/i.test(detail)) {
+      return localized(
+        "この音声ではWebGPUを利用できません。別の声を選んでください。",
+        "WebGPU is unavailable for this voice. Choose another voice.",
+      );
+    }
+    if (/(?:モデル|model).*(?:ありません|見つかりません|not found|no usable)|ダウンロード|download/i.test(detail)) {
+      return localized(
+        "この音声モデルが見つかりません。モデルを追加するか、別の声を選んでください。",
+        "This voice model is unavailable. Add the model or choose another voice.",
+      );
+    }
+    if (/fetch failed|接続できません|connection|ECONN|network|timed?\s*out|timeout/i.test(detail)) {
+      return localized(
+        "音声合成へ接続できません。接続先を確認するか、別の声を選んでください。",
+        "Could not connect to speech synthesis. Check the connection or choose another voice.",
+      );
+    }
+    if (/再生|デコード|decode|playback|audio format|音声形式/i.test(detail)) {
+      return localized(
+        "音声を再生できませんでした。音声設定を確認してください。",
+        "Audio playback failed. Check the voice settings.",
+      );
+    }
+    return localized(
+      "音声を生成できませんでした。音声設定を確認してください。",
+      "Speech generation failed. Check the voice settings.",
+    );
+  }
+
+  function friendlyConversationErrorMessage(error) {
+    const detail = String(error?.message || error || "")
+      .replace(/^Error invoking remote method ['"][^'"]+['"]:\s*/i, "")
+      .replace(/^Error:\s*/i, "")
+      .split(/\r?\n/, 1)[0]
+      .trim();
+    if (/ENOENT|No such file or directory|chdir|cwd=|作業先.*(?:ありません|見つかりません)|フォルダー.*(?:ありません|見つかりません)/i.test(detail)) {
+      return localized("作業先フォルダーを開けません。作業先を選び直してください。", "The Work folder is unavailable. Choose it again.");
+    }
+    if (/\bMCP\b/i.test(detail)) {
+      return localized("選択したMCPへ接続できません。MCP設定で接続を確認してください。", "The selected MCP connection is unavailable. Test it in MCP settings.");
+    }
+    if (/Realtime|\bLive\b/i.test(detail)) {
+      return localized("Liveの処理を続けられませんでした。接続し直すか、通常のChatを利用してください。", "Live could not continue. Reconnect or use standard Chat.");
+    }
+    if (/fetch failed|接続できません|connection|ECONN|network|timed?\s*out|timeout|app-server/i.test(detail)) {
+      return localized("AIへ接続できません。接続を確認して、もう一度試してください。", "Could not connect to the AI. Check the connection and try again.");
+    }
+    const technical = /Error invoking|remote method|(?:^|\s)at\s+\S|[A-Z]:\\|\/home\/|AppData|\.cjs:\d|\.js:\d|CreateProcess|stack/i.test(detail);
+    if (detail && !technical && detail.length <= 180) return detail;
+    return localized("処理を完了できませんでした。もう一度試してください。", "The request could not be completed. Please try again.");
+  }
+
   function mcpSettingsBusy() {
     return Boolean(workHistoryState.activeWorkRunId || realtimePeerConnection || realtimeStarting);
   }
@@ -4202,12 +4261,13 @@
         const providerName = { "piper-plus": "piper-plus", "supertonic-3": "Supertonic 3", "irodori-webgpu": "Irodori TTS", kokoro: "Kokoro", "style-bert-vits2": "Style-Bert-VITS2", "sbv2-jp-extra": "Style-Bert-VITS2 JP-Extra" }[state.ttsProvider];
         setStatus($("#ttsStatus"), `${providerName}で生成しています…`);
         const result = await api.synthesizeTts(text);
+        if (result?.error) throw new Error(result.error);
         const sources = result?.audioDataUrls || [];
         if (!sources.length) throw new Error(`${providerName}から音声データが返されませんでした。音声出力がONか確認してください。`);
         await playGeneratedResult(result, token);
         if (token === speechPlaybackToken) setStatus($("#ttsStatus"), "接続と再生を確認しました。");
       } catch (error) {
-        if (token === speechPlaybackToken) setStatus($("#ttsStatus"), error.message, true);
+        if (token === speechPlaybackToken) setStatus($("#ttsStatus"), friendlyTtsErrorMessage(error), true);
       } finally {
         if (token === speechPlaybackToken) {
           speechAudio = null;
@@ -4286,7 +4346,7 @@
         api.stopCodexRealtime().catch(() => {});
         closeRealtimeAudio();
         realtimeUnavailable ||= /まだ提供されていません/.test(error.message);
-        setStatus($("#chatStatus"), localized(`Liveを開始できません: ${error.message}`, `Could not start Live: ${error.message}`), true);
+        setStatus($("#chatStatus"), friendlyConversationErrorMessage(error), true);
         return;
       }
     }
@@ -4323,7 +4383,7 @@
         chatSelectedMcpServerIds = selectedMcpServerIds;
         renderChatAttachments();
         renderChatSelectedSkills();
-        setStatus($("#chatStatus"), error.message, true);
+        setStatus($("#chatStatus"), friendlyConversationErrorMessage(error), true);
       }
       input.focus();
       return;
@@ -4364,7 +4424,7 @@
         chatSelectedMcpServerIds = selectedMcpServerIds;
         renderChatAttachments();
         renderChatSelectedSkills();
-        setStatus($("#chatStatus"), error.message, true);
+        setStatus($("#chatStatus"), friendlyConversationErrorMessage(error), true);
         $("#stopButton").disabled = false;
       }
       return;
@@ -4400,7 +4460,7 @@
         renderChatAttachments();
         renderChatSelectedSkills();
         setChatBusy(false);
-        setStatus($("#chatStatus"), error.message, true);
+        setStatus($("#chatStatus"), friendlyConversationErrorMessage(error), true);
       } finally {
         localChatSendPending = false;
       }
@@ -4433,7 +4493,7 @@
         renderChatAttachments();
         renderChatSelectedSkills();
       }
-      setStatus($("#chatStatus"), interrupted ? "応答を中断しました。" : error.message, !interrupted);
+      setStatus($("#chatStatus"), interrupted ? localized("応答を中断しました。続けて修正を送れます。", "Response stopped. You can send a revision now.") : friendlyConversationErrorMessage(error), !interrupted);
     } finally {
       localChatSendPending = false;
       setChatBusy(false);
@@ -4557,13 +4617,12 @@
         appendWorkArtifactActions(streamingMessage, payload.artifacts, payload.workRunId);
       }
       if (phase === "error") {
-        if (!streamingMessage?.isConnected || streamingMessageMode !== "chat") {
-          streamingMessage = appendMessage("assistant", "");
-          streamingMessageMode = "chat";
+        if (streamingMessage?.isConnected && streamingMessageMode === "chat") {
+          const paragraph = streamingMessage.querySelector("p");
+          streamingMessage.classList.remove("is-thinking");
+          if (!paragraph?.textContent?.trim()) streamingMessage.remove();
         }
-        const paragraph = streamingMessage.querySelector("p");
-        streamingMessage.classList.remove("is-thinking");
-        paragraph.textContent = "エラー: " + (payload.message || localized("応答を完了できませんでした。", "The response could not be completed."));
+        setStatus($("#chatStatus"), friendlyConversationErrorMessage(payload.message), true);
       }
       if (["done", "error", "interrupted"].includes(phase)) {
         setChatBusy(false);
@@ -4603,7 +4662,7 @@
     });
     api.onCodexRealtime?.((message) => {
       handleCodexRealtimeEvent(message).catch((error) => {
-        setStatus($("#chatStatus"), `音声イベント: ${error.message}`, true);
+        setStatus($("#chatStatus"), friendlyConversationErrorMessage(error), true);
         closeRealtimeAudio();
       });
     });

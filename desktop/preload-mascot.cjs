@@ -237,6 +237,10 @@ window.addEventListener("DOMContentLoaded", () => {
   let ttsNoiseFloor = .0015;
   let ttsEnvelopeSampleAt = 0;
   let ttsBusy = false;
+  let generatedTtsFailedProvider = "";
+  let generatedTtsRetryAfter = 0;
+  let generatedTtsFailureMessage = "";
+  let generatedTtsFailureShownAt = 0;
   const activeTtsStreamIds = new Set();
   let streamTtsQueue = [];
   let streamTtsQueueSignal = null;
@@ -444,6 +448,102 @@ window.addEventListener("DOMContentLoaded", () => {
   };
 
   const uiText = (japanese, english) => appState?.language === "en" ? english : japanese;
+  const cleanIpcErrorMessage = (error) => String(error?.message || error || "")
+    .replace(/^Error invoking remote method ['"][^'"]+['"]:\s*/i, "")
+    .replace(/^Error:\s*/i, "")
+    .split(/\r?\n/, 1)[0]
+    .trim();
+  const friendlyTtsErrorMessage = (error) => {
+    const detail = cleanIpcErrorMessage(error);
+    if (/WebGPU/i.test(detail)) {
+      return uiText(
+        "この音声ではWebGPUを利用できません。設定の「音声」で別の声を選んでください。",
+        "WebGPU is unavailable for this voice. Choose another voice in Voice settings.",
+      );
+    }
+    if (/(?:モデル|model).*(?:ありません|見つかりません|not found|no usable)|ダウンロード|download/i.test(detail)) {
+      return uiText(
+        "この音声モデルが見つかりません。設定の「音声」から追加するか、別の声を選んでください。",
+        "This voice model is unavailable. Add it in Voice settings or choose another voice.",
+      );
+    }
+    if (/fetch failed|接続できません|connection|ECONN|network|timed?\s*out|timeout/i.test(detail)) {
+      return uiText(
+        "音声合成へ接続できません。設定の「音声」で接続先を確認するか、別の声を選んでください。",
+        "Could not connect to speech synthesis. Check the connection in Voice settings or choose another voice.",
+      );
+    }
+    if (/再生|デコード|decode|playback|audio format|音声形式/i.test(detail)) {
+      return uiText(
+        "音声を再生できませんでした。テキストの回答はそのまま確認できます。",
+        "Audio playback failed. The text response is still available.",
+      );
+    }
+    return uiText(
+      "音声を生成できませんでした。テキストの回答はそのまま確認できます。",
+      "Speech generation failed. The text response is still available.",
+    );
+  };
+  const friendlyInteractionErrorMessage = (error) => {
+    const detail = cleanIpcErrorMessage(error);
+    if (/ENOENT|No such file or directory|chdir|cwd=|作業先.*(?:ありません|見つかりません)|フォルダー.*(?:ありません|見つかりません)/i.test(detail)) {
+      return uiText(
+        "作業先フォルダーを開けません。作業先を選び直してください。",
+        "The Work folder is unavailable. Choose the Work folder again.",
+      );
+    }
+    if (/\bMCP\b/i.test(detail)) {
+      return uiText(
+        "選択したMCPへ接続できません。設定の「MCP」で接続を確認してください。",
+        "The selected MCP connection is unavailable. Test it in MCP settings.",
+      );
+    }
+    if (/Realtime|\bLive\b/i.test(detail)) {
+      return uiText(
+        "Liveの処理を続けられませんでした。接続し直すか、通常のChatを利用してください。",
+        "Live could not continue. Reconnect or use standard Chat.",
+      );
+    }
+    if (/fetch failed|接続できません|connection|ECONN|network|timed?\s*out|timeout|app-server/i.test(detail)) {
+      return uiText(
+        "AIへ接続できません。接続を確認して、もう一度試してください。",
+        "Could not connect to the AI. Check the connection and try again.",
+      );
+    }
+    const technical = /Error invoking|remote method|(?:^|\s)at\s+\S|[A-Z]:\\|\/home\/|AppData|\.cjs:\d|\.js:\d|CreateProcess|stack/i.test(detail);
+    if (detail && !technical && detail.length <= 180) return detail;
+    return uiText(
+      "処理を完了できませんでした。もう一度試してください。",
+      "The request could not be completed. Please try again.",
+    );
+  };
+  const reportGeneratedTtsFailure = (provider, error) => {
+    const now = Date.now();
+    const message = friendlyTtsErrorMessage(error);
+    const shouldShow = message !== generatedTtsFailureMessage || now - generatedTtsFailureShownAt > 4_000;
+    generatedTtsFailedProvider = String(provider || "");
+    generatedTtsRetryAfter = now + 15_000;
+    generatedTtsFailureMessage = message;
+    if (shouldShow) {
+      generatedTtsFailureShownAt = now;
+      setStatus(message, 9000);
+    }
+  };
+  const generatedTtsInCooldown = (provider) => {
+    const coolingDown = generatedTtsFailedProvider === String(provider || "") && Date.now() < generatedTtsRetryAfter;
+    if (coolingDown && Date.now() - generatedTtsFailureShownAt > 4_000) {
+      generatedTtsFailureShownAt = Date.now();
+      setStatus(generatedTtsFailureMessage, 7000);
+    }
+    return coolingDown;
+  };
+  const clearGeneratedTtsFailure = (provider) => {
+    if (generatedTtsFailedProvider !== String(provider || "")) return;
+    generatedTtsFailedProvider = "";
+    generatedTtsRetryAfter = 0;
+    generatedTtsFailureMessage = "";
+    generatedTtsFailureShownAt = 0;
+  };
   const syncMascotContextVisibility = () => {
     const hasContext = mascotAttachments.length > 0 || mascotSelectedSkillIds.length > 0 || mascotSelectedMcpServerIds.length > 0;
     contextList.hidden = !hasContext;
@@ -1244,9 +1344,24 @@ window.addEventListener("DOMContentLoaded", () => {
     const spokenText = String(hasSpokenText ? segment.spokenText : text).trim();
     if (!text || !spokenText || token !== ttsPlaybackToken) return null;
     if (!isGeneratedTtsProvider(provider)) return { segment, text, spokenText, sources: null, playbackRate: 1 };
-    const result = await ipcRenderer.invoke("mascotInline:synthesizeTts", spokenText);
+    if (generatedTtsInCooldown(provider)) return null;
+    let result;
+    try {
+      result = await ipcRenderer.invoke("mascotInline:synthesizeTts", spokenText);
+    } catch (error) {
+      reportGeneratedTtsFailure(provider, error);
+      return null;
+    }
+    if (result?.error) {
+      reportGeneratedTtsFailure(provider, result.error);
+      return null;
+    }
     const sources = result?.audioDataUrls || [];
-    if (!sources.length) throw new Error("音声合成から音声データが返されませんでした。");
+    if (!sources.length) {
+      reportGeneratedTtsFailure(provider, new Error("音声合成から音声データが返されませんでした。"));
+      return null;
+    }
+    clearGeneratedTtsFailure(provider);
     const streamId = String(result?.streamId || "");
     if (token !== ttsPlaybackToken) {
       if (streamId) ipcRenderer.invoke("mascotInline:cancelTtsStream", streamId).catch(() => {});
@@ -1351,7 +1466,8 @@ window.addEventListener("DOMContentLoaded", () => {
     } catch (error) {
       if (token === ttsPlaybackToken) {
         streamTtsQueue = [];
-        setStatus(error.message, /ダウンロード|download|音声方式|voice method/i.test(error.message) ? 9000 : 5000);
+        if (isGeneratedTtsProvider(streamTtsConfig.provider)) reportGeneratedTtsFailure(streamTtsConfig.provider, error);
+        else setStatus(friendlyTtsErrorMessage(error), 7000);
       }
     } finally {
       if (token === ttsPlaybackToken) {
@@ -1380,7 +1496,10 @@ window.addEventListener("DOMContentLoaded", () => {
     try {
       await playSpeechSegment({ text, spokenText, expression }, provider, language, token);
     } catch (error) {
-      if (token === ttsPlaybackToken) setStatus(error.message, /ダウンロード|download|音声方式|voice method/i.test(error.message) ? 9000 : 5000);
+      if (token === ttsPlaybackToken) {
+        if (isGeneratedTtsProvider(provider)) reportGeneratedTtsFailure(provider, error);
+        else setStatus(friendlyTtsErrorMessage(error), 7000);
+      }
     } finally {
       if (token === ttsPlaybackToken) finishTtsPlayback();
     }
@@ -1471,8 +1590,8 @@ window.addEventListener("DOMContentLoaded", () => {
         : isScreen ? "画面は共有されませんでした" : isComputer ? "コンピューターは操作されませんでした" : "ブラウザは開かれませんでした");
     } catch (error) {
       clearPermission();
-      showSpeech({ text: `エラー: ${error.message}`, durationMs: 12_000 });
-      setStatus(isScreen ? "画面を共有できませんでした" : isComputer ? "コンピューターを操作できませんでした" : "ブラウザを利用できませんでした");
+      const actionLabel = isScreen ? "画面を共有できませんでした" : isComputer ? "コンピューターを操作できませんでした" : "ブラウザを利用できませんでした";
+      setStatus(`${actionLabel} · ${friendlyInteractionErrorMessage(error)}`, 9000);
     } finally {
       sendButton.disabled = false;
       modeButton.disabled = false;
@@ -1570,11 +1689,9 @@ window.addEventListener("DOMContentLoaded", () => {
       }
       if (selectedMcpServerIds.length) mascotSelectedMcpServerIds = [...new Set([...mascotSelectedMcpServerIds, ...selectedMcpServerIds])];
       if (selectedSkillIds.length || selectedMcpServerIds.length) renderMascotSelectedSkills();
-      const interruptedText = appState?.interactionMode === "work"
-        ? "作業を中断しました。履歴から内容を確認できます。"
-        : "応答を中断しました。続けて修正を送れます。";
-      showSpeech({ text: interrupted ? interruptedText : `エラー: ${error.message}`, durationMs: 12_000 });
-      setStatus(interrupted ? appState?.interactionMode === "work" ? "作業を中断しました" : "応答を中断しました" : "送信できませんでした");
+      setStatus(interrupted
+        ? appState?.interactionMode === "work" ? "作業を中断しました。履歴から内容を確認できます" : "応答を中断しました。続けて修正を送れます"
+        : friendlyInteractionErrorMessage(error), 9000);
     } finally {
       if (!streamOwnsBusyState) {
         setSendingControls(false);

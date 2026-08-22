@@ -26,6 +26,7 @@
   let activeMobileTtsStreamId = "";
   let settingsSaving = false;
   let settingsStatusTimer = 0;
+  let composerHintErrorTimer = 0;
   let pendingRemoteFollowUp = "";
   let approvalCountdownTimer = 0;
   let workElapsedTimer = 0;
@@ -274,6 +275,50 @@
     $("#historyCurrentText").textContent = normalized;
     const lines = normalized.split(/\r?\n/).length;
     $("#bubbleExpandButton").hidden = normalized.length < 74 && lines < 4;
+  }
+
+  function cleanRemoteErrorMessage(error) {
+    return String(error?.message || error || "")
+      .replace(/^Error invoking remote method ['"][^'"]+['"]:\s*/i, "")
+      .replace(/^Error:\s*/i, "")
+      .split(/\r?\n/, 1)[0]
+      .trim();
+  }
+
+  function friendlyRemoteErrorMessage(error) {
+    const detail = cleanRemoteErrorMessage(error);
+    if (/ENOENT|No such file or directory|chdir|cwd=|作業先.*(?:ありません|見つかりません)|フォルダー.*(?:ありません|見つかりません)/i.test(detail)) {
+      return text("作業先フォルダーを開けません。PCで作業先を選び直してください。", "The Work folder is unavailable. Choose it again on the PC.");
+    }
+    if (/\bMCP\b/i.test(detail)) {
+      return text("選択したMCPへ接続できません。PCのMCP設定で接続を確認してください。", "The selected MCP connection is unavailable. Test it in the PC MCP settings.");
+    }
+    if (/Realtime|\bLive\b/i.test(detail)) {
+      return text("Liveの処理を続けられませんでした。接続し直すか、通常のChatを利用してください。", "Live could not continue. Reconnect or use standard Chat.");
+    }
+    if (/fetch failed|接続できません|connection|ECONN|network|timed?\s*out|timeout|app-server/i.test(detail)) {
+      return text("PC側のAIへ接続できません。接続を確認して、もう一度試してください。", "Could not reach the AI on the PC. Check the connection and try again.");
+    }
+    const technical = /Error invoking|remote method|(?:^|\s)at\s+\S|[A-Z]:\\|\/home\/|AppData|\.cjs:\d|\.js:\d|CreateProcess|stack/i.test(detail);
+    if (detail && !technical && detail.length <= 180) return detail;
+    return text("処理を完了できませんでした。もう一度試してください。", "The request could not be completed. Please try again.");
+  }
+
+  function setComposerHint(message, { error = false } = {}) {
+    clearTimeout(composerHintErrorTimer);
+    const hint = $("#composerHint");
+    hint.textContent = String(message || "");
+    hint.classList.toggle("is-error", Boolean(error));
+    if (error) {
+      composerHintErrorTimer = setTimeout(() => {
+        hint.classList.remove("is-error");
+        composerHintErrorTimer = 0;
+      }, 9000);
+    }
+  }
+
+  function showRemoteSystemError(error) {
+    setComposerHint(friendlyRemoteErrorMessage(error), { error: true });
   }
 
   function syncAvatarMotion() {
@@ -603,11 +648,11 @@
       button.classList.toggle("is-active", selected);
       button.setAttribute("aria-checked", String(selected));
     }
-    $("#composerHint").textContent = currentMode === "work"
+    setComposerHint(currentMode === "work"
       ? text(`${appState.workDirectoryName || "選択中のフォルダー"}内で作業`, `Work inside ${appState.workDirectoryName || "the selected folder"}`)
       : microphoneAvailable()
         ? text("マイク利用可 · 安全なHTTPS接続", "Microphone ready · Secure HTTPS connection")
-        : text("文字入力 · マイクにはHTTPS接続が必要", "Text input · Microphone requires HTTPS");
+        : text("文字入力 · マイクにはHTTPS接続が必要", "Text input · Microphone requires HTTPS"));
   }
 
   function setBusy(value) {
@@ -724,7 +769,7 @@
         body: JSON.stringify({ sessionId: failedSessionId }),
       }).catch(() => {});
     }
-    $("#composerHint").textContent = message || text("Beatrice 2を継続できないため元のLive音声へ戻しました", "Beatrice 2 stopped; using the original Live voice");
+    setComposerHint(message || text("Beatrice 2を継続できないため元のLive音声へ戻しました", "Beatrice 2 stopped; using the original Live voice"), { error: true });
   }
 
   async function pumpLiveBeatriceUploads() {
@@ -1258,7 +1303,7 @@
         pendingStartupGreeting = { id: startupGreeting.id, text: startupGreeting.text };
         setTimeout(() => attemptStartupGreeting(), 120);
       } else if (startupGreeting.route === "live") {
-        $("#composerHint").textContent = text("Liveを開始すると、この声で話しかけます", "Start Live to hear this greeting in the selected voice");
+        setComposerHint(text("Liveを開始すると、この声で話しかけます", "Start Live to hear this greeting in the selected voice"));
       }
     }
     const activeRun = appState.workHistory?.activeWorkRunId;
@@ -1294,7 +1339,7 @@
       setBusy(Boolean(nextWorkHistory.activeWorkRunId || appState.busy));
     });
     eventSource.addEventListener("live", (event) => handleLiveEvent(JSON.parse(event.data)).catch((error) => {
-      setResponseText(error.message);
+      showRemoteSystemError(error);
       closeRemoteLivePeer();
     }));
     eventSource.addEventListener("beatrice-audio", (event) => queueLiveBeatricePlayback(JSON.parse(event.data)));
@@ -1350,12 +1395,12 @@
     pendingRemoteFollowUp = String(message || "").trim();
     if (!pendingRemoteFollowUp) return;
     stopMobileSpeech();
-    $("#composerHint").textContent = text("差し込みを受け付けました。現在の応答を止めています…", "Follow-up queued. Stopping the current response…");
+    setComposerHint(text("差し込みを受け付けました。現在の応答を止めています…", "Follow-up queued. Stopping the current response…"));
     try {
       await request("/api/interrupt", { method: "POST", body: "{}" });
     } catch (error) {
       pendingRemoteFollowUp = "";
-      $("#composerHint").textContent = error.message;
+      showRemoteSystemError(error);
       throw error;
     }
   }
@@ -1367,9 +1412,9 @@
     setRemoteLiveOutputSuppressed(false);
     primeAudioOutput().catch(() => {});
     if (busy) {
-      $("#composerHint").textContent = currentMode === "work"
+      setComposerHint(currentMode === "work"
         ? text("追加の指示を同じ作業へ反映しています…", "Applying the follow-up to the current Work…")
-        : text("追加の指示を同じ会話へ反映しています…", "Applying the follow-up to the current conversation…");
+        : text("追加の指示を同じ会話へ反映しています…", "Applying the follow-up to the current conversation…"));
       try {
         const payload = await request("/api/message", {
           method: "POST",
@@ -1382,7 +1427,7 @@
         }
         throw new Error(text("追加入力を反映できませんでした。", "The follow-up could not be applied."));
       } catch (error) {
-        $("#composerHint").textContent = error.message;
+        showRemoteSystemError(error);
         const input = $("#messageInput");
         input.value = normalized;
         input.dispatchEvent(new Event("input", { bubbles: true }));
@@ -1404,7 +1449,7 @@
       await request("/api/message", { method: "POST", body: JSON.stringify({ message: normalized, mode: currentMode }) });
     } catch (error) {
       setBusy(false);
-      setResponseText(error.message);
+      showRemoteSystemError(error);
       const input = $("#messageInput");
       input.value = normalized;
       input.dispatchEvent(new Event("input", { bubbles: true }));
@@ -1479,15 +1524,15 @@
         else interim += transcript;
       }
       $("#messageInput").value = `${finalText}${interim}`.trim();
-      $("#composerHint").textContent = text("聞き取っています…", "Listening…");
+      setComposerHint(text("聞き取っています…", "Listening…"));
     };
     recognition.onerror = (event) => {
       recognitionError = String(event.error || "");
       if (["not-allowed", "service-not-allowed", "audio-capture"].includes(recognitionError)) {
         dictationArmed = false;
-        setResponseText(text(`音声入力を継続できませんでした: ${recognitionError}`, `Continuous dictation could not continue: ${recognitionError}`));
+        showRemoteSystemError(text(`音声入力を継続できませんでした: ${recognitionError}`, `Continuous dictation could not continue: ${recognitionError}`));
       } else if (!["no-speech", "aborted"].includes(recognitionError)) {
-        setResponseText(text(`音声入力を開始できませんでした: ${recognitionError}`, `Could not start dictation: ${recognitionError}`));
+        showRemoteSystemError(text(`音声入力を開始できませんでした: ${recognitionError}`, `Could not start dictation: ${recognitionError}`));
       }
     };
     recognition.onend = () => {
@@ -1508,7 +1553,7 @@
       if (resumed) {
         if (/not.?allowed|permission|gesture|security/i.test(`${error?.name || ""} ${error?.message || ""}`)) {
           dictationArmed = false;
-          setResponseText(text("ブラウザが音声入力の自動再開を許可しませんでした。もう一度マイクを押してください。", "The browser blocked automatic dictation restart. Tap the microphone again."));
+          showRemoteSystemError(text("ブラウザが音声入力の自動再開を許可しませんでした。もう一度マイクを押してください。", "The browser blocked automatic dictation restart. Tap the microphone again."));
           syncMicrophoneButton();
           return;
         }
@@ -1519,7 +1564,7 @@
       throw error;
     }
     syncMicrophoneButton();
-    $("#composerHint").textContent = text("聞き取り中 · 回答後も自動で再開", "Listening · Restarts after each reply");
+    setComposerHint(text("聞き取り中 · 回答後も自動で再開", "Listening · Restarts after each reply"));
   }
 
   async function toggleMicrophone() {
@@ -1538,7 +1583,7 @@
         else startDictation();
       }
     } catch (error) {
-      setResponseText(error.message);
+      showRemoteSystemError(error);
       $("#settingsSheet").showModal();
     }
   }
@@ -1546,7 +1591,7 @@
   async function interrupt() {
     $("#interruptButton").disabled = true;
     try { await request("/api/interrupt", { method: "POST", body: "{}" }); }
-    catch (error) { setResponseText(error.message); }
+    catch (error) { showRemoteSystemError(error); }
     finally { $("#interruptButton").disabled = false; }
   }
 
@@ -1557,20 +1602,20 @@
       : payload.audioRoute === "mobile-tts" ? "mobile-tts" : "none";
     if (audioRoute === "live") stopMobileSpeech();
     if (payload.phase === "follow-up") {
-      $("#composerHint").textContent = payload.statusText || text("追加の指示を同じ作業へ反映しています…", "Applying the follow-up to the current Work…");
+      setComposerHint(payload.statusText || text("追加の指示を同じ作業へ反映しています…", "Applying the follow-up to the current Work…"));
       return;
     }
     if (payload.phase === "start") {
       setBusy(true);
-      $("#composerHint").textContent = payload.mode === "work"
+      setComposerHint(payload.mode === "work"
         ? text("作業を進めています…", "Working…")
-        : text("考えています…", "Thinking…");
+        : text("考えています…", "Thinking…"));
       renderArtifacts([], "");
       return;
     }
     if (payload.phase === "activity") {
       const value = payload.displayText || payload.text;
-      if (value) $("#composerHint").textContent = value;
+      if (value) setComposerHint(value);
       return;
     }
     if (payload.phase === "announcement") {
@@ -1600,7 +1645,7 @@
       return;
     }
     if (payload.phase === "error") {
-      setResponseText(payload.message || text("エラーが発生しました。", "Something went wrong."));
+      showRemoteSystemError(payload.message || text("処理を完了できませんでした。", "The request could not be completed."));
       setBusy(false);
       setTimeout(refreshState, 80);
     }
@@ -1746,7 +1791,7 @@
     if (speaking) {
       if (appState?.voice?.responseMode === "live" && appState.voice.liveConnected) await interrupt().catch(() => {});
       else stopMobileSpeech();
-      $("#composerHint").textContent = text("読み上げを停止しました", "Stopped speaking");
+      setComposerHint(text("読み上げを停止しました", "Stopped speaking"));
       setTimeout(() => setMode(currentMode), 1800);
       return;
     }
@@ -1764,19 +1809,19 @@
       const voice = appState?.voice || {};
       if (voice.responseMode === "live" && !livePeer) {
         if (liveStarting) {
-          $("#composerHint").textContent = text("Liveへ接続しています…", "Connecting to Live…");
+          setComposerHint(text("Liveへ接続しています…", "Connecting to Live…"));
           return;
         }
         if (voice.liveConnected && voice.liveOwner !== "remote") {
-          $("#composerHint").textContent = text(
+          setComposerHint(text(
             "PC側のLiveが使用中です。マイクボタンでこの端末へ切り替えられます",
             "Live is active on the PC. Use the microphone button to move it to this device",
-          );
+          ));
           syncMicrophoneButton();
           return;
         }
         if (!microphoneAvailable()) {
-          $("#composerHint").textContent = microphoneHandoffAvailable()
+          setComposerHint(microphoneHandoffAvailable()
             ? text(
               "タップからLiveを始めるにはHTTPSが必要です。マイクボタンで安全な接続へ切り替えてください",
               "Starting Live by tapping requires HTTPS. Use the microphone button to switch to a secure connection",
@@ -1784,7 +1829,7 @@
             : text(
               "タップからLiveを始めるにはHTTPS接続とマイク権限が必要です",
               "Starting Live by tapping requires an HTTPS connection and microphone permission",
-            );
+            ));
           syncMicrophoneButton();
           return;
         }
@@ -1801,14 +1846,14 @@
       // the single source of truth for both the bubble and the spoken reply.
       if (!result?.deferDisplayToRealtime) setResponseText(result?.text);
       if (result?.realtimeSpeechError) {
-        $("#composerHint").textContent = text(`Live音声: ${result.realtimeSpeechError}`, `Live voice: ${result.realtimeSpeechError}`);
+        setComposerHint(text("Live音声を再生できませんでした。回答は画面で確認できます", "Live audio could not play. The response remains visible"), { error: true });
       } else if (result?.realtimeSpeechBusy) {
-        $("#composerHint").textContent = text("回答中はクリック発話を重ねません", "Tap speech waits until the response finishes");
+        setComposerHint(text("回答中はクリック発話を重ねません", "Tap speech waits until the response finishes"));
       } else if (result?.ttsEnabled && !result?.realtimeSpeech) {
         speak(result.spokenText || result.text).catch(() => {});
       }
     } catch (error) {
-      $("#composerHint").textContent = error.message;
+      showRemoteSystemError(error);
       setTimeout(() => setMode(currentMode), 2400);
     } finally {
       petRequestInFlight = false;

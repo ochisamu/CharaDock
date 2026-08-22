@@ -437,11 +437,18 @@ test("temporary activity state never impersonates the user or replaces character
   const remoteTextHandler = remote.match(/async function sendRemoteText\(message\) \{[\s\S]*?\n  \}\n\n  async function flushPendingRemoteFollowUp/)?.[0] || "";
   const remoteStreamHandler = remote.match(/function handleStream\(payload\) \{[\s\S]*?\n  \}\n\n  async function unlockAudio/)?.[0] || "";
   assert.doesNotMatch(remoteTextHandler, /setResponseText\(normalized\)/);
+  assert.doesNotMatch(remoteTextHandler, /setResponseText\(error\.message\)/);
   assert.doesNotMatch(main, /remoteLastDisplayText = message/);
   assert.doesNotMatch(remoteStreamHandler, /phase === "start"[\s\S]{0,180}setResponseText/);
-  assert.match(remoteStreamHandler, /phase === "activity"[\s\S]*composerHint/);
+  assert.match(remoteStreamHandler, /phase === "activity"[\s\S]*setComposerHint/);
+  assert.match(remoteStreamHandler, /phase === "error"[\s\S]{0,220}showRemoteSystemError/);
+  assert.doesNotMatch(remoteStreamHandler, /phase === "error"[\s\S]{0,220}setResponseText/);
   assert.doesNotMatch(mascot, /bubbleText\.textContent = appState\?\.language === "en" \? "Thinking/);
+  assert.doesNotMatch(mascot, /showSpeech\(\{ text: (?:interrupted|`エラー)/);
+  assert.match(mascot, /friendlyInteractionErrorMessage\(error\)/);
   assert.doesNotMatch(control, /setStatus\(\$\("#chatStatus"\), state\.backend === "codex"/);
+  assert.match(control, /phase === "error"[\s\S]{0,500}friendlyConversationErrorMessage/);
+  assert.doesNotMatch(control, /paragraph\.textContent = "エラー:/);
 });
 
 test("chat composers select per-turn Skills and MCP from plus, slash, and at shortcuts", () => {
@@ -554,6 +561,25 @@ test("mascot Japanese text uses a stable Windows font stack and notices clear th
   assert.match(styles, /--pet-font-ui: "CharaDock Noto Sans JP", "Noto Sans JP", "Yu Gothic UI"/);
   assert.match(styles, /is-open #desktopMascotHint[\s\S]*calc\(var\(--mascot-composer-height\) \+ 8px\)/);
   assert.match(styles, /data-status-tone="error"/);
+});
+
+test("generated TTS failures stay concise and cannot retry-spam the character surface", () => {
+  const control = fs.readFileSync(path.join(projectRoot, "desktop", "control.js"), "utf8");
+  const mascot = fs.readFileSync(path.join(projectRoot, "desktop", "preload-mascot.cjs"), "utf8");
+  for (const source of [control, mascot]) {
+    assert.match(source, /friendlyTtsErrorMessage/);
+    assert.match(source, /Error invoking remote method/);
+    assert.match(source, /テキストの回答|音声設定/);
+  }
+  assert.match(mascot, /generatedTtsRetryAfter = now \+ 15_000/);
+  assert.match(mascot, /if \(generatedTtsInCooldown\(provider\)\) return null/);
+  assert.match(mascot, /if \(result\?\.error\)[\s\S]{0,120}reportGeneratedTtsFailure/);
+  assert.match(mascot, /reportGeneratedTtsFailure\(provider, error\)/);
+  assert.match(mascot, /streamTtsQueue = \[\];[\s\S]{0,220}reportGeneratedTtsFailure/);
+  assert.match(control, /setStatus\(\$\("#ttsStatus"\), friendlyTtsErrorMessage\(error\), true\)/);
+  const main = fs.readFileSync(path.join(projectRoot, "desktop", "main.cjs"), "utf8");
+  assert.match(main, /synthesizeConfiguredTtsForRenderer/);
+  assert.match(main, /audioDataUrls: \[\],[\s\S]{0,100}error:/);
 });
 
 test("user-facing interaction modes are consistently named Chat and Work", () => {

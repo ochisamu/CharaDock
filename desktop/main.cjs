@@ -4457,6 +4457,10 @@ function waitForNextPageLoad(window, timeoutMs = 10_000) {
 async function runSmokeTest() {
   await Promise.all([waitForPageLoad(controlWindow), waitForPageLoad(mascotWindow)]);
   await new Promise((resolve) => setTimeout(resolve, 1800));
+  const initialMascotStatus = await mascotWindow.webContents.executeJavaScript("document.querySelector('#desktopMascotHint')?.textContent || ''");
+  if (/Error invoking remote method|mascotInline:|tts:synthesize/i.test(initialMascotStatus)) {
+    throw new Error(`renderer exposed an internal IPC error: ${initialMascotStatus}`);
+  }
   controlWindow.hide();
   await mascotWindow.webContents.executeJavaScript("document.querySelector('#desktopMascotSettingsButton').click()");
   await new Promise((resolve) => setTimeout(resolve, 300));
@@ -6169,6 +6173,21 @@ function synthesizeConfiguredTts(text, ownerId = 0) {
     modelId: characterTts.styleBertVits2ModelId,
     speed: preferences.data.styleBertVits2Speed,
   });
+}
+
+async function synthesizeConfiguredTtsForRenderer(text, ownerId = 0) {
+  try {
+    return await synthesizeConfiguredTts(text, ownerId);
+  } catch (error) {
+    // Electron logs every rejected ipcRenderer.invoke handler as an internal
+    // transport failure. TTS availability is a recoverable product state, so
+    // return a bounded error envelope and let each renderer present it in app
+    // chrome without making the character recite it.
+    return {
+      audioDataUrls: [],
+      error: String(error?.message || error || mainText("音声を生成できませんでした。", "Speech generation failed.")).slice(0, 600),
+    };
+  }
 }
 
 function thinkingFillerText() {
@@ -8085,7 +8104,7 @@ function registerIpc() {
   });
   ipcMain.handle("mascotInline:synthesizeTts", (event, text) => {
     assertTrustedSender(event, "mascot");
-    return synthesizeConfiguredTts(String(text || "").slice(0, 1000), event.sender.id);
+    return synthesizeConfiguredTtsForRenderer(String(text || "").slice(0, 1000), event.sender.id);
   });
   ipcMain.handle("mascotInline:nextTtsChunk", (event, streamId) => {
     assertTrustedSender(event, "mascot");
@@ -8408,7 +8427,7 @@ function registerIpc() {
   });
   ipcMain.handle("tts:synthesize", (event, text) => {
     assertTrustedSender(event);
-    return synthesizeConfiguredTts(String(text || "").slice(0, 1000), event.sender.id);
+    return synthesizeConfiguredTtsForRenderer(String(text || "").slice(0, 1000), event.sender.id);
   });
   ipcMain.handle("tts:nextChunk", (event, streamId) => {
     assertTrustedSender(event);
