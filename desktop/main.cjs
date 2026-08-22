@@ -48,6 +48,11 @@ const {
 const { TurnCoordinator } = require("./generated/runtime/turn-coordinator.js");
 const { Preferences } = require("./lib/preferences.cjs");
 const {
+  mobileTtsAvailable,
+  remoteTtsProviderSupported,
+  remoteTurnTtsEnabled,
+} = require("./lib/remote-voice-route.cjs");
+const {
   assignedMcpServerIds,
   configNameForMcpServer,
   normalizeMcpAssignments,
@@ -1790,7 +1795,14 @@ function remoteStartupGreeting(context = {}) {
   if (remoteStartupGreetingAttempts.has(attemptKey)) return null;
   remoteStartupGreetingAttempts.add(attemptKey);
   const id = createHash("sha256").update(`${appSessionStartedAt}:${attemptKey}:${message}`).digest("hex").slice(0, 20);
-  const route = preferences.data.remoteResponseMode === "live" ? "live" : "mobile-tts";
+  const route = preferences.data.remoteResponseMode === "live"
+    ? "live"
+    : mobileTtsAvailable({
+        remoteTtsEnabled: preferences.data.remoteTtsEnabled,
+        provider: characterTtsSettings().provider,
+      })
+      ? "mobile-tts"
+      : "none";
   if (route === "live") pendingRemoteLiveGreetings.set(tokenHash, { id, text: message });
   return { id, text: remotePublicText(message, 500), route };
 }
@@ -1813,7 +1825,6 @@ function publicRemoteState(context = {}) {
   const character = activeCharacter();
   const characterTts = characterTtsSettings();
   const workDirectory = validWorkDirectory();
-  const generatedTts = ["style-bert-vits2", "piper-plus", "supertonic-3", "irodori-webgpu", "kokoro", "sbv2-jp-extra"].includes(characterTtsSettings().provider);
   const runs = publicWorkHistory().slice(0, 8).map((run) => ({
     ...run,
     request: remotePublicText(run.request, 3000),
@@ -1842,7 +1853,12 @@ function publicRemoteState(context = {}) {
     turn: publicTurnState(),
     workAllowed: Boolean(preferences.data.remoteWorkEnabled && preferences.data.backend === "codex" && workDirectory),
     workDirectoryName: workDirectory ? path.basename(workDirectory) : "",
-    mobileTtsAllowed: Boolean(preferences.data.remoteTtsEnabled && preferences.data.ttsEnabled && generatedTts),
+    // The phone owns its playback toggle. Disabling desktop read-aloud must
+    // not remove the phone's audio waveform or lip-sync route.
+    mobileTtsAllowed: mobileTtsAvailable({
+      remoteTtsEnabled: preferences.data.remoteTtsEnabled,
+      provider: characterTts.provider,
+    }),
     secureMicrophoneHandoff: Boolean(remoteStatus.securePairing && remoteStatus.pairingUrl),
     voice: {
       responseMode: preferences.data.remoteResponseMode === "live" ? "live" : "tts",
@@ -2242,8 +2258,8 @@ function createRemoteServer(address, sessionMinutes = preferences.data.remoteSes
       },
       interrupt: interruptActiveInteraction,
       synthesizeTts: (text) => {
-        if (!preferences.data.remoteTtsEnabled) throw new Error(mainText("スマートフォン音声は設定で無効です。", "Phone audio is disabled in Settings."));
-        return synthesizeConfiguredTts(String(text || "").slice(0, 4000), REMOTE_TTS_OWNER_ID);
+        if (preferences.data.remoteTtsEnabled === false) throw new Error(mainText("スマートフォン音声は設定で無効です。", "Phone audio is disabled in Settings."));
+        return synthesizeConfiguredTts(String(text || "").slice(0, 4000), REMOTE_TTS_OWNER_ID, { enabled: true });
       },
       nextTtsChunk: (streamId) => nextIrodoriTtsChunk(streamId, REMOTE_TTS_OWNER_ID),
       cancelTts: (streamId) => ({ cancelled: cancelIrodoriTtsStream(streamId, REMOTE_TTS_OWNER_ID) }),
@@ -6463,9 +6479,9 @@ async function synthesizeSbv2Tts(text) {
   return { audioDataUrls, device: actualDevice };
 }
 
-function synthesizeConfiguredTts(text, ownerId = 0) {
+function synthesizeConfiguredTts(text, ownerId = 0, { enabled = preferences.data.ttsEnabled } = {}) {
   const characterTts = characterTtsSettings();
-  if (!preferences.data.ttsEnabled || !["style-bert-vits2", "piper-plus", "supertonic-3", "irodori-webgpu", "kokoro", "sbv2-jp-extra"].includes(characterTts.provider)) {
+  if (!enabled || !remoteTtsProviderSupported(characterTts.provider)) {
     return Promise.resolve({ audioDataUrls: [] });
   }
   const spokenText = configuredSpeechText(text);
@@ -6967,12 +6983,22 @@ async function remoteCharacterPet(payload = {}) {
       && preferences.data.remoteResponseMode === "live"
       && activeRealtimeTarget === "remote",
   });
+  const pcTtsEnabled = Boolean(result.ttsEnabled);
+  const remoteTtsEnabled = Boolean(
+    !result.deferDisplayToRealtime
+    && !result.realtimeSpeech
+    && !currentRealtimeClient()
+    && mobileTtsAvailable({
+      remoteTtsEnabled: preferences.data.remoteTtsEnabled,
+      provider: result.ttsProvider,
+    })
+  );
   if (!result.deferDisplayToRealtime) remoteLastDisplayText = result.text;
-  if (result.ttsEnabled && !currentRealtimeClient() && preferences.data.remotePcAudioEnabled !== false && mascotWindow && !mascotWindow.isDestroyed()) {
+  if (pcTtsEnabled && !currentRealtimeClient() && preferences.data.remotePcAudioEnabled !== false && mascotWindow && !mascotWindow.isDestroyed()) {
     mascotWindow.webContents.send("mascot:speech", result);
   }
   publishRemoteState();
-  return result;
+  return { ...result, ttsEnabled: remoteTtsEnabled };
 }
 
 async function startCodexRealtimeVoice(payload, target = "control") {
@@ -10724,13 +10750,12 @@ async function sendChatMessage(message, {
     maxLength: activeTtsProvider === "irodori-webgpu" ? IRODORI_CHUNK_LENGTH + IRODORI_CHUNK_OVERFLOW : 64,
   });
   const streamTtsEnabled = Boolean(preferences.data.ttsEnabled) && !realtimeOutput && !suppressPcAudio;
-  const remoteTtsEnabled = Boolean(
-    remoteTtsOutput
-    && !realtimeOutput
-    && preferences.data.remoteTtsEnabled
-    && preferences.data.ttsEnabled
-    && ["style-bert-vits2", "piper-plus", "supertonic-3", "irodori-webgpu", "kokoro", "sbv2-jp-extra"].includes(activeTtsProvider)
-  );
+  const remoteTtsEnabled = remoteTurnTtsEnabled({
+    remoteTtsOutput,
+    realtimeOutput,
+    remoteTtsEnabled: preferences.data.remoteTtsEnabled,
+    provider: activeTtsProvider,
+  });
   sendStream({
     phase: "start",
     character: activeCharacter().name,

@@ -34,6 +34,7 @@ For each affected entry and route, cover:
 ## Invariants
 
 - One user action creates at most one assistant answer and one audio route.
+- Desktop read-aloud and phone audio are independent destinations. Turning one off must not disable synthesis, captions, or lip sync on the other.
 - Only the active turn may change visible text, speech, busy state, history, or results.
 - Temporary acknowledgement and progress never masquerade as completion or outlive the turn.
 - A follow-up steers the active turn when supported; it does not silently interrupt and start an unrelated turn.
