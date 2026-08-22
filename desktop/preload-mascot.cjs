@@ -62,18 +62,19 @@ window.addEventListener("DOMContentLoaded", () => {
       <div id="desktopMascotContextList" hidden>
         <div id="desktopMascotAttachmentList" aria-label="添付ファイル"></div>
         <div id="desktopMascotSkillList" aria-label="この送信で使うSkills"></div>
+        <div id="desktopMascotMcpList" aria-label="この送信で使うMCP接続"></div>
       </div>
-      <section id="desktopMascotAddPopover" role="dialog" aria-label="ファイルまたはSkillを追加" hidden>
+      <section id="desktopMascotAddPopover" role="dialog" aria-label="ファイルまたは拡張を追加" hidden>
         <button id="desktopMascotAddFile" type="button"><span class="ui-symbol ui-symbol-attach" aria-hidden="true"></span><span><strong>ファイルを添付</strong><small>ドラッグ＆ドロップにも対応</small></span></button>
-        <header><span><strong>この送信で使うSkill</strong><small>/ または @ でも検索</small></span><button id="desktopMascotManageSkills" type="button">管理</button></header>
-        <label><span class="ui-symbol ui-symbol-search" aria-hidden="true"></span><input id="desktopMascotSkillSearch" type="search" autocomplete="off" aria-label="Skillを検索" placeholder="Skillを検索"></label>
-        <div id="desktopMascotSkillPicker" role="listbox" aria-label="利用できるSkills"></div>
+        <header><span><strong>この送信で使う拡張</strong><small>Skills · MCP ／ または @ で検索</small></span><span class="desktop-mascot-extension-manage"><button id="desktopMascotManageSkills" type="button">Skills</button><button id="desktopMascotManageMcp" type="button">MCP</button></span></header>
+        <label><span class="ui-symbol ui-symbol-search" aria-hidden="true"></span><input id="desktopMascotSkillSearch" type="search" autocomplete="off" aria-label="SkillまたはMCPを検索" placeholder="Skill・MCPを検索"></label>
+        <div id="desktopMascotSkillPicker" role="listbox" aria-label="利用できるSkillsとMCP接続"></div>
       </section>
       <button id="desktopMascotModeButton" type="button" aria-label="ChatとWorkを切り替える">Chat</button>
       <button id="desktopMascotWorkTarget" type="button" aria-label="作業先フォルダーを変更する"></button>
       <button id="desktopMascotWorkOpenButton" type="button" aria-label="作業先フォルダーを開く" title="作業先フォルダーを開く"><span class="ui-symbol ui-symbol-folder-open" aria-hidden="true"></span></button>
       <button id="desktopMascotWorkHistoryButton" type="button" aria-label="履歴を開く" aria-expanded="false" title="履歴を開く"><span class="ui-symbol ui-symbol-history" aria-hidden="true"></span></button>
-      <button id="desktopMascotAttachButton" type="button" aria-label="ファイルまたはSkillを追加" aria-expanded="false" aria-controls="desktopMascotAddPopover" title="ファイルまたはSkillを追加"><span class="ui-symbol ui-symbol-plus" aria-hidden="true"></span></button>
+      <button id="desktopMascotAttachButton" type="button" aria-label="ファイルまたは拡張を追加" aria-expanded="false" aria-controls="desktopMascotAddPopover" title="ファイルまたは拡張を追加"><span class="ui-symbol ui-symbol-plus" aria-hidden="true"></span></button>
       <input id="desktopMascotFileInput" type="file" multiple hidden>
       <button id="desktopMascotMicButton" type="button" aria-label="音声入力" aria-pressed="false" title="音声入力"><span class="ui-symbol ui-symbol-microphone" aria-hidden="true"></span></button>
       <textarea id="desktopMascotInput" rows="1" maxlength="6000" aria-label="メッセージ" placeholder="短く話しかける…"></textarea>
@@ -118,6 +119,7 @@ window.addEventListener("DOMContentLoaded", () => {
   const contextList = dock.querySelector("#desktopMascotContextList");
   const attachmentList = dock.querySelector("#desktopMascotAttachmentList");
   const selectedSkillList = dock.querySelector("#desktopMascotSkillList");
+  const selectedMcpList = dock.querySelector("#desktopMascotMcpList");
   const addPopover = dock.querySelector("#desktopMascotAddPopover");
   const skillSearch = dock.querySelector("#desktopMascotSkillSearch");
   const skillPicker = dock.querySelector("#desktopMascotSkillPicker");
@@ -142,6 +144,7 @@ window.addEventListener("DOMContentLoaded", () => {
   let pendingFollowUp = null;
   let mascotAttachments = [];
   let mascotSelectedSkillIds = [];
+  let mascotSelectedMcpServerIds = [];
   let mascotSkillPickerIndex = 0;
   let mascotSkillTrigger = null;
   let fileDragDepth = 0;
@@ -151,6 +154,7 @@ window.addEventListener("DOMContentLoaded", () => {
   let realtimeDataChannel = null;
   let realtimeSessionState = "idle";
   let realtimeRemoteAudio = null;
+  let realtimeOutputSuppressed = false;
   let realtimeMeterContext = null;
   let realtimeMeterSource = null;
   let realtimeMeterAnalyser = null;
@@ -441,13 +445,16 @@ window.addEventListener("DOMContentLoaded", () => {
 
   const uiText = (japanese, english) => appState?.language === "en" ? english : japanese;
   const syncMascotContextVisibility = () => {
-    const hasContext = mascotAttachments.length > 0 || mascotSelectedSkillIds.length > 0;
+    const hasContext = mascotAttachments.length > 0 || mascotSelectedSkillIds.length > 0 || mascotSelectedMcpServerIds.length > 0;
     contextList.hidden = !hasContext;
     form.classList.toggle("has-attachments", hasContext);
     attachButton.classList.toggle("has-attachments", hasContext);
     const label = hasContext
-      ? uiText(`${mascotAttachments.length}件のファイル・${mascotSelectedSkillIds.length}件のSkill`, `${mascotAttachments.length} files · ${mascotSelectedSkillIds.length} Skills`)
-      : uiText("ファイルまたはSkillを追加", "Add a file or Skill");
+      ? uiText(
+        `${mascotAttachments.length}ファイル・${mascotSelectedSkillIds.length} Skills・${mascotSelectedMcpServerIds.length} MCP`,
+        `${mascotAttachments.length} files · ${mascotSelectedSkillIds.length} Skills · ${mascotSelectedMcpServerIds.length} MCP`,
+      )
+      : uiText("ファイルまたは拡張を追加", "Add a file or extension");
     attachButton.setAttribute("aria-label", label);
     attachButton.title = label;
   };
@@ -510,20 +517,43 @@ window.addEventListener("DOMContentLoaded", () => {
     }
   };
 
-  const mascotSkillRecords = (query = "") => {
+  const mascotExtensionRecords = (query = "") => {
     const normalizedQuery = String(query || "").trim().toLocaleLowerCase();
-    return (appState?.skills?.installed || [])
+    const skills = (appState?.skills?.installed || [])
       .filter((skill) => skill.health !== "missing")
       .filter((skill) => !normalizedQuery || [skill.name, skill.description, skill.sourceName]
         .some((value) => String(value || "").toLocaleLowerCase().includes(normalizedQuery)))
-      .sort((left, right) => Number(Boolean(right.active)) - Number(Boolean(left.active)) || String(left.name).localeCompare(String(right.name)));
+      .map((skill) => ({ ...skill, kind: "skill", pickerKey: `skill:${skill.id}` }));
+    const assignments = appState?.mcpAssignments || { all: [], characters: {} };
+    const assignedMcpIds = new Set([...(assignments.all || []), ...(assignments.characters?.[appState?.characterId] || [])]);
+    const mcpServers = (appState?.mcpServers || [])
+      .filter((server) => server.enabled !== false)
+      .map((server) => ({
+        ...server,
+        kind: "mcp",
+        pickerKey: `mcp:${server.id}`,
+        active: assignedMcpIds.has(server.id),
+        unavailable: server.authType === "api-key" && !server.hasApiKey,
+        description: server.url,
+      }))
+      .filter((server) => !normalizedQuery || [server.name, server.url, "mcp", "model context protocol"]
+        .some((value) => String(value || "").toLocaleLowerCase().includes(normalizedQuery)));
+    return [...skills, ...mcpServers]
+      .sort((left, right) => Number(Boolean(right.active)) - Number(Boolean(left.active))
+        || String(left.kind).localeCompare(String(right.kind))
+        || String(left.name).localeCompare(String(right.name)));
   };
   const renderMascotSelectedSkills = () => {
-    const records = new Map((appState?.skills?.installed || []).map((skill) => [skill.id, skill]));
-    mascotSelectedSkillIds = mascotSelectedSkillIds.filter((id) => records.get(id)?.health !== "missing");
+    const skillRecords = new Map((appState?.skills?.installed || []).map((skill) => [skill.id, skill]));
+    const mcpRecords = new Map((appState?.mcpServers || []).map((server) => [server.id, server]));
+    mascotSelectedSkillIds = mascotSelectedSkillIds.filter((id) => skillRecords.get(id)?.health !== "missing");
+    mascotSelectedMcpServerIds = mascotSelectedMcpServerIds.filter((id) => {
+      const server = mcpRecords.get(id);
+      return server?.enabled !== false && !(server?.authType === "api-key" && !server?.hasApiKey);
+    });
     selectedSkillList.replaceChildren();
     for (const id of mascotSelectedSkillIds) {
-      const skill = records.get(id);
+      const skill = skillRecords.get(id);
       if (!skill) continue;
       const chip = document.createElement("span");
       chip.className = "desktop-mascot-attachment is-skill";
@@ -540,40 +570,64 @@ window.addEventListener("DOMContentLoaded", () => {
       chip.append(icon, name, remove);
       selectedSkillList.appendChild(chip);
     }
+    selectedMcpList.replaceChildren();
+    for (const id of mascotSelectedMcpServerIds) {
+      const server = mcpRecords.get(id);
+      if (!server) continue;
+      const chip = document.createElement("span");
+      chip.className = "desktop-mascot-attachment is-mcp";
+      const icon = document.createElement("span");
+      icon.className = "ui-symbol ui-symbol-mcp";
+      icon.setAttribute("aria-hidden", "true");
+      const name = document.createElement("span");
+      name.textContent = server.name;
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.dataset.mcpServerId = id;
+      remove.setAttribute("aria-label", uiText(`${server.name}を今回の送信から外す`, `Remove ${server.name} from this turn`));
+      remove.innerHTML = '<span class="ui-symbol ui-symbol-close" aria-hidden="true"></span>';
+      chip.append(icon, name, remove);
+      selectedMcpList.appendChild(chip);
+    }
     syncMascotContextVisibility();
     resizeInput();
   };
   const renderMascotSkillPicker = () => {
-    const records = mascotSkillRecords(skillSearch.value);
+    const records = mascotExtensionRecords(skillSearch.value);
     mascotSkillPickerIndex = Math.max(0, Math.min(mascotSkillPickerIndex, Math.max(0, records.length - 1)));
     skillPicker.replaceChildren();
     if (!records.length) {
       const empty = document.createElement("p");
-      empty.textContent = uiText("該当するSkillがありません", "No matching Skills");
+      empty.textContent = uiText("該当する拡張がありません", "No matching extensions");
       skillPicker.appendChild(empty);
       return;
     }
-    records.forEach((skill, index) => {
-      const selected = mascotSelectedSkillIds.includes(skill.id);
+    records.forEach((record, index) => {
+      const isMcp = record.kind === "mcp";
+      const selected = isMcp ? mascotSelectedMcpServerIds.includes(record.id) : mascotSelectedSkillIds.includes(record.id);
       const button = document.createElement("button");
       button.type = "button";
-      button.dataset.skillId = skill.id;
+      button.dataset.pickerKey = record.pickerKey;
       button.setAttribute("role", "option");
       button.setAttribute("aria-selected", String(selected));
+      button.classList.toggle("is-mcp", isMcp);
       button.classList.toggle("is-keyboard-active", index === mascotSkillPickerIndex);
       const icon = document.createElement("span");
-      icon.className = "ui-symbol ui-symbol-sparkle";
+      icon.className = `ui-symbol ${isMcp ? "ui-symbol-mcp" : "ui-symbol-sparkle"}`;
       icon.setAttribute("aria-hidden", "true");
       const copy = document.createElement("span");
       const name = document.createElement("strong");
-      name.textContent = skill.name;
+      name.textContent = record.name;
       const description = document.createElement("small");
-      description.textContent = skill.description || skill.sourceName || uiText("端末に追加済み", "Installed");
+      description.textContent = record.description || record.sourceName || uiText("端末に追加済み", "Installed");
       copy.append(name, description);
       const status = document.createElement("em");
-      status.textContent = realtimePeer && appState?.interactionMode !== "work"
-        ? uiText("Live Workのみ", "Live Work only")
-        : selected ? uiText("選択中", "Selected") : skill.active ? uiText("使用中", "Active") : uiText("今回のみ", "This turn");
+      status.textContent = record.unavailable
+        ? uiText("要設定", "Setup")
+        : !isMcp && realtimePeer && appState?.interactionMode !== "work"
+          ? uiText("Live Workのみ", "Live Work only")
+          : selected ? uiText("選択中", "Selected") : record.active ? uiText("使用中", "Active") : uiText("今回のみ", "This turn");
+      button.disabled = Boolean(record.unavailable);
       button.append(icon, copy, status);
       button.addEventListener("pointermove", () => {
         if (mascotSkillPickerIndex === index) return;
@@ -619,6 +673,34 @@ window.addEventListener("DOMContentLoaded", () => {
     if (realtimePeer && appState?.interactionMode === "work") {
       ipcRenderer.invoke("mascotInline:realtimeTurnSkills", mascotSelectedSkillIds).catch((error) => setStatus(error.message, 5000));
     }
+  };
+  const toggleMascotMcp = (serverId) => {
+    const server = (appState?.mcpServers || []).find((record) => record.id === serverId && record.enabled !== false);
+    if (!server) { setStatus(uiText("MCP接続を見つけられません", "MCP connection not found"), 5000); return; }
+    if (server.authType === "api-key" && !server.hasApiKey) {
+      setStatus(uiText(`「${server.name}」のAPIキーをMCP設定で入力してください`, `Set the API key for “${server.name}” in MCP settings`), 6000);
+      return;
+    }
+    const removing = mascotSelectedMcpServerIds.includes(serverId);
+    if (removing) mascotSelectedMcpServerIds = mascotSelectedMcpServerIds.filter((id) => id !== serverId);
+    else if (mascotSelectedMcpServerIds.length >= 8) { setStatus(uiText("1回に指定できるMCPは8件までです", "You can select up to 8 MCP connections per turn"), 5000); return; }
+    else mascotSelectedMcpServerIds.push(serverId);
+    if (mascotSkillTrigger) {
+      const before = input.value.slice(0, mascotSkillTrigger.start);
+      input.value = `${before}${input.value.slice(mascotSkillTrigger.end)}`;
+      input.setSelectionRange(before.length, before.length);
+      closeMascotAddPopover({ returnFocus: true });
+    }
+    renderMascotSelectedSkills();
+    renderMascotSkillPicker();
+    if (realtimePeer) {
+      ipcRenderer.invoke("mascotInline:realtimeTurnMcp", mascotSelectedMcpServerIds).catch((error) => setStatus(error.message, 6000));
+    }
+  };
+  const toggleMascotExtension = (record) => {
+    if (!record) return;
+    if (record.kind === "mcp") toggleMascotMcp(record.id);
+    else toggleMascotSkill(record.id);
   };
   const mascotSkillTriggerAtCursor = () => {
     const cursor = input.selectionStart;
@@ -830,6 +912,12 @@ window.addEventListener("DOMContentLoaded", () => {
     toggleMascotSkill(remove.dataset.skillId);
     input.focus({ preventScroll: true });
   });
+  selectedMcpList.addEventListener("click", (event) => {
+    const remove = event.target.closest("button[data-mcp-server-id]");
+    if (!remove) return;
+    toggleMascotMcp(remove.dataset.mcpServerId);
+    input.focus({ preventScroll: true });
+  });
   attachButton.addEventListener("click", () => {
     if (addPopover.hidden) openMascotAddPopover();
     else closeMascotAddPopover({ returnFocus: true });
@@ -840,15 +928,20 @@ window.addEventListener("DOMContentLoaded", () => {
   });
   dock.querySelector("#desktopMascotManageSkills").addEventListener("click", () => {
     closeMascotAddPopover();
-    ipcRenderer.invoke("mascotInline:openControl");
+    ipcRenderer.invoke("mascotInline:openControl", { page: "skills" });
+  });
+  dock.querySelector("#desktopMascotManageMcp").addEventListener("click", () => {
+    closeMascotAddPopover();
+    ipcRenderer.invoke("mascotInline:openControl", { page: "mcp" });
   });
   skillPicker.addEventListener("click", (event) => {
-    const option = event.target.closest("button[data-skill-id]");
-    if (option) toggleMascotSkill(option.dataset.skillId);
+    const option = event.target.closest("button[data-picker-key]");
+    if (!option) return;
+    toggleMascotExtension(mascotExtensionRecords(skillSearch.value).find((record) => record.pickerKey === option.dataset.pickerKey));
   });
   skillSearch.addEventListener("input", () => { mascotSkillPickerIndex = 0; renderMascotSkillPicker(); });
   skillSearch.addEventListener("keydown", (event) => {
-    const records = mascotSkillRecords(skillSearch.value);
+    const records = mascotExtensionRecords(skillSearch.value);
     if (event.key === "Escape") { event.preventDefault(); closeMascotAddPopover({ returnFocus: true }); return; }
     if (["ArrowDown", "ArrowUp"].includes(event.key) && records.length) {
       event.preventDefault();
@@ -856,7 +949,7 @@ window.addEventListener("DOMContentLoaded", () => {
       renderMascotSkillPicker();
       return;
     }
-    if (event.key === "Enter" && records[mascotSkillPickerIndex]) { event.preventDefault(); toggleMascotSkill(records[mascotSkillPickerIndex].id); }
+    if (event.key === "Enter" && records[mascotSkillPickerIndex]) { event.preventDefault(); toggleMascotExtension(records[mascotSkillPickerIndex]); }
   });
   fileInput.addEventListener("change", () => {
     addMascotFiles(fileInput.files);
@@ -1390,7 +1483,7 @@ window.addEventListener("DOMContentLoaded", () => {
   });
   input.addEventListener("keydown", (event) => {
     if (mascotSkillTrigger && !addPopover.hidden) {
-      const records = mascotSkillRecords(mascotSkillTrigger.query);
+      const records = mascotExtensionRecords(mascotSkillTrigger.query);
       if (event.key === "Escape") { event.preventDefault(); closeMascotAddPopover(); return; }
       if (["ArrowDown", "ArrowUp"].includes(event.key) && records.length) {
         event.preventDefault();
@@ -1400,7 +1493,7 @@ window.addEventListener("DOMContentLoaded", () => {
       }
       if (event.key === "Enter" && !event.shiftKey && records[mascotSkillPickerIndex]) {
         event.preventDefault();
-        toggleMascotSkill(records[mascotSkillPickerIndex].id);
+        toggleMascotExtension(records[mascotSkillPickerIndex]);
         return;
       }
     }
@@ -1424,25 +1517,27 @@ window.addEventListener("DOMContentLoaded", () => {
       setStatus("自動送信を取り消しました。内容を編集できます", 4200);
     }
   });
-  const sendMascotMessage = async (message, attachments = [], selectedSkillIds = [], deliveryOptions = {}) => {
+  const sendMascotMessage = async (message, attachments = [], selectedSkillIds = [], selectedMcpServerIds = [], deliveryOptions = {}) => {
     setSendingControls(true);
     const useActiveRealtime = Boolean(realtimePeer);
     let streamOwnsBusyState = false;
     setStatus(useActiveRealtime ? "Live音声で応答を生成…" : appState?.interactionMode === "work" ? "作業を開始…" : "考え中…", 30_000);
     try {
       if (useActiveRealtime) {
-        const route = await ipcRenderer.invoke("mascotInline:realtimeAppendText", { text: message, selectedSkillIds });
+        setRealtimeOutputSuppressed(false);
+        const route = await ipcRenderer.invoke("mascotInline:realtimeAppendText", { text: message, selectedSkillIds, selectedMcpServerIds });
         const accepted = typeof route === "object" ? Boolean(route?.accepted) : Boolean(route);
         if (!accepted) throw new Error("Liveセッションへ文字を送信できませんでした。");
         streamOwnsBusyState = appState?.interactionMode === "work" && Boolean(route?.delegated);
         detachedRealtimeWorkBusy = streamOwnsBusyState;
-        setStatus("Liveへ文字を送信しました", 5000);
+        setStatus(appState?.interactionMode === "work" ? "作業を進めています…" : "考えています…", 5000);
         return;
       }
       const result = await ipcRenderer.invoke("mascotInline:chat", {
         message,
         attachmentPaths: attachments.map((item) => item.path),
         selectedSkillIds,
+        selectedMcpServerIds,
         suppressPcAudio: Boolean(deliveryOptions.suppressPcAudio),
         forceWork: Boolean(deliveryOptions.forceWork),
       });
@@ -1467,8 +1562,9 @@ window.addEventListener("DOMContentLoaded", () => {
       if (attachments.length) mergeMascotAttachments(attachments);
       if (selectedSkillIds.length) {
         mascotSelectedSkillIds = [...new Set([...mascotSelectedSkillIds, ...selectedSkillIds])];
-        renderMascotSelectedSkills();
       }
+      if (selectedMcpServerIds.length) mascotSelectedMcpServerIds = [...new Set([...mascotSelectedMcpServerIds, ...selectedMcpServerIds])];
+      if (selectedSkillIds.length || selectedMcpServerIds.length) renderMascotSelectedSkills();
       const interrupted = /interrupt|cancel|abort|中断/i.test(String(error.message || ""));
       const interruptedText = appState?.interactionMode === "work"
         ? "作業を中断しました。履歴から内容を確認できます。"
@@ -1481,7 +1577,7 @@ window.addEventListener("DOMContentLoaded", () => {
         input.focus();
         const followUp = pendingFollowUp;
         pendingFollowUp = null;
-        if (followUp) queueMicrotask(() => sendMascotMessage(followUp.message, followUp.attachments, followUp.selectedSkillIds));
+        if (followUp) queueMicrotask(() => sendMascotMessage(followUp.message, followUp.attachments, followUp.selectedSkillIds, followUp.selectedMcpServerIds));
       }
     }
   };
@@ -1495,13 +1591,14 @@ window.addEventListener("DOMContentLoaded", () => {
     input.focus();
     const followUp = pendingFollowUp;
     pendingFollowUp = null;
-    if (followUp) queueMicrotask(() => sendMascotMessage(followUp.message, followUp.attachments, followUp.selectedSkillIds));
+    if (followUp) queueMicrotask(() => sendMascotMessage(followUp.message, followUp.attachments, followUp.selectedSkillIds, followUp.selectedMcpServerIds));
   };
 
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     const attachments = mascotAttachments.slice();
     const selectedSkillIds = [...mascotSelectedSkillIds];
+    const selectedMcpServerIds = [...mascotSelectedMcpServerIds];
     const message = input.value.trim() || (attachments.length
       ? uiText("添付したファイルを確認してください。", "Please review the attached files.")
       : "");
@@ -1551,21 +1648,24 @@ window.addEventListener("DOMContentLoaded", () => {
     input.value = "";
     mascotAttachments = [];
     mascotSelectedSkillIds = [];
+    mascotSelectedMcpServerIds = [];
     renderMascotAttachments();
     renderMascotSelectedSkills();
     closeMascotAddPopover();
     resizeInput();
     const liveWorkFollowUp = sending && Boolean(realtimePeer) && appState?.interactionMode === "work";
     if (liveWorkFollowUp) {
+      setRealtimeOutputSuppressed(false);
       setStatus(uiText("追加の指示を同じ作業へ反映しています…", "Applying the follow-up to the current Work…"), 7000);
       try {
-        const route = await ipcRenderer.invoke("mascotInline:realtimeAppendText", { text: message, selectedSkillIds });
+        const route = await ipcRenderer.invoke("mascotInline:realtimeAppendText", { text: message, selectedSkillIds, selectedMcpServerIds });
         const accepted = typeof route === "object" ? Boolean(route?.accepted) : Boolean(route);
         if (!accepted) throw new Error(uiText("実行中のWorkへ追加できませんでした。", "The follow-up could not be added to the current Work."));
       } catch (error) {
         input.value = message;
         mergeMascotAttachments(attachments);
         mascotSelectedSkillIds = [...new Set([...mascotSelectedSkillIds, ...selectedSkillIds])];
+        mascotSelectedMcpServerIds = [...new Set([...mascotSelectedMcpServerIds, ...selectedMcpServerIds])];
         renderMascotSelectedSkills();
         resizeInput();
         setStatus(error.message, 5000);
@@ -1574,7 +1674,7 @@ window.addEventListener("DOMContentLoaded", () => {
       return;
     }
     if (sending) {
-      pendingFollowUp = { message, attachments, selectedSkillIds };
+      pendingFollowUp = { message, attachments, selectedSkillIds, selectedMcpServerIds };
       stopTtsPlayback();
       stopButton.disabled = true;
       setStatus("差し込みを受け付けました。現在の応答を止めています…", 30_000);
@@ -1586,7 +1686,7 @@ window.addEventListener("DOMContentLoaded", () => {
       }
       return;
     }
-    await sendMascotMessage(message, attachments, selectedSkillIds);
+    await sendMascotMessage(message, attachments, selectedSkillIds, selectedMcpServerIds);
   });
 
   stopButton.addEventListener("click", async () => {
@@ -1698,20 +1798,26 @@ window.addEventListener("DOMContentLoaded", () => {
   petZone.addEventListener("click", async (event) => {
     if (performance.now() < suppressPetClickUntil) return;
     showTouchSpark(event);
-    const responseSpeaking = ttsBusy || streamTtsDraining || thinkingFillerActive || Boolean(ttsAudio);
-    if (sending || responseSpeaking) {
-      if (responseSpeaking) {
-        stopTtsPlayback();
-        setStatus("読み上げを停止しました", 3200);
-      } else {
-        setStatus("回答中です。差し込む場合は入力欄から送信できます", 4200);
-      }
-      return;
-    }
     const petBounds = petZone.getBoundingClientRect();
     const yRatio = petBounds.height > 0
       ? Math.max(0, Math.min(1, (event.clientY - petBounds.top) / petBounds.height))
       : .5;
+    const responseSpeaking = ttsBusy || streamTtsDraining || thinkingFillerActive || Boolean(ttsAudio);
+    if (sending || responseSpeaking) {
+      // Touch remains physically responsive while a turn is running, but it
+      // must not start a competing character reply. Focus the composer so the
+      // user's next words can be steered into the active turn.
+      ipcRenderer.invoke("mascotInline:pet", { yRatio, reactionOnly: true }).catch(() => {});
+      if (responseSpeaking) {
+        stopTtsPlayback();
+        setStatus(uiText("読み上げを止めたよ。続けて話してね", "I stopped speaking. Go ahead"), 3200);
+      } else if (sending) {
+        setStatus(uiText("続けて話してね。今の返答に差し込めるよ", "Go ahead. Your follow-up will be added to this turn"), 4200);
+      }
+      setOpen(true);
+      input.focus({ preventScroll: true });
+      return;
+    }
     try {
       const shouldAutoStartLive = !realtimePeer
         && appState?.backend === "codex"
@@ -2089,6 +2195,7 @@ window.addEventListener("DOMContentLoaded", () => {
   };
 
   const reportRealtimeRms = (rawRms, now = performance.now()) => {
+    if (realtimeOutputSuppressed) return;
     if (!(Number(rawRms) > 0)) {
       ttsEnvelope = 0;
       ttsDynamicPeak = .022;
@@ -2152,6 +2259,7 @@ window.addEventListener("DOMContentLoaded", () => {
     realtimeRemoteAudio?.pause();
     realtimeRemoteAudio = new Audio();
     realtimeRemoteAudio.autoplay = true;
+    realtimeRemoteAudio.muted = realtimeOutputSuppressed;
     realtimeRemoteAudio.srcObject = stream;
     realtimeRemoteAudio.play().catch(() => {});
     startRealtimeOutputMeter(stream).catch(() => reportRealtimeRms(0));
@@ -2291,6 +2399,7 @@ window.addEventListener("DOMContentLoaded", () => {
     await ipcRenderer.invoke("beatrice:start");
     const context = new AudioContext({ latencyHint: "interactive", sampleRate: 48000 });
     const output = context.createGain();
+    output.gain.value = realtimeOutputSuppressed ? 0 : 1;
     output.connect(context.destination);
     const decodeAudio = new Audio();
     decodeAudio.autoplay = true;
@@ -2316,6 +2425,15 @@ window.addEventListener("DOMContentLoaded", () => {
     setStatus("Beatrice 2でRealtime音声を変換中です", 5000);
   };
 
+  const setRealtimeOutputSuppressed = (suppressed) => {
+    realtimeOutputSuppressed = Boolean(suppressed);
+    if (realtimeRemoteAudio) realtimeRemoteAudio.muted = realtimeOutputSuppressed;
+    if (realtimeBeatriceOutput && realtimeBeatriceContext) {
+      realtimeBeatriceOutput.gain.setTargetAtTime(realtimeOutputSuppressed ? 0 : 1, realtimeBeatriceContext.currentTime, .012);
+    }
+    if (realtimeOutputSuppressed) ipcRenderer.invoke("mascotInline:voice", 0).catch(() => {});
+  };
+
   const closeRealtime = () => {
     try { realtimeDataChannel?.close(); } catch {}
     try { realtimePeer?.close(); } catch {}
@@ -2329,12 +2447,14 @@ window.addEventListener("DOMContentLoaded", () => {
     stopRealtimeBeatrice().catch(() => {});
     realtimeStream = null;
     realtimeSessionState = "idle";
+    realtimeOutputSuppressed = false;
     micButton.setAttribute("aria-pressed", "false");
     updateVoiceContext();
   };
 
   const startRealtime = async () => {
     stopTtsPlayback();
+    setRealtimeOutputSuppressed(false);
     realtimeSessionState = "connecting";
     updateVoiceContext();
     realtimeStream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true }, video: false });
@@ -2366,6 +2486,7 @@ window.addEventListener("DOMContentLoaded", () => {
     await ipcRenderer.invoke("mascotInline:realtimeStart", {
       sdp: realtimePeer.localDescription?.sdp || offer.sdp,
       selectedSkillIds: appState?.interactionMode === "work" ? mascotSelectedSkillIds : [],
+      selectedMcpServerIds: mascotSelectedMcpServerIds,
     });
     micButton.setAttribute("aria-pressed", "true");
     setStatus("Codex Realtimeへ接続中…", 30_000);
@@ -2473,7 +2594,7 @@ window.addEventListener("DOMContentLoaded", () => {
       }
       input.value = "";
       resizeInput();
-      await sendMascotMessage(message, [], [], {
+      await sendMascotMessage(message, [], [], [], {
         suppressPcAudio: !realtimePeer,
         forceWork: true,
       });
@@ -2649,12 +2770,18 @@ window.addEventListener("DOMContentLoaded", () => {
       setStatus("話してください…もう一度押すと終了", 30_000);
       return;
     }
+    if (method.startsWith("thread/realtime/transcript/") && params.role === "assistant") {
+      setRealtimeOutputSuppressed(Boolean(params.suppressed));
+      if (params.suppressed) return;
+    }
     if (method === "thread/realtime/transcript/delta" && params.role === "user") {
+      setRealtimeOutputSuppressed(false);
       input.value += String(params.delta || "");
       resizeInput();
       return;
     }
     if (method === "thread/realtime/transcript/done" && params.role === "user") {
+      setRealtimeOutputSuppressed(false);
       input.value = "";
       resizeInput();
       setStatus("Codexが考えています…", 30_000);
@@ -2702,6 +2829,7 @@ window.addEventListener("DOMContentLoaded", () => {
   });
   ipcRenderer.on("audio:realtimeTurnSkills", (_event, payload = {}) => {
     mascotSelectedSkillIds = Array.isArray(payload.selectedSkillIds) ? payload.selectedSkillIds : [];
+    mascotSelectedMcpServerIds = Array.isArray(payload.selectedMcpServerIds) ? payload.selectedMcpServerIds : [];
     renderMascotSelectedSkills();
     if (!addPopover.hidden) renderMascotSkillPicker();
   });
@@ -2717,6 +2845,7 @@ window.addEventListener("DOMContentLoaded", () => {
     const previousMode = appState?.voiceActivationMode;
     const previousSensitivity = appState?.vadSensitivity;
     appState = { ...appState, ...payload };
+    if (previousProvider === "realtime" && appState.speechInputProvider !== "realtime") closeRealtime();
     updateVoiceContext();
     if (appState.voiceAutoSend === false) clearAutoSendCountdown();
     if (vadActive && (previousProvider !== appState.speechInputProvider

@@ -239,6 +239,44 @@ test("startup speech must quote a recorded fact and cannot invent completion", (
   }), summary), "");
 });
 
+test("startup speech may naturally paraphrase its separately verified evidence", () => {
+  const summary = saveContinuationSummary({}, {
+    characterId: "amber-avatar",
+    summary: { goal: "ニュース検索を改善する", nextStep: "当日性の判定を実装する" },
+    now: NOW,
+  }).record;
+  assert.equal(validateGroundedContinuationMessage(JSON.stringify({
+    message: "ニュースの鮮度チェック、今日は判定部分から手を動かしてみよっか？",
+    evidenceKey: "next-step",
+    basis: "recorded-next-step",
+  }), summary), "ニュースの鮮度チェック、今日は判定部分から手を動かしてみよっか?");
+  assert.equal(validateGroundedContinuationMessage(`\`\`\`json\n${JSON.stringify({
+    message: "ニュース改善に向けて、まず今の検索条件を一緒に見てみる？",
+    groundingPhrase: "ニュース検索を改善する",
+    basis: "recorded-next-step",
+  })}\n\`\`\``, summary), "ニュース改善に向けて、まず今の検索条件を一緒に見てみる?");
+  assert.equal(validateGroundedContinuationMessage(JSON.stringify({
+    message: "今日はまったく別の話を始めよっか？",
+    evidenceKey: "next-step",
+    basis: "recorded-next-step",
+  }), summary), "");
+  assert.equal(validateGroundedContinuationMessage(JSON.stringify({
+    message: "ニュースの判定部分から手を動かしてみよっか？",
+    evidenceKey: "unfinished-99",
+    basis: "recorded-next-step",
+  }), summary), "");
+  const spacedSpeechSummary = saveContinuationSummary({}, {
+    characterId: "amber-avatar",
+    summary: { goal: "MCPを作る", pending: ["Vercel の ストレ ージ から 読む 実 装 に する"] },
+    now: NOW,
+  }).record;
+  assert.equal(validateGroundedContinuationMessage(JSON.stringify({
+    message: "Vercelストレージ対応から進めてみよっか？",
+    evidenceKey: "unfinished-0",
+    basis: "recorded-next-step",
+  }), spacedSpeechSummary), "Vercelストレージ対応から進めてみよっか?");
+});
+
 test("a goal-only summary can produce only an optional grounded suggestion", () => {
   const summary = saveContinuationSummary({}, {
     characterId: "amber-avatar",

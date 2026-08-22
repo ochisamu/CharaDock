@@ -81,6 +81,32 @@ test("Skills catalog exposes CharaDock as a source filter", () => {
   assert.match(control, /data-skill-source="charadock"[^>]*>CharaDock<\/button>/);
 });
 
+test("MCP connection UI explains scope, authentication, and secret handling in English", () => {
+  const labels = new Map([
+    ["拡張", "Extensions"],
+    ["MCP連携", "MCP Connections"],
+    ["MCPサーバー", "MCP servers"],
+    ["キャラクターが会話や作業で使う外部ツールを、全員共通またはキャラクターごとに接続します。", "Connect external tools for conversation and work, either for every character or for one character."],
+    ["割り当てた接続はChat・Work・Liveで使えます。入力欄の＋や /・@ から今回だけ明示することもできます。", "Assigned connections work in Chat, Work, and Live. You can also select one just for this turn from +, /, or @ in the composer."],
+    ["接続を追加", "Add connection"],
+    ["認証なし・APIキーに対応", "No authentication or API key"],
+    ["追加先を信頼できる場合だけ有効にしてください", "Enable only servers you trust"],
+    ["MCPサーバーを追加", "Add MCP server"],
+    ["認証", "Authentication"],
+    ["APIキーヘッダーの詳細", "API key header details"],
+    ["保存して接続確認", "Save and test"],
+  ]);
+  for (const [japanese, english] of labels) assert.equal(translateText(japanese, "en"), english, japanese);
+  const control = fs.readFileSync(path.join(desktopRoot, "control.html"), "utf8");
+  assert.match(control, /data-page="skills"[\s\S]{0,300}data-page="mcp"/);
+  assert.match(control, /data-page-panel="mcp"[\s\S]*id="mcpServersCard"/);
+  const connectionPage = control.match(/data-page-panel="connection"[\s\S]*?(?=<section class="page" data-page-panel="desktop")/)?.[0] || "";
+  assert.doesNotMatch(connectionPage, /id="mcpServersCard"/);
+  assert.match(control, /id="mcpServersCard"/);
+  assert.match(control, /id="mcpServerDialog"[^>]*role="dialog"[^>]*aria-modal="true"/);
+  assert.match(control, /id="mcpServerAuthSelect"[\s\S]*value="none"[\s\S]*value="api-key"/);
+});
+
 test("Irodori V4 presents its fixed generation profile without hiding V3 tuning", () => {
   const labels = new Map([
     ["安定性優先の生成設定", "Stability-focused generation"],

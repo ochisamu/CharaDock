@@ -2,6 +2,15 @@
 
 const RELEASES_API_URL = "https://api.github.com/repos/ochisamu/CharaDock/releases?per_page=30";
 const RELEASES_PAGE_URL = "https://github.com/ochisamu/CharaDock/releases";
+const MICROSOFT_STORE_PRODUCT_ID = "9NXD2K8FXV3V";
+const MICROSOFT_STORE_PAGE_URL = `https://apps.microsoft.com/detail/${MICROSOFT_STORE_PRODUCT_ID.toLowerCase()}`;
+const MICROSOFT_STORE_APP_URL = `ms-windows-store://pdp/?ProductId=${MICROSOFT_STORE_PRODUCT_ID}`;
+
+function detectAppPackageKind({ isPackaged = false, windowsStore = false, portableExecutableFile = "" } = {}) {
+  if (!isPackaged) return "development";
+  if (windowsStore) return "store";
+  return portableExecutableFile ? "portable" : "installer";
+}
 
 function parseVersion(value) {
   const match = String(value || "").trim().match(/^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$/);
@@ -47,6 +56,22 @@ function releasePageUrl(tagName = "") {
   return tag && parseVersion(tag)
     ? `${RELEASES_PAGE_URL}/tag/${encodeURIComponent(tag)}`
     : RELEASES_PAGE_URL;
+}
+
+function updateDestination(packageKind, releaseUrl = RELEASES_PAGE_URL) {
+  if (packageKind === "store") {
+    return {
+      kind: "store",
+      url: MICROSOFT_STORE_APP_URL,
+      fallbackUrl: MICROSOFT_STORE_PAGE_URL,
+    };
+  }
+  const trustedReleaseUrl = String(releaseUrl || "");
+  return {
+    kind: "github",
+    url: trustedReleaseUrl.startsWith(`${RELEASES_PAGE_URL}/tag/`) ? trustedReleaseUrl : RELEASES_PAGE_URL,
+    fallbackUrl: "",
+  };
 }
 
 function normalizeRelease(release) {
@@ -97,11 +122,16 @@ async function checkForAppUpdate({ currentVersion, channel = "stable", fetchImpl
 }
 
 module.exports = {
+  MICROSOFT_STORE_APP_URL,
+  MICROSOFT_STORE_PAGE_URL,
+  MICROSOFT_STORE_PRODUCT_ID,
   RELEASES_API_URL,
   RELEASES_PAGE_URL,
   checkForAppUpdate,
   compareVersions,
+  detectAppPackageKind,
   parseVersion,
   releasePageUrl,
   selectLatestRelease,
+  updateDestination,
 };

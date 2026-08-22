@@ -122,12 +122,14 @@ test("turn coordinator exposes one authoritative status and audio route", () => 
   const activity = coordinator.apply({ phase: "activity", mode: "work", text: "確認中" });
   assert.equal(activity.turnId, start.turnId);
   assert.equal(activity.turnStatus, "working");
+  assert.equal(activity.mode, "work");
   const done = coordinator.apply({ phase: "done", mode: "work", text: "完了", ttsEnabled: true, artifacts: [{ path: "result.md", kind: "file" }] });
   assert.equal(done.turnStatus, "complete");
   assert.equal(done.audioRoute, "tts");
   assert.equal(coordinator.snapshot().artifacts[0].path, "result.md");
-  const repeatedDone = coordinator.apply({ phase: "done", mode: "work", text: "完了" });
+  const repeatedDone = coordinator.apply({ phase: "done", text: "完了" });
   assert.equal(repeatedDone.turnId, start.turnId);
+  assert.equal(repeatedDone.mode, "work");
   const next = coordinator.apply({ phase: "start", mode: "chat", realtimeOutput: true });
   assert.notEqual(next.turnId, start.turnId);
   assert.equal(next.audioRoute, "live");
@@ -140,4 +142,5 @@ test("live route remains authoritative during a realtime turn", () => {
   assert.equal(caption.turnId, start.turnId);
   assert.equal(caption.turnStatus, "speaking");
   assert.equal(caption.audioRoute, "live");
+  assert.equal(caption.mode, "chat");
 });

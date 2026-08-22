@@ -28,8 +28,10 @@
         <button class="nav-tab is-active" type="button" data-page="chat"><span class="ui-symbol ui-symbol-chat" aria-hidden="true"></span>Chat</button>
         <button class="nav-tab" type="button" data-page="remote"><span class="ui-symbol ui-symbol-settings" aria-hidden="true"></span>リモート</button>
         <button class="nav-tab" type="button" data-page="character"><span class="ui-symbol ui-symbol-character" aria-hidden="true"></span>キャラクター</button>
-        <button class="nav-tab" type="button" data-page="skills"><span class="ui-symbol ui-symbol-sparkle" aria-hidden="true"></span>Skills</button>
         <button class="nav-tab" type="button" data-page="voice"><span class="ui-symbol ui-symbol-voice" aria-hidden="true"></span>音声</button>
+        <p class="nav-section-label">拡張</p>
+        <button class="nav-tab" type="button" data-page="skills"><span class="ui-symbol ui-symbol-sparkle" aria-hidden="true"></span>Skills</button>
+        <button class="nav-tab" type="button" data-page="mcp"><span class="ui-symbol ui-symbol-mcp" aria-hidden="true"></span>MCP連携</button>
         <p class="nav-section-label">システム</p>
         <button class="nav-tab" type="button" data-page="connection"><span class="ui-symbol ui-symbol-connection" aria-hidden="true"></span>AI接続</button>
         <button class="nav-tab" type="button" data-page="desktop"><span class="ui-symbol ui-symbol-desktop" aria-hidden="true"></span>デスクトップ</button>
@@ -91,27 +93,28 @@
             <div class="chat-context-list">
               <div id="chatAttachmentList" class="chat-attachment-list" aria-label="添付ファイル"></div>
               <div id="chatSelectedSkillList" class="chat-selected-skill-list" aria-label="この送信で使うSkills"></div>
+              <div id="chatSelectedMcpList" class="chat-selected-mcp-list" aria-label="この送信で使うMCP接続"></div>
             </div>
             <textarea id="chatInput" rows="3" maxlength="12000" placeholder="メッセージを入力…（Ctrl＋Enterで送信）"></textarea>
             <input id="chatAttachmentInput" type="file" multiple hidden />
-            <section id="chatAddPopover" class="composer-add-popover" role="dialog" aria-label="ファイルまたはSkillを追加" hidden>
+            <section id="chatAddPopover" class="composer-add-popover" role="dialog" aria-label="ファイルまたは拡張を追加" hidden>
               <button id="chatAddFileAction" class="composer-add-file" type="button">
                 <span class="composer-add-icon"><span class="ui-symbol ui-symbol-attach" aria-hidden="true"></span></span>
                 <span><strong>ファイルを添付</strong><small>ドラッグ＆ドロップにも対応</small></span>
               </button>
               <div class="composer-skill-picker-head">
-                <span><strong>この送信で使うSkill</strong><small id="chatSkillPickerMeta">/ または @ でも検索</small></span>
-                <button id="chatManageSkillsButton" type="button">管理</button>
+                <span><strong>この送信で使う拡張</strong><small id="chatSkillPickerMeta">Skills · MCP ／ または @ で検索</small></span>
+                <span class="composer-extension-manage"><button id="chatManageSkillsButton" type="button">Skills</button><button id="chatManageMcpButton" type="button">MCP</button></span>
               </div>
               <label class="composer-skill-search">
                 <span class="ui-symbol ui-symbol-search" aria-hidden="true"></span>
-                <span class="visually-hidden">Skillを検索</span>
-                <input id="chatSkillPickerSearch" type="search" autocomplete="off" placeholder="Skillを検索" />
+                <span class="visually-hidden">SkillまたはMCPを検索</span>
+                <input id="chatSkillPickerSearch" type="search" autocomplete="off" placeholder="Skill・MCPを検索" />
               </label>
-              <div id="chatSkillPickerList" class="composer-skill-picker-list" role="listbox" aria-label="利用できるSkills"></div>
+              <div id="chatSkillPickerList" class="composer-skill-picker-list" role="listbox" aria-label="利用できるSkillsとMCP接続"></div>
             </section>
             <div class="composer-actions is-text-only">
-              <button id="chatAddButton" class="composer-add-button" type="button" aria-label="ファイルまたはSkillを追加" aria-expanded="false" aria-controls="chatAddPopover"><span class="ui-symbol ui-symbol-plus" aria-hidden="true"></span></button>
+              <button id="chatAddButton" class="composer-add-button" type="button" aria-label="ファイルまたは拡張を追加" aria-expanded="false" aria-controls="chatAddPopover"><span class="ui-symbol ui-symbol-plus" aria-hidden="true"></span></button>
               <span id="chatComposerHint" class="composer-hint">設定画面では文字入力のみ</span>
               <button id="sendButton" class="button button-primary" type="submit">送信 <span class="ui-symbol ui-symbol-send" aria-hidden="true"></span></button>
               <button id="stopButton" class="button button-danger" type="button" hidden>中断 <span class="ui-symbol ui-symbol-stop" aria-hidden="true"></span></button>
@@ -371,6 +374,25 @@
           </details>
         </section>
         <aside class="skill-security-note"><span class="ui-symbol ui-symbol-support" aria-hidden="true"></span><p><strong>Skillはアプリの機能拡張です。</strong> 任意URLでは説明と配布元を確認してください。割り当ては利用範囲の整理であり、悪意あるSkillに対する安全境界ではありません。</p></aside>
+      </section>
+
+      <section class="page" data-page-panel="mcp">
+        <header class="page-header"><div><p class="eyebrow">Extensions</p><h1>MCP連携</h1></div><span class="setup-state-badge">Chat · Work · Live</span></header>
+        <p class="page-lead">キャラクターが会話や作業で使う外部ツールを、全員共通またはキャラクターごとに接続します。</p>
+        <section id="mcpAssignmentCard" class="skill-target-bar" aria-label="MCPの割り当て先">
+          <div class="skill-target-identity"><span class="ui-symbol ui-symbol-mcp" aria-hidden="true"></span><span><small>接続を使う範囲</small><strong id="mcpTargetSummary">このキャラクター</strong></span></div>
+          <div class="skill-target-metrics" aria-live="polite"><span><strong id="mcpActiveCount">0</strong><small>使用中</small></span><span><strong id="mcpServerCount">0</strong><small>端末に保存</small></span></div>
+          <label class="mcp-target-picker"><span>つけ外しする相手</span><select id="mcpAssignmentTargetSelect" aria-describedby="mcpTargetHint"></select><small id="mcpTargetHint">下のスイッチで切り替え</small></label>
+        </section>
+        <section id="mcpServersCard" class="card settings-card mcp-servers-card">
+          <header class="mcp-card-header">
+            <div><p class="eyebrow">Model Context Protocol</p><h2>MCPサーバー</h2><p>Streamable HTTPの接続を保存し、上で選んだ相手のChat・Work・Liveに割り当てます。</p></div>
+            <div class="mcp-card-actions"><button id="addMcpServerButton" class="button button-primary" type="button"><span class="ui-symbol ui-symbol-plus" aria-hidden="true"></span>接続を追加</button></div>
+          </header>
+          <div id="mcpServerList" class="mcp-server-list"></div>
+          <aside class="mcp-security-note"><span class="ui-symbol ui-symbol-support" aria-hidden="true"></span><div><strong>接続先と利用範囲を確認してください</strong><p>割り当てたMCPツールは確認画面を挟まず実行され、情報送信や外部サービスの変更を行う場合があります。信頼できる接続だけを有効にしてください。APIキーは再表示せず、利用できる端末ではOSの暗号化ストレージへ保存します。OAuth 2.0は次のステップで対応します。</p></div></aside>
+          <p id="mcpStatus" class="inline-status" role="status"></p>
+        </section>
       </section>
 
       <section class="page" data-page-panel="voice">
@@ -842,7 +864,7 @@
         <p class="page-lead">初期設定を見直したり、不具合調査に必要な端末情報を安全にまとめたりできます。</p>
         <div class="support-grid">
           <section class="card settings-card support-update-card">
-            <header><div><h2>アプリのアップデート</h2><p>GitHub Releasesで最新版を確認します。更新は公式リリース画面を開いて行います。</p></div><span id="updateStatusBadge" class="update-status-badge">未確認</span></header>
+            <header><div><h2>アプリのアップデート</h2><p id="updateDescription">最新版を確認し、このアプリの入手先から更新します。</p></div><span id="updateStatusBadge" class="update-status-badge">未確認</span></header>
             <div class="update-version-row">
               <div><small>現在</small><strong id="updateCurrentVersion">—</strong></div>
               <span aria-hidden="true">→</span>
@@ -851,11 +873,11 @@
             <p id="updateReleaseNotes" class="update-release-notes">「今すぐ確認」でGitHub Releasesを確認できます。</p>
             <div class="update-preferences">
               <label class="switch-row"><span><strong>起動時に自動確認</strong><small>バックグラウンドで確認し、更新がある場合だけお知らせします</small></span><input id="updateChecksToggle" type="checkbox" checked /><i></i></label>
-              <label>更新チャンネル<select id="updateChannelSelect"><option value="stable">Stable</option><option value="beta">Beta（プレリリースを含む）</option></select></label>
+              <label id="updateChannelField">更新チャンネル<select id="updateChannelSelect"><option value="stable">Stable</option><option value="beta">Beta（プレリリースを含む）</option></select></label>
             </div>
             <div class="support-actions">
               <button id="checkUpdatesButton" class="button button-secondary" type="button">今すぐ確認</button>
-              <button id="openUpdateReleaseButton" class="button button-primary" type="button" hidden>更新内容を見る <span class="ui-symbol ui-symbol-external" aria-hidden="true"></span></button>
+              <button id="openUpdateReleaseButton" class="button button-primary" type="button" hidden><span id="openUpdateReleaseLabel">更新内容を見る</span> <span class="ui-symbol ui-symbol-external" aria-hidden="true"></span></button>
             </div>
             <small id="updatePackageHint" class="update-package-hint"></small>
           </section>
@@ -939,6 +961,27 @@
       <div><p class="eyebrow">Remove Skill</p><h2 id="skillRemoveTitle">端末から削除</h2><p id="skillRemoveMessage"></p><small>Skillの保存ファイルを削除します。必要になった場合は公式カタログまたはGitHub URLから再追加できます。</small></div>
       <footer><button id="cancelSkillRemoveButton" class="button button-secondary" type="button">キャンセル</button><button id="confirmSkillRemoveButton" class="button button-danger" type="button">端末から削除</button></footer>
     </div>
+  </section>
+  <section id="mcpServerDialog" class="confirmation-overlay mcp-editor-overlay" role="dialog" aria-modal="true" aria-labelledby="mcpServerDialogTitle" hidden>
+    <form id="mcpServerForm" class="mcp-editor-dialog">
+      <header><div><p class="eyebrow">Streamable HTTP</p><h2 id="mcpServerDialogTitle">MCPサーバーを追加</h2><p>名前とURLだけで追加できます。APIキーが必要な場合は認証方式を切り替えてください。</p></div><button id="closeMcpServerDialogButton" class="icon-button" type="button" aria-label="閉じる"><span class="ui-symbol ui-symbol-close" aria-hidden="true"></span></button></header>
+      <input id="mcpServerIdInput" type="hidden" />
+      <div class="mcp-editor-fields">
+        <label>表示名<input id="mcpServerNameInput" type="text" maxlength="80" autocomplete="off" placeholder="例：社内ドキュメント" required /></label>
+        <label>Streamable HTTP URL<input id="mcpServerUrlInput" type="url" maxlength="2000" inputmode="url" autocomplete="off" placeholder="https://example.com/api/mcp" required /></label>
+        <label>認証<select id="mcpServerAuthSelect"><option value="none">認証なし</option><option value="api-key">APIキー</option></select></label>
+        <div id="mcpApiKeyFields" class="mcp-api-key-fields" hidden>
+          <label>APIキー<input id="mcpServerApiKeyInput" type="password" maxlength="8192" autocomplete="new-password" placeholder="保存済みのキーは表示しません" /></label>
+          <p id="mcpApiKeyHint" class="hint">Authorization: Bearer として送信します。</p>
+          <details class="mcp-auth-advanced">
+            <summary>APIキーヘッダーの詳細</summary>
+            <div><label>ヘッダー名<input id="mcpServerHeaderInput" type="text" maxlength="64" autocomplete="off" value="Authorization" /></label><label>接頭辞<input id="mcpServerPrefixInput" type="text" maxlength="40" autocomplete="off" value="Bearer" placeholder="不要なら空欄" /></label></div>
+          </details>
+        </div>
+      </div>
+      <p id="mcpDialogStatus" class="inline-status" role="status"></p>
+      <footer><button id="cancelMcpServerButton" class="button button-quiet" type="button">キャンセル</button><button id="saveMcpServerButton" class="button button-primary" type="submit">保存して接続確認</button></footer>
+    </form>
   </section>
   <section id="onboarding" class="onboarding" role="dialog" aria-modal="true" aria-labelledby="onboardingTitle" hidden>
     <div class="onboarding-window">

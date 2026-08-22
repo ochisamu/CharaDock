@@ -1,9 +1,23 @@
 // SPDX-License-Identifier: Apache-2.0
 
 function boundedConversationHistory(history, userText, assistantText) {
+  const previous = Array.isArray(history) ? history : [];
+  const normalizedUser = String(userText || "").replace(/\s+/g, " ").trim();
+  const normalizedAssistant = String(assistantText || "").replace(/\s+/g, " ").trim();
+  const lastUser = previous.at(-2);
+  const lastAssistant = previous.at(-1);
+  const lastTimestamp = Date.parse(String(lastAssistant?.createdAt || lastUser?.createdAt || ""));
+  const recentlyRecorded = Number.isFinite(lastTimestamp) && Date.now() - lastTimestamp < 60_000;
+  if (recentlyRecorded
+    && lastUser?.role === "user"
+    && lastAssistant?.role === "assistant"
+    && String(lastUser.text || "").replace(/\s+/g, " ").trim() === normalizedUser
+    && String(lastAssistant.text || "").replace(/\s+/g, " ").trim() === normalizedAssistant) {
+    return previous.slice(-40);
+  }
   const createdAt = new Date().toISOString();
   return [
-    ...(Array.isArray(history) ? history : []),
+    ...previous,
     { role: "user", text: String(userText || "").trim(), createdAt },
     { role: "assistant", text: String(assistantText || "").trim(), createdAt },
   ].filter((entry) => entry.text).slice(-40);

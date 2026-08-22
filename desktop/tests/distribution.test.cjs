@@ -323,8 +323,9 @@ test("setup can be rerun and support diagnostics stay separate from private cont
   assert.doesNotMatch(main.match(/async function supportDiagnostics\(\)[\s\S]*?\n}\n/)?.[0] || "", /conversationHistory|characterMemories|continuationSummaries|workHistory/);
 });
 
-test("app updates use the trusted GitHub release flow without automatic execution", () => {
+test("app updates follow the trusted Store or GitHub distribution flow without automatic execution", () => {
   const html = fs.readFileSync(path.join(projectRoot, "desktop", "control.html"), "utf8");
+  const control = fs.readFileSync(path.join(projectRoot, "desktop", "control.js"), "utf8");
   const preload = fs.readFileSync(path.join(projectRoot, "desktop", "preload-control.cjs"), "utf8");
   const main = fs.readFileSync(path.join(projectRoot, "desktop", "main.cjs"), "utf8");
   for (const id of ["updateBanner", "updateChecksToggle", "updateChannelSelect", "checkUpdatesButton", "openUpdateReleaseButton"]) {
@@ -333,7 +334,10 @@ test("app updates use the trusted GitHub release flow without automatic executio
   assert.match(preload, /updates:check/);
   assert.match(preload, /updates:openRelease/);
   assert.match(main, /checkForAppUpdate/);
-  assert.match(main, /shell\.openExternal\(url/);
+  assert.match(main, /process\.windowsStore/);
+  assert.match(main, /updateDestination\(update\.packageKind, update\.releaseUrl\)/);
+  assert.match(main, /shell\.openExternal\(destination\.url/);
+  assert.match(control, /update\.packageKind === "store"/);
   assert.doesNotMatch(main, /autoUpdater|quitAndInstall/);
 });
 
@@ -392,12 +396,12 @@ test("conversation and work surfaces expose history, folder access, interruption
   assert.match(controlPreload, /work:getHistory/);
   assert.match(controlPreload, /work:openDirectory/);
   assert.match(controlPreload, /work:openArtifact/);
-  assert.match(control, /pendingChatFollowUp = \{ message, attachments, selectedSkillIds \}/);
-  assert.ok(control.indexOf("const liveWorkFollowUp = chatBusy") < control.indexOf("pendingChatFollowUp = { message, attachments, selectedSkillIds }"));
+  assert.match(control, /pendingChatFollowUp = \{ message, attachments, selectedSkillIds, selectedMcpServerIds \}/);
+  assert.ok(control.indexOf("const liveWorkFollowUp = chatBusy") < control.indexOf("pendingChatFollowUp = { message, attachments, selectedSkillIds, selectedMcpServerIds }"));
   assert.match(control, /bindFileDropZone\(\$\("#chatForm"\)/);
   assert.match(control, /appendWorkArtifactActions/);
-  assert.match(mascot, /pendingFollowUp = \{ message, attachments, selectedSkillIds \}/);
-  assert.ok(mascot.indexOf("const liveWorkFollowUp = sending") < mascot.indexOf("pendingFollowUp = { message, attachments, selectedSkillIds }"));
+  assert.match(mascot, /pendingFollowUp = \{ message, attachments, selectedSkillIds, selectedMcpServerIds \}/);
+  assert.ok(mascot.indexOf("const liveWorkFollowUp = sending") < mascot.indexOf("pendingFollowUp = { message, attachments, selectedSkillIds, selectedMcpServerIds }"));
   assert.match(mascot, /webUtils\.getPathForFile\(file\)/);
   assert.match(mascot, /id="desktopMascotAttachmentList"/);
   assert.match(mascot, /fileDrop\.id = "desktopMascotFileDrop"/);
@@ -411,7 +415,7 @@ test("conversation and work surfaces expose history, folder access, interruption
   assert.match(control, /syncCharacterSwitchAvailability[\s\S]*button\.disabled = workRunning/);
 });
 
-test("chat composers select per-turn Skills from plus, slash, and at shortcuts", () => {
+test("chat composers select per-turn Skills and MCP from plus, slash, and at shortcuts", () => {
   const html = fs.readFileSync(path.join(projectRoot, "desktop", "control.html"), "utf8");
   const control = fs.readFileSync(path.join(projectRoot, "desktop", "control.js"), "utf8");
   const mascot = fs.readFileSync(path.join(projectRoot, "desktop", "preload-mascot.cjs"), "utf8");
@@ -420,10 +424,12 @@ test("chat composers select per-turn Skills from plus, slash, and at shortcuts",
     assert.match(html, new RegExp(`id="${id}"`));
   }
   assert.match(control, /match\(\/(?:[\s\S])*\(\[\/@\]\)/);
-  assert.match(control, /selectedSkillIds: selectedSkillIds|selectedSkillIds \}/);
+  assert.match(control, /selectedSkillIds,[\s\S]{0,100}selectedMcpServerIds/);
   assert.match(mascot, /id="desktopMascotAddPopover"/);
   assert.match(mascot, /id="desktopMascotSkillPicker"/);
-  assert.match(mascot, /selectedSkillIds,/);
+  assert.match(mascot, /id="desktopMascotMcpList"/);
+  assert.match(mascot, /mascotExtensionRecords/);
+  assert.match(mascot, /selectedSkillIds, selectedMcpServerIds/);
   assert.match(main, /function explicitTurnSkillItems\(value\)/);
   assert.match(main, /skillItems: turnSkillItems/);
   assert.match(main, /function setActiveRealtimeTurnSkills\(value\)/);
@@ -431,8 +437,9 @@ test("chat composers select per-turn Skills from plus, slash, and at shortcuts",
   assert.match(main, /function realtimeWorkFrontendContext\(client, selectedSkillIds/);
   assert.match(main, /initialItems: \[\{[\s\S]*realtimeWorkFrontendContext[\s\S]*realtimeChatFrontendContext/);
   assert.match(main, /activeRealtimeTurnSkillIds = \[\]/);
-  assert.match(control, /appendCodexRealtimeText\(message, selectedSkillIds\)/);
+  assert.match(control, /appendCodexRealtimeText\(message, selectedSkillIds, selectedMcpServerIds\)/);
   assert.match(mascot, /mascotInline:realtimeTurnSkills/);
+  assert.match(mascot, /mascotInline:realtimeTurnMcp/);
   assert.match(mascot, /Live Work only/);
 });
 
@@ -575,7 +582,8 @@ test("remote access exposes compact avatar dialogue, device controls, and Live r
   assert.match(remoteJs, /!modeInitialized \|\| appState\?\.voice\?\.liveConnected/);
   assert.match(remoteJs, /liveSessionId: stoppedSessionId \|\| undefined/);
   assert.match(remoteJs, /charadock\.remote\.audio"\) !== "0"/);
-  assert.match(remoteJs, /gain\.gain\.value = audioEnabled && !liveBeatriceActive \? 1 : 0/);
+  assert.match(remoteJs, /gain\.gain\.value = audioEnabled && !liveBeatriceActive && !liveOutputSuppressed \? 1 : 0/);
+  assert.match(remoteJs, /setRemoteLiveOutputSuppressed\(Boolean\(params\.suppressed\)\)/);
   assert.match(remoteJs, /\/api\/live\/beatrice\/audio/);
   assert.match(remoteJs, /\/api\/live\/beatrice\/stop/);
   assert.match(remoteJs, /createThreeStageMouthTracker/);
@@ -656,13 +664,43 @@ test("Character memory and continuation are grouped, scoped, editable, private, 
   assert.match(main, /preferences\.data\.continuationStartupSpeechEnabled === false/);
   assert.match(main, /dynamicTools: \[\.\.\.MEMORY_DYNAMIC_TOOLS, \.\.\.CONTINUATION_DYNAMIC_TOOLS, \.\.\.HISTORY_DYNAMIC_TOOLS, \.\.\.SKILL_CREATOR_DYNAMIC_TOOLS\]/);
   assert.match(main, /developerInstructions: `\$\{workModeInstructions\(\)\}[\s\S]*MEMORY_TOOL_INSTRUCTIONS/);
-  assert.match(main, /function codexRuntimeMatches\(client, runtime\)/);
+  assert.match(main, /function codexRuntimeMatches\(client, runtime, mcpSignature = ""\)/);
   assert.match(main, /client\.commandArgs[\s\S]{0,300}runtime\.workspaceRoots/);
   assert.match(main, /wslPathTarget\(directory\)\.distribution \? "wsl" : "auto"/);
   assert.doesNotMatch(main, /sharedContinuityContext\(\{[\s\S]{0,300}since: appSessionStartedAt/);
   assert.match(main, /name: "history_search"/);
   assert.match(main, /startupContinuationAttempts\.has\(attemptKey\)/);
+  assert.match(main, /STARTUP_CONTINUATION_TIMEOUT_MS = 25_000/);
+  assert.match(main, /reasoningEffort: "low"/);
+  assert.match(main, /startupContinuationMessages\.set\([\s\S]{0,180}rememberAssistantAnnouncement\(message\)/);
+  assert.doesNotMatch(main.match(/function remoteStartupGreeting\([\s\S]*?\n}/)?.[0] || "", /continuationFallbackMessage/);
   assert.match(main, /project\.id === HOME_PROJECT_ID && preferences\.data\.interactionMode === "work"[\s\S]*HOME_SCOPE_KEY/);
   assert.match(main, /if \(scopeKey === COMMON_SCOPE_KEY\)[\s\S]{0,500}continuationRecordedAt/);
   assert.match(main, /\^\(\?:common\|home\|project-/);
+});
+
+test("Streamable HTTP MCP settings support scoped Chat, Work, and Live use without exposing API keys", () => {
+  const html = fs.readFileSync(path.join(projectRoot, "desktop", "control.html"), "utf8");
+  const control = fs.readFileSync(path.join(projectRoot, "desktop", "control.js"), "utf8");
+  const preload = fs.readFileSync(path.join(projectRoot, "desktop", "preload-control.cjs"), "utf8");
+  const main = fs.readFileSync(path.join(projectRoot, "desktop", "main.cjs"), "utf8");
+  const preferences = fs.readFileSync(path.join(projectRoot, "desktop", "lib", "preferences.cjs"), "utf8");
+  assert.match(html, /<p class="nav-section-label">拡張<\/p>[\s\S]{0,500}data-page="skills"[\s\S]{0,500}data-page="mcp"/);
+  assert.match(html, /data-page-panel="mcp"[\s\S]*id="mcpServersCard"/);
+  const connectionPage = html.match(/data-page-panel="connection"[\s\S]*?(?=<section class="page" data-page-panel="desktop")/)?.[0] || "";
+  assert.doesNotMatch(connectionPage, /id="mcpServersCard"/);
+  assert.match(html, /id="mcpServersCard"/);
+  assert.match(html, /id="mcpAssignmentTargetSelect"/);
+  assert.match(html, /id="chatSelectedMcpList"/);
+  assert.match(html, /id="mcpServerAuthSelect"[\s\S]*value="none"[\s\S]*value="api-key"/);
+  assert.match(control, /saveMcpServer\(payload\)/);
+  assert.match(preload, /ipcRenderer\.invoke\("mcp:test", serverId\)/);
+  assert.match(preload, /ipcRenderer\.invoke\("mcp:setAssignment", payload\)/);
+  assert.match(preload, /ipcRenderer\.invoke\("audio:realtimeTurnMcp", selectedMcpServerIds\)/);
+  assert.match(main, /function ensureWorkClient\(selectedMcpServerIds = \[\]\)[\s\S]*preferences\.mcpRuntime\(effectiveMcpServerIds\(selectedMcpServerIds\)\)/);
+  assert.match(main.match(/function createConversationCodexClient\([\s\S]*?\n}/)?.[0] || "", /mcpRuntime|mcpServers/);
+  assert.match(main, /ipcMain\.handle\("mcp:setAssignment"/);
+  assert.match(control, /selectedMcpServerIds: chatSelectedMcpServerIds/);
+  assert.match(preferences, /state\.mcpServers = publicMcpServers/);
+  assert.doesNotMatch(preferences.match(/publicMcpServers\(records[\s\S]*?\n}/)?.[0] || "", /apiKey:/);
 });

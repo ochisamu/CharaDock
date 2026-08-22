@@ -15,6 +15,11 @@ contextBridge.exposeInMainWorld("mascotDesktop", {
   startRemoteTailscale: () => ipcRenderer.invoke("remote:tailscaleStart"),
   stopRemoteTailscale: () => ipcRenderer.invoke("remote:tailscaleStop"),
   setApiKey: (key) => ipcRenderer.invoke("settings:setApiKey", key),
+  saveMcpServer: (server) => ipcRenderer.invoke("mcp:save", server),
+  setMcpServerEnabled: (serverId, enabled) => ipcRenderer.invoke("mcp:setEnabled", serverId, enabled),
+  setMcpAssignment: (payload) => ipcRenderer.invoke("mcp:setAssignment", payload),
+  removeMcpServer: (serverId) => ipcRenderer.invoke("mcp:remove", serverId),
+  testMcpServer: (serverId) => ipcRenderer.invoke("mcp:test", serverId),
   setCharacter: (id) => ipcRenderer.invoke("character:set", id),
   removeCharacter: (id) => ipcRenderer.invoke("character:remove", id),
   removeMemory: (id) => ipcRenderer.invoke("memory:remove", id),
@@ -86,8 +91,9 @@ contextBridge.exposeInMainWorld("mascotDesktop", {
   removeSbv2Model: (id) => ipcRenderer.invoke("tts:sbv2RemoveModel", id),
   normalizeTtsText: (text) => ipcRenderer.invoke("tts:normalizeText", text),
   startCodexRealtime: (payload) => ipcRenderer.invoke("audio:realtimeStart", payload),
-  appendCodexRealtimeText: (text, selectedSkillIds = []) => ipcRenderer.invoke("audio:realtimeAppendText", { text, selectedSkillIds }),
+  appendCodexRealtimeText: (text, selectedSkillIds = [], selectedMcpServerIds = []) => ipcRenderer.invoke("audio:realtimeAppendText", { text, selectedSkillIds, selectedMcpServerIds }),
   setCodexRealtimeTurnSkills: (selectedSkillIds = []) => ipcRenderer.invoke("audio:realtimeTurnSkills", selectedSkillIds),
+  setCodexRealtimeTurnMcp: (selectedMcpServerIds = []) => ipcRenderer.invoke("audio:realtimeTurnMcp", selectedMcpServerIds),
   appendCodexRealtimeSpeech: (text) => ipcRenderer.invoke("audio:realtimeAppendSpeech", text),
   stopCodexRealtime: () => ipcRenderer.invoke("audio:realtimeStop"),
   getBeatriceStatus: () => ipcRenderer.invoke("beatrice:status"),
@@ -127,6 +133,11 @@ contextBridge.exposeInMainWorld("mascotDesktop", {
     const listener = (_event, payload) => callback(payload);
     ipcRenderer.on("app:stateChanged", listener);
     return () => ipcRenderer.removeListener("app:stateChanged", listener);
+  },
+  onNavigateSettings: (callback) => {
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on("settings:navigate", listener);
+    return () => ipcRenderer.removeListener("settings:navigate", listener);
   },
   onUpdateStatus: (callback) => {
     const listener = (_event, payload) => callback(payload);

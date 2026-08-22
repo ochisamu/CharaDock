@@ -1,11 +1,17 @@
 // SPDX-License-Identifier: Apache-2.0
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
 const test = require("node:test");
 
 const {
   CODEX_MASCOT_INSTRUCTIONS,
   CodexAppServerClient,
   appServerArgs,
+  childProcessEnvironment,
+  configuredMcpServers,
+  configuredMcpServerNames,
   isBenignCodexStderr,
   isOfficialComputerUseSkill,
   normalizeSkillName,
@@ -40,6 +46,56 @@ test("Codex work client can explicitly enable live web search", () => {
   ]);
   assert.match(CODEX_MASCOT_INSTRUCTIONS, /read-only web search/);
   assert.doesNotMatch(CODEX_MASCOT_INSTRUCTIONS, /Do not .*invoke tools/);
+});
+
+test("configured MCP server names are discovered for CharaDock isolation", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "charadock-codex-home-"));
+  try {
+    fs.writeFileSync(path.join(root, "config.toml"), [
+      "[mcp_servers.alpha]",
+      "url = 'https://example.com/a'",
+      "[mcp_servers.alpha.env]",
+      "TOKEN = 'hidden'",
+      "[mcp_servers.\"name.with.dots\"]",
+      "url = 'https://example.com/b'",
+      "[other]",
+      "enabled = true",
+    ].join("\n"));
+    assert.deepEqual(configuredMcpServerNames({ CODEX_HOME: root }), ["alpha", "name.with.dots"]);
+    assert.deepEqual(configuredMcpServers({ CODEX_HOME: root }), [
+      { name: "alpha", url: "https://example.com/a" },
+      { name: "name.with.dots", url: "https://example.com/b" },
+    ]);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("app server args disable inherited MCP servers before adding CharaDock servers", () => {
+  const args = appServerArgs("", "read-only", false, [{
+    name: "charadock_mcp_1111111111111111",
+    url: "https://example.com/mcp",
+    authType: "none",
+  }], [
+    { name: "global-server", url: "https://example.com/global" },
+    { name: "name.with.dots", url: "https://example.com/dots" },
+  ]);
+  assert.ok(args.includes('mcp_servers.global-server.url="https://example.com/global"'));
+  assert.ok(args.includes("mcp_servers.global-server.enabled=false"));
+  assert.ok(args.includes('mcp_servers."name.with.dots".url="https://example.com/dots"'));
+  assert.ok(args.includes('mcp_servers."name.with.dots".enabled=false'));
+  assert.ok(args.includes("mcp_servers.charadock_mcp_1111111111111111.enabled=true"));
+  assert.ok(args.indexOf("mcp_servers.global-server.enabled=false") < args.indexOf("mcp_servers.charadock_mcp_1111111111111111.enabled=true"));
+});
+
+test("Codex forwards MCP secret environment names into a WSL app-server without command-line values", () => {
+  const environment = childProcessEnvironment("C:\\Windows\\System32\\wsl.exe", {
+    CHARADOCK_MCP_API_KEY_MCP_0123456789ABCDEF: "secret",
+  }, { PATH: "C:\\Windows", WSLENV: "EXISTING/u" });
+  assert.equal(environment.CHARADOCK_MCP_API_KEY_MCP_0123456789ABCDEF, "secret");
+  assert.equal(environment.WSLENV, "EXISTING/u:CHARADOCK_MCP_API_KEY_MCP_0123456789ABCDEF");
+  const nativeEnvironment = childProcessEnvironment("codex", { CHARADOCK_MCP_API_KEY_TEST: "secret" }, { PATH: "/usr/bin" });
+  assert.equal(nativeEnvironment.WSLENV, undefined);
 });
 
 test("Codex workspace-write client scopes writes to the selected folder", async () => {
@@ -218,6 +274,117 @@ test("Codex client lists realtime voices through the experimental app-server met
   const result = await client.listRealtimeVoices();
   assert.deepEqual(result.voices.v2, ["marin", "cedar"]);
   assert.deepEqual(request, { method: "thread/realtime/listVoices", params: {} });
+});
+
+test("Codex client lists MCP server status through app-server", async () => {
+  const client = new CodexAppServerClient();
+  client.ensureStarted = async () => {};
+  const calls = [];
+  client.request = async (method, params) => {
+    calls.push({ method, params });
+    if (!params.cursor) return { data: [{ name: "charadock_mcp_test", tools: {}, resources: [], resourceTemplates: [] }], nextCursor: "next" };
+    return { data: [{ name: "other", tools: {}, resources: [], resourceTemplates: [] }], nextCursor: null };
+  };
+  const servers = await client.listMcpServerStatus();
+  assert.deepEqual(servers.map((server) => server.name), ["charadock_mcp_test", "other"]);
+  assert.deepEqual(calls[0], {
+    method: "mcpServerStatus/list",
+    params: { cursor: null, detail: "toolsAndAuthOnly", limit: 100, threadId: null },
+  });
+  assert.equal(calls[1].params.cursor, "next");
+});
+
+test("Codex client waits for configured MCP tools before starting the first thread", async () => {
+  const client = new CodexAppServerClient({
+    mcpServers: [{ name: "charadock_mcp_0123456789abcdef" }],
+  });
+  client.ensureStarted = async () => {};
+  const calls = [];
+  let statusReads = 0;
+  client.request = async (method) => {
+    calls.push(method);
+    if (method === "mcpServerStatus/list") {
+      statusReads += 1;
+      return statusReads === 1
+        ? { data: [{ name: "charadock_mcp_0123456789abcdef", serverInfo: null, tools: {} }] }
+        : { data: [{ name: "charadock_mcp_0123456789abcdef", serverInfo: { name: "ready" }, tools: { search: { name: "search" } } }] };
+    }
+    if (method === "thread/start") return { thread: { id: "thread-mcp-ready" } };
+    if (method === "turn/start") {
+      setImmediate(() => client.handleLine(JSON.stringify({
+        method: "turn/completed",
+        params: { turn: { id: "turn-mcp-ready", status: "completed" } },
+      })));
+      return { turn: { id: "turn-mcp-ready" } };
+    }
+    return {};
+  };
+  client.handleLine = ((original) => (line) => {
+    const message = JSON.parse(line);
+    if (message.method === "turn/completed") {
+      const collector = client.turnCollectors.get("turn-mcp-ready");
+      if (collector) collector.finalText = "ready";
+    }
+    original.call(client, line);
+  })(client.handleLine);
+
+  const result = await client.sendMessage("Use the MCP connection", { timeoutMs: 5_000 });
+  assert.equal(result.text, "ready");
+  assert.equal(statusReads, 2);
+  assert.ok(calls.indexOf("mcpServerStatus/list") < calls.indexOf("thread/start"));
+});
+
+test("Codex client shares one MCP readiness check across concurrent callers", async () => {
+  const client = new CodexAppServerClient({
+    mcpServers: [{ name: "charadock_mcp_0123456789abcdef" }],
+  });
+  client.ensureStarted = async () => {};
+  let statusReads = 0;
+  client.listMcpServerStatus = async () => {
+    statusReads += 1;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    return [{ name: "charadock_mcp_0123456789abcdef", serverInfo: { name: "ready" }, tools: {} }];
+  };
+  const [first, second] = await Promise.all([
+    client.ensureMcpServersReady(),
+    client.ensureMcpServersReady(),
+  ]);
+  assert.equal(statusReads, 1);
+  assert.equal(first[0].name, "charadock_mcp_0123456789abcdef");
+  assert.equal(second[0].name, "charadock_mcp_0123456789abcdef");
+});
+
+test("Codex client skips MCP startup work when no CharaDock connections are configured", async () => {
+  const client = new CodexAppServerClient();
+  client.ensureStarted = async () => {
+    throw new Error("should not start");
+  };
+  assert.deepEqual(await client.ensureMcpServersReady(), []);
+});
+
+test("an unavailable assigned MCP does not break ordinary chat, while an explicit MCP turn fails closed", async () => {
+  const ordinary = new CodexAppServerClient({ mcpServers: [{ name: "charadock_mcp_unavailable" }] });
+  ordinary.ensureStarted = async () => {};
+  ordinary.ensureMcpServersReady = async () => {
+    throw new Error("MCP unavailable");
+  };
+  ordinary.ensureThread = async () => {
+    throw new Error("ordinary chat reached thread startup");
+  };
+  await assert.rejects(ordinary.sendMessage("hello"), /ordinary chat reached thread startup/);
+
+  const explicit = new CodexAppServerClient({ mcpServers: [{ name: "charadock_mcp_unavailable" }] });
+  explicit.ensureStarted = async () => {};
+  explicit.ensureMcpServersReady = async () => {
+    throw new Error("MCP unavailable");
+  };
+  let threadStarted = false;
+  explicit.ensureThread = async () => {
+    threadStarted = true;
+    return "thread-should-not-start";
+  };
+  await assert.rejects(explicit.sendMessage("use MCP", { requireMcpReady: true }), /MCP unavailable/);
+  assert.equal(threadStarted, false);
 });
 
 test("Codex conversation reuses one thread so follow-up turns keep context", async () => {
@@ -458,7 +625,7 @@ test("Computer Use clients fail closed on unhandled approval requests", async ()
     method: "tool/requestUserInput",
     params: { turnId: "turn-approval" },
   }));
-  await assert.rejects(pending, /not approved/);
+  await assert.rejects(pending, /実行しませんでした|not approved/);
   assert.equal(client.activeTurnId, null);
   assert.equal(response.id, 42);
   assert.equal(response.error.code, -32601);

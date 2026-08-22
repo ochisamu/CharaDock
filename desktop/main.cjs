@@ -48,6 +48,12 @@ const {
 const { TurnCoordinator } = require("./generated/runtime/turn-coordinator.js");
 const { Preferences } = require("./lib/preferences.cjs");
 const {
+  assignedMcpServerIds,
+  configNameForMcpServer,
+  normalizeMcpAssignments,
+  normalizeMcpServerId,
+} = require("./lib/mcp-servers.cjs");
+const {
   CharacterHomeManager,
   HOME_PROJECT_ID,
   activateCharacterProject,
@@ -87,6 +93,7 @@ const {
   continuationEligibility,
   continuationFallbackMessage,
   continuationPromptContext,
+  continuationResumeEvidence,
   continuationSummary,
   mergeContinuationCandidate,
   mergeVerifiedWork,
@@ -155,7 +162,7 @@ const { ttsSetupGuidance } = require("./lib/tts-readiness.cjs");
 const { MAX_MODEL_BYTES: MAX_SBV2_MODEL_BYTES, Sbv2ModelLibrary } = require("./lib/sbv2-models.cjs");
 const { Sbv2WorkerClient } = require("./lib/sbv2-worker-client.cjs");
 const { DiagnosticLog, createSupportBundle, diagnosticsAsText, redactDiagnosticText, sanitizeDiagnosticValue } = require("./lib/support-diagnostics.cjs");
-const { RELEASES_PAGE_URL, checkForAppUpdate } = require("./lib/app-update.cjs");
+const { RELEASES_PAGE_URL, checkForAppUpdate, detectAppPackageKind, updateDestination } = require("./lib/app-update.cjs");
 const { validateAvatarOutput } = require("../.agents/skills/build-purupuru-avatar/scripts/validate-output.cjs");
 const { WebPreviewRuntime, commandForWebProject, findWebProject } = require("./lib/web-preview-runtime.cjs");
 const { normalizeExternalHttpUrl, secureWindowNavigation } = require("./lib/window-navigation.cjs");
@@ -316,6 +323,7 @@ const pendingIrodoriConversions = new Map();
 let nextIrodoriStreamId = 1;
 const irodoriTtsStreams = new Map();
 let irodoriPrewarmTimer;
+let mcpPrewarmTimer;
 let kokoroWindow;
 let kokoroReadyPromise;
 let resolveKokoroReady;
@@ -357,6 +365,7 @@ let activeRealtimeInjectedSpeech = [];
 let activeRealtimeWorkDispatcher = null;
 let activeRealtimeWorkSpeech = null;
 let activeRealtimeTurnSkillIds = [];
+let activeRealtimeTurnMcpServerIds = [];
 let lastRealtimePetSpeechAt = 0;
 let beatriceHostClient = null;
 let beatriceAudioOwner = null;
@@ -388,6 +397,7 @@ let workHistory = [];
 const startupContinuationAttempts = new Set();
 const startupContinuationMessages = new Map();
 const remoteStartupGreetingAttempts = new Set();
+const STARTUP_CONTINUATION_TIMEOUT_MS = 25_000;
 const pendingRemoteLiveGreetings = new Map();
 const characterThumbnailCache = new Map();
 const characterMotionCache = new Map();
@@ -580,8 +590,11 @@ function mainText(japanese, english) {
 }
 
 function appPackageKind() {
-  if (!app.isPackaged) return "development";
-  return process.env.PORTABLE_EXECUTABLE_FILE ? "portable" : "installer";
+  return detectAppPackageKind({
+    isPackaged: app.isPackaged,
+    windowsStore: Boolean(process.windowsStore),
+    portableExecutableFile: process.env.PORTABLE_EXECUTABLE_FILE,
+  });
 }
 
 function publicAppUpdateStatus() {
@@ -596,7 +609,7 @@ function publicAppUpdateStatus() {
     publishedAt: String(status.publishedAt || "").slice(0, 40),
     checkedAt: String(status.checkedAt || preferences?.data?.updateLastCheckedAt || "").slice(0, 40),
     error: String(status.error || "").slice(0, 300),
-    channel: preferences?.data?.updateChannel === "beta" ? "beta" : "stable",
+    channel: appPackageKind() === "store" ? "stable" : (preferences?.data?.updateChannel === "beta" ? "beta" : "stable"),
     checksEnabled: preferences?.data?.updateChecksEnabled !== false,
     packageKind: appPackageKind(),
   };
@@ -617,7 +630,7 @@ async function checkAppUpdate({ manual = false } = {}) {
     try {
       const result = await checkForAppUpdate({
         currentVersion: app.getVersion(),
-        channel: preferences.data.updateChannel,
+        channel: appPackageKind() === "store" ? "stable" : preferences.data.updateChannel,
         signal: AbortSignal.timeout(10_000),
       });
       appUpdateStatus = {
@@ -1739,13 +1752,12 @@ function remoteStartupGreeting(context = {}) {
   const character = activeCharacter();
   const scope = currentContinuationScope(character.id);
   const attemptKey = `${tokenHash}:${character.id}:${scope.key}`;
-  if (remoteStartupGreetingAttempts.has(attemptKey)) return null;
-  remoteStartupGreetingAttempts.add(attemptKey);
   const summary = continuationSummary(preferences.data.continuationSummaries, character.id, scope.key);
   if (!continuationEligibility(summary).eligible) return null;
-  const message = startupContinuationMessages.get(`${character.id}:${scope.key}:${summary.updatedAt || ""}`)
-    || continuationFallbackMessage(summary, interfaceLanguage());
+  const message = startupContinuationMessages.get(`${character.id}:${scope.key}:${summary.updatedAt || ""}`);
   if (!message) return null;
+  if (remoteStartupGreetingAttempts.has(attemptKey)) return null;
+  remoteStartupGreetingAttempts.add(attemptKey);
   const id = createHash("sha256").update(`${appSessionStartedAt}:${attemptKey}:${message}`).digest("hex").slice(0, 20);
   const route = preferences.data.remoteResponseMode === "live" ? "live" : "mobile-tts";
   if (route === "live") pendingRemoteLiveGreetings.set(tokenHash, { id, text: message });
@@ -2439,6 +2451,70 @@ function mergeTurnSkillItems(...groups) {
   return items;
 }
 
+function normalizedMcpPreferences() {
+  const servers = Array.isArray(preferences.data.mcpServers) ? preferences.data.mcpServers : [];
+  const assignments = normalizeMcpAssignments(preferences.data.mcpAssignments, servers.map((server) => server.id));
+  return { servers, assignments };
+}
+
+function normalizeTurnMcpServerIds(value) {
+  if (!Array.isArray(value)) return [];
+  const ids = [...new Set(value.map(normalizeMcpServerId).filter(Boolean))];
+  if (ids.length > 8) throw new Error(mainText("1回に指定できるMCP接続は8件までです。", "You can select up to 8 MCP connections per turn."));
+  return ids;
+}
+
+function explicitTurnMcpServers(value) {
+  const requestedIds = normalizeTurnMcpServerIds(value);
+  if (!requestedIds.length) return [];
+  const available = new Map((preferences.data.mcpServers || []).map((server) => [server.id, server]));
+  return requestedIds.map((id) => {
+    const server = available.get(id);
+    if (!server) throw new Error(mainText("選択したMCP接続が端末にありません。MCPを開き直してください。", "A selected MCP connection is no longer available. Reopen the MCP picker."));
+    if (server.authType === "api-key" && !preferences.getMcpApiKey(id)) {
+      throw new Error(mainText(`「${server.name}」のAPIキーを設定してください。`, `Set the API key for “${server.name}”.`));
+    }
+    return server;
+  });
+}
+
+function activeCharacterMcpServerIds(characterId = preferences.data.characterId) {
+  const { servers, assignments } = normalizedMcpPreferences();
+  const ready = new Set(servers.flatMap((server) => server.enabled !== false
+    && (server.authType !== "api-key" || preferences.getMcpApiKey(server.id)) ? [server.id] : []));
+  return assignedMcpServerIds(assignments, characterId).filter((id) => ready.has(id));
+}
+
+function effectiveMcpServerIds(selectedIds = [], characterId = preferences.data.characterId) {
+  const explicit = explicitTurnMcpServers(selectedIds).map((server) => server.id);
+  return [...new Set([...activeCharacterMcpServerIds(characterId), ...explicit])];
+}
+
+function mcpTurnContext(selectedIds = [], characterId = preferences.data.characterId) {
+  const selected = new Set(normalizeTurnMcpServerIds(selectedIds));
+  const effective = new Set(effectiveMcpServerIds([...selected], characterId));
+  const servers = (preferences.data.mcpServers || []).filter((server) => effective.has(server.id));
+  if (!servers.length) return "";
+  const lines = [
+    mainText(
+      "CharaDockで利用可能なMCP接続です。必要な依頼では、接続できないと決めつけず、対応するMCPツールを使用してください。",
+      "These MCP connections are available in CharaDock. For applicable requests, use the corresponding MCP tools instead of claiming they are unavailable.",
+    ),
+    ...servers.map((server) => `- ${server.name} [${configNameForMcpServer(server.id)}]${selected.has(server.id) ? mainText("（今回明示）", " (explicitly selected for this turn)") : ""}`),
+  ];
+  if (selected.size) {
+    lines.push(mainText(
+      "今回明示された接続は、対応するMCPツールを実際に少なくとも1回呼び出してから回答してください。ツール呼び出しが失敗した場合だけ、その理由を簡潔に伝えてください。",
+      "For explicitly selected connections, call a corresponding MCP tool at least once before answering. Only explain the reason when the tool call itself fails.",
+    ));
+  }
+  return lines.join("\n");
+}
+
+function messageExplicitlyRequestsMcp(text) {
+  return /(?:\bMCP\b|エムシーピー|model\s+context\s+protocol|MCP接続|MCPツール)/iu.test(String(text || ""));
+}
+
 function publicAppState() {
   const workDirectory = validWorkDirectory();
   const characterTts = characterTtsSettings();
@@ -2787,11 +2863,15 @@ function conversationCodexSettings() {
   };
 }
 
-function createConversationCodexClient(command = codexCommand) {
+function createConversationCodexClient(command = codexCommand, selectedMcpServerIds = []) {
+  const mcpRuntime = preferences.mcpRuntime(effectiveMcpServerIds(selectedMcpServerIds));
   const client = new CodexAppServerClient({
     cwd: codexWorkingDirectory || projectRoot,
     command: command || "codex",
     ...conversationCodexSettings(),
+    environment: mcpRuntime.environment,
+    mcpServers: mcpRuntime.servers,
+    mcpSignature: mcpRuntime.signature,
     developerInstructions: `${MEMORY_TOOL_INSTRUCTIONS}\n\n${CONTINUATION_TOOL_INSTRUCTIONS}\n\n${HISTORY_TOOL_INSTRUCTIONS}\n\n${SKILL_CREATOR_TOOL_INSTRUCTIONS}`,
     webSearchMode: "live",
     dynamicTools: [...MEMORY_DYNAMIC_TOOLS, ...CONTINUATION_DYNAMIC_TOOLS, ...HISTORY_DYNAMIC_TOOLS, ...SKILL_CREATOR_DYNAMIC_TOOLS],
@@ -2800,6 +2880,46 @@ function createConversationCodexClient(command = codexCommand) {
   client.setPersona(personaInstructions());
   client.setTurnStartSkillItems([builtInSkillCreatorItem()]);
   return client;
+}
+
+function ensureConversationCodexClient(selectedMcpServerIds = []) {
+  const effectiveIds = effectiveMcpServerIds(selectedMcpServerIds);
+  const mcpRuntime = preferences.mcpRuntime(effectiveIds);
+  if (!codexClient || String(codexClient.mcpSignature || "") !== mcpRuntime.signature) {
+    codexClient?.stop();
+    codexClient = createConversationCodexClient(codexCommand, selectedMcpServerIds);
+  }
+  const settings = conversationCodexSettings();
+  codexClient.setModel(settings.model);
+  codexClient.setReasoningEffort(settings.reasoningEffort);
+  codexClient.setPersona(personaInstructions());
+  return codexClient;
+}
+
+function scheduleMcpPrewarm(delayMs = 500) {
+  clearTimeout(mcpPrewarmTimer);
+  if (!preferences || preferences.data.backend !== "codex" || !codexCommand) return;
+  if (!effectiveMcpServerIds().length) return;
+  mcpPrewarmTimer = setTimeout(async () => {
+    if (quitting || activeWorkRunId || activeRealtimeStarting || currentRealtimeClient()) return;
+    const startedAt = Date.now();
+    try {
+      const client = preferences.data.interactionMode === "work" && validWorkDirectory()
+        ? ensureWorkClient()
+        : ensureConversationCodexClient();
+      const statuses = await client.ensureMcpServersReady();
+      diagnosticLog?.write("info", "mcp-prewarm-ready", {
+        elapsedMs: Date.now() - startedAt,
+        serverCount: statuses.length,
+        mode: preferences.data.interactionMode === "work" ? "work" : "chat",
+      });
+    } catch (error) {
+      // Readiness stays out of character dialogue and never blocks launch.
+      // The first applicable turn retries and reports an actionable error if
+      // the connection is still unavailable.
+      diagnosticLog?.write("warn", "mcp-prewarm-failed", String(error?.message || error));
+    }
+  }, Math.max(0, Number(delayMs) || 0));
 }
 
 async function refreshCodexInstallation() {
@@ -3279,24 +3399,34 @@ function resetWorkClient() {
   workCodexClient = null;
 }
 
-function codexRuntimeMatches(client, runtime) {
+function resetConversationClient() {
+  codexClient?.stop();
+  codexClient = createConversationCodexClient();
+}
+
+function codexRuntimeMatches(client, runtime, mcpSignature = "") {
   if (!client || !runtime) return false;
   return client.cwd === runtime.cwd
     && client.spawnCwd === (runtime.spawnCwd || runtime.cwd)
     && client.command === runtime.command
     && JSON.stringify(client.commandArgs || []) === JSON.stringify(runtime.commandArgs || [])
-    && JSON.stringify(client.workspaceRoots || []) === JSON.stringify([runtime.cwd, ...(runtime.workspaceRoots || [])].filter((value, index, values) => values.indexOf(value) === index));
+    && JSON.stringify(client.workspaceRoots || []) === JSON.stringify([runtime.cwd, ...(runtime.workspaceRoots || [])].filter((value, index, values) => values.indexOf(value) === index))
+    && String(client.mcpSignature || "") === String(mcpSignature || "");
 }
 
-function ensureWorkClient() {
+function ensureWorkClient(selectedMcpServerIds = []) {
   const directory = validWorkDirectory();
   if (!directory) throw new Error("先に作業先フォルダーを選択してください。");
   const runtime = codexWorkspaceRuntime(directory, [activeCharacterHomeDirectory()]);
-  if (!codexRuntimeMatches(workCodexClient, runtime)) {
+  const mcpRuntime = preferences.mcpRuntime(effectiveMcpServerIds(selectedMcpServerIds));
+  if (!codexRuntimeMatches(workCodexClient, runtime, mcpRuntime.signature)) {
     resetWorkClient();
     workCodexClient = new CodexAppServerClient({
       ...runtime,
       ...workCodexSettings(),
+      environment: mcpRuntime.environment,
+      mcpServers: mcpRuntime.servers,
+      mcpSignature: mcpRuntime.signature,
       developerInstructions: `${workModeInstructions()}\n\n${MEMORY_TOOL_INSTRUCTIONS}\n\n${CONTINUATION_TOOL_INSTRUCTIONS}\n\n${HISTORY_TOOL_INSTRUCTIONS}\n\n${SKILL_CREATOR_TOOL_INSTRUCTIONS}`,
       sandbox: "workspace-write",
       approvalPolicy: "never",
@@ -3305,6 +3435,7 @@ function ensureWorkClient() {
       webSearchMode: "live",
       dynamicTools: [...MEMORY_DYNAMIC_TOOLS, ...CONTINUATION_DYNAMIC_TOOLS, ...HISTORY_DYNAMIC_TOOLS, ...SKILL_CREATOR_DYNAMIC_TOOLS],
       onDynamicToolCall: handleCharacterContextToolCall,
+      rejectInteractiveRequests: true,
     });
   }
   const character = activeCharacter();
@@ -3316,6 +3447,65 @@ function ensureWorkClient() {
   ].join("\n\n"));
   workCodexClient.setTurnStartSkillItems(activeCharacterSkillItems(character.id));
   return workCodexClient;
+}
+
+function assertMcpSettingsMutable() {
+  if (activeWorkRunId || currentRealtimeClient() || activeRealtimeStarting || workCodexClient?.hasActiveTurn?.()) {
+    throw new Error(mainText(
+      "MCPサーバー設定は、現在のWorkまたはLiveが終わってから変更してください。",
+      "Change MCP server settings after the current Work or Live session finishes.",
+    ));
+  }
+}
+
+function newMcpServerId() {
+  return `mcp-${randomBytes(8).toString("hex")}`;
+}
+
+async function testMcpServer(serverId) {
+  const id = normalizeMcpServerId(serverId);
+  const record = preferences.data.mcpServers.find((server) => server.id === id);
+  if (!record) throw new Error(mainText("MCPサーバーが見つかりません。", "MCP server not found."));
+  const mcpRuntime = preferences.mcpRuntime([id], { includeDisabled: true });
+  const configured = mcpRuntime.servers[0];
+  if (!configured) throw new Error(mainText("APIキーを設定してください。", "Set an API key first."));
+  const directory = validWorkDirectory() || activeCharacterHomeDirectory();
+  const runtime = codexWorkspaceRuntime(directory, [activeCharacterHomeDirectory()]);
+  const client = new CodexAppServerClient({
+    ...runtime,
+    ...conversationCodexSettings(),
+    environment: mcpRuntime.environment,
+    mcpServers: mcpRuntime.servers,
+    mcpSignature: mcpRuntime.signature,
+    developerInstructions: "Test MCP connectivity only. Do not call tools.",
+    sandbox: "read-only",
+    approvalPolicy: "never",
+    serviceName: "charadock_mcp_test",
+    personality: "friendly",
+    webSearchMode: "disabled",
+    rejectInteractiveRequests: true,
+  });
+  try {
+    const statuses = await client.listMcpServerStatus({ detail: "toolsAndAuthOnly" });
+    const status = statuses.find((candidate) => candidate?.name === configNameForMcpServer(id));
+    if (!status) throw new Error(mainText(
+      "CodexからこのMCPサーバーの接続状態を取得できませんでした。URLと認証を確認してください。",
+      "Codex could not read this MCP server's status. Check its URL and authentication.",
+    ));
+    const tools = Object.values(status.tools || {});
+    return {
+      ok: true,
+      serverId: id,
+      serverName: String(status.serverInfo?.title || status.serverInfo?.name || record.name).slice(0, 120),
+      serverVersion: String(status.serverInfo?.version || "").slice(0, 60),
+      authStatus: String(status.authStatus || "unknown"),
+      toolCount: tools.length,
+      toolNames: tools.map((tool) => String(tool?.name || "")).filter(Boolean).slice(0, 12),
+      resourceCount: Number(status.resources?.length || 0) + Number(status.resourceTemplates?.length || 0),
+    };
+  } finally {
+    client.stop();
+  }
 }
 
 async function chooseWorkDirectory() {
@@ -3387,7 +3577,9 @@ async function setInteractionMode(mode) {
   }
   if (nextMode !== preferences.data.interactionMode) await stopActiveRealtime().catch(() => {});
   preferences.patch({ interactionMode: nextMode });
-  return broadcastAppState();
+  const state = broadcastAppState();
+  scheduleMcpPrewarm(100);
+  return state;
 }
 
 function isTrustedSender(event, role = "control") {
@@ -4681,6 +4873,32 @@ async function runSmokeTest() {
   await new Promise((resolve) => setTimeout(resolve, 120));
   const connectionControlImage = await controlWindow.capturePage();
   fs.writeFileSync(path.join(outputDir, "control-connection.png"), connectionControlImage.toPNG());
+  await controlWindow.webContents.executeJavaScript('document.querySelector(\'[data-page="mcp"]\').click()');
+  await new Promise((resolve) => setTimeout(resolve, 120));
+  const mcpSettingsReady = await controlWindow.webContents.executeJavaScript(`(async () => {
+    const card = document.querySelector('#mcpServersCard');
+    const add = document.querySelector('#addMcpServerButton');
+    const dialog = document.querySelector('#mcpServerDialog');
+    if (!card || !add || !dialog) return false;
+    card.scrollIntoView({ block: 'start' });
+    add.click();
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const sheet = dialog.querySelector('.mcp-editor-dialog');
+    const rect = sheet?.getBoundingClientRect();
+    const ready = !dialog.hidden && rect && rect.width >= 360 && rect.height <= window.innerHeight &&
+      document.querySelector('#mcpServerUrlInput')?.type === 'url' &&
+      document.querySelector('#mcpServerAuthSelect')?.value === 'none' &&
+      document.querySelector('#mcpApiKeyFields')?.hidden === true;
+    return Boolean(ready);
+  })()`);
+  if (!mcpSettingsReady) throw new Error("MCP connection settings layout check failed");
+  fs.writeFileSync(path.join(outputDir, "control-mcp-dialog.png"), (await controlWindow.capturePage()).toPNG());
+  await controlWindow.webContents.executeJavaScript(`(() => {
+    document.querySelector('#closeMcpServerDialogButton')?.click();
+    document.querySelector('#mcpServersCard')?.scrollIntoView({ block: 'start' });
+  })()`);
+  await new Promise((resolve) => setTimeout(resolve, 120));
+  fs.writeFileSync(path.join(outputDir, "control-mcp.png"), (await controlWindow.capturePage()).toPNG());
   const codexModelPickersReady = await controlWindow.webContents.executeJavaScript(`(() => {
     const chat = document.querySelector('#codexChatModelInput');
     const work = document.querySelector('#codexWorkModelInput');
@@ -5371,63 +5589,85 @@ function rememberAssistantAnnouncement(text) {
 }
 
 async function generateStartupContinuationMessage(summary, character) {
-  if (!codexCommand || preferences.data.backend !== "codex") return "";
+  const backend = preferences.data.backend;
+  if ((backend === "codex" && !codexCommand) || (backend === "openai" && !preferences.getApiKey())) return "";
+  if (!["codex", "openai"].includes(backend)) return "";
   const language = interfaceLanguage();
   const hasRecordedNext = Boolean(summary?.nextStep || summary?.pending?.length);
   const continuationRuntimeDirectory = path.join(app.getPath("userData"), "continuation-runtime");
   fs.mkdirSync(continuationRuntimeDirectory, { recursive: true, mode: 0o700 });
-  const client = new CodexAppServerClient({
-    cwd: continuationRuntimeDirectory,
-    command: codexCommand,
-    ...conversationCodexSettings(),
-    developerInstructions: language === "en" ? [
+  const instructions = language === "en" ? [
       buildCharacterPersona(character, "en"),
       hasRecordedNext
-        ? "Write one short, natural startup message that briefly grounds itself in the supplied continuation summary and offers its recorded unfinished item or next action as an optional question. Set basis to recorded-next-step."
-        : "Only a current goal is recorded. Write one short startup message that quotes that goal and proposes one conservative, actionable first step derived from it as an optional question. Do not imply that the step was recorded, decided, started, or completed. Set basis to goal-suggestion.",
+        ? "Write one or two brief spoken sentences that naturally reconnect with the recorded unfinished item or next action and gently invite the user to resume. A question is optional. Set basis to recorded-next-step."
+        : "Only a current goal is recorded. Refer to it naturally and propose one conservative, actionable first step as a genuine optional question. Do not imply that this step was recorded, decided, started, or completed. Set basis to goal-suggestion.",
+      "Sound recognizably like the selected character. Vary the opening and sentence shape; do not fall into stock wording such as 'Last time...' or 'Shall we continue with...' and do not mechanically read or quote the stored text.",
       "Use only recorded facts. Never invent progress, completion, decisions, emotion, or confidence. Do not mention storage, summaries, prompts, or internal tools.",
-      "Return only the requested JSON. groundingPhrase must be an exact meaningful phrase copied from the summary and included verbatim in message.",
+      "Return only the requested JSON. evidenceKey must be exactly one key from resumeEvidence. The message may paraphrase that evidence naturally, but must retain a distinctive topic, noun, or entity so the connection is clear.",
     ].join("\n") : [
       buildCharacterPersona(character, "ja"),
       hasRecordedNext
-        ? "渡された継続サマリーに短く根拠を置き、記録済みの未完了事項または次の行動を、強制せず質問として提案してください。basisはrecorded-next-stepにしてください。"
-        : "記録されているのは現在の目的だけです。その目的を完全一致で短く引用し、目的から導ける保守的で具体的な最初の一手を一つ、未決定の提案だと分かる質問として示してください。その一手が記録済み、決定済み、着手済み、完了済みだと示してはいけません。basisはgoal-suggestionにしてください。",
+        ? "記録済みの未完了事項または次の行動へ自然につながる、話し言葉の短い一言か二言を作り、再開をそっと誘ってください。必ず質問形にする必要はありません。basisはrecorded-next-stepにしてください。"
+        : "記録されているのは現在の目的だけです。目的に自然に触れ、そこから導ける保守的で具体的な最初の一手を一つ、本当に選べる提案の質問として示してください。その一手が記録済み、決定済み、着手済み、完了済みだと示してはいけません。basisはgoal-suggestionにしてください。",
+      "選択中のキャラクターらしさが伝わる口調にしてください。書き出しと文型に変化をつけ、「前回は〜」「〜の続き、次は〜から進める？」のような定型文や、保存文の機械的な読み上げを避けてください。",
       "記録済みの事実だけを使い、進捗、完了、決定、感情、自信を創作してはいけません。保存、サマリー、プロンプト、内部ツールには言及しないでください。",
-      "指定JSONだけを返してください。groundingPhraseはサマリーから意味のある語句を完全一致で抜き出し、messageにも同じ形で含めてください。",
-    ].join("\n"),
+      "指定JSONだけを返してください。evidenceKeyにはresumeEvidenceにあるキーを一つだけ完全一致で入れてください。messageでは対応する文をそのまま繰り返さず自然に言い換えて構いませんが、話題が分かる固有名詞・名詞・対象のいずれかは残してください。",
+    ].join("\n");
+  const client = backend === "codex" ? new CodexAppServerClient({
+    cwd: continuationRuntimeDirectory,
+    command: codexCommand,
+    ...conversationCodexSettings(),
+    reasoningEffort: "low",
+    developerInstructions: instructions,
     sandbox: "read-only",
     approvalPolicy: "never",
     serviceName: "charadock_continuation",
     personality: "friendly",
     webSearchMode: "disabled",
-  });
+  }) : new OpenAIClient();
   let startupDeadline;
+  const startedAt = Date.now();
   try {
     const deadline = new Promise((_, reject) => {
       startupDeadline = setTimeout(() => {
-        client.stop();
+        if (backend === "codex") client.stop();
+        else client.reset();
         reject(new Error("Startup continuation generation timed out"));
-      }, 4_000);
+      }, STARTUP_CONTINUATION_TIMEOUT_MS);
     });
-    const generation = client.sendMessage(continuationPromptContext(summary, language), {
-      outputSchema: {
-        type: "object",
-        additionalProperties: false,
-        required: ["message", "groundingPhrase", "basis"],
-        properties: {
-          message: { type: "string", minLength: 8, maxLength: 200 },
-          groundingPhrase: { type: "string", minLength: 2, maxLength: 120 },
-          basis: { type: "string", enum: ["recorded-next-step", "goal-suggestion"] },
-        },
+    const context = continuationPromptContext(summary, language);
+    const evidenceKeys = Object.keys(continuationResumeEvidence(summary));
+    const outputSchema = {
+      type: "object",
+      additionalProperties: false,
+      required: ["message", "evidenceKey", "basis"],
+      properties: {
+        message: { type: "string", minLength: 8, maxLength: 200 },
+        evidenceKey: { type: "string", enum: evidenceKeys },
+        basis: { type: "string", enum: ["recorded-next-step", "goal-suggestion"] },
       },
+    };
+    const generation = backend === "codex" ? client.sendMessage(context, {
+      outputSchema: {
+        ...outputSchema,
+      },
+      timeoutMs: STARTUP_CONTINUATION_TIMEOUT_MS,
+    }) : client.sendMessage({
+      apiKey: preferences.getApiKey(),
+      model: preferences.data.openaiModel,
+      message: context,
+      instructions,
     });
-    // Startup must remain responsive even when app-server startup itself is
-    // slow. After this deadline, the caller uses a grounded local fallback.
+    // Generation is asynchronous and never blocks the windows or normal chat.
+    // The deadline only prevents a stale greeting from appearing much later.
     const result = await Promise.race([generation, deadline]);
-    return validateGroundedContinuationMessage(cleanAssistantText(result.text), summary);
+    const message = validateGroundedContinuationMessage(cleanAssistantText(result.text), summary);
+    if (message) diagnosticLog?.write("info", "startup-continuation-generated", { backend, elapsedMs: Date.now() - startedAt });
+    return message;
   } finally {
     clearTimeout(startupDeadline);
-    client.stop();
+    if (backend === "codex") client.stop();
+    else client.reset();
   }
 }
 
@@ -5468,8 +5708,8 @@ async function maybeOfferStartupContinuation({ allowInSmoke = false, skipGenerat
     || activeRealtimeStarting
     || currentRealtimeClient()
     || codexClient?.hasActiveTurn?.()) return false;
-  rememberAssistantAnnouncement(message);
   startupContinuationMessages.set(`${attemptKey}:${summary.updatedAt || ""}`, message);
+  rememberAssistantAnnouncement(message);
   showMascotSpeech(message, { durationMs: 16_000, ttsEnabled, persistent: true });
   diagnosticLog?.write("info", "startup-continuation-offered", { scopeType: scope.type, reason: eligibility.reason, source });
   return true;
@@ -5907,7 +6147,10 @@ function currentRealtimeClient() {
 }
 
 function publishActiveRealtimeTurnSkills() {
-  const payload = { selectedSkillIds: [...activeRealtimeTurnSkillIds] };
+  const payload = {
+    selectedSkillIds: [...activeRealtimeTurnSkillIds],
+    selectedMcpServerIds: [...activeRealtimeTurnMcpServerIds],
+  };
   if (controlWindow && !controlWindow.isDestroyed()) controlWindow.webContents.send("audio:realtimeTurnSkills", payload);
   if (mascotWindow && !mascotWindow.isDestroyed()) mascotWindow.webContents.send("audio:realtimeTurnSkills", payload);
 }
@@ -5925,7 +6168,7 @@ function realtimeWorkSkillContext(client, selectedSkillIds = []) {
   ].join("\n");
 }
 
-function realtimeWorkFrontendContext(client, selectedSkillIds = [], realtimeMemoryContext = "", sharedContext = "") {
+function realtimeWorkFrontendContext(client, selectedSkillIds = [], selectedMcpServerIds = [], realtimeMemoryContext = "", sharedContext = "") {
   return [
     personaInstructions(),
     [
@@ -5941,10 +6184,11 @@ function realtimeWorkFrontendContext(client, selectedSkillIds = [], realtimeMemo
     realtimeMemoryContext,
     sharedContext,
     realtimeWorkSkillContext(client, selectedSkillIds),
+    mcpTurnContext(selectedMcpServerIds),
   ].filter(Boolean).join("\n\n");
 }
 
-function realtimeChatFrontendContext(realtimeMemoryContext = "", sharedContext = "") {
+function realtimeChatFrontendContext(realtimeMemoryContext = "", sharedContext = "", selectedMcpServerIds = []) {
   return [
     personaInstructions(),
     [
@@ -5960,6 +6204,7 @@ function realtimeChatFrontendContext(realtimeMemoryContext = "", sharedContext =
     ].join("\n"),
     realtimeMemoryContext,
     sharedContext,
+    mcpTurnContext(selectedMcpServerIds),
   ].filter(Boolean).join("\n\n");
 }
 
@@ -5975,12 +6220,35 @@ function setActiveRealtimeTurnSkills(value) {
   return { selectedSkillIds: [...ids] };
 }
 
+function setActiveRealtimeTurnMcpServers(value) {
+  const client = currentRealtimeClient();
+  if (!client) throw new Error(mainText("接続中のLiveでMCPを指定できます。", "MCP can be selected while Live is connected."));
+  const ids = normalizeTurnMcpServerIds(value);
+  explicitTurnMcpServers(ids);
+  const loadedIds = new Set((client.mcpServers || []).map((server) => server.id));
+  const unavailable = ids.filter((id) => !loadedIds.has(id));
+  if (unavailable.length) {
+    throw new Error(mainText(
+      "このMCP接続をLiveへ追加するには、選択したままLiveをいったん停止して再接続してください。",
+      "To add this MCP connection to Live, keep it selected, stop Live, and reconnect.",
+    ));
+  }
+  activeRealtimeTurnMcpServerIds = ids;
+  publishActiveRealtimeTurnSkills();
+  const context = mcpTurnContext(ids);
+  if (context) client.appendRealtimeText(context, "developer").catch((error) => {
+    diagnosticLog?.write("warn", "realtime-mcp-context-failed", String(error?.message || error));
+  });
+  return { selectedMcpServerIds: [...ids] };
+}
+
 async function stopActiveRealtime() {
   activeRealtimeWorkDispatcher?.close?.();
   activeRealtimeWorkDispatcher = null;
   activeRealtimeWorkSpeech?.stop();
   activeRealtimeWorkSpeech = null;
   activeRealtimeTurnSkillIds = [];
+  activeRealtimeTurnMcpServerIds = [];
   publishActiveRealtimeTurnSkills();
   const client = currentRealtimeClient();
   let stopped = false;
@@ -6010,28 +6278,52 @@ async function appendActiveRealtimeText(text, options = {}) {
   if (!client) return false;
   const normalized = normalizedText(text).slice(0, 1000);
   if (!normalized) return false;
+  const selectedMcpServerIds = normalizeTurnMcpServerIds(options?.selectedMcpServerIds);
+  const requestedMcpServerIds = selectedMcpServerIds.length || !messageExplicitlyRequestsMcp(normalized)
+    ? selectedMcpServerIds
+    : activeCharacterMcpServerIds();
+  if (JSON.stringify(requestedMcpServerIds) !== JSON.stringify(activeRealtimeTurnMcpServerIds)) {
+    setActiveRealtimeTurnMcpServers(requestedMcpServerIds);
+  }
+  options = { ...options, selectedMcpServerIds: requestedMcpServerIds };
   if (preferences.data.interactionMode === "work" && activeRealtimeWorkDispatcher) {
+    activeRealtimeTurnBuffer?.addTyped(normalized);
     const dispatched = activeRealtimeWorkDispatcher.dispatchTyped?.(normalized, {
       artifactTarget: options?.artifactTarget || null,
       selectedSkillIds: options?.selectedSkillIds,
+      selectedMcpServerIds: options?.selectedMcpServerIds,
     });
     if (dispatched) return { accepted: true, delegated: true };
     // Social conversation in Work should stay conversational instead of
     // creating a fake Work run. A normal Codex turn grounds the answer, then
     // appendSpeech routes that one final answer through the Live voice.
     const answer = await activeRealtimeWorkDispatcher.dispatchConversation?.(normalized);
-    if (!answer) return false;
+    if (!answer) {
+      activeRealtimeTurnBuffer?.discardInput(normalized);
+      return false;
+    }
     rememberConversationTurn(normalized, answer);
     const spoken = await appendRealtimeOutputSpeechDirect(answer, "chat");
+    if (!spoken) activeRealtimeTurnBuffer?.discardInput(normalized);
     return spoken ? { accepted: true, delegated: true, conversation: true } : false;
   }
   // Realtime V3 appendText is context-only and does not start a response.
   // Start a read-only Codex turn on the same Live thread. With native
   // handoffs enabled, app-server owns the single final voice response; do not
   // also appendSpeech here or typed Chat would be spoken twice.
-  const result = await client.sendMessage(normalized);
+  activeRealtimeTurnBuffer?.addTyped(normalized);
+  let result;
+  try {
+    result = await client.sendMessage(normalized);
+  } catch (error) {
+    activeRealtimeTurnBuffer?.discardInput(normalized);
+    throw error;
+  }
   const answer = cleanAssistantText(result?.text || "").trim();
-  if (!answer) return false;
+  if (!answer) {
+    activeRealtimeTurnBuffer?.discardInput(normalized);
+    return false;
+  }
   rememberConversationTurn(normalized, answer);
   diagnosticLog?.write("info", "realtime-typed-chat-routed", { target: activeRealtimeTarget || "unknown", answerLength: answer.length, route: "native-handoff" });
   return { accepted: true, delegated: true, conversation: true };
@@ -6123,6 +6415,20 @@ async function characterPetResponse(payload = {}, options = {}) {
   reaction.durationMs = Math.round(reaction.durationMs * tuning.durationScale);
   reaction.intensity = tuning.intensity;
   localServer.pushInput({ ...currentCursorInput(), ...reaction });
+  if (options.reactionOnly) {
+    return {
+      text: "",
+      zone: headTouch ? "head" : "body",
+      emotion: reaction.emotion,
+      expression: reaction,
+      durationMs: reaction.durationMs,
+      reactionOnly: true,
+      ttsEnabled: false,
+      realtimeSpeech: false,
+      realtimeSpeechBusy: Boolean(activeWorkRunId || currentRealtimeClient()?.hasActiveTurn?.()),
+      deferDisplayToRealtime: true,
+    };
+  }
   const useRealtimeVoice = typeof options.useRealtimeVoice === "boolean"
     ? options.useRealtimeVoice
     : preferences.data.backend === "codex" && preferences.data.speechInputProvider === "realtime";
@@ -6180,7 +6486,9 @@ async function startCodexRealtimeVoice(payload, target = "control") {
   if (!sdp.startsWith("v=0") || sdp.length > 300_000) throw new Error("音声接続情報が正しくありません。");
   const workMode = preferences.data.interactionMode === "work";
   const initialTurnSkillIds = workMode ? normalizeTurnSkillIds(payload?.selectedSkillIds) : [];
+  const initialTurnMcpServerIds = normalizeTurnMcpServerIds(payload?.selectedMcpServerIds);
   if (initialTurnSkillIds.length) explicitTurnSkillItems(initialTurnSkillIds);
+  if (initialTurnMcpServerIds.length) explicitTurnMcpServers(initialTurnMcpServerIds);
   const sharedContext = currentSharedContinuityContext(1_000);
   const realtimeMemoryContext = characterMemoryContext(undefined, 4);
   if (workMode && activeWorkRunId) throw new Error("実行中の作業があります。完了を待つか、中断してください。");
@@ -6199,7 +6507,9 @@ async function startCodexRealtimeVoice(payload, target = "control") {
   // therefore start on the workspace-scoped client so the native handoff
   // inherits the same cwd, write permission, persona, and dynamic tools as
   // standard Work instead of editing from the conversation client's cwd.
-  const realtimeClient = workMode ? ensureWorkClient() : codexClient;
+  const realtimeClient = workMode
+    ? ensureWorkClient(initialTurnMcpServerIds)
+    : ensureConversationCodexClient(initialTurnMcpServerIds);
   // Live and normal TTS are exclusive audio routes. Stop any speech still
   // draining in either renderer before the WebRTC answer can become audible.
   if (controlWindow && !controlWindow.isDestroyed()) controlWindow.webContents.send("audio:stopNormalSpeech");
@@ -6208,13 +6518,23 @@ async function startCodexRealtimeVoice(payload, target = "control") {
   activeRealtimeClient = realtimeClient;
   activeRealtimeTarget = target;
   activeRealtimeTurnSkillIds = initialTurnSkillIds;
+  activeRealtimeTurnMcpServerIds = initialTurnMcpServerIds;
   publishRemoteState();
   const realtimeTurnBuffer = new RealtimeTurnBuffer();
   activeRealtimeTurnBuffer = realtimeTurnBuffer;
   activeRealtimeInjectedSpeech = [];
   activeRealtimeWorkSpeech?.stop();
   activeRealtimeWorkSpeech = null;
-  const assistantTranscript = { text: "", active: false };
+  const assistantTranscript = { text: "", active: false, authorized: false };
+  const sendControlRealtimeEvent = (message) => {
+    if (controlWindow && !controlWindow.isDestroyed()) controlWindow.webContents.send("audio:realtimeEvent", message);
+  };
+  const sendMascotRealtimeEvent = (message) => {
+    if (mascotWindow && !mascotWindow.isDestroyed()) mascotWindow.webContents.send("mascot:realtimeEvent", message);
+  };
+  const sendMascotStream = (message) => {
+    if (mascotWindow && !mascotWindow.isDestroyed()) mascotWindow.webContents.send("mascot:stream", message);
+  };
   let pendingNativeWorkRequest = "";
   let nativeWorkTurn = null;
   const pendingNativeConversationTurns = [];
@@ -6291,6 +6611,14 @@ async function startCodexRealtimeVoice(payload, target = "control") {
       const skillContext = realtimeWorkSkillContext(realtimeClient, ids);
       if (skillContext) await realtimeClient.appendRealtimeText(skillContext, "developer");
     }
+    if (Array.isArray(options.selectedMcpServerIds)) {
+      const ids = normalizeTurnMcpServerIds(options.selectedMcpServerIds);
+      explicitTurnMcpServers(ids);
+      activeRealtimeTurnMcpServerIds = ids;
+      publishActiveRealtimeTurnSkills();
+      const mcpContext = mcpTurnContext(ids);
+      if (mcpContext) await realtimeClient.appendRealtimeText(mcpContext, "developer");
+    }
     return true;
   };
   const ensureNativeWorkTurn = (turnId = "") => {
@@ -6322,6 +6650,12 @@ async function startCodexRealtimeVoice(payload, target = "control") {
       publishActiveRealtimeTurnSkills();
       const clearedSkillContext = realtimeWorkSkillContext(realtimeClient, []);
       if (clearedSkillContext) queueMicrotask(() => realtimeClient.appendRealtimeText(clearedSkillContext, "developer").catch(() => false));
+    }
+    if (activeRealtimeTurnMcpServerIds.length) {
+      activeRealtimeTurnMcpServerIds = [];
+      publishActiveRealtimeTurnSkills();
+      const clearedMcpContext = mcpTurnContext([]);
+      if (clearedMcpContext) queueMicrotask(() => realtimeClient.appendRealtimeText(clearedMcpContext, "developer").catch(() => false));
     }
     return nativeWorkTurn;
   };
@@ -6526,6 +6860,9 @@ async function startCodexRealtimeVoice(payload, target = "control") {
       const requestedSkillIds = Array.isArray(options.selectedSkillIds)
         ? normalizeTurnSkillIds(options.selectedSkillIds)
         : [...activeRealtimeTurnSkillIds];
+      const requestedMcpServerIds = Array.isArray(options.selectedMcpServerIds)
+        ? normalizeTurnMcpServerIds(options.selectedMcpServerIds)
+        : [...activeRealtimeTurnMcpServerIds];
       const skillItems = mergeTurnSkillItems(activeCharacterSkillItems(), explicitTurnSkillItems(requestedSkillIds));
       const activeState = nativeWorkTurn?.run?.status === "running" && nativeWorkTurn?.turnId
         ? nativeWorkTurn
@@ -6534,7 +6871,7 @@ async function startCodexRealtimeVoice(payload, target = "control") {
         appendNativeWorkFollowUp(activeState, normalized);
         publishNativeWorkFollowUpStatus(activeState);
       } else {
-        noteNativeWorkRequest(normalized, "typed", options);
+        noteNativeWorkRequest(normalized, "typed", { ...options, selectedMcpServerIds: requestedMcpServerIds });
       }
       const activeTurnId = String(activeState?.turnId || realtimeClient.activeTurnId || "");
       const operation = activeTurnId
@@ -6629,7 +6966,9 @@ async function startCodexRealtimeVoice(payload, target = "control") {
       prompt: undefined,
       clientManagedHandoffs: false,
       codexResponseHandoffMode: "thinking",
-      delegationAckFiller: workMode ? false : undefined,
+      // Keep one audible answer per request. The grounded Codex result owns
+      // the response instead of a generated acknowledgement speaking first.
+      delegationAckFiller: false,
       // The Work thread retains executor instructions, cwd, permissions, and
       // tools for the delegated Codex turn. Do not also expose that executor
       // startup context to the voice model: it has no file tools and may
@@ -6638,9 +6977,10 @@ async function startCodexRealtimeVoice(payload, target = "control") {
       initialItems: [{
         role: "developer",
         text: workMode
-          ? realtimeWorkFrontendContext(realtimeClient, initialTurnSkillIds, realtimeMemoryContext, sharedContext)
-          : realtimeChatFrontendContext(realtimeMemoryContext, sharedContext),
+          ? realtimeWorkFrontendContext(realtimeClient, initialTurnSkillIds, initialTurnMcpServerIds, realtimeMemoryContext, sharedContext)
+          : realtimeChatFrontendContext(realtimeMemoryContext, sharedContext, initialTurnMcpServerIds),
       }],
+      requireMcpReady: initialTurnMcpServerIds.length > 0,
       onEvent: (message) => {
         let forwarded = message;
         if (message?.method === "thread/realtime/error") {
@@ -6656,11 +6996,28 @@ async function startCodexRealtimeVoice(payload, target = "control") {
             },
           };
         }
-        if (target === "control" && !controlWindow?.isDestroyed()) controlWindow.webContents.send("audio:realtimeEvent", forwarded);
-        if (target === "mascot" && !mascotWindow?.isDestroyed()) mascotWindow.webContents.send("mascot:realtimeEvent", forwarded);
-        if (target === "remote") remoteServer?.publish("live", forwarded);
       const method = String(message?.method || "");
       const params = message?.params || {};
+      const assistantTranscriptEvent = method.startsWith("thread/realtime/transcript/") && params.role === "assistant";
+      if (assistantTranscriptEvent && !assistantTranscript.active) {
+        assistantTranscript.active = true;
+        assistantTranscript.text = "";
+        assistantTranscript.authorized = realtimeTurnBuffer.hasPendingInput()
+          || activeRealtimeInjectedSpeech.some((entry) => Date.now() - entry.createdAt < 30_000);
+        if (!assistantTranscript.authorized) {
+          diagnosticLog?.write("warn", "realtime-unsolicited-assistant-suppressed", {
+            target,
+            method,
+            preview: String(params.text || params.delta || "").slice(0, 120),
+          });
+        }
+      }
+      if (assistantTranscriptEvent && !assistantTranscript.authorized) {
+        forwarded = { ...forwarded, params: { ...forwarded.params, suppressed: true } };
+      }
+      if (target === "control") sendControlRealtimeEvent(forwarded);
+      if (target === "mascot") sendMascotRealtimeEvent(forwarded);
+      if (target === "remote") remoteServer?.publish("live", forwarded);
       if (target === "remote" && (method.startsWith("thread/realtime/transcript/") || ["thread/realtime/started", "thread/realtime/closed", "thread/realtime/error"].includes(method))) {
         diagnosticLog?.write("info", "remote-live-event", { method, role: String(params.role || "") });
       }
@@ -6683,10 +7040,9 @@ async function startCodexRealtimeVoice(payload, target = "control") {
         }
       }
       if (method === "thread/realtime/transcript/delta" && params.role === "assistant") {
+        if (!assistantTranscript.authorized) return;
         const delta = String(params.delta || "");
-        if (!assistantTranscript.active) {
-          assistantTranscript.active = true;
-          assistantTranscript.text = "";
+        if (!assistantTranscript.text) {
           if (!workMode) {
             const startPayload = turnCoordinator.apply({
               phase: "start",
@@ -6697,7 +7053,7 @@ async function startCodexRealtimeVoice(payload, target = "control") {
               ttsProvider: characterTtsSettings().provider,
               speechLanguage: preferences.data.speechLanguage || "ja-JP",
             });
-            mascotWindow?.webContents.send("mascot:stream", startPayload);
+            sendMascotStream(startPayload);
           }
         }
         assistantTranscript.text += delta;
@@ -6718,9 +7074,15 @@ async function startCodexRealtimeVoice(payload, target = "control") {
           text: remotePublicText(assistantTranscript.text),
           displayText: remoteLastDisplayText,
         });
-        mascotWindow?.webContents.send("mascot:stream", captionPayload);
+        sendMascotStream(captionPayload);
       }
       if (method === "thread/realtime/transcript/done" && params.role === "assistant") {
+        if (!assistantTranscript.authorized) {
+          assistantTranscript.active = false;
+          assistantTranscript.authorized = false;
+          assistantTranscript.text = "";
+          return;
+        }
         assistantTranscript.text = String(params.text || assistantTranscript.text).trim();
         if (assistantTranscript.text) {
           const finalCaptionPayload = turnCoordinator.apply({
@@ -6732,7 +7094,7 @@ async function startCodexRealtimeVoice(payload, target = "control") {
             audioRoute: "live",
             final: true,
           });
-          mascotWindow?.webContents.send("mascot:stream", finalCaptionPayload);
+          sendMascotStream(finalCaptionPayload);
           // Realtime playback owns the mouth through its measured audio
           // envelope. Keep the semantic reaction, but never let a transcript
           // event pin the mouth open or suppress normal blinking.
@@ -6762,14 +7124,17 @@ async function startCodexRealtimeVoice(payload, target = "control") {
             if (!expected || !spoken || expected.includes(spoken) || spoken.includes(expected)) finishNativeRealtimeWork();
           }
           if (!workMode) {
-            mascotWindow?.webContents.send("mascot:stream", completionPayload);
+            sendMascotStream(completionPayload);
           }
-          if (!workMode && !injectedSpeech) {
-            const completedTurn = realtimeTurnBuffer.addAssistant(assistantTranscript.text);
+          const completedTurn = !injectedSpeech || realtimeTurnBuffer.hasPendingInput()
+            ? realtimeTurnBuffer.addAssistant(assistantTranscript.text)
+            : null;
+          if (!workMode && !injectedSpeech && completedTurn?.source !== "typed") {
             if (completedTurn) rememberConversationTurn(completedTurn.user, completedTurn.assistant);
           }
         }
         assistantTranscript.active = false;
+        assistantTranscript.authorized = false;
       }
       if (method === "thread/realtime/transcript/done" && params.role === "user") {
         if (!assistantTranscript.active) assistantTranscript.text = "";
@@ -6781,9 +7146,9 @@ async function startCodexRealtimeVoice(payload, target = "control") {
           forceEyesClosed: null,
         });
         const request = String(params.text || "").trim();
-        if (!workMode && request) {
+        if (request) {
           const completedTurn = realtimeTurnBuffer.addUser(request);
-          if (completedTurn) rememberConversationTurn(completedTurn.user, completedTurn.assistant);
+          if (!workMode && completedTurn) rememberConversationTurn(completedTurn.user, completedTurn.assistant);
         }
         if (workMode && request) {
           const followedUp = realtimeWorkDispatcher.dispatchVoiceFollowUp(request);
@@ -6795,7 +7160,7 @@ async function startCodexRealtimeVoice(payload, target = "control") {
         }
       }
       if (["thread/realtime/error", "thread/realtime/closed"].includes(method)) {
-        if (assistantTranscript.active && !workMode) mascotWindow?.webContents.send("mascot:stream", { phase: "done", text: assistantTranscript.text });
+        if (assistantTranscript.active && !workMode) sendMascotStream({ phase: "done", mode: "chat", text: assistantTranscript.text });
         assistantTranscript.active = false;
         if (activeRealtimeWorkDispatcher === realtimeWorkDispatcher) {
           realtimeWorkDispatcher.close();
@@ -6815,6 +7180,7 @@ async function startCodexRealtimeVoice(payload, target = "control") {
         realtimeTurnBuffer.clear();
         activeRealtimeInjectedSpeech = [];
         activeRealtimeTurnSkillIds = [];
+        activeRealtimeTurnMcpServerIds = [];
         nativeChatTurnIds.clear();
         publishActiveRealtimeTurnSkills();
         remoteBusy = false;
@@ -6845,6 +7211,7 @@ async function startCodexRealtimeVoice(payload, target = "control") {
     realtimeTurnBuffer.clear();
     activeRealtimeInjectedSpeech = [];
     activeRealtimeTurnSkillIds = [];
+    activeRealtimeTurnMcpServerIds = [];
     nativeChatTurnIds.clear();
     publishActiveRealtimeTurnSkills();
     remoteBusy = false;
@@ -6873,7 +7240,7 @@ async function setCharacter(characterId) {
   preferences.patch({ workDirectory: selectedWorkspaceDirectory(configured) });
   resetWorkClient();
   conversationHistory = conversationHistoryForCharacter(character.id);
-  codexClient?.reset();
+  resetConversationClient();
   localServer.setSnapshot(buildAvatarSnapshot(character.id));
   codexClient?.setPersona(personaInstructions(configured));
   openAIClient?.reset();
@@ -6885,6 +7252,7 @@ async function setCharacter(characterId) {
   });
   mascotWindow?.showInactive();
   scheduleIrodoriPrewarm();
+  scheduleMcpPrewarm(100);
   return publicAppState();
 }
 
@@ -6925,8 +7293,16 @@ async function removeGeneratedCharacter(characterId) {
     characters: { ...(preferences.data.skillAssignments?.characters || {}) },
   };
   delete skillAssignments.characters[characterId];
+  preferences.removeMcpAssignmentsForCharacter(characterId);
   characterHomeManager?.remove(characterId);
-  preferences.patch({ ...plan.patch, conversationHistories, characterMemories: memoryProfiles, characterWorkspaces, continuationSummaries, skillAssignments });
+  preferences.patch({
+    ...plan.patch,
+    conversationHistories,
+    characterMemories: memoryProfiles,
+    characterWorkspaces,
+    continuationSummaries,
+    skillAssignments,
+  });
   characterThumbnailCache.delete(`${plan.directory}:complete`);
   characterMotionCache.delete(plan.directory);
   characterTouchHeadRatioCache.delete(plan.directory);
@@ -7324,9 +7700,16 @@ function registerIpc() {
     assertTrustedSender(event, "mascot");
     return publicAppState();
   });
-  ipcMain.handle("mascotInline:openControl", (event) => {
+  ipcMain.handle("mascotInline:openControl", (event, payload = {}) => {
     assertTrustedSender(event, "mascot");
     showControlWindow();
+    const page = String(payload?.page || "");
+    if (["chat", "remote", "character", "skills", "mcp", "voice", "connection", "desktop", "support"].includes(page)) {
+      setTimeout(() => {
+        if (!controlWindow || controlWindow.isDestroyed()) return;
+        controlWindow.webContents.send("settings:navigate", { page });
+      }, 0);
+    }
     return true;
   });
   ipcMain.handle("mascotInline:chat", async (event, payload) => {
@@ -7334,10 +7717,11 @@ function registerIpc() {
     const message = typeof payload === "object" && payload ? payload.message : payload;
     const attachments = normalizeLocalAttachments(typeof payload === "object" && payload ? payload.attachmentPaths : []);
     const selectedSkillIds = normalizeTurnSkillIds(typeof payload === "object" && payload ? payload.selectedSkillIds : []);
+    const selectedMcpServerIds = normalizeTurnMcpServerIds(typeof payload === "object" && payload ? payload.selectedMcpServerIds : []);
     const suppressPcAudio = Boolean(typeof payload === "object" && payload?.suppressPcAudio);
     const forceWork = Boolean(typeof payload === "object" && payload?.forceWork);
     if (attachments.length && preferences.data.backend !== "codex") throw new Error("ファイル添付はCodex app-server接続時に利用できます。");
-    return handleMascotConversation(message, { localAttachments: attachments, selectedSkillIds, suppressPcAudio, forceWork });
+    return handleMascotConversation(message, { localAttachments: attachments, selectedSkillIds, selectedMcpServerIds, suppressPcAudio, forceWork });
   });
   ipcMain.handle("mascotInline:approveScreenShare", async (event, requestId) => {
     assertTrustedSender(event, "mascot");
@@ -7427,7 +7811,7 @@ function registerIpc() {
   });
   ipcMain.handle("mascotInline:pet", async (event, payload = {}) => {
     assertTrustedSender(event, "mascot");
-    return characterPetResponse(payload);
+    return characterPetResponse(payload, { reactionOnly: payload?.reactionOnly === true });
   });
   ipcMain.handle("mascotInline:transcribe", async (event, payload) => {
     assertTrustedSender(event, "mascot");
@@ -7461,11 +7845,16 @@ function registerIpc() {
     assertTrustedSender(event, "mascot");
     const text = typeof payload === "object" && payload ? payload.text : payload;
     const selectedSkillIds = typeof payload === "object" && payload ? normalizeTurnSkillIds(payload.selectedSkillIds) : undefined;
-    return appendActiveRealtimeText(String(text || ""), { selectedSkillIds });
+    const selectedMcpServerIds = typeof payload === "object" && payload ? normalizeTurnMcpServerIds(payload.selectedMcpServerIds) : undefined;
+    return appendActiveRealtimeText(String(text || ""), { selectedSkillIds, selectedMcpServerIds });
   });
   ipcMain.handle("mascotInline:realtimeTurnSkills", (event, selectedSkillIds) => {
     assertTrustedSender(event, "mascot");
     return setActiveRealtimeTurnSkills(selectedSkillIds);
+  });
+  ipcMain.handle("mascotInline:realtimeTurnMcp", (event, selectedMcpServerIds) => {
+    assertTrustedSender(event, "mascot");
+    return setActiveRealtimeTurnMcpServers(selectedMcpServerIds);
   });
   ipcMain.handle("mascotInline:synthesizeTts", (event, text) => {
     assertTrustedSender(event, "mascot");
@@ -7551,6 +7940,7 @@ function registerIpc() {
   ipcMain.handle("settings:save", async (event, patch) => {
     assertTrustedSender(event);
     const previousBackend = preferences.data.backend;
+    const previousSpeechInputProvider = preferences.data.speechInputProvider;
     const previousLanguage = interfaceLanguage();
     const previousWorkNetworkAccess = preferences.data.workNetworkAccess === true;
     const previousMouseFollow = Boolean(preferences.data.mouseFollow);
@@ -7709,6 +8099,16 @@ function registerIpc() {
       edgeSnap: Boolean(patch?.edgeSnap),
       preferredDisplayId: displayId,
     };
+    if (allowed.speechInputProvider !== "realtime"
+      && (activeRealtimeStarting || activeRealtimeTarget || currentRealtimeClient())) {
+      await stopActiveRealtime().catch((error) => {
+        diagnosticLog?.write("warn", "realtime-provider-change-stop-failed", {
+          from: previousSpeechInputProvider,
+          to: allowed.speechInputProvider,
+          error: String(error?.message || error),
+        });
+      });
+    }
     preferences.patch(allowed);
     if (allowed.updateChannel !== previousUpdateChannel) appUpdateStatus = null;
     if (allowed.updateChecksEnabled && (!previousUpdateChecksEnabled || allowed.updateChannel !== previousUpdateChannel)) scheduleAppUpdateCheck();
@@ -8086,9 +8486,15 @@ function registerIpc() {
   ipcMain.handle("updates:openRelease", async (event) => {
     assertTrustedSender(event);
     const update = publicAppUpdateStatus();
-    const url = update.releaseUrl.startsWith(`${RELEASES_PAGE_URL}/tag/`) ? update.releaseUrl : RELEASES_PAGE_URL;
-    await shell.openExternal(url, { activate: true });
-    return { opened: true, url };
+    const destination = updateDestination(update.packageKind, update.releaseUrl);
+    try {
+      await shell.openExternal(destination.url, { activate: true });
+      return { opened: true, url: destination.url, destination: destination.kind };
+    } catch (error) {
+      if (!destination.fallbackUrl) throw error;
+      await shell.openExternal(destination.fallbackUrl, { activate: true });
+      return { opened: true, url: destination.fallbackUrl, destination: destination.kind, fallback: true };
+    }
   });
   ipcMain.handle("support:getDiagnostics", async (event) => {
     assertTrustedSender(event);
@@ -8128,6 +8534,80 @@ function registerIpc() {
     preferences.setApiKey(String(key || "").slice(0, 512));
     openAIClient.reset();
     return publicAppState();
+  });
+  ipcMain.handle("mcp:save", (event, input = {}) => {
+    assertTrustedSender(event);
+    assertMcpSettingsMutable();
+    const requestedId = String(input?.id || "").trim();
+    const id = requestedId ? normalizeMcpServerId(requestedId) : newMcpServerId();
+    if (!id) throw new Error(mainText("MCPサーバーIDが正しくありません。", "Invalid MCP server ID."));
+    preferences.setMcpServer({
+      id,
+      name: String(input?.name || "").slice(0, 80),
+      url: String(input?.url || "").slice(0, 2_000),
+      enabled: input?.enabled !== false,
+      authType: input?.authType === "api-key" ? "api-key" : "none",
+      apiKey: Object.prototype.hasOwnProperty.call(input, "apiKey") ? String(input.apiKey || "").slice(0, 8_192) : undefined,
+      apiKeyHeader: String(input?.apiKeyHeader || "Authorization").slice(0, 64),
+      apiKeyPrefix: String(input?.apiKeyPrefix ?? "Bearer").slice(0, 40),
+    });
+    if (!requestedId) {
+      const target = input?.assignment?.scope === "all"
+        ? { scope: "all" }
+        : { scope: "character", characterId: String(input?.assignment?.characterId || preferences.data.characterId) };
+      if (target.scope === "character" && !allCharacters().some((character) => character.id === target.characterId)) {
+        preferences.removeMcpServer(id);
+        throw new Error(mainText("キャラクターが見つかりません。", "Character not found."));
+      }
+      preferences.setMcpAssignment(id, target, true);
+    }
+    resetConversationClient();
+    resetWorkClient();
+    const state = broadcastAppState();
+    scheduleMcpPrewarm(100);
+    return { state, serverId: id };
+  });
+  ipcMain.handle("mcp:setEnabled", (event, serverId, enabled) => {
+    assertTrustedSender(event);
+    assertMcpSettingsMutable();
+    preferences.setMcpServerEnabled(serverId, enabled);
+    resetConversationClient();
+    resetWorkClient();
+    const state = broadcastAppState();
+    scheduleMcpPrewarm(100);
+    return state;
+  });
+  ipcMain.handle("mcp:setAssignment", (event, payload = {}) => {
+    assertTrustedSender(event);
+    const deferRuntimeReset = Boolean(activeWorkRunId || currentRealtimeClient() || activeRealtimeStarting || workCodexClient?.hasActiveTurn?.());
+    const target = payload.scope === "all"
+      ? { scope: "all" }
+      : { scope: "character", characterId: String(payload.characterId || preferences.data.characterId) };
+    if (target.scope === "character" && !allCharacters().some((character) => character.id === target.characterId)) {
+      throw new Error(mainText("キャラクターが見つかりません。", "Character not found."));
+    }
+    preferences.setMcpAssignment(payload.serverId, target, Boolean(payload.enabled));
+    if (!deferRuntimeReset) {
+      resetConversationClient();
+      resetWorkClient();
+      scheduleMcpPrewarm(100);
+    }
+    return broadcastAppState();
+  });
+  ipcMain.handle("mcp:remove", (event, serverId) => {
+    assertTrustedSender(event);
+    assertMcpSettingsMutable();
+    preferences.removeMcpServer(serverId);
+    resetConversationClient();
+    resetWorkClient();
+    const state = broadcastAppState();
+    scheduleMcpPrewarm(100);
+    return state;
+  });
+  ipcMain.handle("mcp:test", async (event, serverId) => {
+    assertTrustedSender(event);
+    assertMcpSettingsMutable();
+    return testMcpServer(serverId);
   });
   ipcMain.handle("character:set", (event, characterId) => {
     assertTrustedSender(event);
@@ -8485,8 +8965,9 @@ function registerIpc() {
     const message = typeof payload === "object" && payload ? payload.message : payload;
     const attachments = normalizeLocalAttachments(typeof payload === "object" && payload ? payload.attachmentPaths : []);
     const selectedSkillIds = normalizeTurnSkillIds(typeof payload === "object" && payload ? payload.selectedSkillIds : []);
+    const selectedMcpServerIds = normalizeTurnMcpServerIds(typeof payload === "object" && payload ? payload.selectedMcpServerIds : []);
     if (attachments.length && preferences.data.backend !== "codex") throw new Error("ファイル添付はCodex app-server接続時に利用できます。");
-    return sendChatMessage(message, { localAttachments: attachments, selectedSkillIds });
+    return sendChatMessage(message, { localAttachments: attachments, selectedSkillIds, selectedMcpServerIds });
   });
   ipcMain.handle("chat:interrupt", async (event) => {
     assertTrustedSender(event);
@@ -8608,11 +9089,16 @@ function registerIpc() {
     assertTrustedSender(event);
     const text = typeof payload === "object" && payload ? payload.text : payload;
     const selectedSkillIds = typeof payload === "object" && payload ? normalizeTurnSkillIds(payload.selectedSkillIds) : undefined;
-    return appendActiveRealtimeText(String(text || ""), { selectedSkillIds });
+    const selectedMcpServerIds = typeof payload === "object" && payload ? normalizeTurnMcpServerIds(payload.selectedMcpServerIds) : undefined;
+    return appendActiveRealtimeText(String(text || ""), { selectedSkillIds, selectedMcpServerIds });
   });
   ipcMain.handle("audio:realtimeTurnSkills", (event, selectedSkillIds) => {
     assertTrustedSender(event);
     return setActiveRealtimeTurnSkills(selectedSkillIds);
+  });
+  ipcMain.handle("audio:realtimeTurnMcp", (event, selectedMcpServerIds) => {
+    assertTrustedSender(event);
+    return setActiveRealtimeTurnMcpServers(selectedMcpServerIds);
   });
   ipcMain.handle("audio:realtimeStop", async (event) => {
     assertTrustedSender(event);
@@ -8736,6 +9222,7 @@ function requestScreenShare(message, deliveryOptions = {}) {
     id: `screen-${Date.now()}`,
     message: String(message || "").trim().slice(0, 12_000),
     selectedSkillIds: normalizeTurnSkillIds(deliveryOptions.selectedSkillIds),
+    selectedMcpServerIds: normalizeTurnMcpServerIds(deliveryOptions.selectedMcpServerIds),
     expiresAt: Date.now() + 60_000,
   };
   const response = {
@@ -8833,6 +9320,7 @@ function requestBrowserUse(message, deliveryOptions = {}) {
     id: `browser-${Date.now()}`,
     message: String(message || "").trim().slice(0, 12_000),
     selectedSkillIds: normalizeTurnSkillIds(deliveryOptions.selectedSkillIds),
+    selectedMcpServerIds: normalizeTurnMcpServerIds(deliveryOptions.selectedMcpServerIds),
     targetUrl: target?.href || "",
     allowedHost: target?.hostname || "",
     expiresAt: Date.now() + 60_000,
@@ -9178,6 +9666,7 @@ function requestComputerUse(message, deliveryOptions = {}) {
     id: `computer-${Date.now()}`,
     message: String(message || "").trim().slice(0, 12_000),
     selectedSkillIds: normalizeTurnSkillIds(deliveryOptions.selectedSkillIds),
+    selectedMcpServerIds: normalizeTurnMcpServerIds(deliveryOptions.selectedMcpServerIds),
     expiresAt: Date.now() + 60_000,
   };
   const response = {
@@ -9299,7 +9788,12 @@ async function approveComputerUse(requestId, deliveryOptions = {}) {
   retainedComputerAuthorization = computerSession;
   activeComputerSession = computerSession;
   try {
-    return await sendChatMessage(request.message, { selectedSkillIds: request.selectedSkillIds, ...deliveryOptions, computerSession });
+    return await sendChatMessage(request.message, {
+      selectedSkillIds: request.selectedSkillIds,
+      selectedMcpServerIds: request.selectedMcpServerIds,
+      ...deliveryOptions,
+      computerSession,
+    });
   } finally {
     computerSession.active = false;
     if (activeComputerSession === computerSession) activeComputerSession = null;
@@ -9324,7 +9818,12 @@ async function approveBrowserUse(requestId, deliveryOptions = {}) {
   };
   retainedBrowserAuthorization = browserSession;
   try {
-    return await sendChatMessage(request.message, { selectedSkillIds: request.selectedSkillIds, ...deliveryOptions, browserSession });
+    return await sendChatMessage(request.message, {
+      selectedSkillIds: request.selectedSkillIds,
+      selectedMcpServerIds: request.selectedMcpServerIds,
+      ...deliveryOptions,
+      browserSession,
+    });
   } finally {
     browserSession.active = false;
     if (activeBrowserSession === browserSession) activeBrowserSession = null;
@@ -9375,7 +9874,12 @@ async function approveScreenShare(requestId, deliveryOptions = {}) {
   publishRemoteState();
   const capture = await captureCurrentDisplayOnce();
   try {
-    return await sendChatMessage(request.message, { selectedSkillIds: request.selectedSkillIds, ...deliveryOptions, localImagePath: capture.imagePath });
+    return await sendChatMessage(request.message, {
+      selectedSkillIds: request.selectedSkillIds,
+      selectedMcpServerIds: request.selectedMcpServerIds,
+      ...deliveryOptions,
+      localImagePath: capture.imagePath,
+    });
   } finally {
     fs.rmSync(capture.directory, { recursive: true, force: true });
   }
@@ -9438,6 +9942,20 @@ async function handleMascotConversation(message, deliveryOptions = {}) {
     revokeBrowserAuthorization({ closeWindow: true });
     revokeComputerAuthorization();
     return sendChatMessage(text, deliveryOptions);
+  }
+  // An explicitly selected MCP connection is the user's chosen tool route.
+  // Do not reinterpret a search-shaped request as browser-control consent.
+  const selectedMcpServerIds = normalizeTurnMcpServerIds(deliveryOptions.selectedMcpServerIds);
+  const requestedAssignedMcpServerIds = !selectedMcpServerIds.length && messageExplicitlyRequestsMcp(text)
+    ? activeCharacterMcpServerIds()
+    : [];
+  if (selectedMcpServerIds.length || requestedAssignedMcpServerIds.length) {
+    revokeBrowserAuthorization({ closeWindow: true });
+    revokeComputerAuthorization();
+    return sendChatMessage(text, {
+      ...deliveryOptions,
+      selectedMcpServerIds: selectedMcpServerIds.length ? selectedMcpServerIds : requestedAssignedMcpServerIds,
+    });
   }
   const screenPending = currentScreenShareRequest();
   const screenAction = screenShareConversationAction(text, Boolean(screenPending));
@@ -9509,6 +10027,7 @@ async function sendChatMessage(message, {
   artifactTarget = null,
   forceWork = false,
   selectedSkillIds = [],
+  selectedMcpServerIds = [],
 } = {}) {
   const text = String(message || "").trim().slice(0, 12_000);
   if (!text && !localAttachments.length) throw new Error("メッセージを入力してください。");
@@ -9523,8 +10042,16 @@ async function sendChatMessage(message, {
   const conversationalWorkTurn = !forceWork && selectedWorkMode && !localAttachments.length && isSocialConversationTurn(requestText);
   const workMode = selectedWorkMode && !conversationalWorkTurn;
   const explicitSkills = explicitTurnSkillItems(selectedSkillIds);
+  const explicitMcpServers = explicitTurnMcpServers(selectedMcpServerIds);
+  const requireMcpReady = explicitMcpServers.length > 0 || messageExplicitlyRequestsMcp(requestText);
   if (explicitSkills.length && preferences.data.backend !== "codex") {
     throw new Error(mainText("Skillの指定はCodex app-server接続時に利用できます。", "Selecting Skills requires a Codex app-server connection."));
+  }
+  if (explicitMcpServers.length && preferences.data.backend !== "codex") {
+    throw new Error(mainText("MCPの指定はCodex app-server接続時に利用できます。", "Selecting MCP connections requires a Codex app-server connection."));
+  }
+  if (explicitMcpServers.length && (browserSession || computerSession)) {
+    throw new Error(mainText("MCPと画面・ブラウザ操作は同じ送信では併用できません。", "MCP cannot be combined with browser or computer control in the same turn."));
   }
   const turnSkillItems = mergeTurnSkillItems(
     workMode ? activeCharacterSkillItems() : [builtInSkillCreatorItem()],
@@ -9549,7 +10076,8 @@ async function sendChatMessage(message, {
       `The user explicitly selected these Skills for this turn. Prefer the ones that apply to the request: ${explicitSkills.map((skill) => skill.name).join(", ")}`,
     )
     : "";
-  const codexText = [requestText, selectedSkillInstruction, artifactContext, memoryContext, context, imageInstructions, attachmentInstructions].filter(Boolean).join("\n\n");
+  const selectedMcpInstruction = mcpTurnContext(selectedMcpServerIds);
+  const codexText = [requestText, selectedSkillInstruction, selectedMcpInstruction, artifactContext, memoryContext, context, imageInstructions, attachmentInstructions].filter(Boolean).join("\n\n");
   if (workMode && preferences.data.backend !== "codex") throw new Error("WorkはCodex app-server接続時のみ利用できます。");
   if (workMode && activeWorkRunId) throw new Error("実行中の作業があります。完了を待つか、履歴パネルから中断してください。");
   const workRun = workMode ? beginWorkRun(requestText) : null;
@@ -9788,13 +10316,14 @@ async function sendChatMessage(message, {
         result = { ...result, mode: "work", workDirectoryName: path.basename(validWorkDirectory()) };
       }
     } else if (workMode) {
-      const worker = ensureWorkClient();
+      const worker = ensureWorkClient(selectedMcpServerIds);
       workRuntimeDirectory = worker.cwd;
       let lastActivity = "";
       result = await worker.sendMessage(codexText, {
         localImagePath,
         localImagePaths: localAttachments.filter((item) => item.image).map((item) => item.path),
         skillItems: turnSkillItems,
+        requireMcpReady,
         onDelta,
         onEvent: (message) => {
           const itemType = String(message.params?.item?.type || "");
@@ -9821,14 +10350,15 @@ async function sendChatMessage(message, {
         onDelta,
       });
     } else {
-      codexClient.setPersona(personaInstructions());
-      codexClient.setTurnStartSkillItems([builtInSkillCreatorItem()]);
+      const conversationClient = ensureConversationCodexClient(selectedMcpServerIds);
+      conversationClient.setTurnStartSkillItems([builtInSkillCreatorItem()]);
       let searchingWeb = false;
-      result = await codexClient.sendMessage(codexText, {
+      result = await conversationClient.sendMessage(codexText, {
         onDelta,
         skillItems: turnSkillItems,
         localImagePath,
         localImagePaths: localAttachments.filter((item) => item.image).map((item) => item.path),
+        requireMcpReady,
         onEvent: (event) => {
           if (String(event.params?.item?.type || "") !== "webSearch" || searchingWeb) return;
           searchingWeb = true;
@@ -9900,7 +10430,14 @@ async function sendChatMessage(message, {
       sendStream({ phase: "realtime-work-complete", mode: "work", realtimeOutput: true, workRunId: workRun?.id || "" });
     }
     if (!workMode) rememberConversationTurn(requestText, result.text);
-    return { ...result, displayText, artifacts, workRunId: workRun?.id || "", streamed: true };
+    return {
+      ...result,
+      mode: workMode ? "work" : "chat",
+      displayText,
+      artifacts,
+      workRunId: workRun?.id || "",
+      streamed: true,
+    };
   } catch (error) {
     workAnnouncementsOpen = false;
     workVoiceReporter?.complete();
@@ -10221,6 +10758,7 @@ async function boot() {
   registerShortcuts();
   startCursorLoop();
   scheduleIrodoriPrewarm();
+  scheduleMcpPrewarm();
   scheduleAppUpdateCheck();
   scheduleStartupContinuation();
   const syncDisplays = () => {
@@ -10254,6 +10792,7 @@ app.on("window-all-closed", () => {});
 app.on("activate", showControlWindow);
 app.on("before-quit", () => {
   clearTimeout(appUpdateCheckTimer);
+  clearTimeout(mcpPrewarmTimer);
   diagnosticLog?.write("info", "app-stop");
   quitting = true;
   clearInterval(cursorTimer);

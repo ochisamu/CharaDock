@@ -20,6 +20,14 @@ test("conversation backup stays bounded", () => {
   assert.equal(history.at(-1).text, "a29");
 });
 
+test("the same routed turn is recorded once when Live and Codex complete together", () => {
+  const first = boundedConversationHistory([], "同じ入力", "同じ回答");
+  const repeated = boundedConversationHistory(first, "同じ入力", "同じ回答");
+  assert.equal(repeated.length, 2);
+  const older = first.map((entry) => ({ ...entry, createdAt: "2026-01-01T00:00:00.000Z" }));
+  assert.equal(boundedConversationHistory(older, "同じ入力", "同じ回答").length, 4);
+});
+
 test("shared continuity merges conversation and completed Work in chronological order", () => {
   const context = sharedContinuityContext({
     characterId: "kohaku",

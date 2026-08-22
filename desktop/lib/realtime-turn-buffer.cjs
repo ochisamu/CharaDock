@@ -17,7 +17,12 @@ class RealtimeTurnBuffer {
     if (!normalized) return;
     // appendSpeech can emit its user transcript before its request promise
     // resolves. In that ordering addUser already queued the same turn.
-    if (this.pendingUsers.includes(normalized)) return;
+    const pendingUserIndex = this.pendingUsers.indexOf(normalized);
+    if (pendingUserIndex >= 0) {
+      this.pendingUsers.splice(pendingUserIndex, 1);
+      this.pendingTyped.push(normalized);
+      return;
+    }
     this.pendingTyped.push(normalized);
   }
 
@@ -32,8 +37,12 @@ class RealtimeTurnBuffer {
       return null;
     }
     const typedIndex = this.pendingTyped.indexOf(normalized);
-    if (typedIndex >= 0) this.pendingTyped.splice(typedIndex, 1);
-    if (this.pendingAssistants.length) return { user: normalized, assistant: this.pendingAssistants.shift() };
+    // Realtime can echo a typed request as a user transcript before the
+    // assistant audio begins. Keep the typed request queued so the eventual
+    // transcript remains presentation-only instead of becoming a second
+    // persisted conversation turn.
+    if (typedIndex >= 0) return null;
+    if (this.pendingAssistants.length) return { user: normalized, assistant: this.pendingAssistants.shift(), source: "voice" };
     this.pendingUsers.push(normalized);
     return null;
   }
@@ -42,14 +51,36 @@ class RealtimeTurnBuffer {
     const normalized = normalizedText(text);
     if (!normalized) return null;
     let user = this.pendingUsers.shift();
+    let source = user ? "voice" : "";
     if (!user && this.pendingTyped.length) {
       user = this.pendingTyped.shift();
+      source = "typed";
       this.consumedTyped.push({ text: user, createdAt: Date.now() });
       this.consumedTyped = this.consumedTyped.slice(-8);
     }
-    if (user) return { user, assistant: normalized };
+    if (user) return { user, assistant: normalized, source };
     this.pendingAssistants.push(normalized);
     return null;
+  }
+
+  hasPendingInput() {
+    return this.pendingUsers.length > 0 || this.pendingTyped.length > 0;
+  }
+
+  discardInput(text) {
+    const normalized = normalizedText(text);
+    if (!normalized) return false;
+    const typedIndex = this.pendingTyped.indexOf(normalized);
+    if (typedIndex >= 0) {
+      this.pendingTyped.splice(typedIndex, 1);
+      return true;
+    }
+    const userIndex = this.pendingUsers.indexOf(normalized);
+    if (userIndex >= 0) {
+      this.pendingUsers.splice(userIndex, 1);
+      return true;
+    }
+    return false;
   }
 
   clear() {

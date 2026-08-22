@@ -53,7 +53,7 @@ export class TurnCoordinator {
     };
   }
 
-  apply(payload: TurnStreamPayload = {}): TurnStreamPayload & { turnId: string; turnStatus: TurnStatus; audioRoute: AudioRoute } {
+  apply(payload: TurnStreamPayload = {}): TurnStreamPayload & { turnId: string; turnStatus: TurnStatus; audioRoute: AudioRoute; mode: InteractionMode } {
     const phase = String(payload.phase || "");
     // Every user-visible turn is opened explicitly with `start`.  Keeping
     // terminal follow-up events on the existing turn is important: Live can
@@ -96,6 +96,10 @@ export class TurnCoordinator {
       turnId: this.snapshotValue.id,
       turnStatus: this.snapshotValue.status,
       audioRoute: this.snapshotValue.audioRoute,
+      // Downstream renderers must never infer a missing mode from whichever
+      // history tab happens to be open. Most delta/done events omit `mode`,
+      // so always forward the coordinator's authoritative value.
+      mode: this.snapshotValue.mode,
     };
   }
 

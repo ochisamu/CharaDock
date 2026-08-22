@@ -9,6 +9,16 @@ const { describeBeatriceModel } = require("./beatrice-v2.cjs");
 const { normalizeCharacterWorkspaces } = require("./character-home.cjs");
 const { normalizeContinuationSummaries } = require("./continuation-summary.cjs");
 const { normalizeManagedSkills, normalizeSkillAssignments } = require("./skill-library.cjs");
+const {
+  assignedMcpServerIds,
+  buildMcpRuntime,
+  MAX_MCP_SERVERS,
+  normalizeMcpAssignments,
+  normalizeMcpServerId,
+  normalizeMcpServers,
+  publicMcpServers,
+  validateMcpServerInput,
+} = require("./mcp-servers.cjs");
 
 const DEFAULT_IRODORI_VOICES = Object.freeze(BUNDLED_IRODORI_VOICES.map(({ sourceFileName: _sourceFileName, ...voice }) => Object.freeze({ ...voice })));
 const DEFAULT_CHARACTER_TTS_PROFILES = Object.freeze({
@@ -117,6 +127,8 @@ const DEFAULTS = Object.freeze({
   continuationSummaries: {},
   managedSkills: [],
   skillAssignments: { all: [], characters: {} },
+  mcpServers: [],
+  mcpAssignments: { all: [], characters: {} },
   workDirectory: "",
   characterProfiles: {},
   customCharacters: [],
@@ -198,9 +210,18 @@ function migrateSkillAssignmentCharacter(data, legacyId, builtInId) {
   return true;
 }
 
+function migrateMcpAssignmentCharacter(data, legacyId, builtInId) {
+  const characters = data.mcpAssignments?.characters;
+  if (!characters || typeof characters !== "object" || Array.isArray(characters) || !characters[legacyId]) return false;
+  characters[builtInId] = [...new Set([...(characters[builtInId] || []), ...characters[legacyId]])];
+  delete characters[legacyId];
+  return true;
+}
+
 function migrateBundledTowaPreferenceData(data) {
   let changed = false;
   if (migrateSkillAssignmentCharacter(data, LEGACY_TOWA_CHARACTER_ID, BUILT_IN_TOWA_CHARACTER_ID)) changed = true;
+  if (migrateMcpAssignmentCharacter(data, LEGACY_TOWA_CHARACTER_ID, BUILT_IN_TOWA_CHARACTER_ID)) changed = true;
   if (data.characterId === LEGACY_TOWA_CHARACTER_ID) {
     data.characterId = BUILT_IN_TOWA_CHARACTER_ID;
     changed = true;
@@ -251,6 +272,7 @@ function migrateBundledKohakuDisplayName(data) {
 function migrateBundledNikePreferenceData(data) {
   let changed = false;
   if (migrateSkillAssignmentCharacter(data, LEGACY_NIKE_CHARACTER_ID, BUILT_IN_NIKE_CHARACTER_ID)) changed = true;
+  if (migrateMcpAssignmentCharacter(data, LEGACY_NIKE_CHARACTER_ID, BUILT_IN_NIKE_CHARACTER_ID)) changed = true;
   if (data.characterId === LEGACY_NIKE_CHARACTER_ID) {
     data.characterId = BUILT_IN_NIKE_CHARACTER_ID;
     changed = true;
@@ -297,6 +319,7 @@ class Preferences {
       }])),
     };
     this.sessionApiKey = "";
+    this.sessionMcpApiKeys = new Map();
     this.load();
   }
 
@@ -528,12 +551,24 @@ class Preferences {
       this.data.continuationSummaries = normalizeContinuationSummaries(this.data.continuationSummaries);
       this.data.managedSkills = normalizeManagedSkills(this.data.managedSkills);
       this.data.skillAssignments = normalizeSkillAssignments(this.data.skillAssignments, this.data.managedSkills.map((skill) => skill.id));
+      this.data.mcpServers = normalizeMcpServers(this.data.mcpServers);
+      this.data.mcpAssignments = normalizeMcpAssignments(
+        Object.prototype.hasOwnProperty.call(parsed, "mcpAssignments")
+          ? this.data.mcpAssignments
+          : { all: this.data.mcpServers.filter((server) => server.enabled).map((server) => server.id), characters: {} },
+        this.data.mcpServers.map((server) => server.id),
+      );
       this.data.webPreviewRuntimes = this.data.webPreviewRuntimes && typeof this.data.webPreviewRuntimes === "object" && !Array.isArray(this.data.webPreviewRuntimes)
         ? Object.fromEntries(Object.entries(this.data.webPreviewRuntimes).slice(0, 100).flatMap(([projectId, runtime]) =>
           /^web-[a-f0-9]{18}$/.test(String(projectId)) && ["auto", "windows", "wsl"].includes(runtime) ? [[projectId, runtime]] : []))
         : {};
       this.data.workHistory = normalizeWorkHistory(this.data.workHistory);
       if (typeof parsed.encryptedApiKey === "string") this.data.encryptedApiKey = parsed.encryptedApiKey;
+      this.data.encryptedMcpApiKeys = parsed.encryptedMcpApiKeys && typeof parsed.encryptedMcpApiKeys === "object" && !Array.isArray(parsed.encryptedMcpApiKeys)
+        ? Object.fromEntries(Object.entries(parsed.encryptedMcpApiKeys).flatMap(([serverId, encrypted]) =>
+          normalizeMcpServerId(serverId) && typeof encrypted === "string" && encrypted.length <= 8_192
+            ? [[serverId, encrypted]] : []))
+        : {};
       const migratedTowa = migrateBundledTowaPreferenceData(this.data);
       const migratedKohaku = migrateBundledKohakuDisplayName(this.data);
       const migratedNike = migrateBundledNikePreferenceData(this.data);
@@ -553,17 +588,21 @@ class Preferences {
   publicState() {
     const state = {};
     for (const key of PUBLIC_KEYS) {
-      if (!["customCharacters", "workDirectory", "piperPlusExecutablePath", "piperPlusModelPath", "supertonicModelDirectory", "irodoriModelDirectory", "irodoriV4ModelDirectory", "irodoriV4Int4ModelDirectory", "irodoriReferenceAudioPath", "irodoriVoices", "kokoroModelDirectory", "sbv2Models", "beatriceVstPath", "beatriceModelPath", "beatriceModels", "characterTtsProfiles", "conversationHistories", "characterMemories", "characterWorkspaces", "continuationSummaries", "managedSkills", "skillAssignments", "webPreviewRuntimes", "workHistory", "remoteTrustedDevices"].includes(key)) state[key] = this.data[key];
+      if (!["customCharacters", "workDirectory", "piperPlusExecutablePath", "piperPlusModelPath", "supertonicModelDirectory", "irodoriModelDirectory", "irodoriV4ModelDirectory", "irodoriV4Int4ModelDirectory", "irodoriReferenceAudioPath", "irodoriVoices", "kokoroModelDirectory", "sbv2Models", "beatriceVstPath", "beatriceModelPath", "beatriceModels", "characterTtsProfiles", "conversationHistories", "characterMemories", "characterWorkspaces", "continuationSummaries", "managedSkills", "skillAssignments", "mcpServers", "mcpAssignments", "webPreviewRuntimes", "workHistory", "remoteTrustedDevices"].includes(key)) state[key] = this.data[key];
     }
     state.hasWorkDirectory = Boolean(this.data.workDirectory);
     state.workDirectoryName = this.data.workDirectory ? path.basename(this.data.workDirectory) : "";
     state.hasApiKey = Boolean(this.getApiKey());
     state.apiKeyPersistence = this.canEncrypt() ? "encrypted" : "session";
+    state.mcpServers = publicMcpServers(this.data.mcpServers, (serverId) => Boolean(this.getMcpApiKey(serverId)));
+    state.mcpAssignments = normalizeMcpAssignments(this.data.mcpAssignments, this.data.mcpServers.map((server) => server.id));
+    state.mcpApiKeyPersistence = this.canEncrypt() ? "encrypted" : "session";
     return state;
   }
 
   patch(values = {}) {
     for (const key of PUBLIC_KEYS) {
+      if (key === "mcpServers" || key === "mcpAssignments") continue;
       if (Object.prototype.hasOwnProperty.call(values, key)) this.data[key] = values[key];
     }
     this.save();
@@ -599,6 +638,148 @@ class Preferences {
       console.warn("API key decrypt failed:", error);
       return "";
     }
+  }
+
+  setMcpServer(input = {}) {
+    const now = new Date().toISOString();
+    const existing = this.data.mcpServers.find((server) => server.id === input.id);
+    if (!existing && this.data.mcpServers.length >= MAX_MCP_SERVERS) {
+      throw new Error(`MCPサーバーは${MAX_MCP_SERVERS}件まで追加できます。`);
+    }
+    const record = validateMcpServerInput({
+      ...existing,
+      ...input,
+      createdAt: existing?.createdAt || input.createdAt || now,
+      updatedAt: now,
+    });
+    const apiKeyProvided = Object.prototype.hasOwnProperty.call(input, "apiKey") && String(input.apiKey || "").trim();
+    if (record.authType === "api-key" && apiKeyProvided) this.setMcpApiKey(record.id, input.apiKey, { save: false });
+    if (record.authType === "none") this.clearMcpApiKey(record.id, { save: false });
+    if (record.authType === "api-key" && !this.getMcpApiKey(record.id)) {
+      throw new Error("APIキーを入力してください。");
+    }
+    const records = this.data.mcpServers.filter((server) => server.id !== record.id);
+    records.push(record);
+    this.data.mcpServers = normalizeMcpServers(records);
+    this.save();
+    return this.publicState();
+  }
+
+  setMcpServerEnabled(serverId, enabled) {
+    const id = normalizeMcpServerId(serverId);
+    const existing = this.data.mcpServers.find((server) => server.id === id);
+    if (!existing) throw new Error("MCPサーバーが見つかりません。");
+    existing.enabled = Boolean(enabled);
+    existing.updatedAt = new Date().toISOString();
+    const assignments = normalizeMcpAssignments(this.data.mcpAssignments, this.data.mcpServers.map((server) => server.id));
+    if (enabled) assignments.all = [...new Set([...assignments.all, id])];
+    else {
+      assignments.all = assignments.all.filter((serverId) => serverId !== id);
+      for (const [characterId, ids] of Object.entries(assignments.characters)) {
+        const filtered = ids.filter((serverId) => serverId !== id);
+        if (filtered.length) assignments.characters[characterId] = filtered;
+        else delete assignments.characters[characterId];
+      }
+    }
+    this.data.mcpAssignments = assignments;
+    this.save();
+    return this.publicState();
+  }
+
+  setMcpAssignment(serverId, target = {}, enabled = true) {
+    const id = normalizeMcpServerId(serverId);
+    const existing = this.data.mcpServers.find((server) => server.id === id);
+    if (!existing) throw new Error("MCPサーバーが見つかりません。");
+    const serverIds = this.data.mcpServers.map((server) => server.id);
+    const next = normalizeMcpAssignments(this.data.mcpAssignments, serverIds);
+    const update = (items) => enabled ? [...new Set([...(items || []), id])] : (items || []).filter((serverId) => serverId !== id);
+    if (target?.scope === "all") {
+      next.all = update(next.all);
+      if (enabled) {
+        for (const [characterId, ids] of Object.entries(next.characters)) {
+          const filtered = ids.filter((serverId) => serverId !== id);
+          if (filtered.length) next.characters[characterId] = filtered;
+          else delete next.characters[characterId];
+        }
+      }
+    } else {
+      const characterId = String(target?.characterId || "").trim().slice(0, 120);
+      if (!characterId) throw new Error("キャラクターが見つかりません。");
+      if (enabled && next.all.includes(id)) return this.publicState();
+      const assigned = update(next.characters[characterId] || []);
+      if (assigned.length) next.characters[characterId] = assigned;
+      else delete next.characters[characterId];
+    }
+    existing.enabled = true;
+    existing.updatedAt = new Date().toISOString();
+    this.data.mcpAssignments = normalizeMcpAssignments(next, serverIds);
+    this.save();
+    return this.publicState();
+  }
+
+  removeMcpServer(serverId) {
+    const id = normalizeMcpServerId(serverId);
+    if (!id || !this.data.mcpServers.some((server) => server.id === id)) throw new Error("MCPサーバーが見つかりません。");
+    this.data.mcpServers = this.data.mcpServers.filter((server) => server.id !== id);
+    this.data.mcpAssignments = normalizeMcpAssignments(this.data.mcpAssignments, this.data.mcpServers.map((server) => server.id));
+    this.clearMcpApiKey(id, { save: false });
+    this.save();
+    return this.publicState();
+  }
+
+  removeMcpAssignmentsForCharacter(characterId) {
+    const id = String(characterId || "").trim().slice(0, 120);
+    if (!id) return this.publicState();
+    const assignments = normalizeMcpAssignments(this.data.mcpAssignments, this.data.mcpServers.map((server) => server.id));
+    delete assignments.characters[id];
+    this.data.mcpAssignments = assignments;
+    this.save();
+    return this.publicState();
+  }
+
+  setMcpApiKey(serverId, apiKey, { save = true } = {}) {
+    const id = normalizeMcpServerId(serverId);
+    if (!id) throw new Error("MCPサーバーIDが正しくありません。");
+    const normalized = String(apiKey || "").trim().slice(0, 8_192);
+    this.clearMcpApiKey(id, { save: false });
+    if (normalized && this.canEncrypt()) {
+      this.data.encryptedMcpApiKeys ||= {};
+      this.data.encryptedMcpApiKeys[id] = this.safeStorage.encryptString(normalized).toString("base64");
+    } else if (normalized) {
+      this.sessionMcpApiKeys.set(id, normalized);
+    }
+    if (save) this.save();
+  }
+
+  clearMcpApiKey(serverId, { save = true } = {}) {
+    const id = normalizeMcpServerId(serverId);
+    if (!id) return;
+    this.sessionMcpApiKeys.delete(id);
+    if (this.data.encryptedMcpApiKeys) delete this.data.encryptedMcpApiKeys[id];
+    if (save) this.save();
+  }
+
+  getMcpApiKey(serverId) {
+    const id = normalizeMcpServerId(serverId);
+    if (!id) return "";
+    if (this.sessionMcpApiKeys.has(id)) return this.sessionMcpApiKeys.get(id);
+    const encrypted = this.data.encryptedMcpApiKeys?.[id];
+    if (!encrypted || !this.canEncrypt()) return "";
+    try {
+      return this.safeStorage.decryptString(Buffer.from(encrypted, "base64"));
+    } catch (error) {
+      console.warn("MCP API key decrypt failed:", error);
+      return "";
+    }
+  }
+
+  mcpRuntime(selectedIds = null, options = {}) {
+    return buildMcpRuntime(this.data.mcpServers, (serverId) => this.getMcpApiKey(serverId), selectedIds, options);
+  }
+
+  assignedMcpServerIds(characterId = this.data.characterId) {
+    const assignments = normalizeMcpAssignments(this.data.mcpAssignments, this.data.mcpServers.map((server) => server.id));
+    return assignedMcpServerIds(assignments, characterId);
   }
 }
 

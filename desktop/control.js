@@ -37,6 +37,8 @@
   let realtimeAssistantText = "";
   let realtimeAssistantActive = false;
   let realtimePendingTypedText = "";
+  let realtimeTypedChatTurnActive = false;
+  let realtimeOutputSuppressed = false;
   let realtimeUnavailable = false;
   let speechPulseTimer = null;
   let speechAudio = null;
@@ -50,6 +52,11 @@
   let speechTtsStreamId = "";
   let speechPlaybackToken = 0;
   let streamingMessage = null;
+  let streamingMessageMode = "";
+  let activeStreamMode = "";
+  let activeStreamTurnId = "";
+  let activeStreamWorkRunId = "";
+  let localChatSendPending = false;
   let renderedConversationCharacterId = "";
   let renderedContinuationSignature = "";
   let inspectedSkill = null;
@@ -64,11 +71,15 @@
   const mutatingSkillIds = new Set();
   let pendingSkillRemoval = null;
   let skillRemoveFocusReturn = null;
+  let mcpDialogFocusReturn = null;
+  const mcpTestResults = new Map();
+  const mcpMutatingIds = new Set();
   let characterDirectorFocusReturn = null;
   let chatBusy = false;
   let pendingChatFollowUp = null;
   let chatAttachments = [];
   let chatSelectedSkillIds = [];
+  let chatSelectedMcpServerIds = [];
   let chatSkillPickerIndex = 0;
   let chatSkillTrigger = null;
   let chatHistoryView = "conversation";
@@ -124,6 +135,7 @@
     { page: "voice", target: "#standardTtsSettings", ja: "通常TTSと音声モデル", en: "Standard TTS and voice models", detailJa: "Irodori、SBV2、Kokoroなど", detailEn: "Irodori, SBV2, Kokoro, and more", keywords: "irodori sbv2 kokoro piper supertonic style bert model" },
     { page: "connection", target: ".backend-grid", ja: "AI接続方式", en: "AI connection method", detailJa: "CodexまたはOpenAI APIを選択", detailEn: "Choose Codex or OpenAI API", keywords: "backend provider login api", popular: true },
     { page: "connection", target: "#codexSettings", ja: "Codexのモデルと推論", en: "Codex model and reasoning", detailJa: "会話・作業ごとに設定", detailEn: "Configure chat and work separately", keywords: "app server model effort thinking 推論" },
+    { page: "mcp", target: "#mcpAssignmentCard", ja: "MCP連携", en: "MCP connections", detailJa: "全キャラまたはキャラごとにChat・Work・Liveへ外部ツールを割り当てる", detailEn: "Assign external tools to Chat, Work, and Live globally or per character", keywords: "mcp model context protocol streamable http api key ツール 接続 server 割り当て", popular: true },
     { page: "connection", target: "#openaiSettings", ja: "OpenAI API", en: "OpenAI API", detailJa: "APIキーと応答モデル", detailEn: "API key and response model", keywords: "key responses transcription" },
     { page: "desktop", target: "#languageSettingsCard", ja: "表示言語", en: "Display language", detailJa: "日本語とEnglishを切り替える", detailEn: "Switch between Japanese and English", keywords: "language english japanese 日本語 英語" },
     { page: "desktop", target: "#windowSettingsCard", ja: "キャラクターの操作", en: "Character interaction", detailJa: "自動退避、クリック透過、最前面", detailEn: "Auto-hide, click-through, and always-on-top", keywords: "auto hide pointer click through lock window 透過 固定", popular: true },
@@ -139,6 +151,324 @@
   function setStatus(element, message, error = false) {
     element.textContent = String(message || "");
     element.classList.toggle("is-error", Boolean(error));
+  }
+
+  function mcpSettingsBusy() {
+    return Boolean(workHistoryState.activeWorkRunId || realtimePeerConnection || realtimeStarting);
+  }
+
+  function mcpServerById(serverId) {
+    return (state?.mcpServers || []).find((server) => server.id === serverId) || null;
+  }
+
+  function mcpAssignmentTarget() {
+    const value = String($("#mcpAssignmentTargetSelect")?.value || "");
+    return value === "all" ? { scope: "all", characterId: "" } : { scope: "character", characterId: value || state.characterId };
+  }
+
+  function currentMcpAssignmentSets() {
+    const assignments = state?.mcpAssignments || { all: [], characters: {} };
+    const target = mcpAssignmentTarget();
+    return {
+      target,
+      allAssigned: new Set(assignments.all || []),
+      characterAssigned: new Set(assignments.characters?.[target.characterId] || []),
+    };
+  }
+
+  function mcpAssignmentState(serverId, assignmentSets = currentMcpAssignmentSets()) {
+    const global = assignmentSets.allAssigned.has(serverId);
+    const direct = assignmentSets.target.scope === "character" && assignmentSets.characterAssigned.has(serverId);
+    return {
+      global,
+      direct,
+      inherited: assignmentSets.target.scope === "character" && global,
+      active: assignmentSets.target.scope === "all" ? global : global || direct,
+    };
+  }
+
+  function renderMcpAssignmentTarget() {
+    const select = $("#mcpAssignmentTargetSelect");
+    if (!select || !state) return;
+    const previous = select.value || state.characterId;
+    select.replaceChildren(new Option(localized("全キャラクター", "All characters"), "all"));
+    for (const character of state.characters || []) select.appendChild(new Option(character.name, character.id));
+    select.value = [...select.options].some((option) => option.value === previous) ? previous : state.characterId;
+    const target = mcpAssignmentTarget();
+    $("#mcpTargetSummary").textContent = target.scope === "all"
+      ? localized("全キャラクター", "All characters")
+      : state.characters.find((character) => character.id === target.characterId)?.name || localized("このキャラクター", "This character");
+    select.disabled = mcpMutatingIds.size > 0;
+    $("#mcpTargetHint").textContent = target.scope === "all"
+      ? localized("ここでONにすると全キャラで使用", "Connections enabled here apply to every character")
+      : localized("下のスイッチでこのキャラへつけ外し", "Use the switches below to attach or detach for this character");
+  }
+
+  function syncMcpAuthFields() {
+    const authType = $("#mcpServerAuthSelect").value;
+    const fields = $("#mcpApiKeyFields");
+    const server = mcpServerById($("#mcpServerIdInput").value);
+    fields.hidden = authType !== "api-key";
+    const keyInput = $("#mcpServerApiKeyInput");
+    keyInput.required = authType === "api-key" && !server?.hasApiKey;
+    $("#mcpApiKeyHint").textContent = server?.hasApiKey
+      ? localized("APIキーは保存済みです。空欄のまま保存すると現在のキーを維持します。", "An API key is saved. Leave this blank to keep it.")
+      : localized("既定では Authorization: Bearer として送信します。", "By default, this is sent as Authorization: Bearer.");
+  }
+
+  function closeMcpServerDialog({ returnFocus = true } = {}) {
+    $("#mcpServerDialog").hidden = true;
+    $("#mcpServerForm").reset();
+    $("#mcpServerIdInput").value = "";
+    $("#mcpServerHeaderInput").value = "Authorization";
+    $("#mcpServerPrefixInput").value = "Bearer";
+    setStatus($("#mcpDialogStatus"), "");
+    if (returnFocus) mcpDialogFocusReturn?.focus?.({ preventScroll: true });
+    mcpDialogFocusReturn = null;
+  }
+
+  function openMcpServerDialog(server = null) {
+    if (mcpSettingsBusy()) {
+      setStatus($("#mcpStatus"), localized("現在のWorkまたはLiveが終わってから変更してください。", "Make changes after the current Work or Live session finishes."), true);
+      return;
+    }
+    mcpDialogFocusReturn = document.activeElement;
+    $("#mcpServerIdInput").value = server?.id || "";
+    $("#mcpServerNameInput").value = server?.name || "";
+    $("#mcpServerUrlInput").value = server?.url || "";
+    $("#mcpServerAuthSelect").value = server?.authType === "api-key" ? "api-key" : "none";
+    $("#mcpServerApiKeyInput").value = "";
+    $("#mcpServerHeaderInput").value = server?.apiKeyHeader || "Authorization";
+    $("#mcpServerPrefixInput").value = server?.apiKeyPrefix ?? "Bearer";
+    $("#mcpServerDialogTitle").textContent = server
+      ? localized("MCPサーバーを編集", "Edit MCP server")
+      : localized("MCPサーバーを追加", "Add MCP server");
+    $("#saveMcpServerButton").textContent = localized("保存して接続確認", "Save and test");
+    $("#mcpServerDialog").hidden = false;
+    syncMcpAuthFields();
+    setStatus($("#mcpDialogStatus"), "");
+    requestAnimationFrame(() => $("#mcpServerNameInput").focus());
+  }
+
+  function mcpResultText(server, result, assignment) {
+    if (!assignment.active) return localized("この相手では未使用。今回だけ選ぶこともできます。", "Not used for this target. You can still select it for one turn.");
+    if (server.authType === "api-key" && !server.hasApiKey) return localized("APIキーを設定してください。", "Set an API key.");
+    if (result?.ok) {
+      const version = result.serverVersion ? ` · v${result.serverVersion}` : "";
+      return localized(`${result.toolCount}個のツールを確認しました${version}`, `Connected · ${result.toolCount} tool(s)${version}`);
+    }
+    if (result?.error) return result.error;
+    return localized("準備済み。次のChat・Work・Liveから接続します。", "Ready. Connects from the next Chat, Work, or Live session.");
+  }
+
+  function renderMcpServers() {
+    const list = $("#mcpServerList");
+    if (!list || !state) return;
+    const servers = Array.isArray(state.mcpServers) ? state.mcpServers : [];
+    const blocked = mcpSettingsBusy();
+    renderMcpAssignmentTarget();
+    const assignmentSets = currentMcpAssignmentSets();
+    $("#mcpServerCount").textContent = String(servers.length);
+    $("#mcpActiveCount").textContent = String(servers.filter((server) => mcpAssignmentState(server.id, assignmentSets).active && (server.authType !== "api-key" || server.hasApiKey)).length);
+    $("#addMcpServerButton").disabled = blocked;
+    list.replaceChildren();
+    if (!servers.length) {
+      const empty = document.createElement("div");
+      empty.className = "mcp-server-empty";
+      const title = document.createElement("strong");
+      title.textContent = localized("まだMCPサーバーはありません", "No MCP servers yet");
+      const detail = document.createElement("small");
+      detail.textContent = localized("URLを追加すると、キャラクターがWorkで外部ツールを使えるようになります。", "Add a URL to let your character use external tools in Work.");
+      empty.append(title, detail);
+      list.appendChild(empty);
+      return;
+    }
+    for (const server of servers) {
+      const result = mcpTestResults.get(server.id);
+      const missingKey = server.authType === "api-key" && !server.hasApiKey;
+      const assignment = mcpAssignmentState(server.id, assignmentSets);
+      const article = document.createElement("article");
+      article.className = `mcp-server-card${assignment.active ? "" : " is-disabled"}${result?.ok ? " is-ready" : result?.error || missingKey ? " is-error" : ""}`;
+
+      const main = document.createElement("div");
+      main.className = "mcp-server-main";
+      const heading = document.createElement("div");
+      heading.className = "mcp-server-heading";
+      const name = document.createElement("h3");
+      name.textContent = server.name;
+      const auth = document.createElement("span");
+      auth.className = "mcp-server-badge";
+      auth.textContent = server.authType === "api-key" ? localized("APIキー", "API key") : localized("認証なし", "No auth");
+      heading.append(name, auth);
+      const url = document.createElement("code");
+      url.className = "mcp-server-url";
+      url.textContent = server.url;
+      url.title = server.url;
+      const status = document.createElement("p");
+      status.className = "mcp-server-status";
+      status.textContent = mcpResultText(server, result, assignment);
+      main.append(heading, url, status);
+
+      const side = document.createElement("div");
+      side.className = "mcp-server-side";
+      const toggle = document.createElement("label");
+      toggle.className = "switch-row mcp-server-toggle";
+      toggle.title = assignment.inherited
+        ? localized("全キャラから外す", "Detach from all characters")
+        : assignment.active ? localized("この相手から外す", "Detach from this target") : localized("この相手につける", "Attach to this target");
+      const toggleCopy = document.createElement("span");
+      const toggleTitle = document.createElement("strong");
+      toggleTitle.textContent = assignment.inherited
+        ? localized("全員共通でON", "On for everyone")
+        : assignment.active ? localized("この相手でON", "On for this target") : localized("この相手でOFF", "Off for this target");
+      const toggleHint = document.createElement("small");
+      toggleHint.textContent = assignment.inherited
+        ? localized("外すと全員でOFF", "Turning off affects everyone")
+        : localized("次の会話から反映", "Applies next conversation");
+      toggleCopy.append(toggleTitle, toggleHint);
+      const checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.checked = assignment.active;
+      // A session-only key disappears after restart. In that state an already
+      // enabled server must still be switchable off without re-entering it.
+      checkbox.disabled = mcpMutatingIds.has(server.id) || (missingKey && !assignment.active);
+      checkbox.setAttribute("aria-label", toggle.title);
+      checkbox.addEventListener("change", async () => {
+        mcpMutatingIds.add(server.id);
+        renderMcpServers();
+        try {
+          const selectedTarget = mcpAssignmentTarget();
+          const target = !checkbox.checked && assignment.inherited ? { scope: "all", characterId: "" } : selectedTarget;
+          state = await api.setMcpAssignment({ serverId: server.id, scope: target.scope, characterId: target.characterId, enabled: checkbox.checked });
+          mcpTestResults.delete(server.id);
+          syncUi();
+          setStatus($("#mcpStatus"), checkbox.checked
+            ? localized(`「${server.name}」をこの相手で使用します。`, `Enabled “${server.name}” for this target.`)
+            : assignment.inherited
+              ? localized(`「${server.name}」を全キャラクターから外しました。`, `Detached “${server.name}” from all characters.`)
+              : localized(`「${server.name}」をこの相手から外しました。`, `Detached “${server.name}” from this target.`));
+        } catch (error) {
+          setStatus($("#mcpStatus"), error.message, true);
+          state = await api.getState().catch(() => state);
+          syncUi();
+        } finally {
+          mcpMutatingIds.delete(server.id);
+          renderMcpServers();
+        }
+      });
+      toggle.append(toggleCopy, checkbox, document.createElement("i"));
+      side.append(toggle);
+
+      const toolbar = document.createElement("div");
+      toolbar.className = "mcp-server-toolbar";
+      const testButton = document.createElement("button");
+      testButton.className = "button button-secondary";
+      testButton.type = "button";
+      testButton.textContent = localized("接続確認", "Test");
+      testButton.disabled = blocked || missingKey || mcpMutatingIds.has(server.id);
+      testButton.addEventListener("click", () => testSavedMcpServer(server.id));
+      const editButton = document.createElement("button");
+      editButton.className = "button button-quiet";
+      editButton.type = "button";
+      editButton.textContent = localized("編集", "Edit");
+      editButton.disabled = blocked || mcpMutatingIds.has(server.id);
+      editButton.addEventListener("click", () => openMcpServerDialog(server));
+      const removeButton = document.createElement("button");
+      removeButton.className = "button button-quiet";
+      removeButton.type = "button";
+      removeButton.textContent = localized("削除", "Remove");
+      removeButton.disabled = blocked || mcpMutatingIds.has(server.id);
+      removeButton.addEventListener("click", () => removeSavedMcpServer(server));
+      toolbar.append(testButton, editButton, removeButton);
+      article.append(main, side, toolbar);
+      list.appendChild(article);
+    }
+  }
+
+  async function testSavedMcpServer(serverId, statusElement = $("#mcpStatus")) {
+    const server = mcpServerById(serverId);
+    if (!server || mcpMutatingIds.has(serverId)) return null;
+    mcpMutatingIds.add(serverId);
+    setStatus(statusElement, localized(`「${server.name}」へ接続しています…`, `Connecting to “${server.name}”…`));
+    renderMcpServers();
+    try {
+      const result = await api.testMcpServer(serverId);
+      mcpTestResults.set(serverId, result);
+      const message = localized(
+        `接続できました。${result.toolCount}個のツールを確認しました。`,
+        `Connected. Found ${result.toolCount} tool(s).`,
+      );
+      setStatus(statusElement, message);
+      return result;
+    } catch (error) {
+      mcpTestResults.set(serverId, { ok: false, error: error.message });
+      setStatus(statusElement, error.message, true);
+      return null;
+    } finally {
+      mcpMutatingIds.delete(serverId);
+      renderMcpServers();
+    }
+  }
+
+  async function removeSavedMcpServer(server) {
+    if (!window.confirm(localized(
+      `「${server.name}」を削除しますか？ 保存したAPIキーも端末から削除します。`,
+      `Remove “${server.name}”? Its saved API key will also be deleted from this device.`,
+    ))) return;
+    mcpMutatingIds.add(server.id);
+    renderMcpServers();
+    try {
+      state = await api.removeMcpServer(server.id);
+      mcpTestResults.delete(server.id);
+      syncUi();
+      setStatus($("#mcpStatus"), localized(`「${server.name}」を削除しました。`, `Removed “${server.name}”.`));
+    } catch (error) {
+      setStatus($("#mcpStatus"), error.message, true);
+    } finally {
+      mcpMutatingIds.delete(server.id);
+      renderMcpServers();
+    }
+  }
+
+  async function saveMcpServerFromDialog() {
+    const saveButton = $("#saveMcpServerButton");
+    saveButton.disabled = true;
+    saveButton.textContent = localized("保存中…", "Saving…");
+    const apiKey = $("#mcpServerApiKeyInput").value.trim();
+    const existingId = $("#mcpServerIdInput").value;
+    const existing = mcpServerById(existingId);
+    const payload = {
+      id: existingId || undefined,
+      name: $("#mcpServerNameInput").value.trim(),
+      url: $("#mcpServerUrlInput").value.trim(),
+      authType: $("#mcpServerAuthSelect").value,
+      apiKeyHeader: $("#mcpServerHeaderInput").value.trim() || "Authorization",
+      apiKeyPrefix: $("#mcpServerPrefixInput").value.trim(),
+      enabled: existing ? existing.enabled !== false : true,
+      ...(!existing ? { assignment: mcpAssignmentTarget() } : {}),
+    };
+    if (apiKey) payload.apiKey = apiKey;
+    try {
+      const saved = await api.saveMcpServer(payload);
+      state = saved.state;
+      $("#mcpServerIdInput").value = saved.serverId;
+      $("#mcpServerApiKeyInput").value = "";
+      syncMcpAuthFields();
+      syncUi();
+      const result = await testSavedMcpServer(saved.serverId, $("#mcpDialogStatus"));
+      if (result) {
+        closeMcpServerDialog({ returnFocus: true });
+        setStatus($("#mcpStatus"), localized(
+          `保存して接続できました。${result.toolCount}個のツールを次のChat・Work・Liveから利用できます。`,
+          `Saved and connected. ${result.toolCount} tool(s) are available from the next Chat, Work, or Live session.`,
+        ));
+      }
+    } catch (error) {
+      setStatus($("#mcpDialogStatus"), error.message, true);
+    } finally {
+      saveButton.disabled = false;
+      saveButton.textContent = localized("保存して接続確認", "Save and test");
+    }
   }
 
   function bindFileDropZone(element, onFiles) {
@@ -214,11 +544,26 @@
 
   function chatSkillRecords(query = "") {
     const normalizedQuery = String(query || "").trim().toLocaleLowerCase();
-    return (state?.skills?.installed || [])
+    const skills = (state?.skills?.installed || [])
       .filter((skill) => skill.health !== "missing")
       .filter((skill) => !normalizedQuery || [skill.name, skill.description, skill.sourceName]
         .some((value) => String(value || "").toLocaleLowerCase().includes(normalizedQuery)))
-      .sort((left, right) => Number(Boolean(right.active)) - Number(Boolean(left.active)) || String(left.name).localeCompare(String(right.name)));
+      .map((skill) => ({ ...skill, kind: "skill", pickerKey: `skill:${skill.id}` }));
+    const assignments = state?.mcpAssignments || { all: [], characters: {} };
+    const activeMcpIds = new Set([...(assignments.all || []), ...(assignments.characters?.[state?.characterId] || [])]);
+    const mcps = (state?.mcpServers || [])
+      .filter((server) => !normalizedQuery || [server.name, server.url, "mcp", "model context protocol"]
+        .some((value) => String(value || "").toLocaleLowerCase().includes(normalizedQuery)))
+      .map((server) => ({
+        ...server,
+        kind: "mcp",
+        pickerKey: `mcp:${server.id}`,
+        active: activeMcpIds.has(server.id),
+        unavailable: server.authType === "api-key" && !server.hasApiKey,
+      }));
+    return [...skills, ...mcps]
+      .sort((left, right) => Number(Boolean(right.active)) - Number(Boolean(left.active))
+        || String(left.kind).localeCompare(String(right.kind)) || String(left.name).localeCompare(String(right.name)));
   }
 
   function renderChatSelectedSkills() {
@@ -246,6 +591,27 @@
       chip.append(icon, name, remove);
       list.appendChild(chip);
     });
+    const mcpList = $("#chatSelectedMcpList");
+    const mcpRecords = new Map((state?.mcpServers || []).map((server) => [server.id, server]));
+    chatSelectedMcpServerIds = chatSelectedMcpServerIds.filter((id) => mcpRecords.has(id));
+    mcpList.replaceChildren();
+    chatSelectedMcpServerIds.forEach((id) => {
+      const server = mcpRecords.get(id);
+      const chip = document.createElement("span");
+      chip.className = "chat-attachment-chip is-mcp";
+      const icon = document.createElement("span");
+      icon.className = "ui-symbol ui-symbol-mcp";
+      icon.setAttribute("aria-hidden", "true");
+      const name = document.createElement("span");
+      name.textContent = server.name;
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.setAttribute("aria-label", localized(`${server.name}を今回の送信から外す`, `Remove ${server.name} from this turn`));
+      remove.innerHTML = '<span class="ui-symbol ui-symbol-close" aria-hidden="true"></span>';
+      remove.addEventListener("click", () => toggleChatMcp(server.id));
+      chip.append(icon, name, remove);
+      mcpList.appendChild(chip);
+    });
   }
 
   function renderChatSkillPicker() {
@@ -256,40 +622,51 @@
     if (!records.length) {
       const empty = document.createElement("p");
       empty.className = "composer-skill-empty";
-      empty.textContent = localized("該当するSkillがありません。", "No matching Skills.");
+      empty.textContent = localized("該当する拡張がありません。", "No matching extensions.");
       list.appendChild(empty);
       return;
     }
-    records.forEach((skill, index) => {
-      const selected = chatSelectedSkillIds.includes(skill.id);
+    records.forEach((record, index) => {
+      const selected = record.kind === "mcp"
+        ? chatSelectedMcpServerIds.includes(record.id)
+        : chatSelectedSkillIds.includes(record.id);
       const button = document.createElement("button");
       button.type = "button";
-      button.className = `composer-skill-option${index === chatSkillPickerIndex ? " is-keyboard-active" : ""}`;
-      button.dataset.skillId = skill.id;
+      button.className = `composer-skill-option${record.kind === "mcp" ? " is-mcp" : ""}${index === chatSkillPickerIndex ? " is-keyboard-active" : ""}`;
+      button.dataset.pickerKey = record.pickerKey;
       button.setAttribute("role", "option");
       button.setAttribute("aria-selected", String(selected));
+      button.disabled = Boolean(record.unavailable);
       const icon = document.createElement("span");
-      icon.className = "ui-symbol ui-symbol-sparkle";
+      icon.className = `ui-symbol ${record.kind === "mcp" ? "ui-symbol-mcp" : "ui-symbol-sparkle"}`;
       icon.setAttribute("aria-hidden", "true");
       const copy = document.createElement("span");
       const name = document.createElement("strong");
-      name.textContent = skill.name;
+      name.textContent = record.name;
       const description = document.createElement("small");
-      description.textContent = skill.description || skill.sourceName || localized("端末に追加済み", "Installed on this device");
+      description.textContent = record.kind === "mcp"
+        ? record.url
+        : record.description || record.sourceName || localized("端末に追加済み", "Installed on this device");
       copy.append(name, description);
       const status = document.createElement("em");
-      status.textContent = realtimePeerConnection && state?.interactionMode !== "work"
-        ? localized("Live Workのみ", "Live Work only")
-        : selected ? localized("選択中", "Selected") : skill.active ? localized("使用中", "Active") : localized("今回のみ", "This turn");
+      status.textContent = record.unavailable
+        ? localized("要設定", "Setup")
+        : selected ? localized("選択中", "Selected") : record.active ? localized("使用中", "Active") : localized("今回のみ", "This turn");
       button.append(icon, copy, status);
       button.addEventListener("pointermove", () => {
         if (chatSkillPickerIndex === index) return;
         chatSkillPickerIndex = index;
         list.querySelectorAll(".composer-skill-option").forEach((candidate, candidateIndex) => candidate.classList.toggle("is-keyboard-active", candidateIndex === index));
       });
-      button.addEventListener("click", () => toggleChatSkill(skill.id));
+      button.addEventListener("click", () => toggleChatExtension(record));
       list.appendChild(button);
     });
+  }
+
+  function toggleChatExtension(record) {
+    if (!record) return;
+    if (record.kind === "mcp") toggleChatMcp(record.id);
+    else toggleChatSkill(record.id);
   }
 
   function toggleChatSkill(skillId) {
@@ -320,6 +697,45 @@
       api.setCodexRealtimeTurnSkills(chatSelectedSkillIds).catch((error) => {
         setStatus($("#chatStatus"), error.message, true);
       });
+    }
+  }
+
+  async function toggleChatMcp(serverId) {
+    const server = mcpServerById(serverId);
+    if (!server) return;
+    if (server.authType === "api-key" && !server.hasApiKey) {
+      setStatus($("#chatStatus"), localized(`「${server.name}」のAPIキーをMCP設定で追加してください。`, `Add the API key for “${server.name}” in MCP settings.`), true);
+      return;
+    }
+    const previous = [...chatSelectedMcpServerIds];
+    if (chatSelectedMcpServerIds.includes(serverId)) {
+      chatSelectedMcpServerIds = chatSelectedMcpServerIds.filter((id) => id !== serverId);
+    } else if (chatSelectedMcpServerIds.length >= 8) {
+      setStatus($("#chatStatus"), localized("1回に指定できるMCP接続は8件までです。", "You can select up to 8 MCP connections per turn."), true);
+      return;
+    } else {
+      chatSelectedMcpServerIds.push(serverId);
+    }
+    if (chatSkillTrigger) {
+      const input = $("#chatInput");
+      const before = input.value.slice(0, chatSkillTrigger.start);
+      const after = input.value.slice(chatSkillTrigger.end);
+      input.value = `${before}${after}`;
+      input.setSelectionRange(before.length, before.length);
+      closeChatAddPopover({ returnFocus: true });
+    }
+    renderChatSelectedSkills();
+    renderChatSkillPicker();
+    if (realtimePeerConnection) {
+      try {
+        await api.setCodexRealtimeTurnMcp(chatSelectedMcpServerIds);
+      } catch (error) {
+        const reconnectRequired = /再接続|reconnect/i.test(String(error?.message || ""));
+        if (!reconnectRequired) chatSelectedMcpServerIds = previous;
+        renderChatSelectedSkills();
+        renderChatSkillPicker();
+        setStatus($("#chatStatus"), error.message, true);
+      }
     }
   }
 
@@ -828,6 +1244,7 @@
       remote: ["リモート", "Remote"],
       character: ["キャラクター", "Character"],
       skills: ["Skills", "Skills"],
+      mcp: ["MCP連携", "MCP Connections"],
       voice: ["音声", "Voice"],
       connection: ["AI接続", "AI Connection"],
       desktop: ["デスクトップ", "Desktop"],
@@ -1451,6 +1868,19 @@
     $("#workHistoryTab").setAttribute("aria-selected", String(chatHistoryView === "work"));
     if (chatHistoryView === "work") renderWorkHistory(workHistoryState);
     else renderConversationHistory(state?.conversationHistory || []);
+    if (streamingMessage && !streamingMessage.isConnected) {
+      streamingMessage = null;
+      streamingMessageMode = "";
+    }
+    if (realtimeAssistantMessage && !realtimeAssistantMessage.isConnected) realtimeAssistantMessage = null;
+  }
+
+  function historyViewForMode(mode) {
+    return mode === "work" ? "work" : "conversation";
+  }
+
+  function historyShowsMode(mode) {
+    return chatHistoryView === historyViewForMode(mode);
   }
 
   function showOptimisticCharacterSelection(characterId, selector) {
@@ -1900,7 +2330,15 @@
     const issueCount = installed.filter((skill) => skillAssignmentState(skill.id, assignmentSets).active && skill.health === "missing").length;
     $("#skillActiveCount").textContent = String(activeCount);
     const pickerMeta = $("#chatSkillPickerMeta");
-    if (pickerMeta) pickerMeta.textContent = localized(`${activeCount}件が通常使用中 · / または @ でも検索`, `${activeCount} active by default · Type / or @ to search`);
+    if (pickerMeta) {
+      const mcpAssignments = state?.mcpAssignments || { all: [], characters: {} };
+      const mcpIds = new Set([...(mcpAssignments.all || []), ...(mcpAssignments.characters?.[state?.characterId] || [])]);
+      const activeMcpCount = (state?.mcpServers || []).filter((server) => mcpIds.has(server.id) && (server.authType !== "api-key" || server.hasApiKey)).length;
+      pickerMeta.textContent = localized(
+        `${activeCount} Skills · ${activeMcpCount} MCPが通常使用中 · / または @ でも検索`,
+        `${activeCount} Skills · ${activeMcpCount} MCP active by default · Type / or @ to search`,
+      );
+    }
     $("#skillInstalledCount").textContent = String(installed.length);
     $("#skillIssueCount").textContent = String(issueCount);
     $("#skillIssueMetric").hidden = issueCount === 0;
@@ -2395,6 +2833,7 @@
   function syncUpdateUi() {
     if (!state) return;
     const update = state.appUpdate || { status: "idle", currentVersion: "", channel: state.updateChannel || "stable" };
+    const isStoreEdition = update.packageKind === "store";
     const statusLabels = {
       idle: localized("未確認", "Not checked"),
       checking: localized("確認中", "Checking"),
@@ -2411,11 +2850,18 @@
     $("#updateLatestVersion").textContent = update.latestVersion ? `v${update.latestVersion}` : "—";
     $("#updateChecksToggle").checked = state.updateChecksEnabled !== false;
     $("#updateChannelSelect").value = state.updateChannel === "beta" ? "beta" : "stable";
+    $("#updateChannelField").hidden = isStoreEdition;
+    $("#updateDescription").textContent = isStoreEdition
+      ? localized("更新がある場合は、Microsoft Storeの製品ページから安全に更新します。", "When an update is available, install it safely from the Microsoft Store product page.")
+      : localized("GitHub Releasesで最新版を確認し、公式リリースから更新します。", "Checks the latest version and updates from the official GitHub release.");
     const checkButton = $("#checkUpdatesButton");
     checkButton.disabled = update.status === "checking";
     checkButton.textContent = update.status === "checking" ? localized("確認しています…", "Checking…") : localized("今すぐ確認", "Check now");
     const openButton = $("#openUpdateReleaseButton");
     openButton.hidden = update.status !== "available";
+    $("#openUpdateReleaseLabel").textContent = isStoreEdition
+      ? localized("Microsoft Storeで更新", "Update in Microsoft Store")
+      : localized("更新内容を見る", "View update");
     const notes = readableReleaseNotes(update.releaseNotes);
     $("#updateReleaseNotes").textContent = update.status === "available"
       ? notes || localized(`${update.releaseName || `v${update.latestVersion}`}が公開されています。`, `${update.releaseName || `v${update.latestVersion}`} is available.`)
@@ -2423,8 +2869,12 @@
         ? localized("現在のCharaDockは最新版です。", "This CharaDock installation is up to date.")
         : update.status === "error"
           ? update.error || localized("最新版を確認できませんでした。", "Could not check for updates.")
-          : localized("「今すぐ確認」でGitHub Releasesを確認できます。", "Choose Check now to query GitHub Releases.");
-    $("#updatePackageHint").textContent = update.packageKind === "portable"
+          : isStoreEdition
+            ? localized("「今すぐ確認」で公開済みの最新版を確認できます。", "Choose Check now to check the latest published version.")
+            : localized("「今すぐ確認」でGitHub Releasesを確認できます。", "Choose Check now to query GitHub Releases.");
+    $("#updatePackageHint").textContent = isStoreEdition
+      ? localized("Microsoft Store版ではストアが更新を管理します。更新がある場合は製品ページから適用できます。", "Microsoft Store manages updates for this edition. When an update is available, apply it from the product page.")
+      : update.packageKind === "portable"
       ? localized("ポータブル版では、新しいEXEをダウンロードして置き換えてください。設定とモデルはそのまま引き継がれます。", "For the portable edition, download the new EXE and replace the old one. Settings and models remain available.")
       : update.packageKind === "installer"
         ? localized("インストーラー版では、リリース画面から新しいSetupを実行すると現在の設定を保ったまま更新できます。", "For the installed edition, run the new Setup from the release page to update while keeping current settings.")
@@ -2435,6 +2885,9 @@
     if (showBanner) {
       $("#updateBannerTitle").textContent = localized("新しいバージョンがあります", "A new version is available");
       $("#updateBannerDetail").textContent = `CharaDock v${update.latestVersion}`;
+      $("#updateBannerOpenButton").textContent = isStoreEdition
+        ? localized("Microsoft Storeで更新", "Update in Microsoft Store")
+        : localized("更新内容を見る", "View update");
     }
   }
 
@@ -2899,6 +3352,7 @@
     renderCharacters();
     syncCharacterEditor();
     renderSkills();
+    renderMcpServers();
     renderChatSelectedSkills();
     if (!$("#chatAddPopover").hidden) renderChatSkillPicker();
     syncGeneratorUi();
@@ -3283,12 +3737,24 @@
     realtimeBeatriceConverter = null;
     realtimeStarting = false;
     realtimeUserTranscript = "";
+    realtimePendingTypedText = "";
+    realtimeTypedChatTurnActive = false;
+    realtimeAssistantMessage = null;
     realtimeAssistantText = "";
     realtimeAssistantActive = false;
+    realtimeOutputSuppressed = false;
     $("#speechInputButton")?.setAttribute("aria-pressed", "false");
   }
 
+  function setRealtimeOutputSuppressed(suppressed) {
+    realtimeOutputSuppressed = Boolean(suppressed);
+    if (realtimeRemoteAudio) realtimeRemoteAudio.muted = realtimeOutputSuppressed;
+    realtimeBeatriceConverter?.setMuted(realtimeOutputSuppressed);
+    if (realtimeOutputSuppressed) api.sendVoiceLevel(0).catch(() => {});
+  }
+
   function reportRealtimeOutputRms(rawRms, now = performance.now()) {
+    if (realtimeOutputSuppressed) return;
     if (!(Number(rawRms) > 0)) {
       realtimeSpeechEnvelope.reset();
       api.sendVoiceLevel(0).catch(() => {});
@@ -3363,7 +3829,7 @@
     realtimeRemoteAudio?.pause();
     realtimeRemoteAudio = new Audio();
     realtimeRemoteAudio.autoplay = true;
-    realtimeRemoteAudio.muted = false;
+    realtimeRemoteAudio.muted = realtimeOutputSuppressed;
     realtimeRemoteAudio.srcObject = stream;
     realtimeRemoteAudio.play().catch(() => {});
     startRealtimeOutputMeter(stream).catch(() => reportRealtimeOutputRms(0));
@@ -3394,7 +3860,7 @@
               converter.stop().finally(() => { if (realtimePeerConnection) playRealtimeRemoteStream(remoteStream); });
             }, reportRealtimeOutputRms);
             realtimeBeatriceConverter = converter;
-            converter.setMuted(false);
+            converter.setMuted(realtimeOutputSuppressed);
             await converter.start(remoteStream);
             setStatus($("#chatStatus"), "Beatrice 2でRealtime音声を変換中です。");
             return;
@@ -3420,6 +3886,7 @@
       await api.startCodexRealtime({
         sdp: peer.localDescription?.sdp || offer.sdp,
         selectedSkillIds: state?.interactionMode === "work" ? chatSelectedSkillIds : [],
+        selectedMcpServerIds: chatSelectedMcpServerIds,
       });
       if (startGeneration !== realtimeStartGeneration) {
         await api.stopCodexRealtime().catch(() => {});
@@ -3450,66 +3917,85 @@
     if (method === "thread/realtime/transcript/delta") {
       const delta = String(params.delta || "");
       if (params.role === "user") {
+        setRealtimeOutputSuppressed(false);
         realtimeUserTranscript += delta;
         $("#chatInput").value = realtimeUserTranscript;
         setStatus($("#chatStatus"), "聞き取っています…");
       }
       if (params.role === "assistant") {
+        if (params.suppressed) {
+          setRealtimeOutputSuppressed(true);
+          return;
+        }
+        setRealtimeOutputSuppressed(false);
         if (!realtimeAssistantActive) {
           realtimeAssistantActive = true;
-          realtimeAssistantMessage = state?.interactionMode === "work" && streamingMessage
-            ? streamingMessage
-            : null;
           realtimeAssistantText = "";
         }
         realtimeAssistantText += delta;
-        if (!realtimeAssistantMessage) realtimeAssistantMessage = appendMessage("assistant", "");
-        realtimeAssistantMessage.querySelector("p").textContent = realtimeAssistantText;
-        $("#chatLog").scrollTop = $("#chatLog").scrollHeight;
+        if (state?.interactionMode !== "work" && historyShowsMode("chat")) {
+          // Realtime can emit an acknowledgement and then the grounded final
+          // answer without another user transcript. Keep one bubble for that
+          // turn and replace the acknowledgement instead of appending a
+          // second answer.
+          if (!realtimeAssistantMessage?.isConnected && realtimeTypedChatTurnActive) {
+            realtimeAssistantMessage = [...$("#chatLog").querySelectorAll(".message.is-assistant")].at(-1) || null;
+          }
+          if (!realtimeAssistantMessage?.isConnected) realtimeAssistantMessage = appendMessage("assistant", "");
+          realtimeAssistantMessage.querySelector("p").textContent = realtimeAssistantText;
+          $("#chatLog").scrollTop = $("#chatLog").scrollHeight;
+        }
       }
       return;
     }
     if (method === "thread/realtime/transcript/done") {
       const text = String(params.text || "").trim();
       if (params.role === "user" && text) {
-        if (text !== realtimePendingTypedText) appendMessage("user", text);
-        realtimePendingTypedText = "";
+        setRealtimeOutputSuppressed(false);
+        const typedEcho = realtimeTypedChatTurnActive || text === realtimePendingTypedText;
+        if (!typedEcho && state?.interactionMode !== "work" && historyShowsMode("chat")) appendMessage("user", text);
+        if (!typedEcho) realtimePendingTypedText = "";
         realtimeUserTranscript = "";
+        realtimeAssistantMessage = typedEcho && state?.interactionMode !== "work" && historyShowsMode("chat")
+          ? [...$("#chatLog").querySelectorAll(".message.is-assistant")].at(-1) || null
+          : null;
+        realtimeAssistantText = "";
+        realtimeAssistantActive = false;
         $("#chatInput").value = "";
-        if (state?.interactionMode === "work" && !streamingMessage) {
-          streamingMessage = appendMessage("assistant", localized("考え中", "Thinking"), true);
-          streamingMessage.dataset.realtimeWork = "true";
-          setChatBusy(true);
-        }
-        if (!realtimeAssistantActive) {
-          realtimeAssistantMessage = state?.interactionMode === "work" ? streamingMessage : null;
-          realtimeAssistantText = "";
-        }
+        if (state?.interactionMode === "work") setChatBusy(true);
         setStatus($("#chatStatus"), "Codexが考えています…");
       }
       if (params.role === "assistant") {
+        if (params.suppressed) {
+          setRealtimeOutputSuppressed(true);
+          realtimeAssistantActive = false;
+          return;
+        }
         if (text) {
-          if (!realtimeAssistantMessage) realtimeAssistantMessage = appendMessage("assistant", text);
-          else realtimeAssistantMessage.querySelector("p").textContent = text;
+          if (state?.interactionMode !== "work" && historyShowsMode("chat")) {
+            if (!realtimeAssistantMessage?.isConnected) realtimeAssistantMessage = appendMessage("assistant", text);
+            else realtimeAssistantMessage.querySelector("p").textContent = text;
+          }
           realtimeAssistantText = text;
           setStatus($("#chatStatus"), "Codex Realtimeから応答しました。");
         }
+        realtimePendingTypedText = "";
+        realtimeTypedChatTurnActive = false;
         realtimeAssistantActive = false;
-        if (state?.interactionMode === "work" && streamingMessage && !streamingMessage.dataset.workRunId) {
-          streamingMessage.classList.remove("is-thinking");
-          finishDetachedRealtimeWork();
-        }
+        if (state?.interactionMode !== "work") setChatBusy(false);
       }
       return;
     }
     if (method === "thread/realtime/error") {
       realtimeUnavailable ||= Boolean(params.unavailable);
       closeRealtimeAudio();
+      setChatBusy(false);
       setStatus($("#chatStatus"), params.message || "Codex Realtime音声接続を開始できませんでした。", true);
       return;
     }
     if (method === "thread/realtime/closed") {
       closeRealtimeAudio();
+      setChatBusy(false);
       setStatus($("#chatStatus"), "Codex Realtime音声入力を終了しました。");
     }
   }
@@ -3758,6 +4244,7 @@
     const input = $("#chatInput");
     const attachments = chatAttachments.map((item) => ({ ...item }));
     const selectedSkillIds = [...chatSelectedSkillIds];
+    const selectedMcpServerIds = [...chatSelectedMcpServerIds];
     const message = input.value.trim() || (attachments.length ? localized("添付したファイルを確認してください。", "Please review the attached files.") : "");
     if (!message) return;
     if (realtimeStarting) {
@@ -3803,16 +4290,17 @@
     input.value = "";
     chatAttachments = [];
     chatSelectedSkillIds = [];
+    chatSelectedMcpServerIds = [];
     renderChatAttachments();
     renderChatSelectedSkills();
     closeChatAddPopover();
     const liveWorkFollowUp = chatBusy && Boolean(realtimePeerConnection) && state?.interactionMode === "work";
     if (liveWorkFollowUp) {
-      appendMessage("user", message);
       realtimePendingTypedText = message;
+      setRealtimeOutputSuppressed(false);
       setStatus($("#chatStatus"), localized("追加の指示を同じ作業へ反映しています…", "Applying the follow-up to the current Work…"));
       try {
-        const route = await api.appendCodexRealtimeText(message, selectedSkillIds);
+        const route = await api.appendCodexRealtimeText(message, selectedSkillIds, selectedMcpServerIds);
         const accepted = typeof route === "object" ? Boolean(route?.accepted) : Boolean(route);
         if (!accepted) throw new Error(localized("実行中のWorkへ追加できませんでした。", "The follow-up could not be added to the current Work."));
         realtimePendingTypedText = "";
@@ -3821,6 +4309,7 @@
         input.value = message;
         chatAttachments = attachments;
         chatSelectedSkillIds = selectedSkillIds;
+        chatSelectedMcpServerIds = selectedMcpServerIds;
         renderChatAttachments();
         renderChatSelectedSkills();
         setStatus($("#chatStatus"), error.message, true);
@@ -3829,61 +4318,82 @@
       return;
     }
     if (chatBusy) {
-      pendingChatFollowUp = { message, attachments, selectedSkillIds };
+      pendingChatFollowUp = { message, attachments, selectedSkillIds, selectedMcpServerIds };
       setStatus($("#chatStatus"), localized("差し込みを受け付けました。現在の応答を止めています…", "Follow-up queued. Stopping the current response…"));
       $("#stopButton").disabled = true;
       try { await api.interruptChat(); } catch (error) { setStatus($("#chatStatus"), error.message, true); $("#stopButton").disabled = false; }
       return;
     }
-    setChatHistoryView("conversation");
+    const requestedMode = state?.interactionMode === "work" ? "work" : "chat";
+    setChatHistoryView(historyViewForMode(requestedMode));
+    localChatSendPending = true;
     if (realtimePeerConnection) {
-      appendMessage("user", message);
       const liveWork = state?.interactionMode === "work";
-      if (liveWork) {
-        streamingMessage = appendMessage("assistant", localized("考え中", "Thinking"), true);
-        streamingMessage.dataset.realtimeWork = "true";
-        setChatBusy(true);
+      if (!liveWork) {
+        appendMessage("user", message);
+        realtimeTypedChatTurnActive = true;
+        realtimeAssistantMessage = null;
+        realtimeAssistantText = "";
+        realtimeAssistantActive = false;
       }
+      setChatBusy(true);
       realtimePendingTypedText = message;
+      setRealtimeOutputSuppressed(false);
       setStatus($("#chatStatus"), "Live音声で応答を生成しています…");
       try {
-        const route = await api.appendCodexRealtimeText(message, selectedSkillIds);
+        const route = await api.appendCodexRealtimeText(message, selectedSkillIds, selectedMcpServerIds);
         const accepted = typeof route === "object" ? Boolean(route?.accepted) : Boolean(route);
         if (!accepted) throw new Error("Liveセッションへ文字を送信できませんでした。");
+        if (route?.conversation) setChatHistoryView("conversation");
       } catch (error) {
         realtimePendingTypedText = "";
-        if (liveWork && streamingMessage) {
-          streamingMessage.classList.remove("is-thinking");
-          streamingMessage.querySelector("p").textContent = "エラー: " + error.message;
-          streamingMessage = null;
-          setChatBusy(false);
-        }
+        realtimeTypedChatTurnActive = false;
+        setChatBusy(false);
         setStatus($("#chatStatus"), error.message, true);
+      } finally {
+        localChatSendPending = false;
       }
       input.focus();
       return;
     }
     const attachmentLabel = attachments.length ? `\n${attachments.map((item) => `📎 ${item.name}`).join("\n")}` : "";
-    appendMessage("user", `${message}${attachmentLabel}`);
-    const thinking = appendMessage("assistant", "考え中", true);
-    streamingMessage = thinking;
+    let thinking = null;
+    if (requestedMode === "chat") {
+      appendMessage("user", `${message}${attachmentLabel}`);
+      thinking = appendMessage("assistant", "考え中", true);
+      streamingMessage = thinking;
+      streamingMessageMode = "chat";
+    }
     setChatBusy(true);
     setStatus($("#chatStatus"), "応答を待っています…");
     try {
-      const result = await api.sendChat({ message, attachmentPaths: attachments.map((item) => item.path), selectedSkillIds });
-      const paragraph = thinking.querySelector("p");
-      thinking.classList.remove("is-thinking");
-      paragraph.textContent = result.displayText || result.text;
-      appendWorkArtifactActions(thinking, result.artifacts, result.workRunId);
+      const result = await api.sendChat({
+        message,
+        attachmentPaths: attachments.map((item) => item.path),
+        selectedSkillIds,
+        selectedMcpServerIds,
+      });
+      const resultMode = result?.mode === "work" ? "work" : "chat";
+      if (resultMode !== requestedMode) setChatHistoryView(historyViewForMode(resultMode));
+      if (thinking?.isConnected && resultMode === "chat") {
+        const paragraph = thinking.querySelector("p");
+        thinking.classList.remove("is-thinking");
+        paragraph.textContent = result.displayText || result.text;
+        appendWorkArtifactActions(thinking, result.artifacts, result.workRunId);
+      }
       setStatus($("#chatStatus"), result.provider === "codex" ? "Codexから応答しました。" : "OpenAI APIから応答しました。");
     } catch (error) {
-      thinking.classList.remove("is-thinking");
       const interrupted = /interrupt|cancel|abort|中断/i.test(String(error.message || ""));
-      thinking.querySelector("p").textContent = interrupted ? "応答を中断しました。続けて修正できます。" : `エラー: ${error.message}`;
+      if (thinking?.isConnected) {
+        thinking.classList.remove("is-thinking");
+        thinking.querySelector("p").textContent = interrupted ? "応答を中断しました。続けて修正できます。" : `エラー: ${error.message}`;
+      }
       setStatus($("#chatStatus"), interrupted ? "応答を中断しました。" : error.message, !interrupted);
     } finally {
+      localChatSendPending = false;
       setChatBusy(false);
       streamingMessage = null;
+      streamingMessageMode = "";
       input.focus();
       const followUp = pendingChatFollowUp;
       pendingChatFollowUp = null;
@@ -3891,6 +4401,7 @@
         input.value = followUp.message;
         chatAttachments = followUp.attachments;
         chatSelectedSkillIds = followUp.selectedSkillIds || [];
+        chatSelectedMcpServerIds = followUp.selectedMcpServerIds || [];
         renderChatAttachments();
         renderChatSelectedSkills();
         queueMicrotask(() => sendChat());
@@ -3899,11 +4410,15 @@
   }
 
   function finishDetachedRealtimeWork(workRunId = "") {
-    if (!streamingMessage?.dataset.realtimeWork) return;
     const expectedRunId = String(workRunId || "");
-    if (expectedRunId && (!streamingMessage.dataset.workRunId || streamingMessage.dataset.workRunId !== expectedRunId)) return;
+    if (activeStreamMode !== "work") return;
+    if (expectedRunId && activeStreamWorkRunId && activeStreamWorkRunId !== expectedRunId) return;
     setChatBusy(false);
     streamingMessage = null;
+    streamingMessageMode = "";
+    activeStreamMode = "";
+    activeStreamTurnId = "";
+    activeStreamWorkRunId = "";
     $("#chatInput").focus();
     const followUp = pendingChatFollowUp;
     pendingChatFollowUp = null;
@@ -3911,6 +4426,7 @@
       $("#chatInput").value = followUp.message;
       chatAttachments = followUp.attachments;
       chatSelectedSkillIds = followUp.selectedSkillIds || [];
+      chatSelectedMcpServerIds = followUp.selectedMcpServerIds || [];
       renderChatAttachments();
       renderChatSelectedSkills();
       queueMicrotask(() => sendChat());
@@ -3919,7 +4435,9 @@
 
   function bindEvents() {
     api.onStateChanged?.((nextState) => {
+      const previousProvider = state?.speechInputProvider;
       state = nextState;
+      if (previousProvider === "realtime" && state?.speechInputProvider !== "realtime") closeRealtimeAudio();
       syncUi();
     });
     api.onUpdateStatus?.((update) => {
@@ -3933,38 +4451,74 @@
       setStatus($("#beatriceStatus"), message);
     });
     api.onChatStream?.((payload) => {
-      if (payload?.phase === "follow-up") {
+      const phase = String(payload?.phase || "");
+      const mode = payload?.mode === "work" ? "work" : "chat";
+      const turnId = String(payload?.turnId || "");
+      if (phase === "follow-up") {
         setStatus($("#chatStatus"), String(payload.statusText || localized("追加の指示を同じ作業へ反映しています…", "Applying the follow-up to the current Work…")));
         return;
       }
-      if (!streamingMessage && payload?.phase === "start" && payload?.realtimeOutput && payload?.mode === "work") {
-        streamingMessage = appendMessage("assistant", localized("考え中", "Thinking"), true);
-        streamingMessage.dataset.realtimeWork = "true";
+      if (phase === "start") {
+        activeStreamMode = mode;
+        activeStreamTurnId = turnId;
+        activeStreamWorkRunId = String(payload?.workRunId || "");
+        if (localChatSendPending) setChatHistoryView(historyViewForMode(mode));
         setChatBusy(true);
+        if (mode === "chat" && historyShowsMode("chat")) {
+          if (!streamingMessage?.isConnected || streamingMessageMode !== "chat") {
+            streamingMessage = appendMessage("assistant", localized("考え中", "Thinking"), true);
+          }
+          streamingMessageMode = "chat";
+        } else {
+          streamingMessage = null;
+          streamingMessageMode = "";
+        }
+        if (payload?.realtimeOutput && mode === "work") realtimePendingTypedText = "";
       }
-      if (!streamingMessage) return;
-      if (payload?.phase === "start" && payload?.realtimeOutput && payload?.mode === "work") {
-        streamingMessage.dataset.workRunId = String(payload?.workRunId || "");
-        realtimePendingTypedText = "";
+      if (activeStreamTurnId && turnId && activeStreamTurnId !== turnId) return;
+
+      // Work history is rendered exclusively from work:history. Never write a
+      // Work delta into the shared Chat DOM, even when the user is currently
+      // looking at the other tab.
+      if (mode === "work") {
+        if (phase === "realtime-work-complete"
+          || phase === "error"
+          || (phase === "done" && !payload?.realtimeSpeechPending)) {
+          finishDetachedRealtimeWork(payload?.workRunId);
+        }
+        return;
       }
+      if (!historyShowsMode("chat")) {
+        if (["done", "error", "interrupted"].includes(phase)) {
+          setChatBusy(false);
+          activeStreamMode = "";
+          activeStreamTurnId = "";
+        }
+        return;
+      }
+      if (!streamingMessage?.isConnected || streamingMessageMode !== "chat") return;
       const paragraph = streamingMessage.querySelector("p");
-      if (payload?.phase === "start") paragraph.textContent = "考え中";
-      if (["delta", "announcement", "realtime-caption"].includes(payload?.phase)) {
+      if (phase === "start") paragraph.textContent = localized("考え中", "Thinking");
+      if (["delta", "announcement", "realtime-caption"].includes(phase)) {
         streamingMessage.classList.remove("is-thinking");
         paragraph.textContent = String(payload.displayText || payload.text || "");
         $("#chatLog").scrollTop = $("#chatLog").scrollHeight;
       }
-      if (payload?.phase === "done") {
+      if (phase === "done") {
         streamingMessage.classList.remove("is-thinking");
         if (!payload?.deferDisplayToRealtime) paragraph.textContent = String(payload.displayText || payload.text || "");
         appendWorkArtifactActions(streamingMessage, payload.artifacts, payload.workRunId);
-        if (payload?.realtimeOutput && !payload?.realtimeSpeechPending) finishDetachedRealtimeWork(payload?.workRunId);
       }
-      if (payload?.phase === "realtime-work-complete") finishDetachedRealtimeWork(payload?.workRunId);
-      if (payload?.phase === "error" && payload?.realtimeOutput) {
+      if (phase === "error") {
         streamingMessage.classList.remove("is-thinking");
-        paragraph.textContent = "エラー: " + (payload.message || "作業を完了できませんでした。");
-        finishDetachedRealtimeWork(payload?.workRunId);
+        paragraph.textContent = "エラー: " + (payload.message || localized("応答を完了できませんでした。", "The response could not be completed."));
+      }
+      if (["done", "error", "interrupted"].includes(phase)) {
+        setChatBusy(false);
+        streamingMessage = null;
+        streamingMessageMode = "";
+        activeStreamMode = "";
+        activeStreamTurnId = "";
       }
     });
     api.onChatHistory?.((entries) => {
@@ -3972,6 +4526,9 @@
       if (streamingMessage || realtimeAssistantActive || chatHistoryView !== "conversation") return;
       renderedConversationCharacterId = state.characterId;
       renderConversationHistory(state.conversationHistory);
+      if (realtimePeerConnection && (realtimePendingTypedText || realtimeTypedChatTurnActive)) {
+        realtimeAssistantMessage = [...$("#chatLog").querySelectorAll(".message.is-assistant")].at(-1) || null;
+      }
     });
     api.onWorkHistory?.((payload) => {
       workHistoryState = payload && Array.isArray(payload.runs) ? payload : { activeWorkRunId: null, runs: [] };
@@ -4000,6 +4557,7 @@
     });
     api.onCodexRealtimeTurnSkills?.((payload) => {
       chatSelectedSkillIds = Array.isArray(payload?.selectedSkillIds) ? payload.selectedSkillIds : [];
+      chatSelectedMcpServerIds = Array.isArray(payload?.selectedMcpServerIds) ? payload.selectedMcpServerIds : [];
       renderChatSelectedSkills();
       if (!$("#chatAddPopover").hidden) renderChatSkillPicker();
     });
@@ -4011,6 +4569,7 @@
     api.onStopNormalSpeech?.(() => stopSpeechPlayback());
     api.onCharacterGeneration?.((payload) => updateGeneratorProgress(payload));
     $("#skillAssignmentTargetSelect").addEventListener("change", renderSkills);
+    $("#mcpAssignmentTargetSelect").addEventListener("change", renderMcpServers);
     $$("#skillCatalogViews [data-skill-view]").forEach((button) => button.addEventListener("click", () => {
       skillCatalogView = button.dataset.skillView || "active";
       $$("#skillCatalogViews [data-skill-view]").forEach((candidate) => candidate.setAttribute("aria-pressed", String(candidate === button)));
@@ -4199,6 +4758,11 @@
       setSettingsSearchActive(settingsSearchActiveIndex + (event.key === "ArrowDown" ? 1 : -1));
     });
     document.addEventListener("keydown", (event) => {
+      if (!$("#mcpServerDialog").hidden && event.key === "Escape") {
+        event.preventDefault();
+        closeMcpServerDialog();
+        return;
+      }
       if (!$("#characterDirectorDialog").hidden && event.key === "Escape") {
         event.preventDefault();
         closeCharacterDirectorDialog();
@@ -4224,6 +4788,15 @@
       if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
       else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
     });
+    $("#mcpServerDialog").addEventListener("keydown", (event) => {
+      if (event.key !== "Tab") return;
+      const focusable = $$("#mcpServerDialog button:not(:disabled), #mcpServerDialog input:not(:disabled), #mcpServerDialog select:not(:disabled), #mcpServerDialog summary").filter((item) => item.offsetParent !== null);
+      if (!focusable.length) return;
+      const first = focusable[0];
+      const last = focusable.at(-1);
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+    });
     $("#characterDirectorDialog").addEventListener("keydown", (event) => {
       if (event.key !== "Tab") return;
       const focusable = $$("#characterDirectorDialog button:not(:disabled), #characterDirectorDialog textarea:not(:disabled), #characterDirectorDialog summary");
@@ -4238,6 +4811,17 @@
       if (!event.target.closest("#chatAddPopover, #chatAddButton")) closeChatAddPopover();
     });
     $("#chatForm").addEventListener("submit", (event) => { event.preventDefault(); sendChat(); });
+    $("#addMcpServerButton").addEventListener("click", () => openMcpServerDialog());
+    $("#closeMcpServerDialogButton").addEventListener("click", () => closeMcpServerDialog());
+    $("#cancelMcpServerButton").addEventListener("click", () => closeMcpServerDialog());
+    $("#mcpServerAuthSelect").addEventListener("change", syncMcpAuthFields);
+    $("#mcpServerForm").addEventListener("submit", (event) => {
+      event.preventDefault();
+      saveMcpServerFromDialog();
+    });
+    $("#mcpServerDialog").addEventListener("pointerdown", (event) => {
+      if (event.target === $("#mcpServerDialog")) closeMcpServerDialog();
+    });
     $("#chatAddButton").addEventListener("click", () => {
       if (!$("#chatAddPopover").hidden) closeChatAddPopover({ returnFocus: true });
       else openChatAddPopover();
@@ -4250,6 +4834,11 @@
       closeChatAddPopover();
       showPage("skills");
       requestAnimationFrame(() => jumpToSettingsTarget("#skillAssignmentCard", { highlight: false }));
+    });
+    $("#chatManageMcpButton").addEventListener("click", () => {
+      closeChatAddPopover();
+      showPage("mcp");
+      requestAnimationFrame(() => jumpToSettingsTarget("#mcpAssignmentCard", { highlight: false }));
     });
     $("#chatSkillPickerSearch").addEventListener("input", () => {
       chatSkillPickerIndex = 0;
@@ -4266,7 +4855,7 @@
       }
       if (event.key === "Enter" && records[chatSkillPickerIndex]) {
         event.preventDefault();
-        toggleChatSkill(records[chatSkillPickerIndex].id);
+        toggleChatExtension(records[chatSkillPickerIndex]);
       }
     });
     $("#chatAttachmentInput").addEventListener("change", (event) => {
@@ -4332,7 +4921,7 @@
         }
         if (event.key === "Enter" && !event.shiftKey && records[chatSkillPickerIndex]) {
           event.preventDefault();
-          toggleChatSkill(records[chatSkillPickerIndex].id);
+          toggleChatExtension(records[chatSkillPickerIndex]);
           return;
         }
       }
@@ -4850,10 +5439,17 @@
         }
       });
     }
-    $("#speechInputProviderSelect").addEventListener("change", () => {
+    $("#speechInputProviderSelect").addEventListener("change", async () => {
       $("#sherpaOnnxSettings").hidden = $("#speechInputProviderSelect").value !== "sherpa-onnx";
       $("#voiceActivationSettings").hidden = !["sherpa-onnx", "openai"].includes($("#speechInputProviderSelect").value);
-      saveSettings().catch((error) => setStatus($("#connectionStatus"), error.message, true));
+      try {
+        if ($("#speechInputProviderSelect").value !== "realtime" && (realtimePeerConnection || realtimeStarting)) {
+          await stopCodexRealtimeVoice({ quiet: true });
+        }
+        await saveSettings();
+      } catch (error) {
+        setStatus($("#connectionStatus"), error.message, true);
+      }
     });
     $("#sherpaModelSelect").addEventListener("change", () => {
       saveSettings().catch((error) => setStatus($("#ttsStatus"), error.message, true));
@@ -5090,6 +5686,12 @@
     $("#speechInputMount").appendChild($(".speech-input-settings"));
     organizeSettingsLayout();
     state = await api.getState();
+    api.onNavigateSettings?.((payload = {}) => {
+      const page = String(payload.page || "");
+      if (!["chat", "remote", "character", "skills", "mcp", "voice", "connection", "desktop", "support"].includes(page)) return;
+      showPage(page);
+      if (page === "skills") queueMicrotask(() => loadTrustedSkills());
+    });
     api.onSherpaModelProgress((model) => {
       state.sherpaModel = model;
       syncSherpaModelUi(model);
@@ -5122,7 +5724,7 @@
     bindEvents();
     syncUi();
     const page = sessionStorage.getItem("charadock.activePage") || "chat";
-    showPage(["chat", "remote", "character", "skills", "voice", "connection", "desktop", "support"].includes(page) ? page : "chat");
+    showPage(["chat", "remote", "character", "skills", "mcp", "voice", "connection", "desktop", "support"].includes(page) ? page : "chat");
     if (page === "support") refreshSupportDiagnostics();
     if (page === "skills") queueMicrotask(() => loadTrustedSkills());
     refreshCodexAccount();

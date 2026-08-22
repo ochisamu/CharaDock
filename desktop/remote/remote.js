@@ -48,6 +48,7 @@
   let liveAudioFrame = 0;
   let liveAudioSource = null;
   let liveAudioGain = null;
+  let liveOutputSuppressed = false;
   let liveBeatriceActive = false;
   let liveBeatriceSessionId = "";
   let liveBeatriceGeneration = 0;
@@ -650,8 +651,20 @@
     liveInputStream = null;
     liveStarting = false;
     liveSessionId = "";
+    liveOutputSuppressed = false;
     $("#microphoneButton").classList.remove("is-live");
     syncMicrophoneButton();
+  }
+
+  function setRemoteLiveOutputSuppressed(suppressed) {
+    liveOutputSuppressed = Boolean(suppressed);
+    if (liveAudioGain && liveAudioContext) {
+      liveAudioGain.gain.setTargetAtTime(audioEnabled && !liveBeatriceActive && !liveOutputSuppressed ? 1 : 0, liveAudioContext.currentTime, .012);
+    }
+    if (liveBeatricePlaybackGain && liveAudioContext) {
+      liveBeatricePlaybackGain.gain.setTargetAtTime(audioEnabled && !liveOutputSuppressed ? 1 : 0, liveAudioContext.currentTime, .012);
+    }
+    if (liveOutputSuppressed) resetRemoteMouth();
   }
 
   function floatSamplesBase64(samples) {
@@ -698,7 +711,7 @@
     }
     liveBeatricePlaybackSources.clear();
     if (restoreRaw && liveAudioGain && liveAudioContext) {
-      liveAudioGain.gain.setTargetAtTime(audioEnabled ? 1 : 0, liveAudioContext.currentTime, .015);
+      liveAudioGain.gain.setTargetAtTime(audioEnabled && !liveOutputSuppressed ? 1 : 0, liveAudioContext.currentTime, .015);
     }
   }
 
@@ -800,7 +813,7 @@
     liveBeatriceProcessor = processor;
     liveBeatriceSilence = silence;
     liveBeatricePlaybackGain = context.createGain();
-    liveBeatricePlaybackGain.gain.value = audioEnabled ? 1 : 0;
+    liveBeatricePlaybackGain.gain.value = audioEnabled && !liveOutputSuppressed ? 1 : 0;
     liveBeatricePlaybackGain.connect(context.destination);
   }
 
@@ -860,7 +873,7 @@
     source.connect(analyser);
     analyser.connect(gain);
     gain.connect(context.destination);
-    gain.gain.value = audioEnabled && !liveBeatriceActive ? 1 : 0;
+    gain.gain.value = audioEnabled && !liveBeatriceActive && !liveOutputSuppressed ? 1 : 0;
     liveAudioContext = context;
     liveAudioSource = source;
     liveAudioGain = gain;
@@ -917,6 +930,7 @@
     stopDictation();
     stopMobileSpeech({ resumeDictation: false });
     stopLiveBeatricePipeline();
+    setRemoteLiveOutputSuppressed(false);
     liveBeatriceActive = appState?.voice?.realtimeConversion === "beatrice-v2";
     primeAudioOutput().catch(() => {});
     liveStarting = true;
@@ -1041,6 +1055,13 @@
       setConnection(true, "Live");
       $("#microphoneButton").classList.add("is-live");
       return;
+    }
+    if (method.startsWith("thread/realtime/transcript/") && params.role === "assistant") {
+      setRemoteLiveOutputSuppressed(Boolean(params.suppressed));
+      if (params.suppressed) return;
+    }
+    if (method.startsWith("thread/realtime/transcript/") && params.role === "user") {
+      setRemoteLiveOutputSuppressed(false);
     }
     if (method === "thread/realtime/error") {
       setResponseText(params.message || text("Liveへ接続できませんでした。", "Could not connect to Live."));
@@ -1338,6 +1359,7 @@
   async function sendRemoteText(message) {
     const normalized = String(message || "").trim();
     if (!normalized) return;
+    setRemoteLiveOutputSuppressed(false);
     primeAudioOutput().catch(() => {});
     const liveWorkFollowUp = busy
       && currentMode === "work"
@@ -1578,10 +1600,10 @@
     localStorage.setItem("charadock.remote.audio", audioEnabled ? "1" : "0");
     if (!audioEnabled) stopMobileSpeech();
     if (liveAudioGain && liveAudioContext) {
-      liveAudioGain.gain.setValueAtTime(audioEnabled && !liveBeatriceActive ? 1 : 0, liveAudioContext.currentTime);
+      liveAudioGain.gain.setValueAtTime(audioEnabled && !liveBeatriceActive && !liveOutputSuppressed ? 1 : 0, liveAudioContext.currentTime);
     }
     if (liveBeatricePlaybackGain && liveAudioContext) {
-      liveBeatricePlaybackGain.gain.setValueAtTime(audioEnabled ? 1 : 0, liveAudioContext.currentTime);
+      liveBeatricePlaybackGain.gain.setValueAtTime(audioEnabled && !liveOutputSuppressed ? 1 : 0, liveAudioContext.currentTime);
     }
     syncAudioButton();
     syncRemoteSettings();

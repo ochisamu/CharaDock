@@ -36,6 +36,87 @@ test("preferences keeps API key in memory when encryption is unavailable", () =>
   assert.equal(fs.readFileSync(preferences.filePath, "utf8").includes("sk-session-only"), false);
 });
 
+test("preferences encrypts MCP API keys and exposes only connection metadata", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "charadock-mcp-prefs-"));
+  const file = path.join(directory, "preferences.json");
+  const safeStorage = {
+    isEncryptionAvailable: () => true,
+    encryptString: (value) => Buffer.from(`encrypted:${value}`),
+    decryptString: (value) => value.toString().replace(/^encrypted:/, ""),
+  };
+  const preferences = new Preferences(file, safeStorage);
+  preferences.setMcpServer({
+    id: "mcp-0123456789abcdef",
+    name: "Private MCP",
+    url: "https://example.com/mcp",
+    authType: "api-key",
+    apiKeyHeader: "Authorization",
+    apiKeyPrefix: "Bearer",
+    apiKey: "private-mcp-secret",
+  });
+  const disk = fs.readFileSync(file, "utf8");
+  assert.equal(disk.includes("private-mcp-secret"), false);
+  assert.equal(preferences.getMcpApiKey("mcp-0123456789abcdef"), "private-mcp-secret");
+  assert.equal(preferences.publicState().mcpServers[0].hasApiKey, true);
+  assert.equal(Object.prototype.hasOwnProperty.call(preferences.publicState().mcpServers[0], "apiKey"), false);
+  assert.equal(preferences.mcpRuntime().servers.length, 1);
+  preferences.removeMcpServer("mcp-0123456789abcdef");
+  assert.equal(preferences.getMcpApiKey("mcp-0123456789abcdef"), "");
+});
+
+test("preferences keeps MCP API keys session-only when encryption is unavailable", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "charadock-mcp-session-"));
+  const file = path.join(directory, "preferences.json");
+  const preferences = new Preferences(file, { isEncryptionAvailable: () => false });
+  preferences.setMcpServer({
+    id: "mcp-fedcba9876543210",
+    name: "Session MCP",
+    url: "https://example.com/mcp",
+    authType: "api-key",
+    apiKey: "session-secret",
+  });
+  assert.equal(preferences.publicState().mcpApiKeyPersistence, "session");
+  assert.equal(fs.readFileSync(file, "utf8").includes("session-secret"), false);
+  const reloaded = new Preferences(file, { isEncryptionAvailable: () => false });
+  assert.equal(reloaded.publicState().mcpServers[0].hasApiKey, false);
+  assert.equal(reloaded.mcpRuntime().servers.length, 0);
+});
+
+test("preferences bounds the MCP server catalog", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "charadock-mcp-limit-"));
+  const preferences = new Preferences(path.join(directory, "preferences.json"));
+  for (let index = 0; index < 24; index += 1) {
+    preferences.setMcpServer({
+      id: `mcp-${index.toString(16).padStart(16, "0")}`,
+      name: `Server ${index + 1}`,
+      url: `https://example.com/mcp/${index}`,
+      authType: "none",
+    });
+  }
+  assert.throws(() => preferences.setMcpServer({
+    id: "mcp-ffffffffffffffff",
+    name: "One too many",
+    url: "https://example.com/mcp/overflow",
+    authType: "none",
+  }), /24件まで/);
+});
+
+test("preferences assigns MCP connections globally or per character and prunes removed servers", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "charadock-mcp-assignments-"));
+  const preferences = new Preferences(path.join(directory, "preferences.json"));
+  const globalId = "mcp-0123456789abcdef";
+  const characterId = "mcp-fedcba9876543210";
+  preferences.setMcpServer({ id: globalId, name: "Global", url: "https://example.com/global", authType: "none" });
+  preferences.setMcpServer({ id: characterId, name: "Kohaku", url: "https://example.com/kohaku", authType: "none" });
+  preferences.setMcpAssignment(globalId, { scope: "all" }, true);
+  preferences.setMcpAssignment(characterId, { scope: "character", characterId: "kohaku" }, true);
+  assert.deepEqual(preferences.assignedMcpServerIds("kohaku"), [globalId, characterId]);
+  assert.deepEqual(preferences.assignedMcpServerIds("towa"), [globalId]);
+  assert.deepEqual(preferences.mcpRuntime(preferences.assignedMcpServerIds("kohaku")).servers.map((server) => server.id), [globalId, characterId]);
+  preferences.removeMcpServer(characterId);
+  assert.deepEqual(preferences.publicState().mcpAssignments, { all: [globalId], characters: {} });
+});
+
 test("new installs enable onboarding and desktop positioning defaults", () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "charadock-prefs-"));
   const preferences = new Preferences(path.join(directory, "preferences.json"));

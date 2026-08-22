@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 const { spawn } = require("node:child_process");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
 const readline = require("node:readline");
+const { mcpAppServerConfigArgs } = require("../lib/mcp-servers.cjs");
 
 const CODEX_INSTALL_REQUIRED_MESSAGE = [
   "Codexが見つかりません。Codex DesktopまたはCodex CLIをインストールし、CharaDockを再起動してください。",
@@ -47,14 +51,93 @@ function isBenignCodexStderr(value) {
   return lines.length > 0 && lines.every((line) => knownCacheSchemaWarning.test(line));
 }
 
-function appServerArgs(webSearchMode = "", sandbox = "", networkAccess = false) {
+function configuredMcpServers(baseEnvironment = process.env) {
+  const codexHome = String(baseEnvironment?.CODEX_HOME || "").trim() || path.join(os.homedir(), ".codex");
+  let source = "";
+  try {
+    source = fs.readFileSync(path.join(codexHome, "config.toml"), "utf8");
+  } catch {
+    return [];
+  }
+  const servers = new Map();
+  let currentHttpCandidate = "";
+  for (const line of source.split(/\r?\n/)) {
+    const section = line.match(/^\s*\[\s*mcp_servers\s*\.\s*(?:"((?:\\.|[^"])*)"|'([^']*)'|([A-Za-z0-9_-]+))\s*\]\s*(?:#.*)?$/);
+    if (section) {
+      let name = section[1] ?? section[2] ?? section[3] ?? "";
+      if (section[1] !== undefined) {
+        try { name = JSON.parse(`"${section[1]}"`); } catch { name = section[1]; }
+      }
+      currentHttpCandidate = String(name || "").trim();
+      continue;
+    }
+    if (/^\s*\[/.test(line)) {
+      currentHttpCandidate = "";
+      continue;
+    }
+    // Only URL transports are isolated this way. Command-based entries need
+    // their full transport repeated on some Codex versions; overriding only
+    // `enabled` can otherwise make the inherited config fail validation.
+    const urlMatch = currentHttpCandidate && line.match(/^\s*url\s*=\s*("(?:\\.|[^"])*"|'[^']*')/);
+    if (urlMatch) {
+      let url = urlMatch[1].slice(1, -1);
+      if (urlMatch[1].startsWith('"')) {
+        try { url = JSON.parse(urlMatch[1]); } catch { /* retain literal body */ }
+      }
+      if (/^https?:\/\//i.test(url)) servers.set(currentHttpCandidate, { name: currentHttpCandidate, url });
+    }
+  }
+  return [...servers.values()];
+}
+
+function configuredMcpServerNames(baseEnvironment = process.env) {
+  return configuredMcpServers(baseEnvironment).map((server) => server.name);
+}
+
+function configKeySegment(value) {
+  const normalized = String(value || "").trim();
+  return /^[A-Za-z0-9_-]+$/.test(normalized) ? normalized : JSON.stringify(normalized);
+}
+
+function appServerArgs(webSearchMode = "", sandbox = "", networkAccess = false, mcpServers = [], inheritedMcpServers = []) {
   const args = ["app-server", "--stdio", "--enable", "realtime_conversation"];
   if (WEB_SEARCH_MODES.has(webSearchMode)) args.push("-c", `web_search=${JSON.stringify(webSearchMode)}`);
   if (["read-only", "workspace-write"].includes(sandbox)) args.push("-c", `sandbox_mode=${JSON.stringify(sandbox)}`);
   if (sandbox === "workspace-write" && networkAccess === true) {
     args.push("-c", "sandbox_workspace_write.network_access=true");
   }
+  // CharaDock owns MCP trust and character scoping. Codex Desktop/CLI may
+  // have unrelated global MCP entries in the same CODEX_HOME; exposing them
+  // here would bypass the assignment UI and can create duplicate tool routes.
+  const inherited = new Map();
+  for (const item of inheritedMcpServers) {
+    const name = String(typeof item === "object" ? item?.name : item || "").trim();
+    const url = String(typeof item === "object" ? item?.url : "").trim();
+    if (name && /^https?:\/\//i.test(url)) inherited.set(name, url);
+  }
+  for (const [name, url] of inherited) {
+    const root = `mcp_servers.${configKeySegment(name)}`;
+    // A -c leaf override replaces the inherited transport on some app-server
+    // versions, so repeat the URL before disabling the server.
+    args.push("-c", `${root}.url=${JSON.stringify(url)}`, "-c", `${root}.enabled=false`);
+  }
+  args.push(...mcpAppServerConfigArgs(mcpServers));
   return args;
+}
+
+function childProcessEnvironment(command, environment = {}, baseEnvironment = process.env) {
+  const extra = environment && typeof environment === "object" && !Array.isArray(environment) ? environment : {};
+  const merged = { ...baseEnvironment, ...extra };
+  if (!/(?:^|[\\/])wsl(?:\.exe)?$/i.test(String(command || ""))) return merged;
+  const forwarded = String(merged.WSLENV || "").split(":").filter(Boolean);
+  const forwardedNames = new Set(forwarded.map((entry) => entry.split("/")[0].toUpperCase()));
+  for (const name of Object.keys(extra)) {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) || forwardedNames.has(name.toUpperCase())) continue;
+    forwarded.push(name);
+    forwardedNames.add(name.toUpperCase());
+  }
+  merged.WSLENV = forwarded.join(":");
+  return merged;
 }
 
 const OFFICIAL_COMPUTER_USE_SKILL = "computer-use:computer-use";
@@ -90,6 +173,9 @@ class CodexAppServerClient {
     workspaceRoots = [],
     networkAccess = false,
     rejectInteractiveRequests = false,
+    environment = {},
+    mcpServers = [],
+    mcpSignature = "",
   } = {}) {
     this.cwd = cwd || process.cwd();
     this.spawnCwd = spawnCwd || this.cwd;
@@ -109,6 +195,9 @@ class CodexAppServerClient {
     this.workspaceRoots = normalizedWorkspaceRoots(this.cwd, workspaceRoots);
     this.networkAccess = networkAccess === true;
     this.rejectInteractiveRequests = rejectInteractiveRequests === true;
+    this.environment = environment && typeof environment === "object" && !Array.isArray(environment) ? { ...environment } : {};
+    this.mcpServers = Array.isArray(mcpServers) ? mcpServers.map((server) => ({ ...server })) : [];
+    this.mcpSignature = String(mcpSignature || "");
     this.persona = "";
     this.proc = null;
     this.readline = null;
@@ -122,6 +211,8 @@ class CodexAppServerClient {
     this.turnStarting = false;
     this.interruptRequested = false;
     this.startPromise = null;
+    this.mcpReadyPromise = null;
+    this.mcpReadyStatuses = [];
     this.queue = Promise.resolve();
     this.turnStartSkillItems = [];
   }
@@ -198,9 +289,11 @@ class CodexAppServerClient {
     if (!String(this.command || "").trim()) {
       throw new Error(CODEX_INSTALL_REQUIRED_MESSAGE);
     }
-    const child = spawn(this.command, [...this.commandArgs, ...appServerArgs(this.webSearchMode, this.sandbox, this.networkAccess)], {
+    const childEnvironment = childProcessEnvironment(this.command, this.environment);
+    const inheritedMcpServers = configuredMcpServers(childEnvironment);
+    const child = spawn(this.command, [...this.commandArgs, ...appServerArgs(this.webSearchMode, this.sandbox, this.networkAccess, this.mcpServers, inheritedMcpServers)], {
       cwd: this.spawnCwd,
-      env: process.env,
+      env: childEnvironment,
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
     });
@@ -251,6 +344,8 @@ class CodexAppServerClient {
     this.turnStarting = false;
     this.interruptRequested = false;
     this.threadId = null;
+    this.mcpReadyPromise = null;
+    this.mcpReadyStatuses = [];
     this.proc = null;
     this.readline = null;
   }
@@ -263,7 +358,7 @@ class CodexAppServerClient {
       return;
     }
     if (this.rejectInteractiveRequests && (message.method === "tool/requestUserInput" || message.method === "mcpServer/elicitation/request" || /requestApproval$/.test(message.method || ""))) {
-      const error = new Error("This turn requires user input that CharaDock cannot provide. The request was not approved.");
+      const error = new Error("追加の確認または入力が必要なため、この操作は実行しませんでした。CharaDockではまだこの確認に応答できません。 / This action requires confirmation or input that CharaDock cannot provide yet.");
       const turnId = message.params?.turnId || this.activeTurnId;
       const collector = turnId && this.turnCollectors.get(turnId);
       if (collector) {
@@ -458,6 +553,80 @@ class CodexAppServerClient {
     return this.request("thread/realtime/listVoices", {}, 30_000);
   }
 
+  async listMcpServerStatus({ detail = "toolsAndAuthOnly", requestTimeoutMs = 45_000 } = {}) {
+    await this.ensureStarted();
+    const servers = [];
+    let cursor = null;
+    do {
+      const result = await this.request("mcpServerStatus/list", {
+        cursor,
+        detail: detail === "full" ? "full" : "toolsAndAuthOnly",
+        limit: 100,
+        threadId: null,
+      }, Math.max(1_000, Number(requestTimeoutMs) || 45_000));
+      if (Array.isArray(result?.data)) servers.push(...result.data);
+      cursor = result?.nextCursor || null;
+    } while (cursor && servers.length < 500);
+    return servers;
+  }
+
+  async ensureMcpServersReady({ timeoutMs = 20_000, pollIntervalMs = 250 } = {}) {
+    const expectedNames = [...new Set(this.mcpServers
+      .map((server) => String(server?.name || "").trim())
+      .filter(Boolean))];
+    if (!expectedNames.length) return [];
+    const readyNames = new Set(this.mcpReadyStatuses.map((status) => String(status?.name || "")));
+    if (expectedNames.every((name) => readyNames.has(name))) return this.mcpReadyStatuses;
+    if (this.mcpReadyPromise) return this.mcpReadyPromise;
+
+    const waitForReady = async () => {
+      const deadline = Date.now() + Math.max(1_000, Number(timeoutMs) || 20_000);
+      let lastStatuses = [];
+      let lastError = null;
+      do {
+        const remainingMs = Math.max(1_000, deadline - Date.now());
+        try {
+          lastStatuses = await this.listMcpServerStatus({
+            detail: "toolsAndAuthOnly",
+            requestTimeoutMs: Math.min(20_000, remainingMs),
+          });
+          const byName = new Map(lastStatuses.map((status) => [String(status?.name || ""), status]));
+          const ready = expectedNames.every((name) => {
+            const status = byName.get(name);
+            if (!status || status.error) return false;
+            return Boolean(status.serverInfo
+              || Object.keys(status.tools || {}).length
+              || status.resources?.length
+              || status.resourceTemplates?.length);
+          });
+          if (ready) {
+            this.mcpReadyStatuses = expectedNames.map((name) => byName.get(name));
+            return this.mcpReadyStatuses;
+          }
+        } catch (error) {
+          lastError = error;
+        }
+        if (Date.now() >= deadline) break;
+        await new Promise((resolve) => setTimeout(resolve, Math.min(
+          Math.max(50, Number(pollIntervalMs) || 250),
+          Math.max(0, deadline - Date.now()),
+        )));
+      } while (Date.now() < deadline);
+
+      const foundNames = new Set(lastStatuses.map((status) => String(status?.name || "")));
+      const unavailable = expectedNames.filter((name) => !foundNames.has(name));
+      const detail = lastError?.message || (unavailable.length
+        ? `unavailable: ${unavailable.join(", ")}`
+        : "server metadata or tools were not ready");
+      throw new Error(`MCP接続の準備が完了しませんでした。接続を確認して、もう一度お試しください。 / MCP connections were not ready. Check the connection and try again. (${detail})`);
+    };
+
+    this.mcpReadyPromise = waitForReady().finally(() => {
+      this.mcpReadyPromise = null;
+    });
+    return this.mcpReadyPromise;
+  }
+
   async startChatGPTLogin() {
     await this.ensureStarted();
     const result = await this.request("account/login/start", {
@@ -488,10 +657,16 @@ class CodexAppServerClient {
     delegationAckFiller,
     includeStartupContext = true,
     initialItems = [],
+    requireMcpReady = false,
     onEvent,
   } = {}) {
     if (!String(sdp || "").startsWith("v=0")) throw new Error("WebRTCの音声接続情報が正しくありません。");
     await this.ensureStarted();
+    try {
+      await this.ensureMcpServersReady();
+    } catch (error) {
+      if (requireMcpReady) throw error;
+    }
     if (this.realtimeHandlers.size) await this.stopRealtime().catch(() => {});
     this.realtimeHandlers.clear();
     // GPT-Live/Codex Voice sessions must begin as a new empty voice task.
@@ -600,11 +775,16 @@ class CodexAppServerClient {
     return true;
   }
 
-  sendMessage(message, { onDelta, onEvent, localImagePath = "", localImagePaths = [], localAudioPath = "", skillItems = null, outputSchema = null, timeoutMs = 180_000 } = {}) {
+  sendMessage(message, { onDelta, onEvent, localImagePath = "", localImagePaths = [], localAudioPath = "", skillItems = null, outputSchema = null, timeoutMs = 180_000, requireMcpReady = false } = {}) {
     const run = async () => {
       this.turnStarting = true;
       this.interruptRequested = false;
       await this.ensureStarted();
+      try {
+        await this.ensureMcpServersReady();
+      } catch (error) {
+        if (requireMcpReady) throw error;
+      }
       const threadId = await this.ensureThread();
       const input = [{ type: "text", text: String(message || "").trim() }];
       const turnSkills = Array.isArray(skillItems) ? skillItems : this.turnStartSkillItems;
@@ -697,6 +877,9 @@ module.exports = {
   isOfficialComputerUseSkill,
   normalizeSkillName,
   appServerArgs,
+  childProcessEnvironment,
+  configuredMcpServers,
+  configuredMcpServerNames,
   isBenignCodexStderr,
   permissionProfileForSandbox,
   workspaceSandboxPolicy,
