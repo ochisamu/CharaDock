@@ -399,10 +399,14 @@ test("conversation and work surfaces expose history, folder access, interruption
   assert.match(controlPreload, /followUpChat:[\s\S]*chat:followUp/);
   assert.match(control, /api\.followUpChat\([\s\S]*route\?\.accepted/);
   assert.match(main, /async function steerActiveInteraction\([\s\S]*client\.steerActiveTurn/);
+  assert.match(main, /phase === "start"\) remoteBusy = true/);
+  assert.match(main, /\["thinking", "working", "speaking"\]\.includes\(activeTurnStatus\)/);
+  assert.match(main, /A second response cannot start at the same time/);
   assert.match(main, /ipcMain\.handle\("chat:followUp"/);
   assert.match(main, /ipcMain\.handle\("mascotInline:followUp"/);
   assert.match(mascot, /mascotInline:followUp[\s\S]*route\?\.accepted/);
   assert.match(control, /pendingChatFollowUp = \{ message, attachments, selectedSkillIds, selectedMcpServerIds \}/);
+  assert.match(control, /realtimeTypedChatTurnActive = false;[\s\S]{0,300}chatSelectedMcpServerIds = selectedMcpServerIds/);
   assert.ok(control.indexOf("const liveWorkFollowUp = chatBusy") < control.indexOf("pendingChatFollowUp = { message, attachments, selectedSkillIds, selectedMcpServerIds }"));
   assert.match(control, /bindFileDropZone\(\$\("#chatForm"\)/);
   assert.match(control, /appendWorkArtifactActions/);
@@ -412,13 +416,17 @@ test("conversation and work surfaces expose history, folder access, interruption
   assert.match(mascot, /id="desktopMascotAttachmentList"/);
   assert.match(mascot, /fileDrop\.id = "desktopMascotFileDrop"/);
   assert.match(mascot, /attachmentPaths: attachments\.map/);
+  assert.match(control, /if \(!interrupted\) \{[\s\S]*input\.value = message;[\s\S]*chatAttachments = attachments/);
+  assert.match(mascot, /if \(!interrupted\) \{\s*input\.value = message;\s*resizeInput\(\)/);
+  assert.match(fs.readFileSync(path.join(projectRoot, "desktop", "remote", "remote.js"), "utf8"), /responseMode !== "live"\) stopMobileSpeech[\s\S]*input\.dispatchEvent\(new Event\("input"/);
   assert.match(main, /mascotInline:chat[\s\S]{0,500}normalizeLocalAttachments/);
   assert.match(mascot, /mascotInline:previewWorkArtifact/);
   assert.match(mascot, /responseSpeaking[\s\S]*stopTtsPlayback\(\)/);
   assert.match(main, /mascotInline:openWorkDirectory/);
   assert.match(main, /work:openDirectory/);
   assert.match(main, /async function setCharacter\(characterId\) \{[\s\S]*if \(activeWorkRunId\)[\s\S]*Characters cannot be switched while Work is running/);
-  assert.match(control, /syncCharacterSwitchAvailability[\s\S]*button\.disabled = workRunning/);
+  assert.match(control, /syncCharacterSwitchAvailability[\s\S]*interactionBusy[\s\S]*button\.disabled = interactionBusy/);
+  assert.match(main, /publicWorkHistory\(\)[\s\S]*scopedWorkHistory\(workHistory[\s\S]*characterId: activeCharacter\(\)\.id[\s\S]*workspaceKey: workDirectoryKey\(\)/);
 });
 
 test("temporary activity state never impersonates the user or replaces character dialogue", () => {
@@ -528,7 +536,8 @@ test("Work voice reports contextual milestones and keeps artifact buttons out of
   assert.match(mascot, /payload\?\.phase === "announcement"/);
   assert.match(mascot, /payload\?\.phase === "realtime-caption"/);
   assert.match(mascot, /!payload\?\.deferDisplayToRealtime/);
-  assert.match(mascot, /if \(payload\?\.realtimeOutput\) \{\s*if \(!payload\?\.realtimeSpeechPending\) finishDetachedRealtimeWork/);
+  assert.match(mascot, /if \(payload\?\.realtimeOutput\) \{\s*if \(streamWorkMode\)[\s\S]*finishDetachedRealtimeWork/);
+  assert.match(mascot, /else \{\s*setSendingControls\(false\);\s*\}/);
   assert.match(mascot, /renderArtifactActions\(artifactActions, payload\?\.artifacts, payload\?\.workRunId\)/);
   assert.match(mascot, /setTimeout\(clearBubbleArtifactActions, 20_000\)/);
   assert.match(mascot, /phase === "realtime-work-complete"[\s\S]*setWorkActivity\(""\)/);

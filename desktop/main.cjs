@@ -84,7 +84,7 @@ const {
   workCompletionSpeechText,
 } = require("./lib/assistant-text.cjs");
 const { discoverWorkArtifacts, fileChangeCandidates, isArtifactInsideWorkspace } = require("./lib/work-artifacts.cjs");
-const { boundedConversationHistory, searchContinuityEntries, sharedContinuityContext, unfinishedWorkContext } = require("./lib/conversation-context.cjs");
+const { boundedConversationHistory, scopedWorkHistory, searchContinuityEntries, sharedContinuityContext, unfinishedWorkContext } = require("./lib/conversation-context.cjs");
 const { clearCharacterMemories, removeCharacterMemory, saveCharacterMemory, updateCharacterMemory } = require("./lib/character-memory.cjs");
 const {
   COMMON_SCOPE_KEY,
@@ -2976,7 +2976,10 @@ function codexWorkspaceRuntime(directory, additionalDirectories = []) {
 }
 
 function publicWorkHistory() {
-  return workHistory.map((run) => ({
+  return scopedWorkHistory(workHistory, {
+    characterId: activeCharacter().id,
+    workspaceKey: workDirectoryKey(),
+  }).map((run) => ({
     id: run.id,
     startedAt: run.startedAt,
     finishedAt: run.finishedAt || "",
@@ -6225,6 +6228,7 @@ function publishChatStream(payload = {}) {
   // character's durable reply bubble.  Preserve the last meaningful answer
   // until actual dialogue or an actionable error replaces it.
   if (visible && ["announcement", "delta", "realtime-caption", "done", "error"].includes(coordinated.phase)) remoteLastDisplayText = visible;
+  if (coordinated.phase === "start") remoteBusy = true;
   if (coordinated.phase === "error" || (coordinated.phase === "done" && !coordinated.realtimeSpeechPending)) remoteBusy = false;
   remoteServer?.publish("stream", {
     phase: String(coordinated.phase || ""),
@@ -6396,7 +6400,9 @@ async function appendActiveRealtimeText(text, options = {}) {
   }
   options = { ...options, selectedMcpServerIds: requestedMcpServerIds };
   if (preferences.data.interactionMode === "work" && activeRealtimeWorkDispatcher) {
-    activeRealtimeTurnBuffer?.addTyped(normalized);
+    activeRealtimeTurnBuffer?.addTyped(normalized, {
+      followUp: Boolean(client.hasActiveTurn?.() || activeWorkRunId),
+    });
     const dispatched = activeRealtimeWorkDispatcher.dispatchTyped?.(normalized, {
       artifactTarget: options?.artifactTarget || null,
       selectedSkillIds: options?.selectedSkillIds,
@@ -6420,12 +6426,14 @@ async function appendActiveRealtimeText(text, options = {}) {
   // Start a read-only Codex turn on the same Live thread. With native
   // handoffs enabled, app-server owns the single final voice response; do not
   // also appendSpeech here or typed Chat would be spoken twice.
-  activeRealtimeTurnBuffer?.addTyped(normalized);
-  if (client.hasActiveTurn?.()) {
+  const activeTurn = Boolean(client.hasActiveTurn?.());
+  activeRealtimeTurnBuffer?.addTyped(normalized, { followUp: activeTurn });
+  if (activeTurn) {
     const skillItems = mergeTurnSkillItems([builtInSkillCreatorItem()], explicitTurnSkillItems(options?.selectedSkillIds));
     try {
       const accepted = await client.steerActiveTurn(normalized, { skillItems });
       if (!accepted) throw new Error(mainText("実行中のLive Chatが見つかりませんでした。", "The active Live Chat turn was not found."));
+      rememberActiveInteractionFollowUp(client, normalized);
       publishChatStream({
         phase: "follow-up",
         mode: "chat",
@@ -6445,15 +6453,21 @@ async function appendActiveRealtimeText(text, options = {}) {
   try {
     result = await client.sendMessage(normalized);
   } catch (error) {
+    consumeActiveInteractionFollowUps(client);
     activeRealtimeTurnBuffer?.discardInput(normalized);
     throw error;
   }
   const answer = cleanAssistantText(result?.text || "").trim();
   if (!answer) {
+    consumeActiveInteractionFollowUps(client);
     activeRealtimeTurnBuffer?.discardInput(normalized);
     return false;
   }
-  rememberConversationTurn(normalized, answer);
+  const followUps = consumeActiveInteractionFollowUps(client);
+  const recordedRequest = followUps.length
+    ? [normalized, ...followUps.map((followUp) => `${mainText("追加入力", "Follow-up")}: ${followUp}`)].join("\n")
+    : normalized;
+  rememberConversationTurn(recordedRequest, answer);
   diagnosticLog?.write("info", "realtime-typed-chat-routed", { target: activeRealtimeTarget || "unknown", answerLength: answer.length, route: "native-handoff" });
   return { accepted: true, delegated: true, conversation: true };
 }
@@ -7014,7 +7028,6 @@ async function startCodexRealtimeVoice(payload, target = "control") {
         ? nativeWorkTurn
         : null;
       if (activeState) {
-        appendNativeWorkFollowUp(activeState, normalized);
         publishNativeWorkFollowUpStatus(activeState);
       } else {
         noteNativeWorkRequest(normalized, "typed", { ...options, selectedMcpServerIds: requestedMcpServerIds });
@@ -7023,7 +7036,13 @@ async function startCodexRealtimeVoice(payload, target = "control") {
       const operation = activeTurnId
         ? realtimeClient.steerActiveTurn(normalized, { skillItems, turnId: activeTurnId })
         : realtimeClient.sendMessage(normalized, { skillItems });
-      Promise.resolve(operation).catch((error) => {
+      Promise.resolve(operation).then((accepted) => {
+        if (activeTurnId && !accepted) {
+          throw new Error(mainText("実行中のWorkが見つかりませんでした。", "The active Work turn was not found."));
+        }
+        if (activeState) appendNativeWorkFollowUp(activeState, normalized);
+      }).catch((error) => {
+        realtimeTurnBuffer.discardInput(normalized);
         diagnosticLog?.write("warn", "realtime-work-typed-handoff-failed", String(error?.message || error));
         if (!nativeWorkTurn && !nativeCompletionAwaitingSpeech) {
           publishChatStream({
@@ -7045,18 +7064,19 @@ async function startCodexRealtimeVoice(payload, target = "control") {
       const state = nativeWorkTurn;
       if (!workMode || !normalized || isSocialConversationTurn(normalized)
         || !state?.run || state.run.status !== "running" || !state.turnId) return false;
-      appendNativeWorkFollowUp(state, normalized);
       publishNativeWorkFollowUpStatus(state);
       const steerStartedAt = Date.now();
       const transcriptElapsedMs = userTranscriptStartedAt ? steerStartedAt - userTranscriptStartedAt : 0;
       Promise.resolve(realtimeClient.steerActiveTurn(normalized, { skillItems: state.skillItems, turnId: state.turnId })).then((accepted) => {
         if (!accepted) throw new Error(mainText("実行中のWorkが見つかりませんでした。", "The active Work turn was not found."));
+        appendNativeWorkFollowUp(state, normalized);
         diagnosticLog?.write("info", "realtime-work-voice-follow-up-steered", {
           elapsedMs: Date.now() - steerStartedAt,
           transcriptElapsedMs,
           workRunId: state.run.id,
         });
       }).catch((error) => {
+        realtimeTurnBuffer.discardInput(normalized);
         diagnosticLog?.write("warn", "realtime-work-voice-follow-up-failed", String(error?.message || error));
         publishChatStream({
           phase: "error",
@@ -7314,7 +7334,13 @@ async function startCodexRealtimeVoice(payload, target = "control") {
         });
         const request = String(params.text || "").trim();
         if (request) {
-          const completedTurn = realtimeTurnBuffer.addUser(request);
+          const completedTurn = realtimeTurnBuffer.addUser(request, {
+            followUp: Boolean(
+              workMode && nativeWorkTurn?.run?.status === "running" && nativeWorkTurn?.turnId
+                ? true
+                : realtimeClient.hasActiveTurn?.(),
+            ),
+          });
           if (!workMode && completedTurn) rememberConversationTurn(completedTurn.user, completedTurn.assistant);
         }
         if (workMode && request) {
@@ -7329,7 +7355,21 @@ async function startCodexRealtimeVoice(payload, target = "control") {
         voiceFollowUpListeningShown = false;
       }
       if (["thread/realtime/error", "thread/realtime/closed"].includes(method)) {
-        if (assistantTranscript.active && !workMode) sendMascotStream({ phase: "done", mode: "chat", text: assistantTranscript.text });
+        const currentTurnStatus = turnCoordinator.snapshot().status;
+        const terminalTurnPayload = !workMode && ["thinking", "speaking"].includes(currentTurnStatus)
+          ? turnCoordinator.apply({
+            phase: method.endsWith("error") ? "error" : "done",
+            mode: "chat",
+            text: assistantTranscript.text,
+            displayText: assistantTranscript.text || remoteLastDisplayText,
+            message: method.endsWith("error") ? forwarded?.params?.message : "",
+            realtimeOutput: true,
+            audioRoute: "live",
+          })
+          : null;
+        if (assistantTranscript.active && !workMode) {
+          sendMascotStream(terminalTurnPayload || { phase: "done", mode: "chat", text: assistantTranscript.text });
+        }
         assistantTranscript.active = false;
         if (activeRealtimeWorkDispatcher === realtimeWorkDispatcher) {
           realtimeWorkDispatcher.close();
@@ -7354,6 +7394,7 @@ async function startCodexRealtimeVoice(payload, target = "control") {
         publishActiveRealtimeTurnSkills();
         remoteBusy = false;
         remoteServer?.publish("stream", {
+          ...(terminalTurnPayload || {}),
           phase: method.endsWith("error") ? "error" : "done",
           message: method.endsWith("error") ? remotePublicText(forwarded?.params?.message, 1000) : "",
           displayText: remoteLastDisplayText,
@@ -7398,6 +7439,15 @@ async function setCharacter(characterId) {
       "Characters cannot be switched while Work is running. Wait for completion or stop it from history.",
     ));
   }
+  if (activeCodexInteractionClient() || remoteBusy || ["listening", "thinking", "working", "speaking"].includes(turnCoordinator.snapshot().status)) {
+    throw new Error(mainText(
+      "応答中はキャラクターを切り替えられません。完了を待つか、先に中断してください。",
+      "Characters cannot be switched during a response. Wait for it to finish or stop it first.",
+    ));
+  }
+  if (currentRealtimeClient()) await stopActiveRealtime();
+  if (controlWindow && !controlWindow.isDestroyed()) controlWindow.webContents.send("audio:stopNormalSpeech");
+  if (mascotWindow && !mascotWindow.isDestroyed()) mascotWindow.webContents.send("audio:stopNormalSpeech");
   await stopDynamicWebPreview();
   const character = characterById(characterId);
   const characterTtsProfiles = { ...(preferences.data.characterTtsProfiles || {}) };
@@ -10217,6 +10267,17 @@ async function sendChatMessage(message, {
   const text = String(message || "").trim().slice(0, 12_000);
   if (!text && !localAttachments.length) throw new Error("メッセージを入力してください。");
   const requestText = text || mainText("添付したファイルを確認してください。", "Please review the attached files.");
+  const activeTurnStatus = turnCoordinator.snapshot().status;
+  if (!realtimeOutput && (
+    activeWorkRunId
+    || activeCodexInteractionClient()
+    || ["thinking", "working", "speaking"].includes(activeTurnStatus)
+  )) {
+    throw new Error(mainText(
+      "いまの応答へ追加する場合は、差し込みとして送信してください。別の応答は同時に開始できません。",
+      "Send this as a follow-up to the current response. A second response cannot start at the same time.",
+    ));
+  }
   if (!realtimeOutput && (activeRealtimeStarting || activeRealtimeTarget || currentRealtimeClient() || remoteRealtimeStartReservation)) {
     throw new Error(mainText(
       "Live接続中の入力はLiveへ送ってください。通常TTSとの同時実行はできません。",

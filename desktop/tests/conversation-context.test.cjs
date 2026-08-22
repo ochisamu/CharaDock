@@ -2,7 +2,7 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
 
-const { boundedConversationHistory, continuityEntries, recentConversationContext, searchContinuityEntries, sharedContinuityContext, unfinishedWorkContext } = require("../lib/conversation-context.cjs");
+const { boundedConversationHistory, continuityEntries, recentConversationContext, scopedWorkHistory, searchContinuityEntries, sharedContinuityContext, unfinishedWorkContext } = require("../lib/conversation-context.cjs");
 
 test("recent conversation context preserves an elliptical weather follow-up", () => {
   const history = boundedConversationHistory([], "名古屋の天気は？", "今日は晴れです。");
@@ -56,6 +56,7 @@ test("shared continuity excludes another character, workspace, and unfinished wo
       { status: "completed", characterId: "towa", workspaceKey: "workspace-a", request: "other character", result: "done" },
       { status: "completed", characterId: "kohaku", workspaceKey: "workspace-b", request: "other project", result: "done" },
       { status: "running", characterId: "kohaku", workspaceKey: "workspace-a", request: "unfinished", result: "" },
+      { status: "completed", characterId: "", workspaceKey: "workspace-a", request: "unknown character", result: "done" },
       { status: "completed", characterId: "kohaku", workspaceKey: "workspace-a", request: "same project", result: "done" },
     ],
   });
@@ -115,17 +116,29 @@ test("unfinished Work context keeps only the latest matching unverified request"
       { status: "interrupted", characterId: "kohaku", workspaceKey: "workspace-a", request: "直前の修正を続ける", activities: ["テストを確認中"], finishedAt: "2026-08-20T11:00:00.000Z" },
       { status: "interrupted", characterId: "towa", workspaceKey: "workspace-a", request: "別キャラの作業", finishedAt: "2026-08-20T12:00:00.000Z" },
       { status: "interrupted", characterId: "kohaku", workspaceKey: "workspace-b", request: "別フォルダーの作業", finishedAt: "2026-08-20T13:00:00.000Z" },
+      { status: "interrupted", characterId: "", workspaceKey: "workspace-a", request: "不明なキャラの作業", finishedAt: "2026-08-20T13:30:00.000Z" },
       { status: "completed", characterId: "kohaku", workspaceKey: "workspace-a", request: "完了済み", finishedAt: "2026-08-20T14:00:00.000Z" },
     ],
   });
   assert.match(context, /直前の修正を続ける/);
   assert.match(context, /テストを確認中/);
   assert.match(context, /未完了・未検証/);
-  assert.doesNotMatch(context, /古い未完了|別キャラ|別フォルダー|完了済み/);
+  assert.doesNotMatch(context, /古い未完了|別キャラ|別フォルダー|不明なキャラ|完了済み/);
 });
 
 test("unfinished Work context is empty without an exact workspace", () => {
   const history = [{ status: "interrupted", characterId: "kohaku", workspaceKey: "workspace-a", request: "続き" }];
   assert.equal(unfinishedWorkContext({ characterId: "kohaku", workHistory: history }), "");
   assert.equal(unfinishedWorkContext({ characterId: "kohaku", workspaceKey: "workspace-b", workHistory: history }), "");
+});
+
+test("visible Work history never crosses character or workspace scope", () => {
+  const history = [
+    { id: "current", characterId: "kohaku", workspaceKey: "workspace-a" },
+    { id: "other-character", characterId: "nike", workspaceKey: "workspace-a" },
+    { id: "other-workspace", characterId: "kohaku", workspaceKey: "workspace-b" },
+    { id: "legacy-unscoped", characterId: "", workspaceKey: "" },
+  ];
+  assert.deepEqual(scopedWorkHistory(history, { characterId: "kohaku", workspaceKey: "workspace-a" }).map((run) => run.id), ["current"]);
+  assert.deepEqual(scopedWorkHistory(history, { characterId: "kohaku" }), []);
 });

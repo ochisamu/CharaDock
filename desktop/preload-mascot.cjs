@@ -1559,13 +1559,17 @@ window.addEventListener("DOMContentLoaded", () => {
           : result.mode === "work" ? `${result.workDirectoryName || "選択フォルダー"}で作業完了` : result.provider === "codex" ? "Codexから返答" : "OpenAIから返答");
       }
     } catch (error) {
+      const interrupted = /interrupt|cancel|abort|中断/i.test(String(error.message || ""));
+      if (!interrupted) {
+        input.value = message;
+        resizeInput();
+      }
       if (attachments.length) mergeMascotAttachments(attachments);
       if (selectedSkillIds.length) {
         mascotSelectedSkillIds = [...new Set([...mascotSelectedSkillIds, ...selectedSkillIds])];
       }
       if (selectedMcpServerIds.length) mascotSelectedMcpServerIds = [...new Set([...mascotSelectedMcpServerIds, ...selectedMcpServerIds])];
       if (selectedSkillIds.length || selectedMcpServerIds.length) renderMascotSelectedSkills();
-      const interrupted = /interrupt|cancel|abort|中断/i.test(String(error.message || ""));
       const interruptedText = appState?.interactionMode === "work"
         ? "作業を中断しました。履歴から内容を確認できます。"
         : "応答を中断しました。続けて修正を送れます。";
@@ -2651,7 +2655,7 @@ window.addEventListener("DOMContentLoaded", () => {
         provider: payload?.ttsProvider || "system",
         language: payload?.speechLanguage || "ja-JP",
       };
-      sending = true;
+      setSendingControls(true);
       streamWorkMode = payload?.mode === "work";
       if (payload?.realtimeOutput && streamWorkMode) {
         detachedRealtimeWorkBusy = true;
@@ -2754,8 +2758,12 @@ window.addEventListener("DOMContentLoaded", () => {
       syncBubbleOverflow();
       scheduleBubbleHide(Math.max(9000, bubbleHideDuration));
       if (payload?.realtimeOutput) {
-        if (!payload?.realtimeSpeechPending) finishDetachedRealtimeWork(payload?.workRunId);
-      } else sending = false;
+        if (streamWorkMode) {
+          if (!payload?.realtimeSpeechPending) finishDetachedRealtimeWork(payload?.workRunId);
+        } else {
+          setSendingControls(false);
+        }
+      } else setSendingControls(false);
       if (streamWorkMode) setWorkActivity(appState?.language === "en" ? "Work complete" : "作業完了", { finish: true });
       else setWorkActivity("");
       streamWorkMode = false;
@@ -2764,8 +2772,8 @@ window.addEventListener("DOMContentLoaded", () => {
       stopTtsPlayback();
       streamCurrentSpeechText = "";
       if (!bubble.classList.contains("is-expanded") && streamFullText) bubbleText.textContent = normalizeDisplayText(streamFullText);
-      if (payload?.realtimeOutput) finishDetachedRealtimeWork(payload?.workRunId);
-      else sending = false;
+      if (payload?.realtimeOutput && streamWorkMode) finishDetachedRealtimeWork(payload?.workRunId);
+      else setSendingControls(false);
       bubblePersistent = true;
       if (streamWorkMode) setWorkActivity(appState?.language === "en" ? "Work could not be completed" : "作業を完了できませんでした", { finish: true });
       else setWorkActivity("");
@@ -2818,12 +2826,18 @@ window.addEventListener("DOMContentLoaded", () => {
     if (method === "thread/realtime/error") {
       realtimeUnavailable ||= Boolean(params.unavailable);
       closeRealtime();
+      detachedRealtimeWorkBusy = false;
+      detachedRealtimeWorkRunId = "";
+      setSendingControls(false);
       setWorkActivity("");
       setStatus(params.message || "Codex Realtime接続エラー", 5000);
       return;
     }
     if (method === "thread/realtime/closed") {
       closeRealtime();
+      detachedRealtimeWorkBusy = false;
+      detachedRealtimeWorkRunId = "";
+      setSendingControls(false);
       setWorkActivity("");
     }
   });

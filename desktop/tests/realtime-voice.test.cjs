@@ -70,11 +70,15 @@ test("Realtime sessions start only from voice input, accept typed turns, and kee
   assert.match(main, /dispatchVoiceFollowUp\(request\)/);
   assert.match(main, /realtime-work-voice-follow-up/);
   assert.match(main, /appendNativeWorkFollowUp\(state, normalized\)/);
+  assert.match(main, /if \(activeState\) appendNativeWorkFollowUp\(activeState, normalized\)/);
+  assert.match(main, /if \(activeTurnId && !accepted\)[\s\S]*realtimeTurnBuffer\.discardInput\(normalized\)/);
   assert.match(main, /phase: "follow-up"[\s\S]*statusText[\s\S]*workRunId/);
   assert.match(control, /liveWorkFollowUp[\s\S]*appendCodexRealtimeText\(message, selectedSkillIds, selectedMcpServerIds\)[\s\S]*if \(chatBusy\)/);
   assert.match(mascot, /liveWorkFollowUp[\s\S]*mascotInline:realtimeAppendText[\s\S]*if \(sending\)/);
   assert.match(main, /Realtime V3 appendText is context-only[\s\S]*await client\.sendMessage\(normalized\)/);
-  assert.match(main, /activeRealtimeTurnBuffer\?\.addTyped\(normalized\)/);
+  assert.match(main, /activeRealtimeTurnBuffer\?\.addTyped\(normalized, \{ followUp: activeTurn \}\)/);
+  assert.match(main, /rememberActiveInteractionFollowUp\(client, normalized\)/);
+  assert.match(main, /const followUps = consumeActiveInteractionFollowUps\(client\)/);
   assert.match(main, /route: "native-handoff"/);
   assert.match(main, /sandbox: "workspace-write"/);
   assert.match(main, /await stopActiveRealtime\(\)\.catch/);
@@ -86,7 +90,7 @@ test("Realtime sessions start only from voice input, accept typed turns, and kee
   assert.match(main, /unfinishedWorkContext\(\{[\s\S]*workspaceKey: workDirectoryKey\(\)/);
   assert.match(main, /短い単一目的[\s\S]*`rm -f`、`rm -rf`/);
   assert.match(main, /realtimeTurnBuffer\.addAssistant\(assistantTranscript\.text\)/);
-  assert.match(main, /realtimeTurnBuffer\.addUser\(request\)/);
+  assert.match(main, /realtimeTurnBuffer\.addUser\(request, \{[\s\S]*nativeWorkTurn\?\.run\?\.status === "running"[\s\S]*realtimeClient\.hasActiveTurn/);
   assert.match(main, /realtimeTurnBuffer\.hasPendingInput\(\)[\s\S]*realtime-unsolicited-assistant-suppressed/);
   assert.match(main, /params: \{ \.\.\.forwarded\.params, suppressed: true \}/);
   assert.match(main, /await appendRealtimeReactionSpeech\(spokenText\)/);
@@ -104,6 +108,10 @@ test("Realtime sessions start only from voice input, accept typed turns, and kee
   assert.match(control, /params\.suppressed[\s\S]*setRealtimeOutputSuppressed\(true\)/);
   assert.match(mascot, /previousProvider === "realtime" && appState\.speechInputProvider !== "realtime"[\s\S]*closeRealtime\(\)/);
   assert.match(mascot, /setRealtimeOutputSuppressed\(Boolean\(params\.suppressed\)\)[\s\S]*if \(params\.suppressed\) return/);
+  assert.match(mascot, /payload\?\.phase === "start"[\s\S]*setSendingControls\(true\)/);
+  assert.match(mascot, /thread\/realtime\/closed[\s\S]*setSendingControls\(false\)/);
+  assert.match(main, /const terminalTurnPayload = !workMode && \["thinking", "speaking"\]\.includes\(currentTurnStatus\)/);
+  assert.match(main, /terminalTurnPayload \|\| \{ phase: "done", mode: "chat"/);
   assert.match(remote, /setRemoteLiveOutputSuppressed\(Boolean\(params\.suppressed\)\)/);
   assert.match(mascot, /thread\/realtime\/transcript\/done[\s\S]*Listening…[\s\S]*話してください…/);
 });

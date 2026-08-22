@@ -1893,10 +1893,11 @@
 
   function syncCharacterSwitchAvailability() {
     const workRunning = Boolean(workHistoryState.activeWorkRunId);
+    const interactionBusy = Boolean(chatBusy || workRunning || realtimeStarting);
     for (const button of $$("#characterGrid .character-card")) {
-      button.disabled = workRunning;
-      button.title = workRunning
-        ? localized("Workの完了後、または中断後に切り替えられます", "Available after Work finishes or is stopped")
+      button.disabled = interactionBusy;
+      button.title = interactionBusy
+        ? localized("現在の応答が完了するか、中断すると切り替えられます", "Available after the current response finishes or is stopped")
         : "";
     }
   }
@@ -4247,6 +4248,7 @@
     $("#saveContinuationButton").disabled = $("#chatContinuationToggle").disabled;
     $("#clearContinuationButton").disabled = $("#chatContinuationToggle").disabled;
     $("#codexWorkNetworkAccessToggle").disabled = chatBusy || Boolean(workHistoryState.activeWorkRunId || realtimePeerConnection || realtimeStarting);
+    syncCharacterSwitchAvailability();
   }
 
   async function sendChat() {
@@ -4391,6 +4393,12 @@
       } catch (error) {
         realtimePendingTypedText = "";
         realtimeTypedChatTurnActive = false;
+        input.value = message;
+        chatAttachments = attachments;
+        chatSelectedSkillIds = selectedSkillIds;
+        chatSelectedMcpServerIds = selectedMcpServerIds;
+        renderChatAttachments();
+        renderChatSelectedSkills();
         setChatBusy(false);
         setStatus($("#chatStatus"), error.message, true);
       } finally {
@@ -4417,6 +4425,14 @@
       setStatus($("#chatStatus"), result.provider === "codex" ? "Codexから応答しました。" : "OpenAI APIから応答しました。");
     } catch (error) {
       const interrupted = /interrupt|cancel|abort|中断/i.test(String(error.message || ""));
+      if (!interrupted) {
+        input.value = message;
+        chatAttachments = attachments;
+        chatSelectedSkillIds = selectedSkillIds;
+        chatSelectedMcpServerIds = selectedMcpServerIds;
+        renderChatAttachments();
+        renderChatSelectedSkills();
+      }
       setStatus($("#chatStatus"), interrupted ? "応答を中断しました。" : error.message, !interrupted);
     } finally {
       localChatSendPending = false;

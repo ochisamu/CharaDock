@@ -1066,9 +1066,13 @@
     if (method === "thread/realtime/error") {
       setResponseText(params.message || text("Liveへ接続できませんでした。", "Could not connect to Live."));
       closeRemoteLivePeer();
+      setBusy(Boolean(appState?.workHistory?.activeWorkRunId));
       return;
     }
-    if (method === "thread/realtime/closed") closeRemoteLivePeer();
+    if (method === "thread/realtime/closed") {
+      closeRemoteLivePeer();
+      setBusy(Boolean(appState?.workHistory?.activeWorkRunId));
+    }
   }
 
   function renderArtifacts(artifacts, runId) {
@@ -1359,6 +1363,7 @@
   async function sendRemoteText(message) {
     const normalized = String(message || "").trim();
     if (!normalized) return;
+    if (appState?.voice?.responseMode !== "live") stopMobileSpeech({ resumeDictation: false });
     setRemoteLiveOutputSuppressed(false);
     primeAudioOutput().catch(() => {});
     if (busy) {
@@ -1378,7 +1383,9 @@
         throw new Error(text("追加入力を反映できませんでした。", "The follow-up could not be applied."));
       } catch (error) {
         $("#composerHint").textContent = error.message;
-        $("#messageInput").value = normalized;
+        const input = $("#messageInput");
+        input.value = normalized;
+        input.dispatchEvent(new Event("input", { bubbles: true }));
       }
       return;
     }
@@ -1398,6 +1405,9 @@
     } catch (error) {
       setBusy(false);
       setResponseText(error.message);
+      const input = $("#messageInput");
+      input.value = normalized;
+      input.dispatchEvent(new Event("input", { bubbles: true }));
     }
   }
 
@@ -1906,7 +1916,10 @@
     event.target.style.height = "auto";
     event.target.style.height = `${Math.min(112, event.target.scrollHeight)}px`;
   });
-  $("#characterSelect").addEventListener("change", (event) => saveRemoteClientSettings({ characterId: event.target.value }));
+  $("#characterSelect").addEventListener("change", (event) => {
+    stopMobileSpeech({ resumeDictation: false });
+    saveRemoteClientSettings({ characterId: event.target.value });
+  });
   $("#responseModeSelect").addEventListener("change", (event) => {
     if (event.target.value === "live") stopDictation();
     saveRemoteClientSettings({ responseMode: event.target.value });

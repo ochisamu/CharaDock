@@ -37,6 +37,16 @@ function recentConversationContext(history) {
   ].join("\n");
 }
 
+function scopedWorkHistory(history, { characterId = "", workspaceKey = "" } = {}) {
+  const selectedCharacterId = String(characterId || "");
+  const selectedWorkspaceKey = String(workspaceKey || "");
+  if (!selectedCharacterId || !selectedWorkspaceKey) return [];
+  return (Array.isArray(history) ? history : []).filter((run) => (
+    String(run?.characterId || "") === selectedCharacterId
+    && String(run?.workspaceKey || "") === selectedWorkspaceKey
+  ));
+}
+
 function timestamp(value) {
   const parsed = Date.parse(String(value || ""));
   return Number.isFinite(parsed) ? parsed : 0;
@@ -57,7 +67,7 @@ function continuityEntries({ conversationHistory = [], workHistory = [], charact
     // Work is safer than mixing tasks from every project for this character.
     if (!workspaceKey) return [];
     if (run?.status !== "completed") return [];
-    if (characterId && run?.characterId && run.characterId !== characterId) return [];
+    if (characterId && String(run?.characterId || "") !== characterId) return [];
     if (workspaceKey && run?.workspaceKey !== workspaceKey) return [];
     const request = String(run?.request || "").replace(/\s+/g, " ").trim().slice(0, 500);
     const result = String(run?.result || "").replace(/\s+/g, " ").trim().slice(0, 800);
@@ -137,7 +147,7 @@ function unfinishedWorkContext(options = {}) {
   const resumableStatuses = new Set(["running", "stopping", "interrupted"]);
   const latest = (Array.isArray(options.workHistory) ? options.workHistory : [])
     .filter((run) => resumableStatuses.has(String(run?.status || "")))
-    .filter((run) => !characterId || !run?.characterId || run.characterId === characterId)
+    .filter((run) => !characterId || String(run?.characterId || "") === characterId)
     .filter((run) => run?.workspaceKey === workspaceKey)
     .sort((left, right) => timestamp(right?.finishedAt || right?.startedAt) - timestamp(left?.finishedAt || left?.startedAt))[0];
   if (!latest) return "";
@@ -165,4 +175,4 @@ function unfinishedWorkContext(options = {}) {
   ].join("\n");
 }
 
-module.exports = { boundedConversationHistory, continuityEntries, recentConversationContext, searchContinuityEntries, sharedContinuityContext, unfinishedWorkContext };
+module.exports = { boundedConversationHistory, continuityEntries, recentConversationContext, scopedWorkHistory, searchContinuityEntries, sharedContinuityContext, unfinishedWorkContext };

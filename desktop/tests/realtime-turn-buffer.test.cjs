@@ -50,3 +50,61 @@ test("Realtime turn buffer can revoke a request that failed before producing an 
   assert.equal(buffer.hasPendingInput(), false);
   assert.equal(buffer.discardInput("送信に失敗した質問"), false);
 });
+
+test("Realtime turn buffer folds active-turn follow-ups into one answer and clears authorization", () => {
+  const buffer = new RealtimeTurnBuffer();
+  buffer.addTyped("最初の依頼");
+  buffer.addTyped("条件を追加", { followUp: true });
+  buffer.addTyped("出力は短く", { followUp: true });
+  assert.deepEqual(buffer.addAssistant("まとめた回答"), {
+    user: "最初の依頼\n条件を追加\n出力は短く",
+    assistant: "まとめた回答",
+    source: "typed",
+    followUps: ["条件を追加", "出力は短く"],
+  });
+  assert.equal(buffer.hasPendingInput(), false);
+});
+
+test("Realtime turn buffer keeps a later independent typed turn separate", () => {
+  const buffer = new RealtimeTurnBuffer();
+  buffer.addTyped("最初の依頼");
+  buffer.addTyped("次の依頼");
+  assert.deepEqual(buffer.addAssistant("最初の回答"), {
+    user: "最初の依頼",
+    assistant: "最初の回答",
+    source: "typed",
+  });
+  assert.equal(buffer.hasPendingInput(), true);
+  assert.deepEqual(buffer.addAssistant("次の回答"), {
+    user: "次の依頼",
+    assistant: "次の回答",
+    source: "typed",
+  });
+});
+
+test("Realtime turn buffer folds typed follow-ups into a voice-started turn", () => {
+  const buffer = new RealtimeTurnBuffer();
+  buffer.addUser("最初は音声でお願い");
+  buffer.addTyped("出力はMarkdownで", { followUp: true });
+
+  assert.deepEqual(buffer.addAssistant("Markdownにまとめたよ"), {
+    user: "最初は音声でお願い\n出力はMarkdownで",
+    assistant: "Markdownにまとめたよ",
+    source: "voice",
+    followUps: ["出力はMarkdownで"],
+  });
+  assert.equal(buffer.addUser("出力はMarkdownで"), null);
+});
+
+test("Realtime turn buffer folds voice follow-ups into a typed-started turn", () => {
+  const buffer = new RealtimeTurnBuffer();
+  buffer.addTyped("ニュースを調べて");
+  buffer.addUser("国内だけで", { followUp: true });
+
+  assert.deepEqual(buffer.addAssistant("国内ニュースをまとめたよ"), {
+    user: "ニュースを調べて\n国内だけで",
+    assistant: "国内ニュースをまとめたよ",
+    source: "typed",
+    followUps: ["国内だけで"],
+  });
+});
