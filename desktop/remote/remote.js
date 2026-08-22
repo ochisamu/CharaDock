@@ -80,6 +80,7 @@
   let seenStartupGreetingId = "";
   let pendingStartupGreeting = null;
   let seenMcpAppId = "";
+  let seenMcpAppUpdatedAt = 0;
   let dismissedMcpAppId = "";
   let mcpAppHost = null;
 
@@ -1348,7 +1349,11 @@
     const nextMcpApp = appState.mcpApp;
     if (nextMcpApp?.id && nextMcpApp.id !== seenMcpAppId) {
       seenMcpAppId = nextMcpApp.id;
+      seenMcpAppUpdatedAt = Number(nextMcpApp.updatedAt || 0);
       if (nextMcpApp.id !== dismissedMcpAppId) setTimeout(() => openMcpApp(nextMcpApp), 80);
+    } else if (nextMcpApp?.id && Number(nextMcpApp.updatedAt || 0) > seenMcpAppUpdatedAt) {
+      seenMcpAppUpdatedAt = Number(nextMcpApp.updatedAt || 0);
+      if ($("#previewDialog")?.classList.contains("is-mcp-app") && $("#previewDialog")?.open) mcpAppHost?.refresh?.().catch(() => {});
     }
   }
 
@@ -2047,17 +2052,25 @@
     frame.src = `/api/mcp-app?id=${encodeURIComponent(mcpApp.id)}`;
     frame.title = mcpApp.title || text("MCPカード", "MCP card");
     frame.setAttribute("sandbox", "allow-scripts");
-    body.appendChild(frame);
     mcpAppHost = window.CharaDockMcpAppHost?.mount(frame, mcpApp, {
       request: (payload) => request("/api/mcp-app/bridge", { method: "POST", body: JSON.stringify(payload), timeoutMs: 90_000 }),
-      openExternal: (value) => {
-        const url = new URL(String(value || ""));
+      openExternal: async (value) => {
+        const result = await request("/api/mcp-app/bridge", {
+          method: "POST",
+          body: JSON.stringify({ appId: mcpApp.id, method: "ui/open-link", params: { url: String(value || "") } }),
+        });
+        const url = new URL(String(result?.url || ""));
         if (!["https:", "http:"].includes(url.protocol)) throw new Error(text("安全なリンクではありません。", "This link is not safe to open."));
+        if (result?.requiresConfirmation && !window.confirm(text(
+          `${url.hostname} をブラウザーで開きますか？`,
+          `Open ${url.hostname} in your browser?`,
+        ))) return;
         window.open(url.href, "_blank", "noopener,noreferrer");
       },
       onClose: closePreview,
       onDisplayMode: (mode) => dialog.classList.toggle("is-mcp-fullscreen", mode === "fullscreen"),
     });
+    body.appendChild(frame);
     dialog.show();
   }
 

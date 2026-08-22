@@ -609,7 +609,7 @@ class RemoteCompanionServer {
     }
 
     if (request.method === "POST" && ["/api/message", "/api/pet", "/api/interrupt", "/api/settings", "/api/approval", "/api/secure-handoff", "/api/live/start", "/api/live/stop", "/api/live/beatrice/audio", "/api/live/beatrice/stop", "/api/tts", "/api/tts/next", "/api/tts/cancel", "/api/mcp-app/bridge", "/api/disconnect"].includes(url.pathname)) {
-      const { tokenHash } = this.authenticate(request, { csrf: true });
+      const { session, tokenHash } = this.authenticate(request, { csrf: true });
       const body = await jsonBody(request);
       if (url.pathname === "/api/message") {
         const result = await this.callbacks.sendMessage?.({
@@ -652,7 +652,9 @@ class RemoteCompanionServer {
       if (url.pathname === "/api/tts") return this.sendJson(response, 200, await this.callbacks.synthesizeTts?.(body.text));
       if (url.pathname === "/api/tts/next") return this.sendJson(response, 200, await this.callbacks.nextTtsChunk?.(body.streamId));
       if (url.pathname === "/api/tts/cancel") return this.sendJson(response, 200, await this.callbacks.cancelTts?.(body.streamId));
-      if (url.pathname === "/api/mcp-app/bridge") return this.sendJson(response, 200, await this.callbacks.bridgeMcpApp?.(body));
+      if (url.pathname === "/api/mcp-app/bridge") {
+        return this.sendJson(response, 200, await this.callbacks.bridgeMcpApp?.(body, { tokenHash, deviceId: session.id }));
+      }
       this.sessions.delete(tokenHash);
       this.trustedDevices.delete(tokenHash);
       this.persistTrustedDevices(true);

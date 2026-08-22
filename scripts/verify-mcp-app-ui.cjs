@@ -8,6 +8,10 @@ const pcOnly = process.argv.includes("--pc-only");
 const observeOnly = process.argv.includes("--observe-only") || pcOnly;
 const inspectOnly = process.argv.includes("--inspect-only");
 const remoteOnly = process.argv.includes("--remote-only");
+const includeRemote = process.argv.includes("--include-remote");
+const exerciseBridge = process.argv.includes("--exercise-bridge");
+const surfaceArgument = process.argv.find((value) => value.startsWith("--surface="));
+const surface = surfaceArgument?.split("=")[1] === "mascot" ? "mascot" : "settings";
 const positionalArguments = process.argv.slice(2).filter((value) => !value.startsWith("--"));
 const outputDirectory = path.resolve(positionalArguments[0] || path.join(process.cwd(), "work", "mcp-app-evidence"));
 const message = positionalArguments[1] || "AIニケちゃんMCPのsearch_nikechan_knowledgeを使って、AITuberKitについて検索し、カードに表示して。";
@@ -94,6 +98,12 @@ async function capture(client, filename) {
   fs.writeFileSync(filename, Buffer.from(result.data, "base64"));
 }
 
+function report(payload) {
+  const output = `${JSON.stringify(payload, null, 2)}\n`;
+  fs.writeFileSync(path.join(outputDirectory, "verification.json"), output);
+  process.stdout.write(output);
+}
+
 async function main() {
   fs.mkdirSync(outputDirectory, { recursive: true });
   if (remoteOnly) {
@@ -118,7 +128,7 @@ async function main() {
     const remoteScreenshot = path.join(outputDirectory, "mcp-app-remote.png");
     await capture(remoteClient, remoteScreenshot);
     remoteClient.close();
-    process.stdout.write(`${JSON.stringify({ remote, remoteScreenshot }, null, 2)}\n`);
+    report({ entrySurface: "remote", remote, remoteScreenshot });
     return;
   }
   const controlTarget = await targetByUrl("/desktop/control.html", 15_000);
@@ -140,27 +150,42 @@ async function main() {
     snapshot.remoteStatus = await evaluate(control, "window.mascotDesktop.getRemoteStatus()");
     inspected.close();
     control.close();
-    process.stdout.write(`${JSON.stringify(snapshot, null, 2)}\n`);
+    report(snapshot);
     return;
   }
-  if (!observeOnly) await evaluate(control, `(() => {
-    const input = document.querySelector("#chatInput");
-    if (!input || !window.mascotDesktop?.sendChat) throw new Error("Chat composer unavailable");
-    input.value = ${JSON.stringify(message)};
-    input.dispatchEvent(new Event("input", { bubbles: true }));
-    window.__mcpAppVerificationState = { status: "pending" };
-    window.__mcpAppVerification = window.mascotDesktop.sendChat({
-      message: ${JSON.stringify(message)},
-      selectedMcpServerIds: ["mcp-67ecf7c218e115bf"]
-    }).then((result) => {
-      window.__mcpAppVerificationState = { status: "completed", text: String(result?.text || "").slice(0, 300) };
-      return result;
-    }).catch((error) => {
-      window.__mcpAppVerificationState = { status: "failed", message: String(error?.message || error) };
-      throw error;
-    });
-    return true;
-  })()`);
+  if (!observeOnly && surface === "settings") await evaluate(control, `(() => {
+      const input = document.querySelector("#chatInput");
+      if (!input || !window.mascotDesktop?.sendChat) throw new Error("Settings chat composer unavailable");
+      input.value = ${JSON.stringify(message)};
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      window.__mcpAppVerificationState = { status: "pending" };
+      window.__mcpAppVerification = window.mascotDesktop.sendChat({
+        message: ${JSON.stringify(message)},
+        selectedMcpServerIds: ["mcp-67ecf7c218e115bf"]
+      }).then((result) => {
+        window.__mcpAppVerificationState = { status: "completed", text: String(result?.text || "").slice(0, 300) };
+        return result;
+      }).catch((error) => {
+        window.__mcpAppVerificationState = { status: "failed", message: String(error?.message || error) };
+        throw error;
+      });
+      return true;
+    })()`);
+  if (!observeOnly && surface === "mascot") {
+    const mascotTarget = await targetByUrl("?mode=obs", 15_000);
+    const mascot = await new CdpClient(mascotTarget.webSocketDebuggerUrl).connect();
+    await mascot.call("Runtime.enable");
+    await evaluate(mascot, `(() => {
+      const input = document.querySelector("#desktopMascotInput");
+      const form = document.querySelector("#desktopMascotComposer");
+      if (!input || !form) throw new Error("Desktop mascot composer unavailable");
+      input.value = ${JSON.stringify(message)};
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      form.requestSubmit();
+      return true;
+    })()`);
+    mascot.close();
+  }
 
   let previewTarget = null;
   const previewDeadline = Date.now() + 120_000;
@@ -168,7 +193,7 @@ async function main() {
     const targets = await json("/json/list");
     previewTarget = targets.find((entry) => String(entry.url || "").includes("/desktop/artifact-preview.html"));
     if (previewTarget) break;
-    if (!observeOnly) {
+    if (!observeOnly && surface === "settings") {
       const verification = await evaluate(control, "window.__mcpAppVerificationState");
       if (verification?.status === "failed") throw new Error(`Chat request failed: ${verification.message}`);
       if (verification?.status === "completed") throw new Error(`The MCP turn completed without opening a card: ${verification.text}`);
@@ -189,12 +214,36 @@ async function main() {
     revisionHidden: document.querySelector(".revision-panel")?.hidden === true,
     openHidden: document.querySelector("#openButton")?.hidden === true
   }))()`);
+  pc.entrySurface = surface;
+  const currentPreview = await evaluate(preview, "window.charadockArtifactPreview.getCurrent()");
+  const appId = currentPreview?.preview?.mcpApp?.id || "";
+  if (!appId) throw new Error("The active MCP App id is unavailable");
+  const bridgeContext = await evaluate(preview, `window.charadockArtifactPreview.mcpAppBridge(${JSON.stringify({ appId: "__APP_ID__", method: "host/context", params: {} }).replace("__APP_ID__", appId)})`);
+  pc.redirectDomains = bridgeContext?.csp?.redirectDomains || [];
+  if (exerciseBridge) {
+    const stateValue = { selected: "verification", at: 1 };
+    await evaluate(preview, `window.charadockArtifactPreview.mcpAppBridge(${JSON.stringify({ appId: "__APP_ID__", method: "ui/set-widget-state", params: { state: { selected: "verification", at: 1 } } }).replace("__APP_ID__", appId)})`);
+    const afterState = await evaluate(preview, `window.charadockArtifactPreview.mcpAppBridge(${JSON.stringify({ appId: "__APP_ID__", method: "host/context", params: {} }).replace("__APP_ID__", appId)})`);
+    pc.widgetStateRoundTrip = JSON.stringify(afterState?.widgetState) === JSON.stringify(stateValue);
+    pc.cardToolCall = await evaluate(preview, `(async () => {
+      try {
+        const result = await window.charadockArtifactPreview.mcpAppBridge({
+          appId: ${JSON.stringify(appId)},
+          method: "tools/call",
+          params: { name: "search_nikechan_knowledge", arguments: { query: "AITuberKit", limit: 1 } }
+        });
+        return { status: "completed", result: Boolean(result) };
+      } catch (error) {
+        return { status: "blocked", message: String(error?.message || error).slice(0, 300) };
+      }
+    })()`);
+  }
   const pcScreenshot = path.join(outputDirectory, "mcp-app-pc.png");
   await capture(preview, pcScreenshot);
-  if (pcOnly) {
+  if (pcOnly || !includeRemote) {
     preview.close();
     control.close();
-    process.stdout.write(`${JSON.stringify({ pc, pcScreenshot }, null, 2)}\n`);
+    report({ entrySurface: surface, pc, pcScreenshot });
     return;
   }
 
@@ -240,7 +289,7 @@ async function main() {
 
   preview.close();
   control.close();
-  process.stdout.write(`${JSON.stringify({ pc, remote, pcScreenshot, remoteScreenshot }, null, 2)}\n`);
+  report({ entrySurface: surface, pc, remote, pcScreenshot, remoteScreenshot });
 }
 
 main().catch((error) => {

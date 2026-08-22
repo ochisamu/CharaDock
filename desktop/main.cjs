@@ -54,12 +54,17 @@ const {
   normalizeMcpServerId,
 } = require("./lib/mcp-servers.cjs");
 const {
+  boundedMcpAppToolArguments,
+  boundedMcpAppWidgetState,
   createMcpAppId,
   injectMcpAppGuestBridge,
   isCompletedMcpAppToolItem,
   mcpAppContentSecurityPolicy,
+  mcpAppExternalLinkAllowed,
   mcpAppResourceContent,
   mcpAppResourceUri,
+  mcpAppToolAllowsDirectCall,
+  mcpAppToolVisibleToApp,
   mergeMcpAppMeta,
   normalizeMcpAppCsp,
   publicMcpApp,
@@ -358,6 +363,7 @@ let artifactPreviewWindow;
 let activeArtifactPreviewTarget = null;
 let activeMcpApp = null;
 const recentMcpApps = new Map();
+const recentMcpAppItemIds = new Map();
 const pendingMcpAppCaptures = new Map();
 let tray;
 let trayMenu;
@@ -2215,7 +2221,10 @@ function createRemoteServer(address, sessionMinutes = preferences.data.remoteSes
       },
       getArtifact: remoteArtifact,
       getMcpApp: (appId) => mcpAppHtml(appId),
-      bridgeMcpApp: (payload) => bridgeMcpApp(payload, { source: "remote" }),
+      bridgeMcpApp: (payload, context = {}) => bridgeMcpApp(payload, {
+        source: "remote",
+        widgetScope: `remote:${String(context.deviceId || "unknown").slice(0, 80)}`,
+      }),
       sendMessage: sendRemoteMessage,
       pet: remoteCharacterPet,
       startLive: startRemoteRealtime,
@@ -3169,7 +3178,12 @@ function mcpAppProtocolUrl(appId) {
 }
 
 function trimRecentMcpApps() {
-  while (recentMcpApps.size > 4) recentMcpApps.delete(recentMcpApps.keys().next().value);
+  while (recentMcpApps.size > 4) {
+    const id = recentMcpApps.keys().next().value;
+    const instance = recentMcpApps.get(id);
+    recentMcpApps.delete(id);
+    if (instance?.itemId && recentMcpAppItemIds.get(instance.itemId) === id) recentMcpAppItemIds.delete(instance.itemId);
+  }
 }
 
 function mcpAppPreviewPayload(instance = activeMcpApp) {
@@ -3215,11 +3229,14 @@ function mcpAppToolResult(item = {}) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
 
-async function captureMcpAppFromEvent(client, message) {
+async function captureMcpAppFromEvent(client, message, { mode = "chat", surface = "conversation" } = {}) {
   const item = message?.params?.item;
   if (!client || !isCompletedMcpAppToolItem(item)) return false;
   const resourceUri = mcpAppResourceUri(item);
-  const itemId = String(item.id || `${item.server}:${item.tool}:${resourceUri}`);
+  const eventTurnId = String(message?.params?.turnId || message?.params?.turn?.id || "");
+  const itemId = String(item.id || `${item.server}:${item.tool}:${resourceUri}:${eventTurnId || Date.now()}`);
+  const capturedId = recentMcpAppItemIds.get(itemId);
+  if (capturedId && recentMcpApps.has(capturedId)) return true;
   if (pendingMcpAppCaptures.has(itemId)) return pendingMcpAppCaptures.get(itemId);
   const capture = (async () => {
     try {
@@ -3234,12 +3251,28 @@ async function captureMcpAppFromEvent(client, message) {
       const configuredServer = (preferences?.data?.mcpServers || []).find((server) => configNameForMcpServer(server.id) === String(item.server || ""));
       const meta = mergeMcpAppMeta(tool?._meta, located.resource?._meta, content._meta, item?._meta);
       const id = createMcpAppId(item, resourceUri);
+      const serverTools = Array.isArray(located.server?.tools)
+        ? located.server.tools
+        : Object.entries(located.server?.tools || {}).map(([name, descriptor]) => ({ name, ...(descriptor || {}) }));
+      const appVisibleTools = serverTools.filter((entry) => entry?.name && mcpAppToolVisibleToApp(entry));
+      const rawToolResult = mcpAppToolResult(item);
+      const toolResult = {
+        ...rawToolResult,
+        _meta: {
+          ...(rawToolResult?._meta && typeof rawToolResult._meta === "object" ? rawToolResult._meta : {}),
+          "openai/widgetSessionId": id,
+        },
+      };
       const instance = {
         id,
         itemId,
         client,
         threadId: client.threadId || null,
+        turnId: eventTurnId,
+        mode: mode === "work" ? "work" : "chat",
+        surface: String(surface || "conversation"),
         serverName: String(item.server || ""),
+        configuredServerId: String(configuredServer?.id || ""),
         serverTitle: String(configuredServer?.name || located.server?.displayName || located.server?.title || item?.appContext?.appName || item.server || "MCP"),
         toolName: String(item.tool || ""),
         toolTitle: String(tool?.title || tool?.description || item?.appContext?.actionName || item.tool || "MCP App"),
@@ -3250,17 +3283,20 @@ async function captureMcpAppFromEvent(client, message) {
         html: injectMcpAppGuestBridge(content.text),
         mimeType: content.mimeType,
         toolInput: mcpAppToolInput(item),
-        toolResult: mcpAppToolResult(item),
-        allowedTools: Array.isArray(located.server?.tools)
-          ? located.server.tools.map((entry) => String(entry?.name || "")).filter(Boolean)
-          : Object.keys(located.server?.tools || {}),
-        allowedResources: (Array.isArray(located.server?.resources) ? located.server.resources : [])
-          .map((entry) => String(entry?.uri || "")).filter(Boolean),
+        toolResult,
+        widgetStates: new Map(),
+        allowedTools: appVisibleTools.map((entry) => String(entry.name)),
+        directCallTools: appVisibleTools.filter(mcpAppToolAllowsDirectCall).map((entry) => String(entry.name)),
+        allowedResources: [...new Set([
+          resourceUri,
+          ...(Array.isArray(located.server?.resources) ? located.server.resources : []).map((entry) => String(entry?.uri || "")),
+        ].filter(Boolean))].slice(0, 100),
         createdAt: Date.now(),
         updatedAt: Date.now(),
       };
       activeMcpApp = instance;
       recentMcpApps.set(id, instance);
+      recentMcpAppItemIds.set(itemId, id);
       trimRecentMcpApps();
       diagnosticLog?.write("info", "mcp-app-ready", {
         server: instance.serverName,
@@ -3285,8 +3321,8 @@ async function captureMcpAppFromEvent(client, message) {
   return capture;
 }
 
-function observeMcpAppEvent(client, message) {
-  captureMcpAppFromEvent(client, message).catch((error) => {
+function observeMcpAppEvent(client, message, context = {}) {
+  captureMcpAppFromEvent(client, message, context).catch((error) => {
     diagnosticLog?.write("warn", "mcp-app-observer-failed", String(error?.message || error));
   });
 }
@@ -3309,7 +3345,7 @@ function mcpAppMessageText(params = {}) {
     .slice(0, 12_000);
 }
 
-async function bridgeMcpApp(payload = {}, { source = "preview" } = {}) {
+async function bridgeMcpApp(payload = {}, { source = "preview", widgetScope = source } = {}) {
   const instance = mcpAppInstance(payload.appId);
   const method = String(payload.method || "");
   const params = payload.params && typeof payload.params === "object" && !Array.isArray(payload.params) ? payload.params : {};
@@ -3317,42 +3353,90 @@ async function bridgeMcpApp(payload = {}, { source = "preview" } = {}) {
     app: publicMcpApp(instance),
     toolInput: instance.toolInput,
     toolResult: instance.toolResult,
+    widgetState: instance.widgetStates.get(widgetScope) ?? null,
     csp: instance.csp,
   };
   if (method === "tools/call") {
     const toolName = String(params.name || "").trim();
     if (!toolName || !instance.allowedTools.includes(toolName)) throw new Error(mainText("このカードからは指定されたツールを利用できません。", "This card cannot call the requested tool."));
+    if (!instance.directCallTools.includes(toolName)) throw new Error(mainText(
+      "この操作には確認が必要です。カードから直接実行せず、会話で依頼してください。",
+      "This action requires confirmation. Ask for it in the conversation instead of running it directly from the card.",
+    ));
     const result = await instance.client.callMcpTool({
       server: instance.serverName,
       tool: toolName,
-      arguments: params.arguments,
-      _meta: params._meta,
+      arguments: boundedMcpAppToolArguments(params.arguments),
+      _meta: {
+        "openai/locale": interfaceLanguage(),
+        "openai/userAgent": `CharaDock/${app.getVersion()}`,
+        "openai/widgetSessionId": instance.id,
+      },
       threadId: instance.threadId,
     });
-    instance.toolResult = result && typeof result === "object" ? result : {};
+    const nextResult = result && typeof result === "object" ? result : {};
+    instance.toolResult = {
+      ...nextResult,
+      _meta: {
+        ...(nextResult?._meta && typeof nextResult._meta === "object" ? nextResult._meta : {}),
+        "openai/widgetSessionId": instance.id,
+      },
+    };
     instance.updatedAt = Date.now();
     publishRemoteState();
     return instance.toolResult;
   }
   if (method === "resources/read") {
-    const uri = String(params.uri || "").trim();
+    const rawUri = String(params.uri || "").trim();
+    if (rawUri.length > 2_000) throw new Error(mainText("リソースURIが長すぎます。", "The resource URI is too long."));
+    const uri = rawUri;
     if (!uri || !instance.allowedResources.includes(uri)) throw new Error(mainText("このカードからは指定されたリソースを利用できません。", "This card cannot read the requested resource."));
     return instance.client.readMcpResource({ server: instance.serverName, uri, threadId: instance.threadId });
   }
   if (method === "ui/open-link") {
     const url = normalizeExternalHttpUrl(params.url);
     if (!url) throw new Error(mainText("安全なリンクではありません。", "This link is not safe to open."));
+    const declared = mcpAppExternalLinkAllowed(instance.resourceMeta, url);
+    if (!declared && source === "preview") {
+      const destination = new URL(url).hostname;
+      const options = {
+        type: "question",
+        title: "CharaDock",
+        message: mainText("MCPカードから外部リンクを開きますか？", "Open this external link from the MCP card?"),
+        detail: destination,
+        buttons: [mainText("開く", "Open"), mainText("キャンセル", "Cancel")],
+        defaultId: 1,
+        cancelId: 1,
+        noLink: true,
+      };
+      const owner = [artifactPreviewWindow, controlWindow, mascotWindow].find((window) => window && !window.isDestroyed());
+      const choice = owner ? await dialog.showMessageBox(owner, options) : await dialog.showMessageBox(options);
+      if (choice.response !== 0) return { cancelled: true };
+    }
     if (source === "preview") await shell.openExternal(url);
-    return { url };
+    return { url, requiresConfirmation: !declared };
+  }
+  if (method === "ui/set-widget-state") {
+    if (!instance.widgetStates.has(widgetScope) && instance.widgetStates.size >= 16) {
+      instance.widgetStates.delete(instance.widgetStates.keys().next().value);
+    }
+    instance.widgetStates.set(widgetScope, boundedMcpAppWidgetState(params.state));
+    instance.updatedAt = Date.now();
+    return { stored: true };
   }
   if (method === "ui/message") {
     const text = mcpAppMessageText(params);
     if (!text) throw new Error(mainText("送信する内容がありません。", "There is no message to send."));
+    const selectedMcpServerIds = instance.configuredServerId ? [instance.configuredServerId] : [];
     const operation = currentRealtimeClient()
-      ? appendActiveRealtimeText(text)
+      ? appendActiveRealtimeText(text, { selectedMcpServerIds })
       : activeCodexInteractionClient()
-        ? steerActiveInteraction(text)
-        : sendChatMessage(text, { remoteTtsOutput: source === "remote" });
+        ? steerActiveInteraction(text, { selectedMcpServerIds })
+        : sendChatMessage(text, {
+          forceWork: instance.mode === "work",
+          selectedMcpServerIds,
+          remoteTtsOutput: source === "remote",
+        });
     Promise.resolve(operation).catch((error) => diagnosticLog?.write("warn", "mcp-app-message-failed", String(error?.message || error)));
     return { queued: true };
   }
@@ -7433,7 +7517,7 @@ async function startCodexRealtimeVoice(payload, target = "control") {
       }],
       requireMcpReady: initialTurnMcpServerIds.length > 0,
       onEvent: (message) => {
-        observeMcpAppEvent(realtimeClient, message);
+        observeMcpAppEvent(realtimeClient, message, { mode: workMode ? "work" : "chat", surface: "realtime" });
         let forwarded = message;
         if (message?.method === "thread/realtime/error") {
           const original = String(message.params?.message || "");
@@ -10888,7 +10972,7 @@ async function sendChatMessage(message, {
         requireMcpReady,
         onDelta,
         onEvent: (message) => {
-          observeMcpAppEvent(worker, message);
+          observeMcpAppEvent(worker, message, { mode: "work", surface: "conversation" });
           const itemType = String(message.params?.item?.type || "");
           collectWorkArtifacts(message.params?.item);
           observeWorkAgentMessage(message);
@@ -10924,7 +11008,7 @@ async function sendChatMessage(message, {
         localImagePaths: localAttachments.filter((item) => item.image).map((item) => item.path),
         requireMcpReady,
         onEvent: (event) => {
-          observeMcpAppEvent(conversationClient, event);
+          observeMcpAppEvent(conversationClient, event, { mode: "chat", surface: "conversation" });
           if (String(event.params?.item?.type || "") !== "webSearch" || searchingWeb) return;
           searchingWeb = true;
           sendStream({ phase: "activity", text: mainText("Webを検索中…", "Searching the web…"), mode: "chat" });

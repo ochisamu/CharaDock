@@ -5,7 +5,8 @@
   const PROTOCOL_VERSION = "2025-11-21";
 
   function errorPayload(error) {
-    return { code: -32603, message: String(error?.message || error || "MCP App request failed").slice(0, 500) };
+    const code = Number.isInteger(error?.code) ? error.code : -32603;
+    return { code, message: String(error?.message || error || "MCP App request failed").slice(0, 500) };
   }
 
   function post(frame, message) {
@@ -46,10 +47,12 @@
     if (!frame || !app?.id || typeof options.request !== "function") return { destroy() {} };
     let destroyed = false;
     let context = null;
+    let initialized = false;
 
     const notifyContext = () => {
       if (!context || destroyed) return;
       const nextHostContext = hostContext(context);
+      nextHostContext.widgetState = context.widgetState ?? null;
       post(frame, { jsonrpc: "2.0", method: "ui/notifications/host-context-changed", params: nextHostContext });
       post(frame, { jsonrpc: "2.0", method: "ui/notifications/tool-input", params: context.toolInput || {} });
       post(frame, { jsonrpc: "2.0", method: "ui/notifications/tool-result", params: context.toolResult || {} });
@@ -61,9 +64,9 @@
       });
     };
 
-    const loadContext = async () => {
+    const loadContext = async ({ notify = initialized } = {}) => {
       context = await options.request({ appId: app.id, method: "host/context", params: {} });
-      notifyContext();
+      if (notify) notifyContext();
       return context;
     };
 
@@ -95,9 +98,26 @@
           });
           return;
         }
-        if (["ui/notifications/initialized", "ui/notifications/size-changed", "ui/notifications/log"].includes(method)) return;
+        if (method === "ui/notifications/initialized") {
+          initialized = true;
+          context ||= await loadContext({ notify: false });
+          notifyContext();
+          return;
+        }
+        if (["ui/notifications/size-changed", "ui/notifications/log"].includes(method)) return;
+        if (method === "ui/set-widget-state") {
+          await options.request({ appId: app.id, method, params });
+          context ||= await loadContext({ notify: false });
+          context.widgetState = params.state ?? null;
+          return;
+        }
         if (method === "ui/request-display-mode") {
-          const requested = params.mode === "fullscreen" ? "fullscreen" : "inline";
+          if (!["inline", "fullscreen"].includes(params.mode)) {
+            const error = new Error("This display mode is not supported by CharaDock.");
+            error.code = -32602;
+            throw error;
+          }
+          const requested = params.mode;
           options.onDisplayMode?.(requested);
           respond(id, { mode: requested });
           return;
@@ -130,7 +150,7 @@
       }
     };
 
-    const onLoad = () => { loadContext().catch(() => {}); };
+    const onLoad = () => { loadContext({ notify: false }).catch(() => {}); };
     addEventListener("message", onMessage);
     frame.addEventListener("load", onLoad);
     if (frame.contentDocument?.readyState === "complete") onLoad();

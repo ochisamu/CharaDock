@@ -86,7 +86,7 @@ test("remote server requires pairing, same-origin CSRF, and strips token from th
         contentType: "text/html;profile=mcp-app; charset=utf-8",
         contentSecurityPolicy: "default-src 'none'; script-src 'unsafe-inline'; object-src 'none'",
       } : null,
-      bridgeMcpApp: (bridgePayload) => { mcpAppBridgeCalls.push(bridgePayload); return { structuredContent: { ok: true } }; },
+      bridgeMcpApp: (bridgePayload, bridgeContext) => { mcpAppBridgeCalls.push({ payload: bridgePayload, context: bridgeContext }); return { structuredContent: { ok: true } }; },
     },
   });
   context.after(async () => { await server.stop(); fs.rmSync(rootDir, { recursive: true, force: true }); });
@@ -148,7 +148,10 @@ test("remote server requires pairing, same-origin CSRF, and strips token from th
   });
   assert.equal(bridged.status, 200);
   assert.deepEqual(await bridged.json(), { structuredContent: { ok: true } });
-  assert.deepEqual(mcpAppBridgeCalls, [{ appId: "card-1", method: "host/context", params: {} }]);
+  assert.deepEqual(mcpAppBridgeCalls, [{
+    payload: { appId: "card-1", method: "host/context", params: {} },
+    context: { tokenHash: stateContexts[0].tokenHash, deviceId: server.status().devices[0].id },
+  }]);
 
   const configured = await fetch(`${origin}/api/settings`, {
     method: "POST",
