@@ -396,6 +396,12 @@ test("conversation and work surfaces expose history, folder access, interruption
   assert.match(controlPreload, /work:getHistory/);
   assert.match(controlPreload, /work:openDirectory/);
   assert.match(controlPreload, /work:openArtifact/);
+  assert.match(controlPreload, /followUpChat:[\s\S]*chat:followUp/);
+  assert.match(control, /api\.followUpChat\([\s\S]*route\?\.accepted/);
+  assert.match(main, /async function steerActiveInteraction\([\s\S]*client\.steerActiveTurn/);
+  assert.match(main, /ipcMain\.handle\("chat:followUp"/);
+  assert.match(main, /ipcMain\.handle\("mascotInline:followUp"/);
+  assert.match(mascot, /mascotInline:followUp[\s\S]*route\?\.accepted/);
   assert.match(control, /pendingChatFollowUp = \{ message, attachments, selectedSkillIds, selectedMcpServerIds \}/);
   assert.ok(control.indexOf("const liveWorkFollowUp = chatBusy") < control.indexOf("pendingChatFollowUp = { message, attachments, selectedSkillIds, selectedMcpServerIds }"));
   assert.match(control, /bindFileDropZone\(\$\("#chatForm"\)/);
@@ -413,6 +419,21 @@ test("conversation and work surfaces expose history, folder access, interruption
   assert.match(main, /work:openDirectory/);
   assert.match(main, /async function setCharacter\(characterId\) \{[\s\S]*if \(activeWorkRunId\)[\s\S]*Characters cannot be switched while Work is running/);
   assert.match(control, /syncCharacterSwitchAvailability[\s\S]*button\.disabled = workRunning/);
+});
+
+test("temporary activity state never impersonates the user or replaces character dialogue", () => {
+  const main = fs.readFileSync(path.join(projectRoot, "desktop", "main.cjs"), "utf8");
+  const control = fs.readFileSync(path.join(projectRoot, "desktop", "control.js"), "utf8");
+  const mascot = fs.readFileSync(path.join(projectRoot, "desktop", "preload-mascot.cjs"), "utf8");
+  const remote = fs.readFileSync(path.join(projectRoot, "desktop", "remote", "remote.js"), "utf8");
+  const remoteTextHandler = remote.match(/async function sendRemoteText\(message\) \{[\s\S]*?\n  \}\n\n  async function flushPendingRemoteFollowUp/)?.[0] || "";
+  const remoteStreamHandler = remote.match(/function handleStream\(payload\) \{[\s\S]*?\n  \}\n\n  async function unlockAudio/)?.[0] || "";
+  assert.doesNotMatch(remoteTextHandler, /setResponseText\(normalized\)/);
+  assert.doesNotMatch(main, /remoteLastDisplayText = message/);
+  assert.doesNotMatch(remoteStreamHandler, /phase === "start"[\s\S]{0,180}setResponseText/);
+  assert.match(remoteStreamHandler, /phase === "activity"[\s\S]*composerHint/);
+  assert.doesNotMatch(mascot, /bubbleText\.textContent = appState\?\.language === "en" \? "Thinking/);
+  assert.doesNotMatch(control, /setStatus\(\$\("#chatStatus"\), state\.backend === "codex"/);
 });
 
 test("chat composers select per-turn Skills and MCP from plus, slash, and at shortcuts", () => {
@@ -576,7 +597,8 @@ test("remote access exposes compact avatar dialogue, device controls, and Live r
   assert.match(remoteTapHandler, /await startRemoteLive\(\{ microphone: true \}\)[\s\S]*request\("\/api\/pet"/);
   assert.doesNotMatch(remoteTapHandler, /startRemoteLive\(\{ microphone: false \}\)/);
   const remoteTextHandler = remoteJs.match(/async function sendRemoteText\(message\) \{[\s\S]*?\n  \}\n\n  async function flushPendingRemoteFollowUp/)?.[0] || "";
-  assert.match(remoteTextHandler, /const liveWorkFollowUp = busy[\s\S]*request\("\/api\/message"[\s\S]*if \(busy\)[\s\S]*queueRemoteFollowUp/);
+  assert.match(remoteTextHandler, /if \(busy\)[\s\S]*followUp: true[\s\S]*payload\.result\?\.accepted[\s\S]*queueRemoteFollowUp/);
+  assert.doesNotMatch(remoteTextHandler, /setResponseText\(normalized\)/);
   assert.match(remoteTextHandler, /responseMode === "live"[\s\S]*await startRemoteLive\(\{ microphone: true \}\)[\s\S]*request\("\/api\/message"/);
   assert.doesNotMatch(remoteTextHandler, /startRemoteLive\(\{ microphone: false \}\)/);
   assert.match(remoteJs, /!modeInitialized \|\| appState\?\.voice\?\.liveConnected/);

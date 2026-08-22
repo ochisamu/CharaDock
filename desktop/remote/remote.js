@@ -1361,26 +1361,27 @@
     if (!normalized) return;
     setRemoteLiveOutputSuppressed(false);
     primeAudioOutput().catch(() => {});
-    const liveWorkFollowUp = busy
-      && currentMode === "work"
-      && appState?.voice?.responseMode === "live"
-      && Boolean(livePeer)
-      && appState?.voice?.liveConnected
-      && appState?.voice?.liveOwner === "remote";
-    if (liveWorkFollowUp) {
-      $("#composerHint").textContent = text("追加の指示を同じ作業へ反映しています…", "Applying the follow-up to the current Work…");
+    if (busy) {
+      $("#composerHint").textContent = currentMode === "work"
+        ? text("追加の指示を同じ作業へ反映しています…", "Applying the follow-up to the current Work…")
+        : text("追加の指示を同じ会話へ反映しています…", "Applying the follow-up to the current conversation…");
       try {
-        await request("/api/message", { method: "POST", body: JSON.stringify({ message: normalized, mode: currentMode }) });
+        const payload = await request("/api/message", {
+          method: "POST",
+          body: JSON.stringify({ message: normalized, mode: currentMode, followUp: true }),
+        });
+        if (payload.result?.accepted) return;
+        if (payload.result?.retryAsNewTurn) {
+          await queueRemoteFollowUp(normalized);
+          return;
+        }
+        throw new Error(text("追加入力を反映できませんでした。", "The follow-up could not be applied."));
       } catch (error) {
         $("#composerHint").textContent = error.message;
+        $("#messageInput").value = normalized;
       }
       return;
     }
-    if (busy) {
-      await queueRemoteFollowUp(normalized);
-      return;
-    }
-    setResponseText(normalized);
     renderArtifacts([], "");
     setBusy(true);
     try {
@@ -1551,14 +1552,21 @@
     }
     if (payload.phase === "start") {
       setBusy(true);
-      setResponseText(text("考え中…", "Thinking…"));
+      $("#composerHint").textContent = payload.mode === "work"
+        ? text("作業を進めています…", "Working…")
+        : text("考えています…", "Thinking…");
       renderArtifacts([], "");
       return;
     }
-    if (["activity", "announcement"].includes(payload.phase)) {
+    if (payload.phase === "activity") {
+      const value = payload.displayText || payload.text;
+      if (value) $("#composerHint").textContent = value;
+      return;
+    }
+    if (payload.phase === "announcement") {
       const value = payload.displayText || payload.text;
       if (value) setResponseText(value);
-      if (payload.phase === "announcement" && audioRoute === "mobile-tts") speak(value);
+      if (audioRoute === "mobile-tts") speak(value);
       return;
     }
     if (["delta", "realtime-caption"].includes(payload.phase)) {

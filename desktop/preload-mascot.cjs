@@ -1674,13 +1674,34 @@ window.addEventListener("DOMContentLoaded", () => {
       return;
     }
     if (sending) {
-      pendingFollowUp = { message, attachments, selectedSkillIds, selectedMcpServerIds };
-      stopTtsPlayback();
-      stopButton.disabled = true;
-      setStatus("差し込みを受け付けました。現在の応答を止めています…", 30_000);
       try {
+        const route = await ipcRenderer.invoke("mascotInline:followUp", {
+          message,
+          attachmentPaths: attachments.map((item) => item.path),
+          selectedSkillIds,
+          selectedMcpServerIds,
+        });
+        if (route?.accepted) {
+          setStatus(route.mode === "work"
+            ? uiText("追加の指示を同じ作業へ反映しています…", "Applying the follow-up to the current Work…")
+            : uiText("追加の指示を同じ会話へ反映しています…", "Applying the follow-up to the current conversation…"), 7000);
+          input.focus();
+          return;
+        }
+        if (!route?.retryAsNewTurn) throw new Error(uiText("追加入力を反映できませんでした。", "The follow-up could not be applied."));
+        pendingFollowUp = { message, attachments, selectedSkillIds, selectedMcpServerIds };
+        stopTtsPlayback();
+        stopButton.disabled = true;
+        setStatus(uiText("この接続では差し込みに対応していないため、現在の応答を止めています…", "This connection cannot steer an active response, so the current response is being stopped…"), 30_000);
         await ipcRenderer.invoke("mascotInline:interruptActive");
       } catch (error) {
+        pendingFollowUp = null;
+        input.value = message;
+        mergeMascotAttachments(attachments);
+        mascotSelectedSkillIds = [...new Set([...mascotSelectedSkillIds, ...selectedSkillIds])];
+        mascotSelectedMcpServerIds = [...new Set([...mascotSelectedMcpServerIds, ...selectedMcpServerIds])];
+        renderMascotSelectedSkills();
+        resizeInput();
         stopButton.disabled = false;
         setStatus(error.message, 5000);
       }
@@ -2638,12 +2659,10 @@ window.addEventListener("DOMContentLoaded", () => {
       }
       streamHasActivity = false;
       clearTimeout(hideTimer);
-      if (!bubble.classList.contains("is-visible") || !bubbleText.textContent.trim()) {
-        bubbleText.textContent = appState?.language === "en" ? "Thinking…" : "考え中…";
-      }
+      const hasMeaningfulBubble = Boolean(bubbleText.textContent.trim());
       bubble.classList.remove("is-expanded", "has-overflow", "has-full-reply");
       bubbleMore.hidden = true;
-      bubble.classList.add("is-visible");
+      bubble.classList.toggle("is-visible", hasMeaningfulBubble);
       setWorkActivity(streamWorkMode
         ? (appState?.language === "en" ? "Starting work" : "作業を開始しています")
         : (appState?.language === "en" ? "Thinking" : "考えています"), { trackElapsed: true });
@@ -2786,7 +2805,6 @@ window.addEventListener("DOMContentLoaded", () => {
       resizeInput();
       setStatus("Codexが考えています…", 30_000);
       bubblePersistent = true;
-      bubble.classList.add("is-visible");
       setWorkActivity(appState?.language === "en" ? "Thinking" : "考えています", { trackElapsed: true });
       return;
     }

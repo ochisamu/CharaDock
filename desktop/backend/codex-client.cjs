@@ -760,10 +760,21 @@ class CodexAppServerClient {
   }
 
   async steerActiveTurn(message, { skillItems = null, turnId = "" } = {}) {
+    const normalized = String(message || "").trim();
+    if (!normalized) return false;
+    // A renderer can offer a follow-up as soon as `turn/start` has been sent,
+    // slightly before app-server returns the turn id.  Give that short startup
+    // race a bounded chance to settle instead of forcing the UI to interrupt
+    // the original turn and create a second one.
+    if (!turnId && this.turnStarting && (!this.threadId || !this.activeTurnId)) {
+      const deadline = Date.now() + 1_500;
+      while (this.turnStarting && (!this.threadId || !this.activeTurnId) && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+    }
     const threadId = this.threadId;
     const expectedTurnId = String(turnId || this.activeTurnId || "").trim();
-    const normalized = String(message || "").trim();
-    if (!threadId || !expectedTurnId || !normalized) return false;
+    if (!threadId || !expectedTurnId) return false;
     const input = [{ type: "text", text: normalized }];
     const turnSkills = Array.isArray(skillItems) ? skillItems : [];
     for (const skill of turnSkills) {

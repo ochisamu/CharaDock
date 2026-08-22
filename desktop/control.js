@@ -3447,7 +3447,16 @@
       ? `ログイン済み${codexAccount.planType ? ` · ${codexAccount.planType}` : ""}`
       : state.backend === "codex" ? "アカウント確認中" : state.hasApiKey ? "APIキー設定済み" : "APIキー未設定";
     $("#connectionPill").classList.toggle("is-error", state.backend === "openai" && !state.hasApiKey);
-    setStatus($("#chatStatus"), state.backend === "codex" ? "Codex app-serverを使用します。" : "OpenAI Responses APIを使用します。");
+    const chatStatus = $("#chatStatus");
+    const replaceableConnectionStatuses = new Set([
+      "", "Codex app-serverを使用します。", "OpenAI Responses APIを使用します。",
+      "Using Codex app-server.", "Using OpenAI Responses API.",
+    ]);
+    if (!chatBusy && replaceableConnectionStatuses.has(chatStatus.textContent.trim())) {
+      chatStatus.textContent = state.backend === "codex"
+        ? localized("Codex app-serverを使用します。", "Using Codex app-server.")
+        : localized("OpenAI Responses APIを使用します。", "Using OpenAI Responses API.");
+    }
     syncUpdateUi();
     syncOnboarding();
   }
@@ -4318,10 +4327,44 @@
       return;
     }
     if (chatBusy) {
-      pendingChatFollowUp = { message, attachments, selectedSkillIds, selectedMcpServerIds };
-      setStatus($("#chatStatus"), localized("差し込みを受け付けました。現在の応答を止めています…", "Follow-up queued. Stopping the current response…"));
-      $("#stopButton").disabled = true;
-      try { await api.interruptChat(); } catch (error) { setStatus($("#chatStatus"), error.message, true); $("#stopButton").disabled = false; }
+      try {
+        const route = await api.followUpChat({
+          message,
+          attachmentPaths: attachments.map((item) => item.path),
+          selectedSkillIds,
+          selectedMcpServerIds,
+        });
+        if (route?.accepted) {
+          if (route.mode === "chat" && historyShowsMode("chat")) {
+            appendMessage("user", message);
+            const activeAssistant = realtimeAssistantMessage?.isConnected
+              ? realtimeAssistantMessage
+              : streamingMessage?.isConnected && streamingMessageMode === "chat" ? streamingMessage : null;
+            if (activeAssistant) $("#chatLog").appendChild(activeAssistant);
+            $("#chatLog").scrollTop = $("#chatLog").scrollHeight;
+          }
+          setStatus($("#chatStatus"), route.mode === "work"
+            ? localized("追加の指示を同じ作業へ反映しています…", "Applying the follow-up to the current Work…")
+            : localized("追加の指示を同じ会話へ反映しています…", "Applying the follow-up to the current conversation…"));
+          input.focus();
+          return;
+        }
+        if (!route?.retryAsNewTurn) throw new Error(localized("追加入力を反映できませんでした。", "The follow-up could not be applied."));
+        pendingChatFollowUp = { message, attachments, selectedSkillIds, selectedMcpServerIds };
+        setStatus($("#chatStatus"), localized("この接続では差し込みに対応していないため、現在の応答を止めています…", "This connection cannot steer an active response, so the current response is being stopped…"));
+        $("#stopButton").disabled = true;
+        await api.interruptChat();
+      } catch (error) {
+        pendingChatFollowUp = null;
+        input.value = message;
+        chatAttachments = attachments;
+        chatSelectedSkillIds = selectedSkillIds;
+        chatSelectedMcpServerIds = selectedMcpServerIds;
+        renderChatAttachments();
+        renderChatSelectedSkills();
+        setStatus($("#chatStatus"), error.message, true);
+        $("#stopButton").disabled = false;
+      }
       return;
     }
     const requestedMode = state?.interactionMode === "work" ? "work" : "chat";
@@ -4357,12 +4400,8 @@
       return;
     }
     const attachmentLabel = attachments.length ? `\n${attachments.map((item) => `📎 ${item.name}`).join("\n")}` : "";
-    let thinking = null;
     if (requestedMode === "chat") {
       appendMessage("user", `${message}${attachmentLabel}`);
-      thinking = appendMessage("assistant", "考え中", true);
-      streamingMessage = thinking;
-      streamingMessageMode = "chat";
     }
     setChatBusy(true);
     setStatus($("#chatStatus"), "応答を待っています…");
@@ -4375,19 +4414,9 @@
       });
       const resultMode = result?.mode === "work" ? "work" : "chat";
       if (resultMode !== requestedMode) setChatHistoryView(historyViewForMode(resultMode));
-      if (thinking?.isConnected && resultMode === "chat") {
-        const paragraph = thinking.querySelector("p");
-        thinking.classList.remove("is-thinking");
-        paragraph.textContent = result.displayText || result.text;
-        appendWorkArtifactActions(thinking, result.artifacts, result.workRunId);
-      }
       setStatus($("#chatStatus"), result.provider === "codex" ? "Codexから応答しました。" : "OpenAI APIから応答しました。");
     } catch (error) {
       const interrupted = /interrupt|cancel|abort|中断/i.test(String(error.message || ""));
-      if (thinking?.isConnected) {
-        thinking.classList.remove("is-thinking");
-        thinking.querySelector("p").textContent = interrupted ? "応答を中断しました。続けて修正できます。" : `エラー: ${error.message}`;
-      }
       setStatus($("#chatStatus"), interrupted ? "応答を中断しました。" : error.message, !interrupted);
     } finally {
       localChatSendPending = false;
@@ -4464,12 +4493,7 @@
         activeStreamWorkRunId = String(payload?.workRunId || "");
         if (localChatSendPending) setChatHistoryView(historyViewForMode(mode));
         setChatBusy(true);
-        if (mode === "chat" && historyShowsMode("chat")) {
-          if (!streamingMessage?.isConnected || streamingMessageMode !== "chat") {
-            streamingMessage = appendMessage("assistant", localized("考え中", "Thinking"), true);
-          }
-          streamingMessageMode = "chat";
-        } else {
+        if (mode !== "chat" || !historyShowsMode("chat")) {
           streamingMessage = null;
           streamingMessageMode = "";
         }
@@ -4496,20 +4520,32 @@
         }
         return;
       }
-      if (!streamingMessage?.isConnected || streamingMessageMode !== "chat") return;
-      const paragraph = streamingMessage.querySelector("p");
-      if (phase === "start") paragraph.textContent = localized("考え中", "Thinking");
       if (["delta", "announcement", "realtime-caption"].includes(phase)) {
+        if (!streamingMessage?.isConnected || streamingMessageMode !== "chat") {
+          streamingMessage = appendMessage("assistant", "");
+          streamingMessageMode = "chat";
+        }
+        const paragraph = streamingMessage.querySelector("p");
         streamingMessage.classList.remove("is-thinking");
         paragraph.textContent = String(payload.displayText || payload.text || "");
         $("#chatLog").scrollTop = $("#chatLog").scrollHeight;
       }
       if (phase === "done") {
+        if (!streamingMessage?.isConnected || streamingMessageMode !== "chat") {
+          streamingMessage = appendMessage("assistant", "");
+          streamingMessageMode = "chat";
+        }
+        const paragraph = streamingMessage.querySelector("p");
         streamingMessage.classList.remove("is-thinking");
         if (!payload?.deferDisplayToRealtime) paragraph.textContent = String(payload.displayText || payload.text || "");
         appendWorkArtifactActions(streamingMessage, payload.artifacts, payload.workRunId);
       }
       if (phase === "error") {
+        if (!streamingMessage?.isConnected || streamingMessageMode !== "chat") {
+          streamingMessage = appendMessage("assistant", "");
+          streamingMessageMode = "chat";
+        }
+        const paragraph = streamingMessage.querySelector("p");
         streamingMessage.classList.remove("is-thinking");
         paragraph.textContent = "エラー: " + (payload.message || localized("応答を完了できませんでした。", "The response could not be completed."));
       }

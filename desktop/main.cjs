@@ -297,6 +297,7 @@ let remoteTailscaleStatus = { installed: null, active: false, managed: false, ur
 const REMOTE_TTS_OWNER_ID = "charadock-link";
 let codexClient;
 let workCodexClient;
+const activeInteractionFollowUps = new WeakMap();
 let skillMutationQueue = Promise.resolve();
 let skillMutationActive = false;
 let browserCodexClient;
@@ -1875,6 +1876,9 @@ async function sendRemoteMessage(payload = {}) {
   if (mode === "work" && !(preferences.data.remoteWorkEnabled && preferences.data.backend === "codex" && validWorkDirectory())) {
     throw new Error(mainText("スマートフォンからのWorkが許可されていないか、作業先がありません。", "Phone Work is not allowed or no work folder is selected."));
   }
+  if (payload.followUp === true && !currentRealtimeClient()) {
+    return steerActiveInteraction(message);
+  }
   const liveMode = preferences.data.remoteResponseMode === "live";
   if (liveMode) {
     diagnosticLog?.write("info", "remote-live-text-requested", { mode, length: message.length });
@@ -1910,7 +1914,6 @@ async function sendRemoteMessage(payload = {}) {
     ));
   }
   remoteBusy = true;
-  remoteLastDisplayText = message;
   publishRemoteState();
   try {
     const result = await handleMascotConversation(message, { suppressPcAudio: preferences.data.remotePcAudioEnabled === false });
@@ -3365,6 +3368,101 @@ async function interruptActiveInteraction() {
   const interrupted = await client?.interruptActiveTurn?.();
   if (!interrupted) throw new Error("中断できる応答がありません。");
   return { interrupted: true, mode: "chat" };
+}
+
+function activeCodexInteractionClient() {
+  const clients = [macComputerSkillClient, computerCodexClient, browserCodexClient, workCodexClient, codexClient]
+    .filter(Boolean);
+  return clients.find((client, index) => clients.indexOf(client) === index && client.hasActiveTurn?.()) || null;
+}
+
+function rememberActiveInteractionFollowUp(client, message) {
+  if (!client) return;
+  const normalized = String(message || "").trim().slice(0, 12_000);
+  if (!normalized) return;
+  const current = activeInteractionFollowUps.get(client) || [];
+  if (current.at(-1) === normalized) return;
+  activeInteractionFollowUps.set(client, [...current, normalized].slice(-8));
+}
+
+function consumeActiveInteractionFollowUps(client) {
+  if (!client) return [];
+  const followUps = activeInteractionFollowUps.get(client) || [];
+  activeInteractionFollowUps.delete(client);
+  return followUps;
+}
+
+function appendWorkRunFollowUp(run, message) {
+  if (!run) return;
+  const normalized = String(message || "").trim().slice(0, 4_000);
+  if (!normalized) return;
+  const label = mainText("追加入力", "Follow-up");
+  const addition = `${label}: ${normalized}`;
+  if (String(run.request || "").split("\n").includes(addition)) return;
+  run.request = `${String(run.request || "").trim()}\n${addition}`.trim().slice(0, 12_000);
+  persistWorkHistory();
+  broadcastWorkHistory();
+}
+
+async function steerActiveInteraction(message, {
+  localAttachments = [],
+  selectedSkillIds = [],
+  selectedMcpServerIds = [],
+} = {}) {
+  const normalized = String(message || "").trim().slice(0, 12_000);
+  if (!normalized) throw new Error(mainText("追加入力を入力してください。", "Enter a follow-up."));
+  if (Array.isArray(localAttachments) && localAttachments.length) {
+    throw new Error(mainText(
+      "実行中の応答へファイルは追加できません。完了を待つか、停止してから送信してください。",
+      "Files cannot be added to a response already in progress. Wait for it to finish, or stop it before sending.",
+    ));
+  }
+  if (currentRealtimeClient()) {
+    const route = await appendActiveRealtimeText(normalized, { selectedSkillIds, selectedMcpServerIds });
+    return typeof route === "object" ? route : { accepted: Boolean(route), realtime: true };
+  }
+  if (preferences.data.backend !== "codex") return { accepted: false, retryAsNewTurn: true, mode: preferences.data.interactionMode };
+  let client = activeCodexInteractionClient();
+  if (!client) {
+    const deadline = Date.now() + 1_000;
+    while (!client && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      client = activeCodexInteractionClient();
+    }
+  }
+  if (!client) return { accepted: false, retryAsNewTurn: true, mode: preferences.data.interactionMode };
+
+  const explicitMcpServers = explicitTurnMcpServers(selectedMcpServerIds);
+  const loadedMcpIds = new Set((client.mcpServers || []).map((server) => String(server?.id || "")));
+  const unavailableMcp = explicitMcpServers.find((server) => !loadedMcpIds.has(server.id));
+  if (unavailableMcp) {
+    throw new Error(mainText(
+      `実行中の応答へ「${unavailableMcp.name}」は追加できません。完了後の送信で指定してください。`,
+      `“${unavailableMcp.name}” cannot be added to a response already in progress. Select it on the next turn.`,
+    ));
+  }
+  const workMode = Boolean(activeWorkRunId && workCodexClient === client)
+    || [macComputerSkillClient, computerCodexClient, browserCodexClient].includes(client) && preferences.data.interactionMode === "work";
+  const skillItems = mergeTurnSkillItems(
+    workMode ? activeCharacterSkillItems() : [builtInSkillCreatorItem()],
+    explicitTurnSkillItems(selectedSkillIds),
+  );
+  const accepted = await client.steerActiveTurn(normalized, { skillItems });
+  if (!accepted) return { accepted: false, retryAsNewTurn: true, mode: workMode ? "work" : "chat" };
+  rememberActiveInteractionFollowUp(client, normalized);
+  const run = workMode ? workHistory.find((item) => item.id === activeWorkRunId) : null;
+  if (run) appendWorkRunFollowUp(run, normalized);
+  const statusText = workMode
+    ? mainText("追加の指示を同じ作業へ反映しています…", "Applying the follow-up to the current Work…")
+    : mainText("追加の指示を同じ会話へ反映しています…", "Applying the follow-up to the current conversation…");
+  publishChatStream({
+    phase: "follow-up",
+    mode: workMode ? "work" : "chat",
+    statusText,
+    workRunId: run?.id || "",
+  });
+  diagnosticLog?.write("info", "interaction-follow-up-steered", { mode: workMode ? "work" : "chat", length: normalized.length });
+  return { accepted: true, mode: workMode ? "work" : "chat", workRunId: run?.id || "" };
 }
 
 function broadcastAppState() {
@@ -6112,10 +6210,21 @@ function clearCurrentConversationHistory() {
 
 function publishChatStream(payload = {}) {
   const coordinated = turnCoordinator.apply(payload);
-  if (controlWindow && !controlWindow.isDestroyed()) controlWindow.webContents.send("chat:stream", coordinated);
-  if (mascotWindow && !mascotWindow.isDestroyed()) mascotWindow.webContents.send("mascot:stream", coordinated);
+  const sendIfAlive = (window, channel) => {
+    try {
+      const contents = window && !window.isDestroyed() ? window.webContents : null;
+      if (contents && !contents.isDestroyed()) contents.send(channel, coordinated);
+    } catch {
+      // A window can be destroyed between the guard and send while quitting.
+    }
+  };
+  sendIfAlive(controlWindow, "chat:stream");
+  sendIfAlive(mascotWindow, "mascot:stream");
   const visible = remotePublicText(coordinated.displayText || coordinated.text || coordinated.message);
-  if (visible && ["announcement", "activity", "delta", "done", "error"].includes(coordinated.phase)) remoteLastDisplayText = visible;
+  // Transport/activity labels belong to the activity indicator, not the
+  // character's durable reply bubble.  Preserve the last meaningful answer
+  // until actual dialogue or an actionable error replaces it.
+  if (visible && ["announcement", "delta", "realtime-caption", "done", "error"].includes(coordinated.phase)) remoteLastDisplayText = visible;
   if (coordinated.phase === "error" || (coordinated.phase === "done" && !coordinated.realtimeSpeechPending)) remoteBusy = false;
   remoteServer?.publish("stream", {
     phase: String(coordinated.phase || ""),
@@ -6312,6 +6421,26 @@ async function appendActiveRealtimeText(text, options = {}) {
   // handoffs enabled, app-server owns the single final voice response; do not
   // also appendSpeech here or typed Chat would be spoken twice.
   activeRealtimeTurnBuffer?.addTyped(normalized);
+  if (client.hasActiveTurn?.()) {
+    const skillItems = mergeTurnSkillItems([builtInSkillCreatorItem()], explicitTurnSkillItems(options?.selectedSkillIds));
+    try {
+      const accepted = await client.steerActiveTurn(normalized, { skillItems });
+      if (!accepted) throw new Error(mainText("実行中のLive Chatが見つかりませんでした。", "The active Live Chat turn was not found."));
+      publishChatStream({
+        phase: "follow-up",
+        mode: "chat",
+        statusText: mainText("追加の指示を同じ会話へ反映しています…", "Applying the follow-up to the current conversation…"),
+        realtimeOutput: true,
+      });
+      remoteBusy = true;
+      publishRemoteState();
+      diagnosticLog?.write("info", "realtime-typed-chat-follow-up", { target: activeRealtimeTarget || "unknown", length: normalized.length });
+      return { accepted: true, delegated: true, conversation: true, followUp: true };
+    } catch (error) {
+      activeRealtimeTurnBuffer?.discardInput(normalized);
+      throw error;
+    }
+  }
   let result;
   try {
     result = await client.sendMessage(normalized);
@@ -6526,14 +6655,31 @@ async function startCodexRealtimeVoice(payload, target = "control") {
   activeRealtimeWorkSpeech?.stop();
   activeRealtimeWorkSpeech = null;
   const assistantTranscript = { text: "", active: false, authorized: false };
+  let userTranscriptStartedAt = 0;
+  let voiceFollowUpListeningShown = false;
   const sendControlRealtimeEvent = (message) => {
-    if (controlWindow && !controlWindow.isDestroyed()) controlWindow.webContents.send("audio:realtimeEvent", message);
+    try {
+      const contents = controlWindow && !controlWindow.isDestroyed() ? controlWindow.webContents : null;
+      if (contents && !contents.isDestroyed()) contents.send("audio:realtimeEvent", message);
+    } catch {
+      // Realtime can close at the same instant as its renderer during quit.
+    }
   };
   const sendMascotRealtimeEvent = (message) => {
-    if (mascotWindow && !mascotWindow.isDestroyed()) mascotWindow.webContents.send("mascot:realtimeEvent", message);
+    try {
+      const contents = mascotWindow && !mascotWindow.isDestroyed() ? mascotWindow.webContents : null;
+      if (contents && !contents.isDestroyed()) contents.send("mascot:realtimeEvent", message);
+    } catch {
+      // Realtime can close at the same instant as its renderer during quit.
+    }
   };
   const sendMascotStream = (message) => {
-    if (mascotWindow && !mascotWindow.isDestroyed()) mascotWindow.webContents.send("mascot:stream", message);
+    try {
+      const contents = mascotWindow && !mascotWindow.isDestroyed() ? mascotWindow.webContents : null;
+      if (contents && !contents.isDestroyed()) contents.send("mascot:stream", message);
+    } catch {
+      // A final caption is non-critical once the renderer is closing.
+    }
   };
   let pendingNativeWorkRequest = "";
   let nativeWorkTurn = null;
@@ -6901,8 +7047,15 @@ async function startCodexRealtimeVoice(payload, target = "control") {
         || !state?.run || state.run.status !== "running" || !state.turnId) return false;
       appendNativeWorkFollowUp(state, normalized);
       publishNativeWorkFollowUpStatus(state);
+      const steerStartedAt = Date.now();
+      const transcriptElapsedMs = userTranscriptStartedAt ? steerStartedAt - userTranscriptStartedAt : 0;
       Promise.resolve(realtimeClient.steerActiveTurn(normalized, { skillItems: state.skillItems, turnId: state.turnId })).then((accepted) => {
         if (!accepted) throw new Error(mainText("実行中のWorkが見つかりませんでした。", "The active Work turn was not found."));
+        diagnosticLog?.write("info", "realtime-work-voice-follow-up-steered", {
+          elapsedMs: Date.now() - steerStartedAt,
+          transcriptElapsedMs,
+          workRunId: state.run.id,
+        });
       }).catch((error) => {
         diagnosticLog?.write("warn", "realtime-work-voice-follow-up-failed", String(error?.message || error));
         publishChatStream({
@@ -7023,6 +7176,20 @@ async function startCodexRealtimeVoice(payload, target = "control") {
       }
       handleNativeWorkEvent(message);
       handleNativeChatEvent(message);
+      if (method === "thread/realtime/transcript/delta" && params.role === "user") {
+        if (!userTranscriptStartedAt) userTranscriptStartedAt = Date.now();
+        if (workMode && !voiceFollowUpListeningShown && nativeWorkTurn?.run?.status === "running" && nativeWorkTurn?.turnId) {
+          voiceFollowUpListeningShown = true;
+          publishChatStream({
+            phase: "follow-up",
+            mode: "work",
+            statusText: mainText("差し込みを聞いています…", "Listening for your follow-up…"),
+            realtimeOutput: true,
+            workRunId: nativeWorkTurn.run.id,
+          });
+          diagnosticLog?.write("info", "realtime-work-voice-follow-up-listening", { workRunId: nativeWorkTurn.run.id });
+        }
+      }
       if (method === "thread/realtime/started" && target === "remote") {
         const remoteTokenHash = String(payload?.remoteTokenHash || "");
         const startupGreeting = pendingRemoteLiveGreetings.get(remoteTokenHash);
@@ -7158,6 +7325,8 @@ async function startCodexRealtimeVoice(payload, target = "control") {
             });
           }
         }
+        userTranscriptStartedAt = 0;
+        voiceFollowUpListeningShown = false;
       }
       if (["thread/realtime/error", "thread/realtime/closed"].includes(method)) {
         if (assistantTranscript.active && !workMode) sendMascotStream({ phase: "done", mode: "chat", text: assistantTranscript.text });
@@ -7722,6 +7891,14 @@ function registerIpc() {
     const forceWork = Boolean(typeof payload === "object" && payload?.forceWork);
     if (attachments.length && preferences.data.backend !== "codex") throw new Error("ファイル添付はCodex app-server接続時に利用できます。");
     return handleMascotConversation(message, { localAttachments: attachments, selectedSkillIds, selectedMcpServerIds, suppressPcAudio, forceWork });
+  });
+  ipcMain.handle("mascotInline:followUp", async (event, payload) => {
+    assertTrustedSender(event, "mascot");
+    const message = typeof payload === "object" && payload ? payload.message : payload;
+    const attachments = normalizeLocalAttachments(typeof payload === "object" && payload ? payload.attachmentPaths : []);
+    const selectedSkillIds = normalizeTurnSkillIds(typeof payload === "object" && payload ? payload.selectedSkillIds : []);
+    const selectedMcpServerIds = normalizeTurnMcpServerIds(typeof payload === "object" && payload ? payload.selectedMcpServerIds : []);
+    return steerActiveInteraction(message, { localAttachments: attachments, selectedSkillIds, selectedMcpServerIds });
   });
   ipcMain.handle("mascotInline:approveScreenShare", async (event, requestId) => {
     assertTrustedSender(event, "mascot");
@@ -8969,6 +9146,14 @@ function registerIpc() {
     if (attachments.length && preferences.data.backend !== "codex") throw new Error("ファイル添付はCodex app-server接続時に利用できます。");
     return sendChatMessage(message, { localAttachments: attachments, selectedSkillIds, selectedMcpServerIds });
   });
+  ipcMain.handle("chat:followUp", async (event, payload) => {
+    assertTrustedSender(event);
+    const message = typeof payload === "object" && payload ? payload.message : payload;
+    const attachments = normalizeLocalAttachments(typeof payload === "object" && payload ? payload.attachmentPaths : []);
+    const selectedSkillIds = normalizeTurnSkillIds(typeof payload === "object" && payload ? payload.selectedSkillIds : []);
+    const selectedMcpServerIds = normalizeTurnMcpServerIds(typeof payload === "object" && payload ? payload.selectedMcpServerIds : []);
+    return steerActiveInteraction(message, { localAttachments: attachments, selectedSkillIds, selectedMcpServerIds });
+  });
   ipcMain.handle("chat:interrupt", async (event) => {
     assertTrustedSender(event);
     return interruptActiveInteraction();
@@ -10186,6 +10371,7 @@ async function sendChatMessage(message, {
     if (String(item?.phase || "") !== "commentary") return;
     workVoiceReporter.commentary(String(item?.text || ""));
   };
+  let activeMessageClient = null;
   try {
     let result;
     if (computerSession) {
@@ -10216,6 +10402,7 @@ async function sendChatMessage(message, {
           onDynamicToolCall: (params) => handleComputerToolCall(computerSession, params),
         });
         computerCodexClient.setPersona(personaInstructions());
+        activeMessageClient = computerCodexClient;
         result = await computerCodexClient.sendMessage(codexText, { onDelta, onEvent: observeWorkAgentMessage, skillItems: turnSkillItems });
       } else if (process.platform === "darwin") {
         const skillClient = new CodexAppServerClient({
@@ -10245,6 +10432,7 @@ async function sendChatMessage(message, {
           }
           skillClient.setTurnStartSkillItems([computerUseSkill]);
           skillClient.setPersona(personaInstructions());
+          activeMessageClient = skillClient;
           result = await skillClient.sendMessage(`$computer-use:computer-use ${codexText}`, {
             onDelta,
             onEvent: observeWorkAgentMessage,
@@ -10303,6 +10491,7 @@ async function sendChatMessage(message, {
         onDynamicToolCall: (params) => handleBrowserToolCall(browserSession, params),
       });
       browserCodexClient.setPersona(personaInstructions());
+      activeMessageClient = browserCodexClient;
       result = await browserCodexClient.sendMessage(codexText, {
         onDelta,
         skillItems: turnSkillItems,
@@ -10319,6 +10508,7 @@ async function sendChatMessage(message, {
       const worker = ensureWorkClient(selectedMcpServerIds);
       workRuntimeDirectory = worker.cwd;
       let lastActivity = "";
+      activeMessageClient = worker;
       result = await worker.sendMessage(codexText, {
         localImagePath,
         localImagePaths: localAttachments.filter((item) => item.image).map((item) => item.path),
@@ -10353,6 +10543,7 @@ async function sendChatMessage(message, {
       const conversationClient = ensureConversationCodexClient(selectedMcpServerIds);
       conversationClient.setTurnStartSkillItems([builtInSkillCreatorItem()]);
       let searchingWeb = false;
+      activeMessageClient = conversationClient;
       result = await conversationClient.sendMessage(codexText, {
         onDelta,
         skillItems: turnSkillItems,
@@ -10366,6 +10557,7 @@ async function sendChatMessage(message, {
         },
       });
     }
+    const steeredFollowUps = consumeActiveInteractionFollowUps(activeMessageClient);
     result = { ...result, text: cleanAssistantText(result.text) };
     workAnnouncementsOpen = false;
     workVoiceReporter?.complete();
@@ -10429,7 +10621,12 @@ async function sendChatMessage(message, {
       }
       sendStream({ phase: "realtime-work-complete", mode: "work", realtimeOutput: true, workRunId: workRun?.id || "" });
     }
-    if (!workMode) rememberConversationTurn(requestText, result.text);
+    if (!workMode) {
+      const recordedRequest = steeredFollowUps.length
+        ? [requestText, ...steeredFollowUps.map((followUp) => `${mainText("追加入力", "Follow-up")}: ${followUp}`)].join("\n")
+        : requestText;
+      rememberConversationTurn(recordedRequest, result.text);
+    }
     return {
       ...result,
       mode: workMode ? "work" : "chat",
@@ -10439,6 +10636,7 @@ async function sendChatMessage(message, {
       streamed: true,
     };
   } catch (error) {
+    consumeActiveInteractionFollowUps(activeMessageClient);
     workAnnouncementsOpen = false;
     workVoiceReporter?.complete();
     if (workRun) {

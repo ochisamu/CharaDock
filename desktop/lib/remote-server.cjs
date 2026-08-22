@@ -595,6 +595,7 @@ class RemoteCompanionServer {
         const result = await this.callbacks.sendMessage?.({
           message: body.message,
           mode: body.mode,
+          followUp: body.followUp === true,
           secureActionsAllowed: this.isTrustedTailscaleRequest(request),
         });
         return this.sendJson(response, 200, { ok: true, result });

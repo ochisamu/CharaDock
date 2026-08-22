@@ -41,6 +41,7 @@ contextBridge.exposeInMainWorld("mascotDesktop", {
   setExpression: (expression) => ipcRenderer.invoke("mascot:expression", expression),
   controlMascotWindow: (action, value) => ipcRenderer.invoke("mascot:window", action, value),
   sendChat: (message) => ipcRenderer.invoke("chat:send", message),
+  followUpChat: (message) => ipcRenderer.invoke("chat:followUp", message),
   interruptChat: () => ipcRenderer.invoke("chat:interrupt"),
   resetChat: () => ipcRenderer.invoke("chat:reset"),
   getWorkHistory: () => ipcRenderer.invoke("work:getHistory"),

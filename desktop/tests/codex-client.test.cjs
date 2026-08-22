@@ -777,6 +777,30 @@ test("Codex client can steer a tracked Work turn by explicit id during an active
   }]);
 });
 
+test("Codex client waits briefly for turn/start before steering an immediate follow-up", async () => {
+  const calls = [];
+  const client = new CodexAppServerClient();
+  client.turnStarting = true;
+  client.request = async (method, params) => {
+    calls.push({ method, params });
+    return {};
+  };
+  setTimeout(() => {
+    client.threadId = "thread-starting";
+    client.activeTurnId = "turn-starting";
+    client.turnStarting = false;
+  }, 25);
+  assert.equal(await client.steerActiveTurn("すぐ追加して"), true);
+  assert.deepEqual(calls, [{
+    method: "turn/steer",
+    params: {
+      threadId: "thread-starting",
+      expectedTurnId: "turn-starting",
+      input: [{ type: "text", text: "すぐ追加して" }],
+    },
+  }]);
+});
+
 test("Codex client surfaces realtime startup notification errors immediately", async () => {
   const client = new CodexAppServerClient();
   client.ensureStarted = async () => {};

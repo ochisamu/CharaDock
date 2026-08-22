@@ -117,7 +117,7 @@ test("remote server requires pairing, same-origin CSRF, and strips token from th
     body: JSON.stringify({ message: "hello", mode: "chat" }),
   });
   assert.equal(sent.status, 200);
-  assert.deepEqual(messages, [{ message: "hello", mode: "chat", secureActionsAllowed: false }]);
+  assert.deepEqual(messages, [{ message: "hello", mode: "chat", followUp: false, secureActionsAllowed: false }]);
 
   const petted = await fetch(`${origin}/api/pet`, {
     method: "POST",
