@@ -79,6 +79,9 @@
   let dictationRestartTimer = 0;
   let seenStartupGreetingId = "";
   let pendingStartupGreeting = null;
+  let seenMcpAppId = "";
+  let dismissedMcpAppId = "";
+  let mcpAppHost = null;
 
   const text = (ja, en) => appState?.language === "en" ? en : ja;
   const artifactUrl = (runId, artifactPath) => `/api/artifact?runId=${encodeURIComponent(runId)}&path=${encodeURIComponent(artifactPath)}`;
@@ -1342,6 +1345,11 @@
     syncRemoteSettings();
     syncPwaSettings();
     syncWakeLock();
+    const nextMcpApp = appState.mcpApp;
+    if (nextMcpApp?.id && nextMcpApp.id !== seenMcpAppId) {
+      seenMcpAppId = nextMcpApp.id;
+      if (nextMcpApp.id !== dismissedMcpAppId) setTimeout(() => openMcpApp(nextMcpApp), 80);
+    }
   }
 
   async function refreshState() {
@@ -1993,6 +2001,10 @@
   async function openArtifact(runId, artifact) {
     const dialog = $("#previewDialog");
     const body = $("#previewBody");
+    mcpAppHost?.destroy?.();
+    mcpAppHost = null;
+    if (dialog.open) dialog.close();
+    dialog.classList.remove("is-mcp-app", "is-mcp-fullscreen");
     body.replaceChildren();
     $("#previewTitle").textContent = artifact.name || artifact.path;
     const url = artifactUrl(runId, artifact.path);
@@ -2009,6 +2021,44 @@
       const frame = document.createElement("iframe"); frame.src = url; frame.title = artifact.name || "成果物"; frame.setAttribute("sandbox", "allow-scripts"); body.appendChild(frame);
     }
     dialog.showModal();
+  }
+
+  function closePreview() {
+    const dialog = $("#previewDialog");
+    if (dialog.classList.contains("is-mcp-app") && appState?.mcpApp?.id) dismissedMcpAppId = appState.mcpApp.id;
+    mcpAppHost?.destroy?.();
+    mcpAppHost = null;
+    dialog.classList.remove("is-mcp-app", "is-mcp-fullscreen");
+    if (dialog.open) dialog.close();
+  }
+
+  function openMcpApp(mcpApp) {
+    if (!mcpApp?.id) return;
+    const dialog = $("#previewDialog");
+    const body = $("#previewBody");
+    mcpAppHost?.destroy?.();
+    mcpAppHost = null;
+    if (dialog.open) dialog.close();
+    dialog.classList.add("is-mcp-app");
+    dialog.classList.remove("is-mcp-fullscreen");
+    body.replaceChildren();
+    $("#previewTitle").textContent = mcpApp.title || text("MCPカード", "MCP card");
+    const frame = document.createElement("iframe");
+    frame.src = `/api/mcp-app?id=${encodeURIComponent(mcpApp.id)}`;
+    frame.title = mcpApp.title || text("MCPカード", "MCP card");
+    frame.setAttribute("sandbox", "allow-scripts");
+    body.appendChild(frame);
+    mcpAppHost = window.CharaDockMcpAppHost?.mount(frame, mcpApp, {
+      request: (payload) => request("/api/mcp-app/bridge", { method: "POST", body: JSON.stringify(payload), timeoutMs: 90_000 }),
+      openExternal: (value) => {
+        const url = new URL(String(value || ""));
+        if (!["https:", "http:"].includes(url.protocol)) throw new Error(text("安全なリンクではありません。", "This link is not safe to open."));
+        window.open(url.href, "_blank", "noopener,noreferrer");
+      },
+      onClose: closePreview,
+      onDisplayMode: (mode) => dialog.classList.toggle("is-mcp-fullscreen", mode === "fullscreen"),
+    });
+    dialog.show();
   }
 
   $("#messageForm").addEventListener("submit", sendMessage);
@@ -2043,7 +2093,7 @@
   $("#bubbleExpandButton").addEventListener("click", () => { renderHistory(); $("#historySheet").showModal(); });
   $("#closeHistoryButton").addEventListener("click", () => $("#historySheet").close());
   $("#closeSettingsButton").addEventListener("click", () => $("#settingsSheet").close());
-  $("#closePreviewButton").addEventListener("click", () => $("#previewDialog").close());
+  $("#closePreviewButton").addEventListener("click", closePreview);
   $("#workProgressCard").addEventListener("click", () => {
     selectedWorkRunId = appState?.workHistory?.activeWorkRunId || selectedWorkRunId;
     renderWorkProgress();

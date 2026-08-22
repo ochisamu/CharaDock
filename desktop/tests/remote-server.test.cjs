@@ -62,6 +62,7 @@ test("remote server requires pairing, same-origin CSRF, and strips token from th
   const beatriceAudio = [];
   const beatriceStops = [];
   const stateContexts = [];
+  const mcpAppBridgeCalls = [];
   let secureHandoffs = 0;
   const server = new RemoteCompanionServer({
     rootDir,
@@ -80,6 +81,12 @@ test("remote server requires pairing, same-origin CSRF, and strips token from th
       processLiveBeatriceAudio: (payload) => { beatriceAudio.push(payload); return { accepted: true }; },
       stopLiveBeatrice: (payload) => { beatriceStops.push(payload); return { stopped: true }; },
       interrupt: () => ({ interrupted: true }),
+      getMcpApp: (id) => id === "card-1" ? {
+        body: Buffer.from("<!doctype html><title>MCP card</title>"),
+        contentType: "text/html;profile=mcp-app; charset=utf-8",
+        contentSecurityPolicy: "default-src 'none'; script-src 'unsafe-inline'; object-src 'none'",
+      } : null,
+      bridgeMcpApp: (bridgePayload) => { mcpAppBridgeCalls.push(bridgePayload); return { structuredContent: { ok: true } }; },
     },
   });
   context.after(async () => { await server.stop(); fs.rmSync(rootDir, { recursive: true, force: true }); });
@@ -127,6 +134,21 @@ test("remote server requires pairing, same-origin CSRF, and strips token from th
   assert.equal(petted.status, 200);
   assert.deepEqual(await petted.json(), { text: "Hello!", emotion: "happy" });
   assert.deepEqual(pets, [{ zone: "head", yRatio: 0.31 }]);
+
+  const mcpCard = await fetch(`${origin}/api/mcp-app?id=card-1`, { headers: { Cookie: cookie } });
+  assert.equal(mcpCard.status, 200);
+  assert.match(mcpCard.headers.get("content-type"), /profile=mcp-app/);
+  assert.equal(mcpCard.headers.get("x-frame-options"), "SAMEORIGIN");
+  assert.match(await mcpCard.text(), /MCP card/);
+
+  const bridged = await fetch(`${origin}/api/mcp-app/bridge`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Origin: origin, Cookie: cookie, "X-CharaDock-CSRF": payload.csrfToken },
+    body: JSON.stringify({ appId: "card-1", method: "host/context", params: {} }),
+  });
+  assert.equal(bridged.status, 200);
+  assert.deepEqual(await bridged.json(), { structuredContent: { ok: true } });
+  assert.deepEqual(mcpAppBridgeCalls, [{ appId: "card-1", method: "host/context", params: {} }]);
 
   const configured = await fetch(`${origin}/api/settings`, {
     method: "POST",

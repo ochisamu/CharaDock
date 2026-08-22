@@ -54,6 +54,19 @@ const {
   normalizeMcpServerId,
 } = require("./lib/mcp-servers.cjs");
 const {
+  createMcpAppId,
+  injectMcpAppGuestBridge,
+  isCompletedMcpAppToolItem,
+  mcpAppContentSecurityPolicy,
+  mcpAppResourceContent,
+  mcpAppResourceUri,
+  mergeMcpAppMeta,
+  normalizeMcpAppCsp,
+  publicMcpApp,
+  statusResource,
+  statusTool,
+} = require("./lib/mcp-apps.cjs");
+const {
   CharacterHomeManager,
   HOME_PROJECT_ID,
   activateCharacterProject,
@@ -174,10 +187,16 @@ const { buildOnboardingFirstWorkPrompt, normalizeOnboardingFirstWork } = require
 // and conversation speech has no click at all. Keep Chromium from discarding
 // that intended playback when its transient user activation expires.
 app.commandLine.appendSwitch("autoplay-policy", "no-user-gesture-required");
-protocol.registerSchemesAsPrivileged([{
-  scheme: "charadock-artifact",
-  privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true },
-}]);
+protocol.registerSchemesAsPrivileged([
+  {
+    scheme: "charadock-artifact",
+    privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true },
+  },
+  {
+    scheme: "charadock-mcp-app",
+    privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true },
+  },
+]);
 
 const developmentUserDataArgument = process.argv.indexOf("--charadock-user-data");
 if (developmentUserDataArgument >= 0 && process.argv[developmentUserDataArgument + 1]) {
@@ -337,6 +356,9 @@ let controlWindow;
 let mascotWindow;
 let artifactPreviewWindow;
 let activeArtifactPreviewTarget = null;
+let activeMcpApp = null;
+const recentMcpApps = new Map();
+const pendingMcpAppCaptures = new Map();
 let tray;
 let trayMenu;
 let appUpdateStatus = null;
@@ -1841,6 +1863,7 @@ function publicRemoteState(context = {}) {
     workHistory: { activeWorkRunId, runs },
     approval: publicRemoteApproval(),
     startupGreeting: remoteStartupGreeting(context),
+    mcpApp: publicMcpApp(activeMcpApp),
   };
 }
 
@@ -2191,6 +2214,8 @@ function createRemoteServer(address, sessionMinutes = preferences.data.remoteSes
         return { body: fs.readFileSync(target), contentType: "image/png" };
       },
       getArtifact: remoteArtifact,
+      getMcpApp: (appId) => mcpAppHtml(appId),
+      bridgeMcpApp: (payload) => bridgeMcpApp(payload, { source: "remote" }),
       sendMessage: sendRemoteMessage,
       pet: remoteCharacterPet,
       startLive: startRemoteRealtime,
@@ -3139,6 +3164,210 @@ function artifactMimeType(filePath) {
   })[extension] || "application/octet-stream";
 }
 
+function mcpAppProtocolUrl(appId) {
+  return `charadock-mcp-app://${String(appId || "").toLowerCase()}/index.html`;
+}
+
+function trimRecentMcpApps() {
+  while (recentMcpApps.size > 4) recentMcpApps.delete(recentMcpApps.keys().next().value);
+}
+
+function mcpAppPreviewPayload(instance = activeMcpApp) {
+  const appInfo = publicMcpApp(instance);
+  if (!appInfo) return null;
+  return {
+    target: null,
+    preview: {
+      type: "mcp-app",
+      name: appInfo.title || mainText("MCPカード", "MCP card"),
+      path: appInfo.subtitle || "MCP App",
+      url: mcpAppProtocolUrl(appInfo.id),
+      mcpApp: appInfo,
+    },
+    language: interfaceLanguage(),
+  };
+}
+
+async function showMcpAppPreviewWindow(instance = activeMcpApp) {
+  const payload = mcpAppPreviewPayload(instance);
+  if (!payload) return false;
+  activeArtifactPreviewTarget = null;
+  const window = createArtifactPreviewWindow();
+  if (!window.isVisible()) window.setBounds(artifactPreviewBoundsNearMascot());
+  if (window.webContents.isLoadingMainFrame()) {
+    window.webContents.once("did-finish-load", () => window.webContents.send("artifactPreview:show", payload));
+  } else {
+    window.webContents.send("artifactPreview:show", payload);
+  }
+  // A tool card is supporting content. Keep the user's current text or voice
+  // interaction focused instead of stealing focus from the composer.
+  window.showInactive();
+  return true;
+}
+
+function mcpAppToolInput(item = {}) {
+  const value = item.arguments ?? item.input ?? item.params?.arguments ?? {};
+  return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+}
+
+function mcpAppToolResult(item = {}) {
+  const value = item.result ?? item.output ?? {};
+  return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+}
+
+async function captureMcpAppFromEvent(client, message) {
+  const item = message?.params?.item;
+  if (!client || !isCompletedMcpAppToolItem(item)) return false;
+  const resourceUri = mcpAppResourceUri(item);
+  const itemId = String(item.id || `${item.server}:${item.tool}:${resourceUri}`);
+  if (pendingMcpAppCaptures.has(itemId)) return pendingMcpAppCaptures.get(itemId);
+  const capture = (async () => {
+    try {
+      const [readResult, statuses] = await Promise.all([
+        client.readMcpResource({ server: item.server, uri: resourceUri, threadId: client.threadId }),
+        client.listMcpServerStatus({ detail: "full" }).catch(() => []),
+      ]);
+      const content = mcpAppResourceContent(readResult, resourceUri);
+      if (!content) throw new Error("MCP App resource did not return supported HTML.");
+      const located = statusResource(statuses, item.server, resourceUri);
+      const tool = statusTool(statuses, item.server, item.tool);
+      const configuredServer = (preferences?.data?.mcpServers || []).find((server) => configNameForMcpServer(server.id) === String(item.server || ""));
+      const meta = mergeMcpAppMeta(tool?._meta, located.resource?._meta, content._meta, item?._meta);
+      const id = createMcpAppId(item, resourceUri);
+      const instance = {
+        id,
+        itemId,
+        client,
+        threadId: client.threadId || null,
+        serverName: String(item.server || ""),
+        serverTitle: String(configuredServer?.name || located.server?.displayName || located.server?.title || item?.appContext?.appName || item.server || "MCP"),
+        toolName: String(item.tool || ""),
+        toolTitle: String(tool?.title || tool?.description || item?.appContext?.actionName || item.tool || "MCP App"),
+        title: String(item?.appContext?.actionName || tool?.title || item?.appContext?.appName || item.tool || "MCP App"),
+        resourceUri,
+        resourceMeta: meta,
+        csp: normalizeMcpAppCsp(meta),
+        html: injectMcpAppGuestBridge(content.text),
+        mimeType: content.mimeType,
+        toolInput: mcpAppToolInput(item),
+        toolResult: mcpAppToolResult(item),
+        allowedTools: Array.isArray(located.server?.tools)
+          ? located.server.tools.map((entry) => String(entry?.name || "")).filter(Boolean)
+          : Object.keys(located.server?.tools || {}),
+        allowedResources: (Array.isArray(located.server?.resources) ? located.server.resources : [])
+          .map((entry) => String(entry?.uri || "")).filter(Boolean),
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      };
+      activeMcpApp = instance;
+      recentMcpApps.set(id, instance);
+      trimRecentMcpApps();
+      diagnosticLog?.write("info", "mcp-app-ready", {
+        server: instance.serverName,
+        tool: instance.toolName,
+        resourceUri: instance.resourceUri,
+      });
+      await showMcpAppPreviewWindow(instance);
+      publishRemoteState();
+      return true;
+    } catch (error) {
+      diagnosticLog?.write("warn", "mcp-app-capture-failed", {
+        server: String(item?.server || ""),
+        tool: String(item?.tool || ""),
+        message: String(error?.message || error),
+      });
+      return false;
+    } finally {
+      pendingMcpAppCaptures.delete(itemId);
+    }
+  })();
+  pendingMcpAppCaptures.set(itemId, capture);
+  return capture;
+}
+
+function observeMcpAppEvent(client, message) {
+  captureMcpAppFromEvent(client, message).catch((error) => {
+    diagnosticLog?.write("warn", "mcp-app-observer-failed", String(error?.message || error));
+  });
+}
+
+function mcpAppInstance(appId) {
+  const id = String(appId || "").toLowerCase();
+  const instance = recentMcpApps.get(id);
+  if (!instance) throw new Error(mainText("このMCPカードは利用できなくなりました。", "This MCP card is no longer available."));
+  return instance;
+}
+
+function mcpAppMessageText(params = {}) {
+  if (typeof params.prompt === "string") return params.prompt.trim().slice(0, 12_000);
+  if (typeof params.text === "string") return params.text.trim().slice(0, 12_000);
+  return (Array.isArray(params.content) ? params.content : [])
+    .filter((part) => part?.type === "text")
+    .map((part) => String(part.text || ""))
+    .join("\n")
+    .trim()
+    .slice(0, 12_000);
+}
+
+async function bridgeMcpApp(payload = {}, { source = "preview" } = {}) {
+  const instance = mcpAppInstance(payload.appId);
+  const method = String(payload.method || "");
+  const params = payload.params && typeof payload.params === "object" && !Array.isArray(payload.params) ? payload.params : {};
+  if (method === "host/context") return {
+    app: publicMcpApp(instance),
+    toolInput: instance.toolInput,
+    toolResult: instance.toolResult,
+    csp: instance.csp,
+  };
+  if (method === "tools/call") {
+    const toolName = String(params.name || "").trim();
+    if (!toolName || !instance.allowedTools.includes(toolName)) throw new Error(mainText("このカードからは指定されたツールを利用できません。", "This card cannot call the requested tool."));
+    const result = await instance.client.callMcpTool({
+      server: instance.serverName,
+      tool: toolName,
+      arguments: params.arguments,
+      _meta: params._meta,
+      threadId: instance.threadId,
+    });
+    instance.toolResult = result && typeof result === "object" ? result : {};
+    instance.updatedAt = Date.now();
+    publishRemoteState();
+    return instance.toolResult;
+  }
+  if (method === "resources/read") {
+    const uri = String(params.uri || "").trim();
+    if (!uri || !instance.allowedResources.includes(uri)) throw new Error(mainText("このカードからは指定されたリソースを利用できません。", "This card cannot read the requested resource."));
+    return instance.client.readMcpResource({ server: instance.serverName, uri, threadId: instance.threadId });
+  }
+  if (method === "ui/open-link") {
+    const url = normalizeExternalHttpUrl(params.url);
+    if (!url) throw new Error(mainText("安全なリンクではありません。", "This link is not safe to open."));
+    if (source === "preview") await shell.openExternal(url);
+    return { url };
+  }
+  if (method === "ui/message") {
+    const text = mcpAppMessageText(params);
+    if (!text) throw new Error(mainText("送信する内容がありません。", "There is no message to send."));
+    const operation = currentRealtimeClient()
+      ? appendActiveRealtimeText(text)
+      : activeCodexInteractionClient()
+        ? steerActiveInteraction(text)
+        : sendChatMessage(text, { remoteTtsOutput: source === "remote" });
+    Promise.resolve(operation).catch((error) => diagnosticLog?.write("warn", "mcp-app-message-failed", String(error?.message || error)));
+    return { queued: true };
+  }
+  throw new Error(mainText("このMCPカード操作にはまだ対応していません。", "This MCP card operation is not supported yet."));
+}
+
+function mcpAppHtml(appId) {
+  const instance = mcpAppInstance(appId);
+  return {
+    body: Buffer.from(instance.html, "utf8"),
+    contentType: instance.mimeType || "text/html;profile=mcp-app; charset=utf-8",
+    contentSecurityPolicy: mcpAppContentSecurityPolicy(instance.resourceMeta),
+  };
+}
+
 function registerArtifactPreviewProtocol() {
   protocol.handle("charadock-artifact", async (request) => {
     try {
@@ -3168,6 +3397,24 @@ function registerArtifactPreviewProtocol() {
       });
     } catch {
       return new Response("Artifact preview unavailable", { status: 404, headers: { "Content-Type": "text/plain; charset=utf-8" } });
+    }
+  });
+  protocol.handle("charadock-mcp-app", async (request) => {
+    try {
+      const url = new URL(request.url);
+      const asset = mcpAppHtml(url.hostname);
+      return new Response(asset.body, {
+        status: 200,
+        headers: {
+          "Content-Type": asset.contentType,
+          "Cache-Control": "no-store",
+          "Content-Security-Policy": asset.contentSecurityPolicy,
+          "Cross-Origin-Resource-Policy": "cross-origin",
+          "X-Content-Type-Options": "nosniff",
+        },
+      });
+    } catch {
+      return new Response("MCP App unavailable", { status: 404, headers: { "Content-Type": "text/plain; charset=utf-8" } });
     }
   });
 }
@@ -7186,6 +7433,7 @@ async function startCodexRealtimeVoice(payload, target = "control") {
       }],
       requireMcpReady: initialTurnMcpServerIds.length > 0,
       onEvent: (message) => {
+        observeMcpAppEvent(realtimeClient, message);
         let forwarded = message;
         if (message?.method === "thread/realtime/error") {
           const original = String(message.params?.message || "");
@@ -9283,7 +9531,7 @@ function registerIpc() {
   });
   ipcMain.handle("artifactPreview:getCurrent", (event) => {
     assertTrustedSender(event, "preview");
-    if (!activeArtifactPreviewTarget) return null;
+    if (!activeArtifactPreviewTarget) return mcpAppPreviewPayload(activeMcpApp);
     return {
       target: { ...activeArtifactPreviewTarget },
       preview: previewWorkArtifact(activeArtifactPreviewTarget.runId, activeArtifactPreviewTarget.path),
@@ -9316,6 +9564,10 @@ function registerIpc() {
   ipcMain.handle("artifactPreview:webPreviewOpen", async (event) => {
     assertTrustedSender(event, "preview");
     return openDynamicWebPreview();
+  });
+  ipcMain.handle("mcpApp:bridge", async (event, payload) => {
+    assertTrustedSender(event, "preview");
+    return bridgeMcpApp(payload, { source: "preview" });
   });
   ipcMain.handle("work:webPreviewStart", async (event, payload) => {
     assertTrustedSender(event);
@@ -10636,6 +10888,7 @@ async function sendChatMessage(message, {
         requireMcpReady,
         onDelta,
         onEvent: (message) => {
+          observeMcpAppEvent(worker, message);
           const itemType = String(message.params?.item?.type || "");
           collectWorkArtifacts(message.params?.item);
           observeWorkAgentMessage(message);
@@ -10671,6 +10924,7 @@ async function sendChatMessage(message, {
         localImagePaths: localAttachments.filter((item) => item.image).map((item) => item.path),
         requireMcpReady,
         onEvent: (event) => {
+          observeMcpAppEvent(conversationClient, event);
           if (String(event.params?.item?.type || "") !== "webSearch" || searchingWeb) return;
           searchingWeb = true;
           sendStream({ phase: "activity", text: mainText("Webを検索中…", "Searching the web…"), mode: "chat" });
@@ -10936,6 +11190,70 @@ async function removeRetiredWorkSlmData() {
   }
 }
 
+function verificationArgumentsForMcpTool(tool = {}) {
+  const schema = tool.inputSchema && typeof tool.inputSchema === "object" ? tool.inputSchema : {};
+  const properties = schema.properties && typeof schema.properties === "object" ? schema.properties : {};
+  const required = new Set(Array.isArray(schema.required) ? schema.required : []);
+  const args = {};
+  for (const [name, definition] of Object.entries(properties)) {
+    const lower = name.toLowerCase();
+    if (/query|search|keyword|term|text/.test(lower)) args[name] = "AITuberKit";
+    else if (/limit|count|max/.test(lower)) args[name] = 3;
+    else if (required.has(name) && definition?.type === "string") args[name] = "AITuberKit";
+    else if (required.has(name) && ["integer", "number"].includes(definition?.type)) args[name] = 3;
+    else if (required.has(name) && definition?.type === "boolean") args[name] = false;
+  }
+  return args;
+}
+
+async function runMcpAppProfileVerification() {
+  if (app.isPackaged) throw new Error("MCP App profile verification is development-only.");
+  const client = ensureConversationCodexClient();
+  await client.ensureMcpServersReady({ timeoutMs: 30_000 });
+  const statuses = await client.listMcpServerStatus({ detail: "full" });
+  let selected = null;
+  for (const server of statuses) {
+    const tools = Array.isArray(server?.tools) ? server.tools : Object.entries(server?.tools || {}).map(([name, descriptor]) => ({ name, ...descriptor }));
+    for (const tool of tools) {
+      const resourceUri = mcpAppResourceUri({ _meta: tool?._meta });
+      if (!resourceUri) continue;
+      selected = { server, tool, resourceUri };
+      break;
+    }
+    if (selected) break;
+  }
+  if (!selected) throw new Error("The configured profile has no MCP App tool.");
+  const args = verificationArgumentsForMcpTool(selected.tool);
+  const result = await client.callMcpTool({
+    server: selected.server.name,
+    tool: selected.tool.name,
+    arguments: args,
+    threadId: client.threadId,
+  });
+  const item = {
+    id: `mcp-app-verification-${Date.now()}`,
+    type: "mcpToolCall",
+    status: "completed",
+    server: selected.server.name,
+    tool: selected.tool.name,
+    arguments: args,
+    result,
+    appContext: {
+      appName: selected.server.displayName || selected.server.title || selected.server.name,
+      actionName: selected.tool.title || selected.tool.name,
+      resourceUri: selected.resourceUri,
+    },
+    _meta: selected.tool._meta || {},
+  };
+  const shown = await captureMcpAppFromEvent(client, { method: "item/completed", params: { item } });
+  if (!shown) throw new Error("The profile MCP App could not be displayed.");
+  diagnosticLog?.write("info", "mcp-app-profile-verification-completed", {
+    server: selected.server.name,
+    tool: selected.tool.name,
+  });
+  return publicMcpApp(activeMcpApp);
+}
+
 async function boot() {
   projectRoot = app.getAppPath();
   app.setAppLogsPath();
@@ -11091,6 +11409,7 @@ async function boot() {
   applyLoginItemSetting(preferences.data.launchAtLogin);
   if (process.argv.includes("--hidden")) controlWindow.hide();
   if (process.argv.includes("--smoke-test")) await runSmokeTest();
+  if (process.argv.includes("--mcp-app-test")) await runMcpAppProfileVerification();
 }
 
 const hasLock = app.requestSingleInstanceLock();

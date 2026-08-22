@@ -10,6 +10,7 @@ contextBridge.exposeInMainWorld("charadockArtifactPreview", {
   startWebPreview: (payload) => ipcRenderer.invoke("artifactPreview:webPreviewStart", payload),
   stopWebPreview: () => ipcRenderer.invoke("artifactPreview:webPreviewStop"),
   openWebPreview: () => ipcRenderer.invoke("artifactPreview:webPreviewOpen"),
+  mcpAppBridge: (payload) => ipcRenderer.invoke("mcpApp:bridge", payload),
   onShow: (callback) => {
     const listener = (_event, payload) => callback(payload);
     ipcRenderer.on("artifactPreview:show", listener);

@@ -501,6 +501,12 @@ class RemoteCompanionServer {
     if (request.method === "GET" && url.pathname === "/") return this.sendStatic(response, "index.html", "text/html; charset=utf-8");
     if (request.method === "GET" && url.pathname === "/remote.css") return this.sendStatic(response, "remote.css", "text/css; charset=utf-8");
     if (request.method === "GET" && url.pathname === "/remote.js") return this.sendStatic(response, "remote.js", "text/javascript; charset=utf-8");
+    if (request.method === "GET" && url.pathname === "/mcp-app-host.js") {
+      const body = fs.readFileSync(path.resolve(this.rootDir, "..", "mcp-app-host.js"));
+      response.writeHead(200, { ...securityHeaders("text/javascript; charset=utf-8"), "Content-Security-Policy": "default-src 'none'" });
+      response.end(body);
+      return;
+    }
     if (request.method === "GET" && url.pathname === "/audio-envelope.js") {
       const body = fs.readFileSync(path.resolve(this.rootDir, "..", "audio-envelope.js"));
       response.writeHead(200, {
@@ -588,7 +594,21 @@ class RemoteCompanionServer {
       return;
     }
 
-    if (request.method === "POST" && ["/api/message", "/api/pet", "/api/interrupt", "/api/settings", "/api/approval", "/api/secure-handoff", "/api/live/start", "/api/live/stop", "/api/live/beatrice/audio", "/api/live/beatrice/stop", "/api/tts", "/api/tts/next", "/api/tts/cancel", "/api/disconnect"].includes(url.pathname)) {
+    if (request.method === "GET" && url.pathname === "/api/mcp-app") {
+      this.authenticate(request);
+      const asset = await this.callbacks.getMcpApp?.(url.searchParams.get("id"));
+      if (!asset?.body) throw Object.assign(new Error("MCP App not found."), { statusCode: 404 });
+      response.writeHead(200, {
+        ...securityHeaders(asset.contentType || "text/html;profile=mcp-app; charset=utf-8"),
+        "X-Frame-Options": "SAMEORIGIN",
+        "Cross-Origin-Resource-Policy": "cross-origin",
+        "Content-Security-Policy": asset.contentSecurityPolicy || "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; object-src 'none'; form-action 'none'",
+      });
+      response.end(asset.body);
+      return;
+    }
+
+    if (request.method === "POST" && ["/api/message", "/api/pet", "/api/interrupt", "/api/settings", "/api/approval", "/api/secure-handoff", "/api/live/start", "/api/live/stop", "/api/live/beatrice/audio", "/api/live/beatrice/stop", "/api/tts", "/api/tts/next", "/api/tts/cancel", "/api/mcp-app/bridge", "/api/disconnect"].includes(url.pathname)) {
       const { tokenHash } = this.authenticate(request, { csrf: true });
       const body = await jsonBody(request);
       if (url.pathname === "/api/message") {
@@ -632,6 +652,7 @@ class RemoteCompanionServer {
       if (url.pathname === "/api/tts") return this.sendJson(response, 200, await this.callbacks.synthesizeTts?.(body.text));
       if (url.pathname === "/api/tts/next") return this.sendJson(response, 200, await this.callbacks.nextTtsChunk?.(body.streamId));
       if (url.pathname === "/api/tts/cancel") return this.sendJson(response, 200, await this.callbacks.cancelTts?.(body.streamId));
+      if (url.pathname === "/api/mcp-app/bridge") return this.sendJson(response, 200, await this.callbacks.bridgeMcpApp?.(body));
       this.sessions.delete(tokenHash);
       this.trustedDevices.delete(tokenHash);
       this.persistTrustedDevices(true);

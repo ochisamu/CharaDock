@@ -2,6 +2,7 @@
 (() => {
   "use strict";
   const api = window.charadockArtifactPreview;
+  const kindLabel = document.querySelector("#previewKind");
   const title = document.querySelector("#previewTitle");
   const pathLabel = document.querySelector("#previewPath");
   const body = document.querySelector("#previewBody");
@@ -15,7 +16,9 @@
   const revisionTitle = document.querySelector("#revisionTitle");
   const revisionHint = document.querySelector("#revisionHint");
   const revisionState = document.querySelector("#revisionState");
+  const revisionPanel = document.querySelector(".revision-panel");
   let current = null;
+  let mcpAppHost = null;
   let statusTimer = null;
 
   const english = () => current?.language === "en";
@@ -201,8 +204,13 @@
     current = payload;
     document.documentElement.lang = english() ? "en" : "ja";
     const preview = payload.preview;
+    const isMcpApp = preview.type === "mcp-app";
+    document.body.classList.toggle("is-mcp-app", isMcpApp);
+    kindLabel.textContent = isMcpApp ? "MCP APP" : "PREVIEW";
     title.textContent = preview.name || t("成果物", "Output");
     pathLabel.textContent = preview.path || "";
+    openButton.hidden = isMcpApp;
+    revisionPanel.hidden = isMcpApp;
     openButtonLabel.textContent = preview.type === "web-project" && preview.server?.status === "running" ? t("ブラウザーで開く", "Open in browser") : t("外部で開く", "Open externally");
     closeButton.setAttribute("aria-label", t("閉じる", "Close"));
     revisionTitle.textContent = t("この成果物を続けて修正", "Keep refining this output");
@@ -210,8 +218,20 @@
     revisionInput.placeholder = t("例: タイトルを大きくして、配色をもう少し落ち着かせて", "For example: Make the title larger and use calmer colors");
     revisionSendButton.textContent = t("修正する", "Revise");
     body.replaceChildren();
+    mcpAppHost?.destroy?.();
+    mcpAppHost = null;
     let node;
-    if (preview.type === "web-project") node = webProject(preview);
+    if (isMcpApp) {
+      node = document.createElement("iframe");
+      node.title = preview.name || t("MCPカード", "MCP card");
+      node.src = preview.url;
+      node.setAttribute("sandbox", "allow-scripts");
+      mcpAppHost = window.CharaDockMcpAppHost?.mount(node, preview.mcpApp, {
+        request: (request) => api.mcpAppBridge(request),
+        onClose: () => api.close(),
+        onDisplayMode: (mode) => document.body.classList.toggle("is-mcp-fullscreen", mode === "fullscreen"),
+      });
+    } else if (preview.type === "web-project") node = webProject(preview);
     else if (["web", "pdf"].includes(preview.type)) {
       node = document.createElement("iframe"); node.title = preview.name || t("成果物プレビュー", "Output preview"); node.src = preview.url;
       if (preview.type === "web") node.setAttribute("sandbox", "allow-scripts");

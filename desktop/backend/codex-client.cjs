@@ -571,6 +571,36 @@ class CodexAppServerClient {
     return servers;
   }
 
+  async readMcpResource({ server, uri, threadId = this.threadId, requestTimeoutMs = 45_000 } = {}) {
+    const serverName = String(server || "").trim();
+    const resourceUri = String(uri || "").trim();
+    if (!serverName || !resourceUri) throw new Error("MCP resource server and URI are required.");
+    await this.ensureStarted();
+    const effectiveThreadId = threadId || await this.ensureThread();
+    const params = {
+      server: serverName,
+      uri: resourceUri,
+      threadId: effectiveThreadId,
+    };
+    return this.request("mcpServer/resource/read", params, Math.max(1_000, Number(requestTimeoutMs) || 45_000));
+  }
+
+  async callMcpTool({ server, tool, arguments: toolArguments = {}, _meta, threadId = this.threadId, requestTimeoutMs = 90_000 } = {}) {
+    const serverName = String(server || "").trim();
+    const toolName = String(tool || "").trim();
+    if (!serverName || !toolName) throw new Error("MCP tool server and name are required.");
+    await this.ensureStarted();
+    const effectiveThreadId = threadId || await this.ensureThread();
+    const params = {
+      server: serverName,
+      tool: toolName,
+      arguments: toolArguments && typeof toolArguments === "object" && !Array.isArray(toolArguments) ? toolArguments : {},
+      threadId: effectiveThreadId,
+    };
+    if (_meta && typeof _meta === "object" && !Array.isArray(_meta)) params._meta = _meta;
+    return this.request("mcpServer/tool/call", params, Math.max(1_000, Number(requestTimeoutMs) || 90_000));
+  }
+
   async ensureMcpServersReady({ timeoutMs = 20_000, pollIntervalMs = 250 } = {}) {
     const expectedNames = [...new Set(this.mcpServers
       .map((server) => String(server?.name || "").trim())
