@@ -76,6 +76,8 @@ const { screenShareConversationAction } = require("./lib/screen-share-intent.cjs
 const { computerContinuationAction, computerConversationAction, normalizeComputerToolName } = require("./lib/computer-use-intent.cjs");
 const { runWindowsInput } = require("./lib/windows-input.cjs");
 const { StreamingTextSegmenter, sanitizeSpeechText } = require("./lib/speech-stream.cjs");
+const { consumeInjectedSpeech, recentInjectedSpeech } = require("./lib/realtime-injected-speech.cjs");
+const { completionMinimumAssistantSequence, completionTranscriptEligible } = require("./lib/realtime-completion-gate.cjs");
 const { normalizeSpeechPronunciation } = require("./lib/speech-pronunciation.cjs");
 const {
   cleanAssistantText,
@@ -1916,7 +1918,10 @@ async function sendRemoteMessage(payload = {}) {
   remoteBusy = true;
   publishRemoteState();
   try {
-    const result = await handleMascotConversation(message, { suppressPcAudio: preferences.data.remotePcAudioEnabled === false });
+    const result = await handleMascotConversation(message, {
+      suppressPcAudio: preferences.data.remotePcAudioEnabled === false,
+      remoteTtsOutput: true,
+    });
     if (result?.text && result?.permissionRequest) remoteLastDisplayText = remotePublicText(result.text);
     return { completed: !result?.permissionRequest, result };
   } finally {
@@ -6262,9 +6267,17 @@ function publishChatStream(payload = {}) {
     realtimeOutput: Boolean(coordinated.realtimeOutput),
     realtimeSpeechPending: Boolean(coordinated.realtimeSpeechPending),
     deferDisplayToRealtime: Boolean(coordinated.deferDisplayToRealtime),
+    remoteTtsEnabled: Boolean(coordinated.remoteTtsEnabled),
     audioRoute: coordinated.audioRoute === "live"
       ? "live"
-      : coordinated.audioRoute === "tts" && ["announcement", "done"].includes(coordinated.phase) ? "mobile-tts" : "none",
+      : coordinated.remoteTtsEnabled && ["announcement", "delta", "done"].includes(coordinated.phase)
+        ? "mobile-tts"
+        : "none",
+    speechSegments: (Array.isArray(coordinated.speechSegments) ? coordinated.speechSegments : []).slice(0, 12).flatMap((segment) => {
+      const text = remotePublicText(segment?.text || segment, 1000);
+      if (!text) return [];
+      return [{ text, spokenText: remotePublicText(segment?.spokenText || text, 1000) }];
+    }),
     artifacts: (Array.isArray(coordinated.artifacts) ? coordinated.artifacts : []).slice(0, 8).map((artifact) => ({
       path: String(artifact?.path || "").slice(0, 1000),
       name: String(artifact?.name || "").slice(0, 260),
@@ -6418,6 +6431,9 @@ async function appendActiveRealtimeText(text, options = {}) {
     setActiveRealtimeTurnMcpServers(requestedMcpServerIds);
   }
   options = { ...options, selectedMcpServerIds: requestedMcpServerIds };
+  const selectedSkillItems = explicitTurnSkillItems(options?.selectedSkillIds);
+  const requireMcpReady = requestedMcpServerIds.length > 0 || messageExplicitlyRequestsMcp(normalized);
+  if (requireMcpReady) await client.ensureMcpServersReady();
   if (preferences.data.interactionMode === "work" && activeRealtimeWorkDispatcher) {
     activeRealtimeTurnBuffer?.addTyped(normalized, {
       followUp: Boolean(client.hasActiveTurn?.() || activeWorkRunId),
@@ -6448,7 +6464,7 @@ async function appendActiveRealtimeText(text, options = {}) {
   const activeTurn = Boolean(client.hasActiveTurn?.());
   activeRealtimeTurnBuffer?.addTyped(normalized, { followUp: activeTurn });
   if (activeTurn) {
-    const skillItems = mergeTurnSkillItems([builtInSkillCreatorItem()], explicitTurnSkillItems(options?.selectedSkillIds));
+    const skillItems = mergeTurnSkillItems([builtInSkillCreatorItem()], selectedSkillItems);
     try {
       const accepted = await client.steerActiveTurn(normalized, { skillItems });
       if (!accepted) throw new Error(mainText("実行中のLive Chatが見つかりませんでした。", "The active Live Chat turn was not found."));
@@ -6470,7 +6486,8 @@ async function appendActiveRealtimeText(text, options = {}) {
   }
   let result;
   try {
-    result = await client.sendMessage(normalized);
+    const skillItems = mergeTurnSkillItems([builtInSkillCreatorItem()], selectedSkillItems);
+    result = await client.sendMessage(normalized, { skillItems, requireMcpReady });
   } catch (error) {
     consumeActiveInteractionFollowUps(client);
     activeRealtimeTurnBuffer?.discardInput(normalized);
@@ -6491,25 +6508,10 @@ async function appendActiveRealtimeText(text, options = {}) {
   return { accepted: true, delegated: true, conversation: true };
 }
 
-function injectedSpeechComparable(value) {
-  return normalizedText(value).replace(/[\s、。！？!?.,・]/g, "").toLowerCase();
-}
-
-function consumeRealtimeInjectedAssistant(text) {
-  const cutoff = Date.now() - 30_000;
-  activeRealtimeInjectedSpeech = activeRealtimeInjectedSpeech.filter((entry) => entry.createdAt >= cutoff);
-  const comparable = injectedSpeechComparable(text);
-  let index = activeRealtimeInjectedSpeech.findIndex((entry) => {
-    const pending = injectedSpeechComparable(entry.text);
-    return pending && comparable && (pending === comparable || pending.includes(comparable) || comparable.includes(pending));
-  });
-  // Frameless may naturally rephrase a client-selected Chat utterance. It is
-  // still the audio presentation of the already persisted Codex answer, not a
-  // second conversation turn. Consume the oldest pending Chat speech even
-  // when punctuation/wording differs so history never records two replies.
-  if (index < 0) index = activeRealtimeInjectedSpeech.findIndex((entry) => entry.kind === "chat");
-  if (index < 0) return null;
-  return activeRealtimeInjectedSpeech.splice(index, 1)[0] || null;
+function consumeRealtimeInjectedAssistant(text, options = {}) {
+  const consumed = consumeInjectedSpeech(activeRealtimeInjectedSpeech, text, options);
+  activeRealtimeInjectedSpeech = consumed.entries;
+  return consumed.entry;
 }
 
 async function appendRealtimeOutputSpeechDirect(text, kind = "update") {
@@ -6687,7 +6689,7 @@ async function startCodexRealtimeVoice(payload, target = "control") {
   activeRealtimeInjectedSpeech = [];
   activeRealtimeWorkSpeech?.stop();
   activeRealtimeWorkSpeech = null;
-  const assistantTranscript = { text: "", active: false, authorized: false };
+  const assistantTranscript = { text: "", active: false, authorized: false, startedAt: 0, sequence: 0 };
   let userTranscriptStartedAt = 0;
   let voiceFollowUpListeningShown = false;
   const sendControlRealtimeEvent = (message) => {
@@ -6815,6 +6817,7 @@ async function startCodexRealtimeVoice(payload, target = "control") {
       artifactCandidates: [],
       skillItems,
       skillSteerText: "",
+      finalAvailableAt: 0,
     };
     publishChatStream({
       phase: "start",
@@ -6909,10 +6912,18 @@ async function startCodexRealtimeVoice(payload, target = "control") {
     });
     nativeCompletionAwaitingSpeech = {
       workRunId: state.run.id,
-      comparable: injectedSpeechComparable(resultText || displayText),
       resultText: resultText || displayText,
       displayText,
       artifacts,
+      createdAt: Date.now(),
+      minimumAssistantSequence: completionMinimumAssistantSequence({
+        assistantSequence: assistantTranscript.sequence,
+        assistantActive: assistantTranscript.active,
+        assistantStartedAt: assistantTranscript.startedAt,
+        finalAvailableAt: state.finalAvailableAt,
+        expectedText: resultText || displayText,
+        currentText: assistantTranscript.text,
+      }),
     };
     clearNativeCompletionTimer();
     nativeCompletionTimer = setTimeout(recoverNativeRealtimeWorkSpeech, 6_000);
@@ -6990,6 +7001,7 @@ async function startCodexRealtimeVoice(payload, target = "control") {
       }
       if (method === "item/completed" && itemType === "agentMessage" && String(item.phase || "") !== "commentary" && String(item.text || "").trim()) {
         state.finalText = String(item.text);
+        state.finalAvailableAt = Date.now();
       }
       const activity = itemType === "commandExecution" ? mainText("コマンドを実行中…", "Running a command…")
         : itemType === "fileChange" ? mainText("ファイルを更新中…", "Updating files…")
@@ -7194,8 +7206,10 @@ async function startCodexRealtimeVoice(payload, target = "control") {
       if (assistantTranscriptEvent && !assistantTranscript.active) {
         assistantTranscript.active = true;
         assistantTranscript.text = "";
+        assistantTranscript.startedAt = Date.now();
+        assistantTranscript.sequence += 1;
         assistantTranscript.authorized = realtimeTurnBuffer.hasPendingInput()
-          || activeRealtimeInjectedSpeech.some((entry) => Date.now() - entry.createdAt < 30_000);
+          || recentInjectedSpeech(activeRealtimeInjectedSpeech).length > 0;
         if (!assistantTranscript.authorized) {
           diagnosticLog?.write("warn", "realtime-unsolicited-assistant-suppressed", {
             target,
@@ -7287,6 +7301,7 @@ async function startCodexRealtimeVoice(payload, target = "control") {
           assistantTranscript.active = false;
           assistantTranscript.authorized = false;
           assistantTranscript.text = "";
+          assistantTranscript.startedAt = 0;
           return;
         }
         assistantTranscript.text = String(params.text || assistantTranscript.text).trim();
@@ -7323,24 +7338,35 @@ async function startCodexRealtimeVoice(payload, target = "control") {
             displayText: remoteLastDisplayText,
           });
           if (!workMode && !nativeChatTurnIds.size) remoteBusy = false;
-          const injectedSpeech = consumeRealtimeInjectedAssistant(assistantTranscript.text);
+          const injectedSpeech = consumeRealtimeInjectedAssistant(assistantTranscript.text, {
+            responseStartedAt: assistantTranscript.startedAt,
+            newestPendingInputCreatedAt: realtimeTurnBuffer.newestPendingInputCreatedAt(),
+          });
           if (workMode && nativeCompletionAwaitingSpeech) {
-            const spoken = injectedSpeechComparable(assistantTranscript.text);
-            const expected = nativeCompletionAwaitingSpeech.comparable;
-            if (!expected || !spoken || expected.includes(spoken) || spoken.includes(expected)) finishNativeRealtimeWork();
+            if (completionTranscriptEligible({
+              sequence: assistantTranscript.sequence,
+              minimumSequence: nativeCompletionAwaitingSpeech.minimumAssistantSequence,
+              expectedText: nativeCompletionAwaitingSpeech.resultText,
+              actualText: assistantTranscript.text,
+              responseStartedAt: assistantTranscript.startedAt,
+              completionCreatedAt: nativeCompletionAwaitingSpeech.createdAt,
+              newestPendingInputCreatedAt: realtimeTurnBuffer.newestPendingInputCreatedAt(),
+            })) finishNativeRealtimeWork();
           }
           if (!workMode) {
             sendMascotStream(completionPayload);
           }
-          const completedTurn = !injectedSpeech || realtimeTurnBuffer.hasPendingInput()
-            ? realtimeTurnBuffer.addAssistant(assistantTranscript.text)
-            : null;
+          // appendSpeech is presentation of an answer already recorded by the
+          // authoritative Codex route. Never pair that transcript with a newer
+          // user input merely because both happened to overlap in time.
+          const completedTurn = injectedSpeech ? null : realtimeTurnBuffer.addAssistant(assistantTranscript.text);
           if (!workMode && !injectedSpeech && completedTurn?.source !== "typed") {
             if (completedTurn) rememberConversationTurn(completedTurn.user, completedTurn.assistant);
           }
         }
         assistantTranscript.active = false;
         assistantTranscript.authorized = false;
+        assistantTranscript.startedAt = 0;
       }
       if (method === "thread/realtime/transcript/done" && params.role === "user") {
         if (!assistantTranscript.active) assistantTranscript.text = "";
@@ -10172,7 +10198,10 @@ async function resolveRemoteApproval(payload = {}) {
   remoteBusy = true;
   publishRemoteState();
   try {
-    const deliveryOptions = { suppressPcAudio: preferences.data.remotePcAudioEnabled === false };
+    const deliveryOptions = {
+      suppressPcAudio: preferences.data.remotePcAudioEnabled === false,
+      remoteTtsOutput: true,
+    };
     const result = approval.type === "screen"
       ? await approveScreenShare(approval.id, deliveryOptions)
       : approval.type === "browser"
@@ -10282,6 +10311,7 @@ async function sendChatMessage(message, {
   forceWork = false,
   selectedSkillIds = [],
   selectedMcpServerIds = [],
+  remoteTtsOutput = false,
 } = {}) {
   const text = String(message || "").trim().slice(0, 12_000);
   if (!text && !localAttachments.length) throw new Error("メッセージを入力してください。");
@@ -10358,11 +10388,19 @@ async function sendChatMessage(message, {
     maxLength: activeTtsProvider === "irodori-webgpu" ? IRODORI_CHUNK_LENGTH + IRODORI_CHUNK_OVERFLOW : 64,
   });
   const streamTtsEnabled = Boolean(preferences.data.ttsEnabled) && !realtimeOutput && !suppressPcAudio;
+  const remoteTtsEnabled = Boolean(
+    remoteTtsOutput
+    && !realtimeOutput
+    && preferences.data.remoteTtsEnabled
+    && preferences.data.ttsEnabled
+    && ["style-bert-vits2", "piper-plus", "supertonic-3", "irodori-webgpu", "kokoro", "sbv2-jp-extra"].includes(activeTtsProvider)
+  );
   sendStream({
     phase: "start",
     character: activeCharacter().name,
     mode: workMode ? "work" : "chat",
     ttsEnabled: streamTtsEnabled,
+    remoteTtsEnabled,
     realtimeOutput,
     ttsProvider: activeTtsProvider,
     speechLanguage: preferences.data.speechLanguage || "ja-JP",
@@ -10377,7 +10415,8 @@ async function sendChatMessage(message, {
       kind,
       text: announcement,
       displayText: announcement,
-      speechSegments: streamTtsEnabled ? expressiveWorkAnnouncementSegment(announcement) : [],
+      speechSegments: streamTtsEnabled || remoteTtsEnabled ? expressiveWorkAnnouncementSegment(announcement) : [],
+      remoteTtsEnabled,
     });
   };
   const announceWork = ({ kind, text: announcement }) => {
@@ -10437,6 +10476,7 @@ async function sendChatMessage(message, {
       text: visibleText,
       displayText: visibleText,
       speechSegments,
+      remoteTtsEnabled,
     });
   };
   const workArtifactCandidates = [];
@@ -10674,13 +10714,14 @@ async function sendChatMessage(message, {
       phase: "done",
       text: result.text,
       displayText,
-      speechSegments: streamTtsEnabled || fallbackTtsEnabled ? finalSpeechSegments : [],
+      speechSegments: streamTtsEnabled || fallbackTtsEnabled || remoteTtsEnabled ? finalSpeechSegments : [],
       artifacts,
       workRunId: workRun?.id || "",
       deferDisplayToRealtime: deliverViaRealtime,
       realtimeOutput,
       realtimeSpeechPending: deliverViaRealtime,
       ttsEnabled: streamTtsEnabled || fallbackTtsEnabled,
+      remoteTtsEnabled,
       ttsProvider: activeTtsProvider,
       speechLanguage: preferences.data.speechLanguage || "ja-JP",
     });

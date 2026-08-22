@@ -143,4 +143,17 @@ test("live route remains authoritative during a realtime turn", () => {
   assert.equal(caption.turnStatus, "speaking");
   assert.equal(caption.audioRoute, "live");
   assert.equal(caption.mode, "chat");
+  const delayedTts = coordinator.apply({ phase: "done", text: "同じ回答", ttsEnabled: true });
+  assert.equal(delayedTts.audioRoute, "live");
+});
+
+test("normal TTS route stays authoritative across interleaved activity events", () => {
+  const coordinator = new TurnCoordinator(() => 84);
+  coordinator.apply({ phase: "start", mode: "chat" });
+  const firstSentence = coordinator.apply({ phase: "delta", text: "最初の文。", ttsEnabled: true });
+  assert.equal(firstSentence.audioRoute, "tts");
+  const activity = coordinator.apply({ phase: "activity", text: "検索中" });
+  assert.equal(activity.audioRoute, "tts");
+  const accidentalLiveFlag = coordinator.apply({ phase: "done", text: "回答", realtimeOutput: true });
+  assert.equal(accidentalLiveFlag.audioRoute, "tts");
 });

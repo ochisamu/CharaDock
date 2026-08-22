@@ -48,7 +48,8 @@ function permissionProfileForSandbox(sandbox) {
 function isBenignCodexStderr(value) {
   const lines = String(value || "").split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
   const knownCacheSchemaWarning = /(?:failed to load models cache|failed to renew cache TTL):\s*missing field [`'“”]?(?:base_instructions|supports_parallel_tool_calls)/i;
-  return lines.length > 0 && lines.every((line) => knownCacheSchemaWarning.test(line));
+  const knownPluginIconWarning = /ignoring interface\.icon_(?:small|large): icon path with ['"]\.\.['"] must resolve under plugin assets\//i;
+  return lines.length > 0 && lines.every((line) => knownCacheSchemaWarning.test(line) || knownPluginIconWarning.test(line));
 }
 
 function configuredMcpServers(baseEnvironment = process.env) {
@@ -594,8 +595,11 @@ class CodexAppServerClient {
           const ready = expectedNames.every((name) => {
             const status = byName.get(name);
             if (!status || status.error) return false;
-            return Boolean(status.serverInfo
-              || Object.keys(status.tools || {}).length
+            // serverInfo is published as soon as the transport handshake
+            // completes, before app-server has necessarily discovered any
+            // callable capability. Starting a turn in that gap explains the
+            // intermittent "MCP is connected but cannot be used" experience.
+            return Boolean(Object.keys(status.tools || {}).length
               || status.resources?.length
               || status.resourceTemplates?.length);
           });

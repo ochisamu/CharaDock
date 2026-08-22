@@ -175,6 +175,8 @@ window.addEventListener("DOMContentLoaded", () => {
   let realtimeBeatricePlaybackFrames = [];
   let realtimeBeatricePlaybackSamples = 0;
   let realtimeBeatriceNextPlaybackTime = 0;
+  let realtimeBeatriceCaptionReady = false;
+  let realtimeBeatricePendingCaption = "";
   const realtimeBeatricePlaybackSources = new Set();
   const realtimeBeatriceLevelTimers = new Set();
   let realtimeBeatricePlaybackFlushTimer = 0;
@@ -260,6 +262,32 @@ window.addEventListener("DOMContentLoaded", () => {
     // bundled Noto Sans JP contains the base glyph (for example 隠), while the
     // orphan selector is rendered as a tofu box on Windows.
     .replace(/[\u{E0100}-\u{E01EF}]/gu, "");
+
+  const renderRealtimeCaption = (value, { force = false } = {}) => {
+    const caption = normalizeDisplayText(value);
+    if (!caption) return;
+    streamFullText = caption;
+    if (realtimeBeatriceContext && !realtimeBeatriceCaptionReady && !force) {
+      // Beatrice adds a conversion buffer after the Realtime transcript.
+      // Hold the compact caption until converted playback actually starts so
+      // the character does not appear to finish the sentence before speaking.
+      realtimeBeatricePendingCaption = caption;
+      bubblePersistent = true;
+      bubble.classList.add("is-visible");
+      return;
+    }
+    realtimeBeatricePendingCaption = "";
+    streamCurrentSpeechText = caption;
+    bubbleText.textContent = caption;
+    bubblePersistent = true;
+    bubble.classList.add("is-visible");
+    syncBubbleOverflow();
+  };
+
+  const releaseRealtimeBeatriceCaption = () => {
+    if (!realtimeBeatricePendingCaption) return;
+    renderRealtimeCaption(realtimeBeatricePendingCaption, { force: true });
+  };
 
   const applyInterfaceLanguage = (language) => {
     document.documentElement.dataset.uiLanguage = language === "en" ? "en" : "ja";
@@ -2328,6 +2356,8 @@ window.addEventListener("DOMContentLoaded", () => {
     realtimeBeatricePlaybackFrames = [];
     realtimeBeatricePlaybackSamples = 0;
     realtimeBeatriceNextPlaybackTime = 0;
+    realtimeBeatriceCaptionReady = false;
+    releaseRealtimeBeatriceCaption();
     try { await realtimeBeatriceContext?.close(); } catch {}
     realtimeBeatriceContext = null;
     realtimeBeatriceOutput = null;
@@ -2443,13 +2473,19 @@ window.addEventListener("DOMContentLoaded", () => {
     const rms = Math.sqrt(sum / combined.length);
     const levelTimer = setTimeout(() => {
       realtimeBeatriceLevelTimers.delete(levelTimer);
+      realtimeBeatriceCaptionReady = true;
+      releaseRealtimeBeatriceCaption();
       reportRealtimeRms(rms, performance.now());
     }, Math.max(0, (playbackTime - context.currentTime) * 1000));
     realtimeBeatriceLevelTimers.add(levelTimer);
     realtimeBeatricePlaybackSources.add(playback);
     playback.onended = () => {
       realtimeBeatricePlaybackSources.delete(playback);
-      if (!realtimeBeatricePlaybackSources.size && !realtimeBeatricePlaybackSamples) reportRealtimeRms(0);
+      if (!realtimeBeatricePlaybackSources.size && !realtimeBeatricePlaybackSamples) {
+        realtimeBeatriceCaptionReady = false;
+        releaseRealtimeBeatriceCaption();
+        reportRealtimeRms(0);
+      }
     };
   };
 
@@ -2827,15 +2863,7 @@ window.addEventListener("DOMContentLoaded", () => {
       return;
     }
     if (payload?.phase === "realtime-caption") {
-      const caption = normalizeDisplayText(payload.displayText || payload.text);
-      if (caption) {
-        streamFullText = caption;
-        streamCurrentSpeechText = caption;
-        bubbleText.textContent = caption;
-        bubblePersistent = true;
-        bubble.classList.add("is-visible");
-        syncBubbleOverflow();
-      }
+      renderRealtimeCaption(payload.displayText || payload.text);
       return;
     }
     if (payload?.phase === "activity") {
@@ -2934,6 +2962,7 @@ window.addEventListener("DOMContentLoaded", () => {
       return;
     }
     if (method === "thread/realtime/transcript/done" && params.role === "assistant") {
+      releaseRealtimeBeatriceCaption();
       if (!detachedRealtimeWorkBusy) {
         setWorkActivity("");
         setStatus(appState?.language === "en" ? "Listening…" : "話してください…", 30_000);

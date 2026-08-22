@@ -75,7 +75,8 @@ test("Realtime sessions start only from voice input, accept typed turns, and kee
   assert.match(main, /phase: "follow-up"[\s\S]*statusText[\s\S]*workRunId/);
   assert.match(control, /liveWorkFollowUp[\s\S]*appendCodexRealtimeText\(message, selectedSkillIds, selectedMcpServerIds\)[\s\S]*if \(chatBusy\)/);
   assert.match(mascot, /liveWorkFollowUp[\s\S]*mascotInline:realtimeAppendText[\s\S]*if \(sending\)/);
-  assert.match(main, /Realtime V3 appendText is context-only[\s\S]*await client\.sendMessage\(normalized\)/);
+  assert.match(main, /Realtime V3 appendText is context-only[\s\S]*client\.sendMessage\(normalized, \{ skillItems, requireMcpReady \}\)/);
+  assert.match(main, /const requireMcpReady = requestedMcpServerIds\.length > 0 \|\| messageExplicitlyRequestsMcp\(normalized\);[\s\S]*await client\.ensureMcpServersReady\(\)/);
   assert.match(main, /activeRealtimeTurnBuffer\?\.addTyped\(normalized, \{ followUp: activeTurn \}\)/);
   assert.match(main, /rememberActiveInteractionFollowUp\(client, normalized\)/);
   assert.match(main, /const followUps = consumeActiveInteractionFollowUps\(client\)/);
@@ -109,9 +110,13 @@ test("Realtime sessions start only from voice input, accept typed turns, and kee
   assert.match(mascot, /previousProvider === "realtime" && appState\.speechInputProvider !== "realtime"[\s\S]*closeRealtime\(\)/);
   assert.match(mascot, /setRealtimeOutputSuppressed\(Boolean\(params\.suppressed\)\)[\s\S]*if \(params\.suppressed\) return/);
   assert.match(mascot, /payload\?\.phase === "start"[\s\S]*setSendingControls\(true\)/);
+  assert.match(mascot, /Beatrice adds a conversion buffer[\s\S]*realtimeBeatricePendingCaption = caption/);
+  assert.match(mascot, /realtimeBeatriceCaptionReady = true;[\s\S]*releaseRealtimeBeatriceCaption\(\)/);
   assert.match(mascot, /thread\/realtime\/closed[\s\S]*setSendingControls\(false\)/);
   assert.match(main, /const terminalTurnPayload = !workMode && \["thinking", "speaking"\]\.includes\(currentTurnStatus\)/);
   assert.match(main, /terminalTurnPayload \|\| \{ phase: "done", mode: "chat"/);
   assert.match(remote, /setRemoteLiveOutputSuppressed\(Boolean\(params\.suppressed\)\)/);
+  assert.match(remote, /pendingLiveBeatriceCaption = String\(value\)/);
+  assert.match(remote, /liveBeatriceCaptionReady = true;[\s\S]*releaseLiveBeatriceCaption\(\)/);
   assert.match(mascot, /thread\/realtime\/transcript\/done[\s\S]*Listening…[\s\S]*話してください…/);
 });

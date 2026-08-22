@@ -108,3 +108,16 @@ test("Realtime turn buffer folds voice follow-ups into a typed-started turn", ()
     followUps: ["国内だけで"],
   });
 });
+
+test("Realtime turn buffer exposes the newest pending input time for transcript ownership", () => {
+  let now = 1_000;
+  const buffer = new RealtimeTurnBuffer({ now: () => now });
+  buffer.addTyped("先の文字入力");
+  now = 1_250;
+  buffer.addUser("後の音声入力");
+  assert.equal(buffer.newestPendingInputCreatedAt(), 1_250);
+  buffer.discardInput("先の文字入力");
+  assert.equal(buffer.newestPendingInputCreatedAt(), 1_250);
+  buffer.clear();
+  assert.equal(buffer.newestPendingInputCreatedAt(), 0);
+});

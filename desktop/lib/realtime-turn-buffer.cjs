@@ -5,7 +5,8 @@ function normalizedText(value) {
 }
 
 class RealtimeTurnBuffer {
-  constructor() {
+  constructor({ now = Date.now } = {}) {
+    this.now = typeof now === "function" ? now : Date.now;
     this.pendingUsers = [];
     this.pendingAssistants = [];
     this.pendingTyped = [];
@@ -18,6 +19,7 @@ class RealtimeTurnBuffer {
       text,
       followUp: Boolean(followUp),
       sequence: Number.isFinite(sequence) ? sequence : this.nextSequence++,
+      createdAt: this.now(),
     };
   }
 
@@ -38,7 +40,7 @@ class RealtimeTurnBuffer {
   addUser(text, options = {}) {
     const normalized = normalizedText(text);
     if (!normalized) return null;
-    const cutoff = Date.now() - 15_000;
+    const cutoff = this.now() - 15_000;
     this.consumedTyped = this.consumedTyped.filter((entry) => entry.createdAt >= cutoff);
     const consumedIndex = this.consumedTyped.findIndex((entry) => entry.text === normalized);
     if (consumedIndex >= 0) {
@@ -80,7 +82,7 @@ class RealtimeTurnBuffer {
         if (followUp.source === "typed") consumedTypedInputs.push(followUp.text);
       }
       if (consumedTypedInputs.length) {
-        this.consumedTyped.push(...consumedTypedInputs.map((input) => ({ text: input, createdAt: Date.now() })));
+        this.consumedTyped.push(...consumedTypedInputs.map((input) => ({ text: input, createdAt: this.now() })));
         this.consumedTyped = this.consumedTyped.slice(-8);
       }
       const turn = { user: inputs.join("\n"), assistant: normalized, source: first.source };
@@ -93,6 +95,13 @@ class RealtimeTurnBuffer {
 
   hasPendingInput() {
     return this.pendingUsers.length > 0 || this.pendingTyped.length > 0;
+  }
+
+  newestPendingInputCreatedAt() {
+    const timestamps = [...this.pendingUsers, ...this.pendingTyped]
+      .map((entry) => Number(entry.createdAt) || 0)
+      .filter((value) => value > 0);
+    return timestamps.length ? Math.max(...timestamps) : 0;
   }
 
   discardInput(text) {

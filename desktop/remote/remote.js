@@ -24,6 +24,12 @@
   let mobileSpeechToken = 0;
   let mobileSpeechPending = false;
   let activeMobileTtsStreamId = "";
+  let mobileStreamSpeechQueue = [];
+  let mobileStreamSpeechTurnId = "";
+  let mobileStreamSpeechFinished = false;
+  let mobileStreamSpeechFullText = "";
+  let mobileStreamSpeechDraining = false;
+  let mobileStreamSpeechSignal = null;
   let settingsSaving = false;
   let settingsStatusTimer = 0;
   let composerHintErrorTimer = 0;
@@ -62,6 +68,8 @@
   let liveBeatriceUploadQueue = [];
   let liveBeatriceUploading = false;
   let liveBeatriceNextPlaybackTime = 0;
+  let liveBeatriceCaptionReady = false;
+  let pendingLiveBeatriceCaption = "";
   const liveBeatricePlaybackSources = new Set();
   const liveBeatriceLevelTimers = new Set();
   let liveBeatriceMouthCloseTimer = 0;
@@ -729,6 +737,13 @@
     return new Float32Array(bytes.buffer);
   }
 
+  function releaseLiveBeatriceCaption() {
+    if (!pendingLiveBeatriceCaption) return;
+    const caption = pendingLiveBeatriceCaption;
+    pendingLiveBeatriceCaption = "";
+    setResponseText(caption);
+  }
+
   function stopLiveBeatricePipeline({ restoreRaw = false } = {}) {
     liveBeatriceGeneration += 1;
     liveBeatriceActive = false;
@@ -746,6 +761,9 @@
     liveBeatriceUploadQueue = [];
     liveBeatriceUploading = false;
     liveBeatriceNextPlaybackTime = 0;
+    liveBeatriceCaptionReady = false;
+    if (pendingLiveBeatriceCaption) setResponseText(pendingLiveBeatriceCaption);
+    pendingLiveBeatriceCaption = "";
     clearTimeout(liveBeatriceMouthCloseTimer);
     liveBeatriceMouthCloseTimer = 0;
     for (const timer of liveBeatriceLevelTimers) clearTimeout(timer);
@@ -884,13 +902,21 @@
       source.start(playbackTime);
       liveBeatriceNextPlaybackTime += buffer.duration;
       liveBeatricePlaybackSources.add(source);
-      source.onended = () => liveBeatricePlaybackSources.delete(source);
+      source.onended = () => {
+        liveBeatricePlaybackSources.delete(source);
+        if (!liveBeatricePlaybackSources.size) {
+          liveBeatriceCaptionReady = false;
+          releaseLiveBeatriceCaption();
+        }
+      };
       let sum = 0;
       for (const sample of samples) sum += sample * sample;
       const rms = Math.sqrt(sum / Math.max(1, samples.length));
       const levelTimer = setTimeout(() => {
         liveBeatriceLevelTimers.delete(levelTimer);
         if (!liveBeatriceActive || generation !== liveBeatriceGeneration) return;
+        liveBeatriceCaptionReady = true;
+        releaseLiveBeatriceCaption();
         updateRemoteMouth(rms);
         clearTimeout(liveBeatriceMouthCloseTimer);
         liveBeatriceMouthCloseTimer = setTimeout(() => {
@@ -1606,6 +1632,8 @@
       return;
     }
     if (payload.phase === "start") {
+      if (payload.remoteTtsEnabled) beginMobileStreamSpeech(payload.turnId);
+      else if (mobileStreamSpeechTurnId) stopMobileSpeech({ resumeDictation: false });
       setBusy(true);
       setComposerHint(payload.mode === "work"
         ? text("作業を進めています…", "Working…")
@@ -1620,21 +1648,26 @@
     }
     if (payload.phase === "announcement") {
       const value = payload.displayText || payload.text;
-      if (value) setResponseText(value);
-      if (audioRoute === "mobile-tts") speak(value);
+      const queued = audioRoute === "mobile-tts" && queueMobileStreamSpeech(payload);
+      if (value && !queued && !mobileStreamSpeechTurnId) setResponseText(value);
       return;
     }
     if (["delta", "realtime-caption"].includes(payload.phase)) {
       const value = payload.displayText || payload.text;
-      if (value) setResponseText(value);
+      const queued = payload.phase === "delta" && audioRoute === "mobile-tts" && queueMobileStreamSpeech(payload);
+      if (value && payload.phase === "realtime-caption" && liveBeatriceActive && !liveBeatriceCaptionReady) {
+        pendingLiveBeatriceCaption = String(value);
+      } else if (value && (!mobileStreamSpeechTurnId || (!queued && payload.phase === "realtime-caption"))) {
+        setResponseText(value);
+      }
       if (payload.phase === "realtime-caption") setBusy(true);
       return;
     }
     if (payload.phase === "done") {
       const value = payload.displayText || payload.text || text("完了したよ。", "Done.");
-      if (!payload.deferDisplayToRealtime) setResponseText(value);
+      const queued = audioRoute === "mobile-tts" && queueMobileStreamSpeech(payload, { finished: true });
+      if (!payload.deferDisplayToRealtime && !mobileStreamSpeechTurnId && !queued) setResponseText(value);
       renderArtifacts(payload.artifacts, payload.workRunId);
-      if (audioRoute === "mobile-tts") speak(value);
       if (!payload.realtimeSpeechPending) setBusy(false);
       setTimeout(refreshState, 80);
       return;
@@ -1645,6 +1678,7 @@
       return;
     }
     if (payload.phase === "error") {
+      if (mobileStreamSpeechTurnId) stopMobileSpeech({ resumeDictation: false });
       showRemoteSystemError(payload.message || text("処理を完了できませんでした。", "The request could not be completed."));
       setBusy(false);
       setTimeout(refreshState, 80);
@@ -1690,8 +1724,12 @@
     return audioContext.decodeAudioData(bytes.buffer);
   }
 
-  async function playAudioUrl(dataUrl, playbackRate = 1) {
+  async function playAudioUrl(dataUrl, playbackRate = 1, onStart = null, shouldStart = null) {
     const buffer = await decodeDataUrl(dataUrl);
+    // Decoding can finish after the user has stopped speech or begun another
+    // turn. Recheck ownership immediately before creating an audible source;
+    // otherwise an already-cancelled caption can start speaking late.
+    if (shouldStart && !shouldStart()) return false;
     return new Promise((resolve) => {
       const source = audioContext.createBufferSource();
       const analyser = audioContext.createAnalyser();
@@ -1715,6 +1753,7 @@
         if (activeAudioSource === source) activeAudioSource = null;
         resolve();
       };
+      onStart?.();
       source.start();
     });
   }
@@ -1722,6 +1761,12 @@
   function stopMobileSpeech({ resumeDictation = true } = {}) {
     mobileSpeechToken += 1;
     mobileSpeechPending = false;
+    mobileStreamSpeechQueue = [];
+    mobileStreamSpeechTurnId = "";
+    mobileStreamSpeechFinished = false;
+    mobileStreamSpeechFullText = "";
+    mobileStreamSpeechSignal?.();
+    mobileStreamSpeechSignal = null;
     if (activeMobileTtsStreamId) {
       request("/api/tts/cancel", { method: "POST", body: JSON.stringify({ streamId: activeMobileTtsStreamId }) }).catch(() => {});
       activeMobileTtsStreamId = "";
@@ -1733,36 +1778,120 @@
     if (resumeDictation) scheduleDictationResume();
   }
 
+  async function playMobileTtsValue(value, token, onStart = null) {
+    const normalized = String(value || "").trim().slice(0, 4000);
+    if (!normalized || token !== mobileSpeechToken) return false;
+    const result = await request("/api/tts", { method: "POST", body: JSON.stringify({ text: normalized }) });
+    if (token !== mobileSpeechToken) return false;
+    let activated = false;
+    let played = false;
+    const activate = () => {
+      if (activated) return;
+      activated = true;
+      onStart?.();
+    };
+    activeMobileTtsStreamId = result?.streamId || "";
+    for (const audioUrl of result?.audioDataUrls || []) {
+      if (token !== mobileSpeechToken) return false;
+      await playAudioUrl(audioUrl, result.playbackRate, activate, () => token === mobileSpeechToken);
+      if (token !== mobileSpeechToken) return false;
+      played = true;
+    }
+    let streamId = result?.streamId;
+    while (streamId && token === mobileSpeechToken) {
+      const next = await request("/api/tts/next", { method: "POST", body: JSON.stringify({ streamId }) });
+      if (token !== mobileSpeechToken) return false;
+      for (const audioUrl of next?.audioDataUrls || []) {
+        if (token !== mobileSpeechToken) return false;
+        await playAudioUrl(audioUrl, next.playbackRate || result.playbackRate, activate, () => token === mobileSpeechToken);
+        if (token !== mobileSpeechToken) return false;
+        played = true;
+      }
+      if (next?.done) streamId = "";
+      activeMobileTtsStreamId = streamId;
+    }
+    activeMobileTtsStreamId = "";
+    return played;
+  }
+
+  function beginMobileStreamSpeech(turnId = "") {
+    if (!audioEnabled || !appState?.mobileTtsAllowed) return false;
+    stopMobileSpeech({ resumeDictation: false });
+    mobileStreamSpeechTurnId = String(turnId || "");
+    mobileStreamSpeechFinished = false;
+    mobileStreamSpeechFullText = "";
+    mobileSpeechPending = true;
+    if (speechRecognition) stopDictation({ keepArmed: true });
+    drainMobileStreamSpeech();
+    return true;
+  }
+
+  function queueMobileStreamSpeech(payload, { finished = false } = {}) {
+    if (!mobileStreamSpeechTurnId || (payload?.turnId && payload.turnId !== mobileStreamSpeechTurnId)) return false;
+    const segments = (Array.isArray(payload?.speechSegments) ? payload.speechSegments : []).flatMap((segment) => {
+      const caption = String(segment?.text || segment || "").trim();
+      const spokenText = String(segment?.spokenText || caption).trim();
+      return caption && spokenText ? [{ caption, spokenText }] : [];
+    });
+    mobileStreamSpeechQueue.push(...segments);
+    if (payload?.displayText || payload?.text) mobileStreamSpeechFullText = String(payload.displayText || payload.text);
+    if (finished) mobileStreamSpeechFinished = true;
+    mobileStreamSpeechSignal?.();
+    mobileStreamSpeechSignal = null;
+    drainMobileStreamSpeech();
+    return Boolean(segments.length);
+  }
+
+  async function drainMobileStreamSpeech() {
+    if (mobileStreamSpeechDraining || !mobileStreamSpeechTurnId) return;
+    const token = mobileSpeechToken;
+    mobileStreamSpeechDraining = true;
+    try {
+      audioContext ||= new AudioContext({ latencyHint: "interactive" });
+      await audioContext.resume();
+      if (audioContext.state !== "running") throw new Error("Audio output is waiting for a user gesture.");
+      while (token === mobileSpeechToken && mobileStreamSpeechTurnId) {
+        const segment = mobileStreamSpeechQueue.shift();
+        if (segment) {
+          await playMobileTtsValue(segment.spokenText, token, () => setResponseText(segment.caption));
+          continue;
+        }
+        if (mobileStreamSpeechFinished) break;
+        await new Promise((resolve) => { mobileStreamSpeechSignal = resolve; });
+      }
+    } catch {
+      resetRemoteMouth();
+    } finally {
+      mobileStreamSpeechDraining = false;
+      if (token === mobileSpeechToken) {
+        if (mobileStreamSpeechFinished && !mobileStreamSpeechQueue.length) {
+          if (mobileStreamSpeechFullText) setResponseText(mobileStreamSpeechFullText);
+          mobileStreamSpeechTurnId = "";
+          mobileStreamSpeechFinished = false;
+          mobileStreamSpeechFullText = "";
+          mobileSpeechPending = false;
+          activeMobileTtsStreamId = "";
+          resetRemoteMouth();
+          scheduleDictationResume();
+        }
+      } else if (mobileStreamSpeechTurnId) {
+        queueMicrotask(() => drainMobileStreamSpeech());
+      }
+    }
+  }
+
   async function speak(value) {
     if (!audioEnabled || !appState?.mobileTtsAllowed || !String(value || "").trim()) return false;
     if (speechRecognition) stopDictation({ keepArmed: true });
     stopMobileSpeech({ resumeDictation: false });
-    const token = ++mobileSpeechToken;
+    const token = mobileSpeechToken;
     mobileSpeechPending = true;
     let completed = false;
     try {
-      audioContext ||= new AudioContext();
+      audioContext ||= new AudioContext({ latencyHint: "interactive" });
       await audioContext.resume();
       if (audioContext.state !== "running") throw new Error("Audio output is waiting for a user gesture.");
-      const result = await request("/api/tts", { method: "POST", body: JSON.stringify({ text: String(value).slice(0, 4000) }) });
-      if (token !== mobileSpeechToken) return;
-      activeMobileTtsStreamId = result?.streamId || "";
-      for (const audioUrl of result?.audioDataUrls || []) {
-        if (token !== mobileSpeechToken) return;
-        await playAudioUrl(audioUrl, result.playbackRate);
-      }
-      let streamId = result?.streamId;
-      while (streamId && token === mobileSpeechToken) {
-        const next = await request("/api/tts/next", { method: "POST", body: JSON.stringify({ streamId }) });
-        if (token !== mobileSpeechToken) return;
-        for (const audioUrl of next?.audioDataUrls || []) {
-          if (token !== mobileSpeechToken) return;
-          await playAudioUrl(audioUrl, next.playbackRate || result.playbackRate);
-        }
-        if (next?.done) streamId = "";
-        activeMobileTtsStreamId = streamId;
-      }
-      completed = true;
+      completed = await playMobileTtsValue(value, token);
     } catch {
       resetRemoteMouth();
     } finally {

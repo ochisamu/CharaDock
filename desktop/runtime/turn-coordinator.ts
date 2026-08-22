@@ -2,8 +2,6 @@
 
 import type { AudioRoute, InteractionMode, TurnSnapshot, TurnStatus, TurnStreamPayload } from "./types";
 
-const terminalStatuses = new Set<TurnStatus>(["complete", "interrupted", "error"]);
-
 function normalizeMode(value: unknown): InteractionMode {
   return value === "work" ? "work" : "chat";
 }
@@ -81,11 +79,18 @@ export class TurnCoordinator {
     const route = requestedAudioRoute(payload);
     const status = phaseStatus(phase, mode, this.snapshotValue.status);
     const artifacts = Array.isArray(payload.artifacts) ? payload.artifacts.slice(0, 8) : this.snapshotValue.artifacts;
+    // Once a turn has selected an audible route, later progress/final events
+    // cannot switch it. Route changes belong to the next explicit `start`;
+    // allowing a delayed TTS or Live flag to win mid-turn is how double voice
+    // and caption/audio disagreement are created.
+    const audioRoute = !shouldBegin && this.snapshotValue.audioRoute !== "none"
+      ? this.snapshotValue.audioRoute
+      : route;
     this.snapshotValue = {
       ...this.snapshotValue,
       mode,
       status,
-      audioRoute: route === "none" && this.snapshotValue.audioRoute === "live" && !terminalStatuses.has(status) ? "live" : route,
+      audioRoute,
       authoritativeText: authoritativeText(payload, this.snapshotValue.authoritativeText),
       workRunId: typeof payload.workRunId === "string" && payload.workRunId ? payload.workRunId : this.snapshotValue.workRunId,
       artifacts,

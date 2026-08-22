@@ -24,6 +24,9 @@ test("Codex client suppresses only the known non-fatal models cache warning", ()
   assert.equal(isBenignCodexStderr("failed to renew cache TTL: missing field `supports_parallel_tool_calls` at line 97"), true);
   assert.equal(isBenignCodexStderr("failed to renew cache TTL: missing field `unknown_field` at line 97"), false);
   assert.equal(isBenignCodexStderr("failed to renew cache TTL: missing field `supports_parallel_tool_calls`\nauthentication failed"), false);
+  assert.equal(isBenignCodexStderr("ignoring interface.icon_small: icon path with '..' must resolve under plugin assets/"), true);
+  assert.equal(isBenignCodexStderr("ignoring interface.icon_large: icon path with '..' must resolve under plugin assets/"), true);
+  assert.equal(isBenignCodexStderr("ignoring interface.icon_small: invalid absolute path"), false);
   assert.equal(isBenignCodexStderr("authentication failed"), false);
 });
 
@@ -306,7 +309,7 @@ test("Codex client waits for configured MCP tools before starting the first thre
     if (method === "mcpServerStatus/list") {
       statusReads += 1;
       return statusReads === 1
-        ? { data: [{ name: "charadock_mcp_0123456789abcdef", serverInfo: null, tools: {} }] }
+        ? { data: [{ name: "charadock_mcp_0123456789abcdef", serverInfo: { name: "handshake-only" }, tools: {} }] }
         : { data: [{ name: "charadock_mcp_0123456789abcdef", serverInfo: { name: "ready" }, tools: { search: { name: "search" } } }] };
     }
     if (method === "thread/start") return { thread: { id: "thread-mcp-ready" } };
@@ -343,7 +346,7 @@ test("Codex client shares one MCP readiness check across concurrent callers", as
   client.listMcpServerStatus = async () => {
     statusReads += 1;
     await new Promise((resolve) => setTimeout(resolve, 10));
-    return [{ name: "charadock_mcp_0123456789abcdef", serverInfo: { name: "ready" }, tools: {} }];
+    return [{ name: "charadock_mcp_0123456789abcdef", serverInfo: { name: "ready" }, tools: { search: { name: "search" } } }];
   };
   const [first, second] = await Promise.all([
     client.ensureMcpServersReady(),
@@ -609,6 +612,40 @@ test("per-turn Skills override defaults without resetting the active thread", as
     { type: "skill", name: "picked-skill", path: "/skills/picked" },
   ]);
   assert.deepEqual(client.turnStartSkillItems, [{ name: "default-skill", path: "/skills/default" }]);
+});
+
+test("queued turns keep their own Skill selection and restore character defaults on the next turn", async () => {
+  const client = new CodexAppServerClient();
+  client.ensureStarted = async () => {};
+  client.threadId = "thread-skill-queue";
+  client.ensureThread = async () => client.threadId;
+  client.setTurnStartSkillItems([{ name: "character-default", path: "/skills/default" }]);
+  const starts = [];
+  let sequence = 0;
+  client.request = async (method, params) => {
+    if (method !== "turn/start") return {};
+    const turnId = `turn-skill-${++sequence}`;
+    starts.push(params.input);
+    setImmediate(() => {
+      client.handleLine(JSON.stringify({
+        method: "item/agentMessage/delta",
+        params: { turnId, delta: "done" },
+      }));
+      client.handleLine(JSON.stringify({
+        method: "turn/completed",
+        params: { turn: { id: turnId, status: "completed" } },
+      }));
+    });
+    return { turn: { id: turnId } };
+  };
+
+  const selected = client.sendMessage("選択あり", { skillItems: [{ name: "one-turn", path: "/skills/one" }] });
+  const normal = client.sendMessage("次は通常");
+  await Promise.all([selected, normal]);
+  assert.deepEqual(starts, [
+    [{ type: "text", text: "選択あり" }, { type: "skill", name: "one-turn", path: "/skills/one" }],
+    [{ type: "text", text: "次は通常" }, { type: "skill", name: "character-default", path: "/skills/default" }],
+  ]);
 });
 
 test("Computer Use clients fail closed on unhandled approval requests", async () => {
