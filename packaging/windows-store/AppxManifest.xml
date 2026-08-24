@@ -8,7 +8,7 @@
   <Identity
     Name="ochisamu.CharaDock"
     Publisher="CN=69C091B3-AED2-456C-BF7B-A39616771379"
-    Version="0.2.1.0"
+    Version="0.4.0.0"
     ProcessorArchitecture="x64" />
   <Properties>
     <DisplayName>CharaDock</DisplayName>
@@ -33,7 +33,10 @@
         BackgroundColor="transparent"
         Square150x150Logo="Assets\MedTile.png"
         Square44x44Logo="Assets\AppList.png">
-        <uap:DefaultTile Wide310x150Logo="Assets\WideTile.png" />
+        <uap:DefaultTile
+          Square71x71Logo="Assets\SmallTile.png"
+          Wide310x150Logo="Assets\WideTile.png"
+          Square310x310Logo="Assets\LargeTile.png" />
       </uap:VisualElements>
     </Application>
   </Applications>

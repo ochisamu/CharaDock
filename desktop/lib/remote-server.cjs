@@ -497,12 +497,28 @@ class RemoteCompanionServer {
     this.validateHost(request);
     const url = new URL(request.url, this.origin());
     const liveAudioRequest = request.method === "POST" && url.pathname === "/api/live/beatrice/audio";
-    this.enforceRateLimit(request, liveAudioRequest ? "live-audio" : "all", liveAudioRequest ? 1200 : 180);
+    const streamingSpeechChunkRequest = request.method === "POST" && url.pathname === "/api/streaming-speech/append";
+    this.enforceRateLimit(request, liveAudioRequest ? "live-audio" : streamingSpeechChunkRequest ? "streaming-speech" : "all", liveAudioRequest || streamingSpeechChunkRequest ? 1200 : 180);
     if (request.method === "GET" && url.pathname === "/") return this.sendStatic(response, "index.html", "text/html; charset=utf-8");
     if (request.method === "GET" && url.pathname === "/remote.css") return this.sendStatic(response, "remote.css", "text/css; charset=utf-8");
     if (request.method === "GET" && url.pathname === "/remote.js") return this.sendStatic(response, "remote.js", "text/javascript; charset=utf-8");
+    if (request.method === "GET" && url.pathname === "/mcp-app-host.js") {
+      const body = fs.readFileSync(path.resolve(this.rootDir, "..", "mcp-app-host.js"));
+      response.writeHead(200, { ...securityHeaders("text/javascript; charset=utf-8"), "Content-Security-Policy": "default-src 'none'" });
+      response.end(body);
+      return;
+    }
     if (request.method === "GET" && url.pathname === "/audio-envelope.js") {
       const body = fs.readFileSync(path.resolve(this.rootDir, "..", "audio-envelope.js"));
+      response.writeHead(200, {
+        ...securityHeaders("text/javascript; charset=utf-8"),
+        "Content-Security-Policy": "default-src 'none'",
+      });
+      response.end(body);
+      return;
+    }
+    if (request.method === "GET" && url.pathname === "/realtime-turn-detection.js") {
+      const body = fs.readFileSync(path.resolve(this.rootDir, "..", "realtime-turn-detection.js"));
       response.writeHead(200, {
         ...securityHeaders("text/javascript; charset=utf-8"),
         "Content-Security-Policy": "default-src 'none'",
@@ -588,20 +604,39 @@ class RemoteCompanionServer {
       return;
     }
 
-    if (request.method === "POST" && ["/api/message", "/api/pet", "/api/interrupt", "/api/settings", "/api/approval", "/api/secure-handoff", "/api/live/start", "/api/live/stop", "/api/live/beatrice/audio", "/api/live/beatrice/stop", "/api/tts", "/api/tts/next", "/api/tts/cancel", "/api/disconnect"].includes(url.pathname)) {
-      const { tokenHash } = this.authenticate(request, { csrf: true });
+    if (request.method === "GET" && url.pathname === "/api/mcp-app") {
+      this.authenticate(request);
+      const asset = await this.callbacks.getMcpApp?.(url.searchParams.get("id"));
+      if (!asset?.body) throw Object.assign(new Error("MCP App not found."), { statusCode: 404 });
+      response.writeHead(200, {
+        ...securityHeaders(asset.contentType || "text/html;profile=mcp-app; charset=utf-8"),
+        "X-Frame-Options": "SAMEORIGIN",
+        "Cross-Origin-Resource-Policy": "cross-origin",
+        "Content-Security-Policy": asset.contentSecurityPolicy || "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; object-src 'none'; form-action 'none'",
+      });
+      response.end(asset.body);
+      return;
+    }
+
+    if (request.method === "POST" && ["/api/message", "/api/pet", "/api/interrupt", "/api/settings", "/api/approval", "/api/secure-handoff", "/api/live/start", "/api/live/stop", "/api/live/beatrice/audio", "/api/live/beatrice/stop", "/api/streaming-speech/start", "/api/streaming-speech/append", "/api/streaming-speech/finish", "/api/streaming-speech/cancel", "/api/tts", "/api/tts/next", "/api/tts/cancel", "/api/mcp-app/bridge", "/api/disconnect"].includes(url.pathname)) {
+      const { session, tokenHash } = this.authenticate(request, { csrf: true });
       const body = await jsonBody(request);
       if (url.pathname === "/api/message") {
         const result = await this.callbacks.sendMessage?.({
           message: body.message,
           mode: body.mode,
+          followUp: body.followUp === true,
           secureActionsAllowed: this.isTrustedTailscaleRequest(request),
         });
         return this.sendJson(response, 200, { ok: true, result });
       }
       if (url.pathname === "/api/pet") {
         this.enforceRateLimit(request, "pet", 30);
-        return this.sendJson(response, 200, await this.callbacks.pet?.({ zone: body.zone === "head" ? "head" : "body" }));
+        const parsedYRatio = Number(body.yRatio);
+        return this.sendJson(response, 200, await this.callbacks.pet?.({
+          zone: body.zone === "head" ? "head" : "body",
+          yRatio: Number.isFinite(parsedYRatio) ? Math.max(0, Math.min(1, parsedYRatio)) : undefined,
+        }));
       }
       if (url.pathname === "/api/interrupt") return this.sendJson(response, 200, await this.callbacks.interrupt?.());
       if (url.pathname === "/api/settings") return this.sendJson(response, 200, { state: await this.callbacks.setSettings?.(body) });
@@ -624,9 +659,24 @@ class RemoteCompanionServer {
       if (url.pathname === "/api/live/beatrice/stop") {
         return this.sendJson(response, 200, await this.callbacks.stopLiveBeatrice?.({ sessionId: body.sessionId, remoteTokenHash: tokenHash }));
       }
+      if (url.pathname === "/api/streaming-speech/start") {
+        return this.sendJson(response, 200, await this.callbacks.startStreamingSpeech?.({ ...body, remoteTokenHash: tokenHash }));
+      }
+      if (url.pathname === "/api/streaming-speech/append") {
+        return this.sendJson(response, 200, await this.callbacks.appendStreamingSpeech?.({ ...body, remoteTokenHash: tokenHash }));
+      }
+      if (url.pathname === "/api/streaming-speech/finish") {
+        return this.sendJson(response, 200, await this.callbacks.finishStreamingSpeech?.({ ...body, remoteTokenHash: tokenHash }));
+      }
+      if (url.pathname === "/api/streaming-speech/cancel") {
+        return this.sendJson(response, 200, await this.callbacks.cancelStreamingSpeech?.({ ...body, remoteTokenHash: tokenHash }));
+      }
       if (url.pathname === "/api/tts") return this.sendJson(response, 200, await this.callbacks.synthesizeTts?.(body.text));
       if (url.pathname === "/api/tts/next") return this.sendJson(response, 200, await this.callbacks.nextTtsChunk?.(body.streamId));
       if (url.pathname === "/api/tts/cancel") return this.sendJson(response, 200, await this.callbacks.cancelTts?.(body.streamId));
+      if (url.pathname === "/api/mcp-app/bridge") {
+        return this.sendJson(response, 200, await this.callbacks.bridgeMcpApp?.(body, { tokenHash, deviceId: session.id }));
+      }
       this.sessions.delete(tokenHash);
       this.trustedDevices.delete(tokenHash);
       this.persistTrustedDevices(true);

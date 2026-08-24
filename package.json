@@ -1,33 +1,38 @@
 {
   "name": "charadock",
-  "version": "0.2.1",
+  "version": "0.4.0",
+  "storePackageVersion": "0.4.0.0",
   "description": "CharaDock is a transparent Windows desktop companion powered by PuruPuru PNGTuber, Codex app-server, and the OpenAI Responses API.",
   "main": "desktop/main.cjs",
   "author": "ochisamu",
   "license": "Apache-2.0",
   "private": true,
   "scripts": {
-    "desktop": "electron .",
-    "desktop:debug": "electron . --debug",
+    "runtime:build": "tsc -p tsconfig.runtime.json",
+    "runtime:typecheck": "tsc -p tsconfig.runtime.json --noEmit",
+    "desktop": "npm run runtime:build && electron .",
+    "desktop:debug": "npm run runtime:build && electron . --debug",
     "desktop:win:dev": "bash scripts/windows-dev.sh",
     "desktop:win:dev:profile": "bash scripts/windows-dev.sh --shared-profile",
     "previews:build": "node scripts/build_character_previews.cjs",
     "site:build": "node scripts/build_character_previews.cjs && node scripts/build_site.mjs",
     "assets:clean-alpha": "node scripts/clean_avatar_alpha.cjs assets/amber-avatar assets/bronze-avatar assets/towa-avatar assets/sage-avatar assets/nike-avatar",
-    "test:desktop": "node --test desktop/tests/*.test.cjs",
+    "assets:windows-store": "node scripts/build_windows_store_assets.cjs",
+    "test:desktop": "npm run runtime:build && node --check desktop/main.cjs && node --test desktop/tests/*.test.cjs",
     "test": "node tests/js_runtime_checks.mjs && npm run test:desktop && uv run python -m unittest tests.test_project_static",
-    "dist": "electron-builder --dir",
-    "dist:win": "electron-builder --win --dir",
-    "dist:win:installer": "electron-builder --win nsis portable",
+    "dist": "npm run runtime:build && electron-builder --dir",
+    "dist:win": "npm run runtime:build && electron-builder --win --dir",
+    "dist:win:installer": "npm run runtime:build && electron-builder --win nsis portable",
     "dist:win:store": ".agents\\skills\\build-windows-binaries\\scripts\\build-windows.cmd store",
-    "dist:mac:arm64": "electron-builder --mac dmg zip --arm64 --publish never"
+    "dist:mac:arm64": "npm run runtime:build && electron-builder --mac dmg zip --arm64 --publish never"
   },
   "devDependencies": {
     "@highlightjs/cdn-assets": "11.11.1",
     "dompurify": "3.4.13",
     "electron": "43.1.1",
     "electron-builder": "26.15.3",
-    "markdown-it": "14.3.0"
+    "markdown-it": "14.3.0",
+    "typescript": "^5.9.3"
   },
   "build": {
     "appId": "jp.ochisamu.charadock.desktop",

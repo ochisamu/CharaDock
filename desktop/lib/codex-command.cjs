@@ -23,11 +23,47 @@ function cacheAppxBinary(source, cacheDirectory) {
   return destination;
 }
 
+function parseWslUncPath(value) {
+  const normalized = String(value || "").trim();
+  const match = normalized.match(/^(?:\\\\|\/\/)(?:wsl\.localhost|wsl\$)[\\/]+([^\\/]+)(?:[\\/]+(.*))?$/i);
+  if (!match) return null;
+  const relativePath = String(match[2] || "").replace(/\\/g, "/").replace(/^\/+/, "");
+  return {
+    distribution: match[1],
+    path: relativePath ? `/${relativePath}` : "/",
+  };
+}
+
 function windowsPathToWsl(value) {
-  const normalized = String(value || "");
+  const normalized = String(value || "").trim();
+  const wslUnc = parseWslUncPath(normalized);
+  if (wslUnc) return wslUnc.path;
   const match = normalized.match(/^([a-zA-Z]):[\\/](.*)$/);
   if (!match) return normalized.replace(/\\/g, "/");
   return `/mnt/${match[1].toLowerCase()}/${match[2].replace(/\\/g, "/")}`;
+}
+
+function wslPathTarget(value) {
+  const wslUnc = parseWslUncPath(value);
+  return wslUnc || { distribution: "", path: windowsPathToWsl(value) };
+}
+
+function wslCommandArgsForPath(value, commandArgs = []) {
+  const target = wslPathTarget(value);
+  return [
+    ...(target.distribution ? ["--distribution", target.distribution] : []),
+    "--cd",
+    target.path,
+    ...(Array.isArray(commandArgs) ? commandArgs : []),
+  ];
+}
+
+function workspacePathIdentity(value, platform = process.platform) {
+  const normalized = String(value || "").trim();
+  if (platform !== "win32") return normalized;
+  const wslUnc = parseWslUncPath(normalized);
+  if (wslUnc) return `wsl:${wslUnc.distribution.toLocaleLowerCase()}:${wslUnc.path}`;
+  return normalized.toLocaleLowerCase();
 }
 
 function npmCodexBinaryCandidates(commandPath, arch = process.arch) {
@@ -68,22 +104,86 @@ function resolveWslCodexCommand({
   exists = fs.existsSync,
   readDirectory = fs.readdirSync,
   stat = fs.statSync,
+  cacheDirectory = "",
+  cacheRuntime = cacheWslCodexRuntime,
 } = {}) {
   if (platform !== "win32") return "";
-  if (env.CODEX_WSL_CLI_PATH && exists(env.CODEX_WSL_CLI_PATH)) return windowsPathToWsl(env.CODEX_WSL_CLI_PATH);
+  if (env.CODEX_WSL_CLI_PATH && exists(env.CODEX_WSL_CLI_PATH)) {
+    if (!cacheDirectory) return windowsPathToWsl(env.CODEX_WSL_CLI_PATH);
+    try { return cacheRuntime(env.CODEX_WSL_CLI_PATH, cacheDirectory); }
+    catch { return windowsPathToWsl(env.CODEX_WSL_CLI_PATH); }
+  }
   const profile = env.USERPROFILE || "";
   if (!profile) return "";
   const root = path.win32.join(profile, ".codex", "bin", "wsl");
   let entries;
   try { entries = readDirectory(root, { withFileTypes: true }); } catch { return ""; }
-  return entries
+  const sourceCommand = entries
     .filter((entry) => entry.isDirectory())
     .map((entry) => path.win32.join(root, entry.name, "codex"))
     .filter((candidate) => exists(candidate))
     .sort((left, right) => {
       try { return stat(right).mtimeMs - stat(left).mtimeMs; } catch { return 0; }
-    })
-    .map(windowsPathToWsl)[0] || "";
+    })[0] || "";
+  if (!sourceCommand) return "";
+  if (!cacheDirectory) return windowsPathToWsl(sourceCommand);
+  try {
+    return cacheRuntime(sourceCommand, cacheDirectory);
+  } catch {
+    // Keep Work available when the app-owned cache cannot be prepared. The
+    // external path still works until its owner rotates that runtime.
+    return windowsPathToWsl(sourceCommand);
+  }
+}
+
+function cacheWslCodexRuntime(sourceCommand, cacheDirectory, options = {}) {
+  const pathApi = options.pathApi || path.win32;
+  const exists = options.exists || fs.existsSync;
+  const readDirectory = options.readDirectory || fs.readdirSync;
+  const stat = options.stat || fs.statSync;
+  const makeDirectory = options.makeDirectory || fs.mkdirSync;
+  const linkFile = options.linkFile || fs.linkSync;
+  const copyFile = options.copyFile || fs.copyFileSync;
+  const rename = options.rename || fs.renameSync;
+  const remove = options.remove || fs.rmSync;
+  const toRuntimePath = options.toRuntimePath || windowsPathToWsl;
+  const source = String(sourceCommand || "");
+  const cacheRoot = String(cacheDirectory || "");
+  if (!source || !cacheRoot || !exists(source)) return "";
+  const sourceDirectory = pathApi.dirname(source);
+  const sourceName = pathApi.basename(sourceDirectory).replace(/[^A-Za-z0-9._-]/g, "").slice(0, 80) || "runtime";
+  const files = readDirectory(sourceDirectory, { withFileTypes: true })
+    .filter((entry) => entry.isFile())
+    .map((entry) => ({
+      name: entry.name,
+      source: pathApi.join(sourceDirectory, entry.name),
+    }))
+    .map((entry) => ({ ...entry, size: stat(entry.source).size }));
+  if (!files.some((entry) => entry.name === pathApi.basename(source))) return "";
+  const destinationDirectory = pathApi.join(cacheRoot, "wsl", sourceName);
+  const destinationCommand = pathApi.join(destinationDirectory, pathApi.basename(source));
+  const ready = files.length > 0 && files.every((entry) => {
+    try { return stat(pathApi.join(destinationDirectory, entry.name)).size === entry.size; } catch { return false; }
+  });
+  if (ready) return toRuntimePath(destinationCommand);
+
+  makeDirectory(pathApi.join(cacheRoot, "wsl"), { recursive: true });
+  const temporaryDirectory = `${destinationDirectory}.install-${process.pid}-${Date.now()}`;
+  makeDirectory(temporaryDirectory, { recursive: true });
+  try {
+    for (const entry of files) {
+      const destination = pathApi.join(temporaryDirectory, entry.name);
+      try { linkFile(entry.source, destination); }
+      catch { copyFile(entry.source, destination); }
+      if (stat(destination).size !== entry.size) throw new Error(`Incomplete WSL Codex runtime file: ${entry.name}`);
+    }
+    if (exists(destinationDirectory)) remove(destinationDirectory, { recursive: true, force: true });
+    rename(temporaryDirectory, destinationDirectory);
+  } catch (error) {
+    try { remove(temporaryDirectory, { recursive: true, force: true }); } catch {}
+    throw error;
+  }
+  return toRuntimePath(destinationCommand);
 }
 
 async function resolveCodexCommand({
@@ -145,10 +245,15 @@ async function resolveCodexCommand({
 
 module.exports = {
   cacheAppxBinary,
+  cacheWslCodexRuntime,
   macCodexCandidates,
   npmCodexBinaryCandidates,
+  parseWslUncPath,
   resolveCodexCommand,
   resolveNpmCodexBinary,
   resolveWslCodexCommand,
+  wslCommandArgsForPath,
+  wslPathTarget,
   windowsPathToWsl,
+  workspacePathIdentity,
 };

@@ -15,6 +15,11 @@ contextBridge.exposeInMainWorld("mascotDesktop", {
   startRemoteTailscale: () => ipcRenderer.invoke("remote:tailscaleStart"),
   stopRemoteTailscale: () => ipcRenderer.invoke("remote:tailscaleStop"),
   setApiKey: (key) => ipcRenderer.invoke("settings:setApiKey", key),
+  saveMcpServer: (server) => ipcRenderer.invoke("mcp:save", server),
+  setMcpServerEnabled: (serverId, enabled) => ipcRenderer.invoke("mcp:setEnabled", serverId, enabled),
+  setMcpAssignment: (payload) => ipcRenderer.invoke("mcp:setAssignment", payload),
+  removeMcpServer: (serverId) => ipcRenderer.invoke("mcp:remove", serverId),
+  testMcpServer: (serverId) => ipcRenderer.invoke("mcp:test", serverId),
   setCharacter: (id) => ipcRenderer.invoke("character:set", id),
   removeCharacter: (id) => ipcRenderer.invoke("character:remove", id),
   removeMemory: (id) => ipcRenderer.invoke("memory:remove", id),
@@ -28,6 +33,7 @@ contextBridge.exposeInMainWorld("mascotDesktop", {
   setSkillAssignment: (payload) => ipcRenderer.invoke("skills:setAssignment", payload),
   removeSkill: (skillId) => ipcRenderer.invoke("skills:remove", skillId),
   configureCharacter: (profile) => ipcRenderer.invoke("character:configure", profile),
+  configureCharacterDirector: (profile) => ipcRenderer.invoke("character:configureDirector", profile),
   previewCharacterMotion: (payload) => ipcRenderer.invoke("character:previewMotion", payload),
   generateCharacter: (payload) => ipcRenderer.invoke("character:generate", payload),
   importPuruPuruCharacter: (payload) => ipcRenderer.invoke("character:importPuruPuru", payload),
@@ -35,6 +41,7 @@ contextBridge.exposeInMainWorld("mascotDesktop", {
   setExpression: (expression) => ipcRenderer.invoke("mascot:expression", expression),
   controlMascotWindow: (action, value) => ipcRenderer.invoke("mascot:window", action, value),
   sendChat: (message) => ipcRenderer.invoke("chat:send", message),
+  followUpChat: (message) => ipcRenderer.invoke("chat:followUp", message),
   interruptChat: () => ipcRenderer.invoke("chat:interrupt"),
   resetChat: () => ipcRenderer.invoke("chat:reset"),
   getWorkHistory: () => ipcRenderer.invoke("work:getHistory"),
@@ -50,11 +57,13 @@ contextBridge.exposeInMainWorld("mascotDesktop", {
   openWebPreview: () => ipcRenderer.invoke("work:webPreviewOpen"),
   testBackend: (backend) => ipcRenderer.invoke("backend:test", backend),
   getCodexAccount: () => ipcRenderer.invoke("codex:account"),
+  detectCodex: () => ipcRenderer.invoke("codex:detect"),
   getCodexModels: () => ipcRenderer.invoke("codex:models"),
   getRealtimeVoices: () => ipcRenderer.invoke("codex:realtimeVoices"),
   startCodexLogin: () => ipcRenderer.invoke("codex:login"),
   logoutCodex: () => ipcRenderer.invoke("codex:logout"),
   completeOnboarding: (complete) => ipcRenderer.invoke("onboarding:complete", complete),
+  startOnboardingFirstWork: (payload) => ipcRenderer.invoke("onboarding:startFirstWork", payload),
   checkForUpdates: () => ipcRenderer.invoke("updates:check"),
   openUpdateRelease: () => ipcRenderer.invoke("updates:openRelease"),
   getDiagnostics: () => ipcRenderer.invoke("support:getDiagnostics"),
@@ -63,8 +72,15 @@ contextBridge.exposeInMainWorld("mascotDesktop", {
   openLogs: () => ipcRenderer.invoke("support:openLogs"),
   transcribe: (payload) => ipcRenderer.invoke("audio:transcribe", payload),
   transcribeSherpa: (payload) => ipcRenderer.invoke("audio:transcribeSherpa", payload),
+  startStreamingSpeech: (payload) => ipcRenderer.invoke("audio:streamingSpeechStart", payload),
+  appendStreamingSpeech: (payload) => ipcRenderer.invoke("audio:streamingSpeechAppend", payload),
+  finishStreamingSpeech: (payload) => ipcRenderer.invoke("audio:streamingSpeechFinish", payload),
+  cancelStreamingSpeech: (payload) => ipcRenderer.invoke("audio:streamingSpeechCancel", payload),
+  transcribeStreamingSpeech: (payload) => ipcRenderer.invoke("audio:transcribeStreamingSpeech", payload),
   downloadSherpaModel: (modelId) => ipcRenderer.invoke("sherpa:modelDownload", modelId),
   removeSherpaModel: (modelId) => ipcRenderer.invoke("sherpa:modelRemove", modelId),
+  downloadStreamingSpeechModel: (modelId) => ipcRenderer.invoke("streamingSpeech:modelDownload", modelId),
+  removeStreamingSpeechModel: (modelId) => ipcRenderer.invoke("streamingSpeech:modelRemove", modelId),
   synthesizeTts: (text) => ipcRenderer.invoke("tts:synthesize", text),
   nextTtsChunk: (streamId) => ipcRenderer.invoke("tts:nextChunk", streamId),
   cancelTtsStream: (streamId) => ipcRenderer.invoke("tts:cancelStream", streamId),
@@ -83,8 +99,9 @@ contextBridge.exposeInMainWorld("mascotDesktop", {
   removeSbv2Model: (id) => ipcRenderer.invoke("tts:sbv2RemoveModel", id),
   normalizeTtsText: (text) => ipcRenderer.invoke("tts:normalizeText", text),
   startCodexRealtime: (payload) => ipcRenderer.invoke("audio:realtimeStart", payload),
-  appendCodexRealtimeText: (text, selectedSkillIds = []) => ipcRenderer.invoke("audio:realtimeAppendText", { text, selectedSkillIds }),
+  appendCodexRealtimeText: (text, selectedSkillIds = [], selectedMcpServerIds = []) => ipcRenderer.invoke("audio:realtimeAppendText", { text, selectedSkillIds, selectedMcpServerIds }),
   setCodexRealtimeTurnSkills: (selectedSkillIds = []) => ipcRenderer.invoke("audio:realtimeTurnSkills", selectedSkillIds),
+  setCodexRealtimeTurnMcp: (selectedMcpServerIds = []) => ipcRenderer.invoke("audio:realtimeTurnMcp", selectedMcpServerIds),
   appendCodexRealtimeSpeech: (text) => ipcRenderer.invoke("audio:realtimeAppendSpeech", text),
   stopCodexRealtime: () => ipcRenderer.invoke("audio:realtimeStop"),
   getBeatriceStatus: () => ipcRenderer.invoke("beatrice:status"),
@@ -124,6 +141,11 @@ contextBridge.exposeInMainWorld("mascotDesktop", {
     const listener = (_event, payload) => callback(payload);
     ipcRenderer.on("app:stateChanged", listener);
     return () => ipcRenderer.removeListener("app:stateChanged", listener);
+  },
+  onNavigateSettings: (callback) => {
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on("settings:navigate", listener);
+    return () => ipcRenderer.removeListener("settings:navigate", listener);
   },
   onUpdateStatus: (callback) => {
     const listener = (_event, payload) => callback(payload);
@@ -169,6 +191,11 @@ contextBridge.exposeInMainWorld("mascotDesktop", {
     const listener = (_event, payload) => callback(payload);
     ipcRenderer.on("sherpa:modelProgress", listener);
     return () => ipcRenderer.removeListener("sherpa:modelProgress", listener);
+  },
+  onStreamingSpeechModelProgress: (callback) => {
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on("streamingSpeech:modelProgress", listener);
+    return () => ipcRenderer.removeListener("streamingSpeech:modelProgress", listener);
   },
   onTtsModelProgress: (callback) => {
     const listener = (_event, payload) => callback(payload);

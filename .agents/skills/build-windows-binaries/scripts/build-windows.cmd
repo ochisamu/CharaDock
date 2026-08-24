@@ -29,6 +29,18 @@ if not exist "node_modules\electron-builder\out\cli\cli.js" (
   popd
   exit /b 1
 )
+if not exist "node_modules\typescript\bin\tsc" (
+  echo TypeScript is missing. Run npm install in WSL first. 1>&2
+  popd
+  exit /b 1
+)
+
+echo Building the typed CharaDock runtime...
+"%CHARADOCK_NODE%" node_modules\typescript\bin\tsc -p tsconfig.runtime.json
+if errorlevel 1 (
+  popd
+  exit /b 1
+)
 
 if not exist "node_modules\sherpa-onnx-win-x64\sherpa-onnx.node" (
   if not defined CHARADOCK_NPM (
@@ -97,6 +109,13 @@ if not exist "packaging\windows-store\AppxManifest.xml" (
   exit /b 1
 )
 
+echo Generating distinctive Microsoft Store tile assets...
+"%CHARADOCK_NODE%" scripts\build_windows_store_assets.cjs
+if errorlevel 1 (
+  popd
+  exit /b 1
+)
+
 "%CHARADOCK_NODE%" node_modules\electron-builder\out\cli\cli.js --win --dir --x64 --publish never
 if errorlevel 1 (
   popd
@@ -104,18 +123,18 @@ if errorlevel 1 (
 )
 
 set "CHARADOCK_VERSION_FILE=%TEMP%\charadock-version-%RANDOM%-%RANDOM%.txt"
-"%CHARADOCK_NODE%" -p "require('./package.json').version" > "!CHARADOCK_VERSION_FILE!"
-set /p CHARADOCK_VERSION=<"!CHARADOCK_VERSION_FILE!"
+"%CHARADOCK_NODE%" -p "require('./package.json').storePackageVersion" > "!CHARADOCK_VERSION_FILE!"
+set /p CHARADOCK_STORE_VERSION=<"!CHARADOCK_VERSION_FILE!"
 del /q "!CHARADOCK_VERSION_FILE!" >nul 2>&1
-if not defined CHARADOCK_VERSION (
-  echo Could not resolve the CharaDock package version. 1>&2
+if not defined CHARADOCK_STORE_VERSION (
+  echo Could not resolve the CharaDock Store package version. 1>&2
   popd
   exit /b 1
 )
 
 set "CHARADOCK_STORE_TEMP=%TEMP%\charadock-store-%RANDOM%-%RANDOM%"
 set "CHARADOCK_STORE_LAYOUT=!CHARADOCK_STORE_TEMP!\layout"
-set "CHARADOCK_STORE_PACKAGE=!CHARADOCK_STORE_TEMP!\CharaDock-!CHARADOCK_VERSION!-store-x64-unsigned.msix"
+set "CHARADOCK_STORE_PACKAGE=!CHARADOCK_STORE_TEMP!\CharaDock-!CHARADOCK_STORE_VERSION!-store-x64-unsigned.msix"
 mkdir "!CHARADOCK_STORE_LAYOUT!" >nul 2>&1
 robocopy "dist\win-unpacked" "!CHARADOCK_STORE_LAYOUT!" /E /NFL /NDL /NJH /NJS /NP >nul
 if errorlevel 8 (
@@ -131,7 +150,7 @@ call "%CHARADOCK_NPX%" -y @microsoft/winappcli@0.6.0 package "!CHARADOCK_STORE_L
 set "CHARADOCK_BUILD_EXIT=!ERRORLEVEL!"
 if "!CHARADOCK_BUILD_EXIT!"=="0" (
   if not exist "dist\store" mkdir "dist\store"
-  move /Y "!CHARADOCK_STORE_PACKAGE!" "dist\store\CharaDock-!CHARADOCK_VERSION!-store-x64-unsigned.msix" >nul
+  move /Y "!CHARADOCK_STORE_PACKAGE!" "dist\store\CharaDock-!CHARADOCK_STORE_VERSION!-store-x64-unsigned.msix" >nul
 )
 rmdir /s /q "!CHARADOCK_STORE_TEMP!" >nul 2>&1
 popd

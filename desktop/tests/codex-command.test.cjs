@@ -4,10 +4,15 @@ const test = require("node:test");
 
 const {
   macCodexCandidates,
+  cacheWslCodexRuntime,
   npmCodexBinaryCandidates,
+  parseWslUncPath,
   resolveCodexCommand,
   resolveWslCodexCommand,
+  wslCommandArgsForPath,
+  wslPathTarget,
   windowsPathToWsl,
+  workspacePathIdentity,
 } = require("../lib/codex-command.cjs");
 
 test("macOS packaged apps discover Codex Desktop outside the Finder PATH", async () => {
@@ -57,6 +62,77 @@ test("Windows work folders and the bundled WSL Codex binary map to Linux paths",
     stat: () => ({ mtimeMs: 1 }),
   });
   assert.equal(command, "/mnt/c/Users/test/.codex/bin/wsl/build-1/codex");
+});
+
+test("WSL Codex runtime is pinned into app-owned storage with its helper binaries", () => {
+  const fs = require("node:fs");
+  const os = require("node:os");
+  const path = require("node:path");
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "charadock-wsl-runtime-"));
+  const source = path.join(root, "external", "build-1");
+  const cache = path.join(root, "owned");
+  fs.mkdirSync(source, { recursive: true });
+  fs.writeFileSync(path.join(source, "codex"), "codex-binary");
+  fs.writeFileSync(path.join(source, "codex-code-mode-host"), "helper-binary");
+  const command = cacheWslCodexRuntime(path.join(source, "codex"), cache, {
+    pathApi: path,
+    toRuntimePath: (value) => value,
+  });
+  assert.equal(command, path.join(cache, "wsl", "build-1", "codex"));
+  assert.equal(fs.readFileSync(path.join(cache, "wsl", "build-1", "codex-code-mode-host"), "utf8"), "helper-binary");
+  fs.rmSync(source, { recursive: true, force: true });
+  assert.equal(fs.readFileSync(command, "utf8"), "codex-binary");
+});
+
+test("WSL command resolution uses an app-owned runtime cache when requested", () => {
+  let cachedSource = "";
+  const command = resolveWslCodexCommand({
+    platform: "win32",
+    env: { USERPROFILE: "C:\\Users\\test" },
+    cacheDirectory: "C:\\AppData\\CharaDock\\codex-bin",
+    readDirectory: () => [{ name: "build-1", isDirectory: () => true }],
+    exists: (candidate) => candidate.endsWith("\\build-1\\codex"),
+    stat: () => ({ mtimeMs: 1 }),
+    cacheRuntime: (source, destination) => {
+      cachedSource = source;
+      assert.equal(destination, "C:\\AppData\\CharaDock\\codex-bin");
+      return "/mnt/c/AppData/CharaDock/codex-bin/wsl/build-1/codex";
+    },
+  });
+  assert.match(cachedSource, /build-1\\codex$/);
+  assert.equal(command, "/mnt/c/AppData/CharaDock/codex-bin/wsl/build-1/codex");
+});
+
+test("WSL UNC work folders preserve their distribution and map to Linux paths", () => {
+  const localhostPath = "\\\\wsl.localhost\\Ubuntu\\home\\test\\workspace\\project";
+  assert.deepEqual(parseWslUncPath(localhostPath), {
+    distribution: "Ubuntu",
+    path: "/home/test/workspace/project",
+  });
+  assert.deepEqual(wslPathTarget("\\\\wsl$\\Debian\\srv\\project"), {
+    distribution: "Debian",
+    path: "/srv/project",
+  });
+  assert.equal(windowsPathToWsl(localhostPath), "/home/test/workspace/project");
+  assert.deepEqual(wslCommandArgsForPath(localhostPath, ["env", "codex"]), [
+    "--distribution", "Ubuntu", "--cd", "/home/test/workspace/project", "env", "codex",
+  ]);
+});
+
+test("WSL path arguments remain generic for ordinary Windows folders", () => {
+  assert.deepEqual(wslCommandArgsForPath("D:\\work\\project", ["node", "server.js"]), [
+    "--cd", "/mnt/d/work/project", "node", "server.js",
+  ]);
+});
+
+test("equivalent WSL UNC aliases share one workspace identity", () => {
+  const localhost = "\\\\wsl.localhost\\Ubuntu\\home\\test\\project";
+  const legacy = "\\\\wsl$\\ubuntu\\home\\test\\project";
+  assert.equal(workspacePathIdentity(localhost, "win32"), workspacePathIdentity(legacy, "win32"));
+  assert.notEqual(
+    workspacePathIdentity(localhost, "win32"),
+    workspacePathIdentity("\\\\wsl.localhost\\Debian\\home\\test\\project", "win32"),
+  );
 });
 
 test("Codex command honors an explicit path", async () => {

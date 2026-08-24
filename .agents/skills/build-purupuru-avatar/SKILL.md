@@ -85,6 +85,17 @@ Write this exact structure:
   "name": "短い名前",
   "personality": "日本語の性格・話し方（1〜3文）",
   "petPhrases": ["短い反応1", "短い反応2", "短い反応3"],
+  "director": {
+    "role": "このキャラクターが利用者をどう支える存在か",
+    "relationship": "利用者との自然な関係性",
+    "values": ["判断で大切にすること1", "判断で大切にすること2", "判断で大切にすること3"],
+    "speechStyle": "口調、文の長さ、温度感",
+    "preferredPhrases": ["文脈に合う時だけ使う表現1", "表現2"],
+    "avoidPhrases": ["避ける言い回しや振る舞い1", "避けること2"],
+    "thinkingPhrases": ["考え中の自然な一言1", "一言2", "一言3"],
+    "touchHeadPhrases": ["頭をタップした時の短い反応1", "反応2", "反応3"],
+    "touchBodyPhrases": ["体をタップした時の短い反応1", "反応2", "反応3"]
+  },
   "hairMode": "layered",
   "rig": {
     "faceCenter": [512, 430],
@@ -96,7 +107,7 @@ Write this exact structure:
 }
 ```
 
-Use integer output-canvas coordinates. `hairMode` must be `layered` or the documented `static` fallback. Require exactly two eye centers and the vertical order eyes → mouth → chin → neck. Infer a short Japanese name only if `request.json` has no `requestedName`. If `requestedPersonality` is present, preserve it as the character personality and derive three matching pet phrases without changing its intent; infer a concise personality only when it is empty. Do not make claims about real identity, age, ethnicity, religion, health, or other sensitive traits.
+Use integer output-canvas coordinates. `hairMode` must be `layered` or the documented `static` fallback. Require exactly two eye centers and the vertical order eyes → mouth → chin → neck. Infer a short Japanese name only if `request.json` has no `requestedName`. If `requestedPersonality` is present, preserve it as the character personality and derive the full `director` and three matching pet phrases from that intent. If it is empty, infer a concise personality and the complete `director` from visible, non-sensitive design cues such as expression, pose, color, costume styling, and apparent energy. Treat these as a creative character proposal, never a claim about a real person's identity or traits. Fill every `director` field with useful, mutually consistent content: 3–5 values, 2–5 preferred/avoid entries, and at least 3 distinct phrases in each reaction list. Keep the role broadly useful, the relationship respectful and non-romantic by default, the speech natural for spoken output, and the phrases varied rather than catchphrases. Do not infer or claim real identity, age, ethnicity, religion, health, sexual orientation, politics, or other sensitive traits from the image.
 
 ## Completion gate
 
@@ -111,4 +122,4 @@ Reject and repair all of the following:
 - seams, long straight/rectangular cut boundaries, double hair, shifted/redrawn hair, exposed forehead holes, newly added text, or watermarks;
 - incorrect rig positions or a preview that does not show six complete states.
 
-Return only a compact JSON summary with `status`, `name`, `personality`, and `outputDirectory` after the validator exits successfully and the preview passes visual inspection.
+Return only a compact JSON summary with `status`, `name`, `personality`, and `outputDirectory` after the validator exits successfully and the preview passes visual inspection. The app reads the full validated `director` from `output/character.json`; do not repeat it in the completion message.

@@ -99,5 +99,14 @@ button, select, textarea { font: inherit; }
 .revision-state { min-height: 12px; margin: 0; color: #a9a3ad; font-size: 8px; line-height: 1.4; }
 .revision-state[data-status="completed"] { color: #8fd5a7; }
 .revision-state[data-status="error"] { color: #f2a39e; }
+.preview-actions > [hidden] { display: none !important; }
+.revision-panel[hidden] { display: none; }
+body.is-mcp-app .preview-window { grid-template-rows: auto minmax(0, 1fr); background: #f4f5f7; }
+body.is-mcp-app .preview-titlebar { color: #28262c; background: rgba(250,250,252,.96); border-bottom-color: rgba(25,25,28,.09); }
+body.is-mcp-app .preview-heading h1 { color: #222126; }
+body.is-mcp-app .preview-heading small { color: #77727b; }
+body.is-mcp-app .preview-body { padding: 0; background: #fff; }
+body.is-mcp-app .preview-body > iframe { width: 100%; height: 100%; border: 0; background: #fff; }
+body.is-mcp-app.is-mcp-fullscreen .preview-titlebar { display: none; }
 @keyframes pulse { 50% { opacity: .35; transform: scale(.72); } }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; animation: none !important; transition-duration: .01ms !important; } }

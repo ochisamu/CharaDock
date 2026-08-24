@@ -24,6 +24,17 @@ function metadata() {
     name: "テスト",
     personality: "明るく簡潔に話す。",
     petPhrases: ["なあに？", "うれしいな。", "一緒にやろう。"],
+    director: {
+      role: "利用者の好奇心を小さな実験へつなぐ相棒",
+      relationship: "利用者と対等に試す共同作業者",
+      values: ["小さく試す", "確認してから伝える", "失敗を次へ生かす"],
+      speechStyle: "明るく簡潔で、自然な口語で話す",
+      preferredPhrases: ["試してみよう", "見えてきたね"],
+      avoidPhrases: ["未確認の完了報告", "毎回同じ相槌"],
+      thinkingPhrases: ["大事なところを見ているよ。", "順番を整えているよ。", "もう少しだけ確かめるね。"],
+      touchHeadPhrases: ["なあに？", "くすぐったいよ。", "少し休憩する？"],
+      touchBodyPhrases: ["呼んだ？", "ここにいるよ。", "次は何を試そうか？"],
+    },
     rig: {
       faceCenter: [652, 590],
       eyeCenters: [[548, 604], [758, 565]],
@@ -48,6 +59,8 @@ test("bundled avatar skill validates a complete PuruPuru output", (t) => {
   assert.match(skillText, /Never ask image generation to redraw the detached hair/);
   assert.match(skillText, /hairMode: "static"/);
   assert.match(skillText, /long straight\/rectangular cut boundaries/);
+  assert.match(skillText, /"director"/);
+  assert.match(skillText, /infer a concise personality and the complete `director`/);
   const directory = temporaryDirectory(t);
   const source = path.join(ROOT, "assets", "amber-avatar");
   for (const name of IMAGE_NAMES) fs.copyFileSync(path.join(source, name), path.join(directory, name));
@@ -56,6 +69,18 @@ test("bundled avatar skill validates a complete PuruPuru output", (t) => {
   assert.equal(result.status, 0, result.stderr);
   assert.equal(JSON.parse(result.stdout).ok, true);
   assert.equal(fs.existsSync(path.join(directory, "qa-preview.png")), true);
+});
+
+test("avatar validator requires a complete inferred character identity", (t) => {
+  const directory = temporaryDirectory(t);
+  const source = path.join(ROOT, "assets", "amber-avatar");
+  for (const name of IMAGE_NAMES) fs.copyFileSync(path.join(source, name), path.join(directory, name));
+  const invalid = metadata();
+  delete invalid.director.touchBodyPhrases;
+  fs.writeFileSync(path.join(directory, "character.json"), JSON.stringify(invalid));
+  const result = spawnSync(process.execPath, [VALIDATOR, directory], { encoding: "utf8" });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /director\.touchBodyPhrases/);
 });
 
 test("avatar validator accepts the explicit static-hair safety fallback", (t) => {

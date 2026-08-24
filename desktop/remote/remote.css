@@ -116,6 +116,7 @@ button:focus-visible, textarea:focus-visible { outline: 3px solid rgba(76,111,25
 .send-button, .interrupt-button { display: grid; place-items: center; flex: 0 0 38px; height: 38px; border: 0; border-radius: 12px; color: white; background: var(--accent); line-height: 1; }
 .interrupt-button { background: var(--danger); }
 .composer-hint { margin: 7px 4px 0; color: var(--muted); text-align: center; font-size: 10px; }
+.composer-hint.is-error { color: #a23d46; font-size: 11px; font-weight: 750; }
 dialog { border: 0; margin: 0; color: var(--ink); }
 dialog::backdrop { background: rgba(16,24,36,.28); backdrop-filter: blur(4px); }
 .bottom-sheet { top: auto; bottom: 0; width: 100%; max-height: 78dvh; border-radius: 25px 25px 0 0; padding: 20px 18px calc(20px + env(safe-area-inset-bottom)); background: #f7f9fc; box-shadow: 0 -16px 55px rgba(21,36,57,.2); }
@@ -183,6 +184,13 @@ dialog::backdrop { background: rgba(16,24,36,.28); backdrop-filter: blur(4px); }
 .preview-body { height: calc(100% - 44px); overflow: auto; border-radius: 14px; background: white; }
 .preview-body iframe, .preview-body img, .preview-body video { display: block; width: 100%; height: 100%; border: 0; object-fit: contain; }
 .preview-body pre { margin: 0; padding: 17px; white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.65 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.preview-dialog.is-mcp-app { position: fixed; inset: auto 10px calc(150px + env(safe-area-inset-bottom)); z-index: 36; width: calc(100% - 20px); height: min(52dvh, 540px); margin: 0 auto; padding: 9px; border: 1px solid rgba(30,43,59,.1); border-radius: 22px; background: rgba(247,249,252,.96); box-shadow: 0 18px 65px rgba(15,28,47,.26); backdrop-filter: blur(24px) saturate(1.12); animation: mcp-app-arrive 240ms cubic-bezier(.22,.82,.28,1); }
+.preview-dialog.is-mcp-app::backdrop { display: none; }
+.preview-dialog.is-mcp-app header { height: 40px; padding: 0 3px 7px 10px; }
+.preview-dialog.is-mcp-app header strong { overflow: hidden; color: #252d38; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
+.preview-dialog.is-mcp-app .preview-body { height: calc(100% - 40px); box-shadow: inset 0 0 0 1px rgba(30,43,59,.06); }
+.preview-dialog.is-mcp-app.is-mcp-fullscreen { inset: 3dvh 10px auto; height: 94dvh; }
+@keyframes mcp-app-arrive { from { opacity: 0; transform: translateY(18px) scale(.985); } to { opacity: 1; transform: translateY(0) scale(1); } }
 @keyframes avatar-idle { 0%,100% { transform: translate3d(calc(0px - var(--sway-x)), 0, 0) rotate(var(--body-roll-negative)) scale(1); } 28% { transform: translate3d(var(--sway-x), calc(0px - var(--sway-y)), 0) rotate(var(--body-roll)) scale(var(--breath-half), var(--breath-full)); } 58% { transform: translate3d(0, -2px, 0) rotate(0deg) scale(1, var(--breath-half)); } 78% { transform: translate3d(calc(0px - var(--sway-x)), calc(0px - var(--sway-y)), 0) rotate(var(--body-roll-negative)) scale(var(--breath-half), var(--breath-full)); } }
 @keyframes hair-back { 0%,100% { transform: rotate(var(--hair-roll-negative)) translateX(-2px); } 45% { transform: rotate(var(--hair-roll)) translateX(2px) translateY(-1px); } }
 @keyframes hair-front { 0%,100% { transform: rotate(var(--hair-roll)) translateX(1px); } 52% { transform: rotate(var(--hair-roll-negative)) translateX(-2px) translateY(2px); } }

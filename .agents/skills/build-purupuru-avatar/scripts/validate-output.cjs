@@ -48,6 +48,32 @@ function point(value, label, width, height, errors) {
   return { x: value[0], y: value[1] };
 }
 
+function validateDirector(value, errors) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    errors.push("character director is missing");
+    return;
+  }
+  for (const [key, maxLength] of Object.entries({ role: 500, relationship: 700, speechStyle: 700 })) {
+    const text = String(value[key] || "").trim();
+    if (!text) errors.push(`director.${key} is empty`);
+    else if (text.length > maxLength) errors.push(`director.${key} exceeds ${maxLength} characters`);
+  }
+  const lists = {
+    values: [3, 10, 240],
+    preferredPhrases: [2, 12, 160],
+    avoidPhrases: [2, 12, 200],
+    thinkingPhrases: [3, 12, 240],
+    touchHeadPhrases: [3, 12, 180],
+    touchBodyPhrases: [3, 12, 180],
+  };
+  for (const [key, [minimum, maximum, maxLength]] of Object.entries(lists)) {
+    const values = Array.isArray(value[key]) ? value[key].map((item) => String(item || "").trim()).filter(Boolean) : [];
+    if (values.length < minimum || values.length > maximum) errors.push(`director.${key} must contain ${minimum}-${maximum} entries`);
+    if (new Set(values).size !== values.length) errors.push(`director.${key} must contain distinct entries`);
+    if (values.some((item) => item.length > maxLength)) errors.push(`director.${key} entries must be at most ${maxLength} characters`);
+  }
+}
+
 function visibilityStats(png) {
   const total = png.width * png.height;
   const cornerWidth = Math.max(8, Math.floor(png.width * .08));
@@ -252,6 +278,7 @@ function validateAvatarOutput(directory, { writePreview = false, requireHairRefe
     if (!String(character.personality || "").trim()) errors.push("character personality is empty");
     if (!Array.isArray(character.petPhrases) || character.petPhrases.length < 3) errors.push("petPhrases must contain at least 3 entries");
     else if (new Set(character.petPhrases.map((value) => String(value || "").trim()).filter(Boolean)).size < 3) errors.push("petPhrases must contain 3 distinct non-empty entries");
+    validateDirector(character.director, errors);
     if (character.hairMode != null && !["layered", "static"].includes(character.hairMode)) errors.push("hairMode must be layered or static");
   } catch (error) {
     errors.push(`invalid character.json: ${error.message}`);

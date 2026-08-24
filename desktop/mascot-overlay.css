@@ -66,6 +66,7 @@
 .ui-symbol-attach { -webkit-mask-image: url("../assets/ui/icons/attach.svg"); mask-image: url("../assets/ui/icons/attach.svg"); }
 .ui-symbol-plus { -webkit-mask-image: url("../assets/ui/icons/plus.svg"); mask-image: url("../assets/ui/icons/plus.svg"); }
 .ui-symbol-sparkle { -webkit-mask-image: url("../assets/ui/icons/sparkle.svg"); mask-image: url("../assets/ui/icons/sparkle.svg"); }
+.ui-symbol-mcp { -webkit-mask-image: url("../assets/ui/icons/mcp.svg"); mask-image: url("../assets/ui/icons/mcp.svg"); }
 .ui-symbol-search { -webkit-mask-image: url("../assets/ui/icons/search.svg"); mask-image: url("../assets/ui/icons/search.svg"); }
 .ui-symbol-folder-open { -webkit-mask-image: url("../assets/ui/icons/folder-open.svg"); mask-image: url("../assets/ui/icons/folder-open.svg"); }
 .ui-symbol-history { -webkit-mask-image: url("../assets/ui/icons/history.svg"); mask-image: url("../assets/ui/icons/history.svg"); }
@@ -386,7 +387,7 @@ body.is-work-panel-open #desktopMascotBubble.is-visible { opacity: 0; transform:
 }
 #desktopMascotContextList[hidden] { display: none !important; }
 #desktopMascotContextList::-webkit-scrollbar { display: none; }
-#desktopMascotAttachmentList, #desktopMascotSkillList { display: contents; }
+#desktopMascotAttachmentList, #desktopMascotSkillList, #desktopMascotMcpList { display: contents; }
 .desktop-mascot-attachment {
   display: inline-flex;
   align-items: center;
@@ -405,6 +406,8 @@ body.is-work-panel-open #desktopMascotBubble.is-visible { opacity: 0; transform:
 }
 .desktop-mascot-attachment > .ui-symbol { width: 12px; height: 12px; color: var(--pet-accent); }
 .desktop-mascot-attachment.is-skill { color: color-mix(in srgb, var(--pet-accent) 76%, var(--pet-text)); background: color-mix(in srgb, var(--pet-accent) 10%, var(--pet-control-subtle)); border-color: var(--pet-accent-line); }
+.desktop-mascot-attachment.is-mcp { color: color-mix(in srgb, #61d2b9 80%, var(--pet-text)); background: color-mix(in srgb, #42bfa5 11%, var(--pet-control-subtle)); border-color: color-mix(in srgb, #42bfa5 32%, var(--pet-border)); }
+.desktop-mascot-attachment.is-mcp > .ui-symbol { color: #61d2b9; }
 .desktop-mascot-attachment > span:nth-child(2) { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .desktop-mascot-attachment button {
   display: grid;
@@ -447,6 +450,7 @@ body.is-work-panel-open #desktopMascotBubble.is-visible { opacity: 0; transform:
 #desktopMascotAddPopover > header { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 2px; padding: 8px 7px 6px; border-top: 1px solid var(--pet-border); }
 #desktopMascotAddPopover > header button { padding: 5px 7px; color: var(--pet-accent); background: transparent; border: 0; border-radius: 7px; font: 750 9px/1 var(--pet-font-ui); cursor: pointer; }
 #desktopMascotAddPopover > header button:hover { background: var(--pet-control-subtle); }
+.desktop-mascot-extension-manage { display: flex; align-items: center; gap: 1px; padding: 2px; border: 1px solid var(--pet-border); border-radius: 8px; background: var(--pet-control-subtle); }
 #desktopMascotAddPopover > label { display: flex; align-items: center; gap: 7px; margin: 0 4px 6px; padding: 0 8px; color: var(--pet-text-muted); background: var(--pet-control-subtle); border: 1px solid var(--pet-border); border-radius: 9px; }
 #desktopMascotAddPopover > label:focus-within { border-color: var(--pet-accent-line); }
 #desktopMascotAddPopover > label .ui-symbol { width: 13px; height: 13px; }
@@ -457,6 +461,9 @@ body.is-work-panel-open #desktopMascotBubble.is-visible { opacity: 0; transform:
 #desktopMascotSkillPicker > button:hover, #desktopMascotSkillPicker > button.is-keyboard-active { background: var(--pet-control-subtle); }
 #desktopMascotSkillPicker > button[aria-selected="true"] { background: color-mix(in srgb, var(--pet-accent) 10%, var(--pet-control-subtle)); }
 #desktopMascotSkillPicker > button > .ui-symbol { width: 16px; height: 16px; color: var(--pet-accent); }
+#desktopMascotSkillPicker > button.is-mcp > .ui-symbol, #desktopMascotSkillPicker > button.is-mcp em { color: #61d2b9; }
+#desktopMascotSkillPicker > button.is-mcp[aria-selected="true"] { background: color-mix(in srgb, #42bfa5 11%, var(--pet-control-subtle)); }
+#desktopMascotSkillPicker > button:disabled { opacity: .5; cursor: default; }
 #desktopMascotSkillPicker > button span { min-width: 0; }
 #desktopMascotSkillPicker strong, #desktopMascotSkillPicker small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #desktopMascotSkillPicker strong { font: 750 10px/1.3 var(--pet-font-ui); }
@@ -771,10 +778,10 @@ body.is-work-mode #desktopMascotInput { min-height: 42px; max-height: 78px; padd
   -webkit-app-region: no-drag;
   position: fixed;
   z-index: 998;
-  left: var(--mascot-pet-left, 0%);
-  top: var(--mascot-pet-top, 27%);
-  width: var(--mascot-pet-width, 56%);
-  height: var(--mascot-pet-height, 42%);
+  left: var(--mascot-character-touch-left, var(--mascot-pet-left, 0%));
+  top: var(--mascot-character-touch-top, var(--mascot-pet-top, 27%));
+  width: var(--mascot-character-touch-width, var(--mascot-pet-width, 56%));
+  height: var(--mascot-character-touch-height, var(--mascot-pet-height, 42%));
   border-radius: 46% 54% 42% 48%;
   cursor: grab;
   touch-action: none;

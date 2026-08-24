@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: charadock-artifact:; media-src 'self' data: blob: charadock-artifact:; frame-src charadock-artifact: http://127.0.0.1:*; object-src 'none'; base-uri 'none'; form-action 'none'" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: charadock-artifact:; media-src 'self' data: blob: charadock-artifact:; frame-src charadock-artifact: charadock-mcp-app: http://127.0.0.1:*; object-src 'none'; base-uri 'none'; form-action 'none'" />
   <title>CharaDock Preview</title>
   <link rel="stylesheet" href="/vendor/highlightjs/11.11.1/styles/github-dark-dimmed.min.css" />
   <link rel="stylesheet" href="/desktop/artifact-preview.css" />
@@ -12,7 +12,7 @@
   <main class="preview-window">
     <header class="preview-titlebar">
       <div class="preview-heading">
-        <p>PREVIEW</p>
+        <p id="previewKind">PREVIEW</p>
         <h1 id="previewTitle">読み込み中…</h1>
         <small id="previewPath"></small>
       </div>
@@ -37,6 +37,7 @@
   <script src="/vendor/highlightjs/11.11.1/highlight.min.js"></script>
   <script src="/vendor/markdown-it/14.3.0/markdown-it.min.js"></script>
   <script src="/vendor/dompurify/3.4.13/purify.min.js"></script>
+  <script src="/desktop/mcp-app-host.js"></script>
   <script src="/desktop/artifact-preview.js"></script>
 </body>
 </html>

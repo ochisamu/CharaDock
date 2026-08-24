@@ -19,6 +19,31 @@ test("interface translator supports exact and dynamic English labels", () => {
   assert.equal(translateText("名前や用途で検索", "en"), "Search by name or purpose");
   assert.equal(translateText("追加して有効化", "en"), "Add and enable");
   assert.equal(translateText("キャラクター設定", "ja"), "キャラクター設定");
+  assert.equal(translateText("外部ネットワーク接続", "en"), "External network access");
+  assert.equal(
+    translateText("WorkからAPI・パッケージ取得・名前解決を利用できます", "en"),
+    "Allow Work to access APIs, download packages, and resolve host names",
+  );
+});
+
+test("first-run setup has complete English labels for Codex and Live", () => {
+  const labels = new Map([
+    ["キャラクターと始める", "Start with a character"],
+    ["仕事を任せる準備", "Prepare Codex for work"],
+    ["公式アプリを入手", "Get the official app"],
+    ["一緒に最初の成果物を作る", "Create your first output together"],
+    ["キャラクターとの進め方", "How to work with your character"],
+    ["GPT-Liveで話しながら", "Talk through GPT-Live"],
+    ["文字だけで静かに", "Continue silently in text"],
+    ["ローカル音声モデルは不要", "No local voice model required"],
+    ["今回は作らずに始める", "Start without creating it"],
+  ]);
+  for (const [japanese, english] of labels) assert.equal(translateText(japanese, "en"), english, japanese);
+
+  const control = fs.readFileSync(path.join(desktopRoot, "control.html"), "utf8");
+  assert.equal((control.match(/data-onboarding-step="\d"/g) || []).length, 3);
+  assert.match(control, /name="onboardingDelivery" value="live" checked/);
+  assert.match(control, /name="onboardingDelivery" value="text"/);
 });
 
 test("Skills management UI has complete English labels", () => {
@@ -54,6 +79,32 @@ test("Skills management UI has complete English labels", () => {
 test("Skills catalog exposes CharaDock as a source filter", () => {
   const control = fs.readFileSync(path.join(desktopRoot, "control.html"), "utf8");
   assert.match(control, /data-skill-source="charadock"[^>]*>CharaDock<\/button>/);
+});
+
+test("MCP connection UI explains scope, authentication, and secret handling in English", () => {
+  const labels = new Map([
+    ["拡張", "Extensions"],
+    ["MCP連携", "MCP Connections"],
+    ["MCPサーバー", "MCP servers"],
+    ["キャラクターが会話や作業で使う外部ツールを、全員共通またはキャラクターごとに接続します。", "Connect external tools for conversation and work, either for every character or for one character."],
+    ["割り当てた接続はChat・Work・Liveで使えます。入力欄の＋や /・@ から今回だけ明示することもできます。", "Assigned connections work in Chat, Work, and Live. You can also select one just for this turn from +, /, or @ in the composer."],
+    ["接続を追加", "Add connection"],
+    ["認証なし・APIキーに対応", "No authentication or API key"],
+    ["追加先を信頼できる場合だけ有効にしてください", "Enable only servers you trust"],
+    ["MCPサーバーを追加", "Add MCP server"],
+    ["認証", "Authentication"],
+    ["APIキーヘッダーの詳細", "API key header details"],
+    ["保存して接続確認", "Save and test"],
+  ]);
+  for (const [japanese, english] of labels) assert.equal(translateText(japanese, "en"), english, japanese);
+  const control = fs.readFileSync(path.join(desktopRoot, "control.html"), "utf8");
+  assert.match(control, /data-page="skills"[\s\S]{0,300}data-page="mcp"/);
+  assert.match(control, /data-page-panel="mcp"[\s\S]*id="mcpServersCard"/);
+  const connectionPage = control.match(/data-page-panel="connection"[\s\S]*?(?=<section class="page" data-page-panel="desktop")/)?.[0] || "";
+  assert.doesNotMatch(connectionPage, /id="mcpServersCard"/);
+  assert.match(control, /id="mcpServersCard"/);
+  assert.match(control, /id="mcpServerDialog"[^>]*role="dialog"[^>]*aria-modal="true"/);
+  assert.match(control, /id="mcpServerAuthSelect"[\s\S]*value="none"[\s\S]*value="api-key"/);
 });
 
 test("Irodori V4 presents its fixed generation profile without hiding V3 tuning", () => {
@@ -104,6 +155,38 @@ test("built-in characters provide localized English identities", () => {
   for (const name of ["Kohaku", "Sepia", "Towa", "Sage", "AI Nike-chan"]) assert.match(main, new RegExp(`name: "${name}"`));
   assert.match(main, /https:\/\/x\.com\/tegnike/);
   assert.match(main, /https:\/\/nikechan\.com\//);
-  assert.match(main, /Respond naturally in English/);
+  assert.match(main, /buildCharacterPersona\(character, language\)/);
+  const director = fs.readFileSync(path.join(desktopRoot, "runtime", "character-director.ts"), "utf8");
+  assert.match(director, /Speak as \$\{name\}/);
+  assert.match(director, /Answer the user's actual question directly/);
   assert.match(main, /Before using tools, send one brief commentary acknowledgement that names the request-specific subject and action/);
+});
+
+test("character identity editor uses progressive disclosure and complete English labels", () => {
+  const labels = new Map([
+    ["キャラクター性", "Character identity"],
+    ["標準プロフィール", "Default profile"],
+    ["詳しく編集", "Edit details"],
+    ["人物像の核", "Core identity"],
+    ["役割", "Role"],
+    ["利用者との関係", "Relationship with the user"],
+    ["大切にする価値観", "Core values"],
+    ["話し方", "Speaking style"],
+    ["言葉と反応を詳しく調整", "Fine-tune wording and reactions"],
+    ["考え中のひとこと", "Thinking phrases"],
+    ["キャラクター性を保存", "Save character identity"],
+  ]);
+  for (const [japanese, english] of labels) assert.equal(translateText(japanese, "en"), english, japanese);
+
+  const control = fs.readFileSync(path.join(desktopRoot, "control.html"), "utf8");
+  assert.match(control, /id="characterDirectorDialog"[^>]*role="dialog"[^>]*aria-modal="true"/);
+  assert.match(control, /id="characterDirectorAdvanced" class="character-director-advanced"/);
+  assert.match(control, /id="characterDirectorRoleInput"/);
+  assert.match(control, /id="characterDirectorThinkingInput"/);
+  assert.match(control, /id="characterDirectorTouchHeadInput"/);
+  assert.match(control, /id="characterDirectorTouchBodyInput"/);
+  assert.equal(
+    translateText("名前・性格が空欄なら元絵から提案し、役割・価値観・話し方・反応まで自動で整えます。生成後はキャラクター設定から直せます。", "en"),
+    "If name or personality is blank, CharaDock proposes it from the artwork and also prepares the role, values, speaking style, and reactions. You can edit everything afterward in Character settings.",
+  );
 });

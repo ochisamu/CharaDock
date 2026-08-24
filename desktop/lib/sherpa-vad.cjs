@@ -88,11 +88,25 @@ class EmbeddedSherpaVad {
   accept(samples) {
     if (!this.detector) throw new Error("Silero VADが開始されていません。");
     const waveform = samples instanceof Float32Array ? samples : new Float32Array(samples || []);
-    if (!waveform.length || waveform.length > 32_768) return { detected: this.detector.isDetected(), segmentComplete: false };
+    if (!waveform.length || waveform.length > 32_768) return { detected: this.detector.isDetected(), segmentComplete: false, segmentSamples: null };
     this.detector.acceptWaveform(waveform);
     const segmentComplete = !this.detector.isEmpty();
-    if (segmentComplete) this.detector.pop();
-    return { detected: this.detector.isDetected(), segmentComplete };
+    let segmentSamples = null;
+    if (segmentComplete) {
+      // Copy before pop(): front() may be backed by detector-owned native
+      // memory. Returning the actual Silero segment lets final recognition use
+      // the same VAD boundary as Mojicast instead of reconstructing it from
+      // delayed renderer callbacks.
+      // The sherpa-onnx Node addon defaults to an external ArrayBuffer here.
+      // Electron rejects that buffer on Windows ("External buffers are not
+      // allowed"), so request an owned buffer before pop() invalidates it.
+      const segment = this.detector.front(false);
+      segmentSamples = segment?.samples instanceof Float32Array
+        ? segment.samples.slice()
+        : new Float32Array(segment?.samples || []);
+      this.detector.pop();
+    }
+    return { detected: this.detector.isDetected(), segmentComplete, segmentSamples };
   }
 
   stop() {
