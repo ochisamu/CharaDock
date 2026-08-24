@@ -12,5 +12,6 @@ regexTarget = "secret"
 regexes = [
   '''^abcdef0123456789abcdef01$''',
   '''^abcdef123456$''',
+  '''^CHARADOCK_MCP_API_KEY_MCP_0123456789ABCDEF$''',
   '''^sk-secret123456$''',
 ]

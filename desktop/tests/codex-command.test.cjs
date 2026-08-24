@@ -75,7 +75,7 @@ test("WSL Codex runtime is pinned into app-owned storage with its helper binarie
   fs.writeFileSync(path.join(source, "codex"), "codex-binary");
   fs.writeFileSync(path.join(source, "codex-code-mode-host"), "helper-binary");
   const command = cacheWslCodexRuntime(path.join(source, "codex"), cache, {
-    pathApi: path.posix,
+    pathApi: path,
     toRuntimePath: (value) => value,
   });
   assert.equal(command, path.join(cache, "wsl", "build-1", "codex"));
