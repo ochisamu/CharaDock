@@ -61,6 +61,7 @@ test("remote server requires pairing, same-origin CSRF, and strips token from th
   const liveStops = [];
   const beatriceAudio = [];
   const beatriceStops = [];
+  const streamingSpeechCalls = [];
   const stateContexts = [];
   const mcpAppBridgeCalls = [];
   let secureHandoffs = 0;
@@ -80,6 +81,10 @@ test("remote server requires pairing, same-origin CSRF, and strips token from th
       stopLive: (payload) => { liveStops.push(payload); return { stopped: true }; },
       processLiveBeatriceAudio: (payload) => { beatriceAudio.push(payload); return { accepted: true }; },
       stopLiveBeatrice: (payload) => { beatriceStops.push(payload); return { stopped: true }; },
+      startStreamingSpeech: (payload) => { streamingSpeechCalls.push(["start", payload]); return { sessionId: payload.sessionId, text: "", partial: true }; },
+      appendStreamingSpeech: (payload) => { streamingSpeechCalls.push(["append", payload]); return { sessionId: payload.sessionId, text: "テスト", partial: true }; },
+      finishStreamingSpeech: (payload) => { streamingSpeechCalls.push(["finish", payload]); return { sessionId: payload.sessionId, text: "テスト", partial: false }; },
+      cancelStreamingSpeech: (payload) => { streamingSpeechCalls.push(["cancel", payload]); return { cancelled: true }; },
       interrupt: () => ({ interrupted: true }),
       getMcpApp: (id) => id === "card-1" ? {
         body: Buffer.from("<!doctype html><title>MCP card</title>"),
@@ -206,6 +211,22 @@ test("remote server requires pairing, same-origin CSRF, and strips token from th
     { liveSessionId: undefined, remoteTokenHash: liveStarts[0].remoteTokenHash },
   ]);
 
+  const speechSessionId = "phone-session-1";
+  const speechChunk = Buffer.alloc(3200).toString("base64");
+  for (const [route, body] of [
+    ["start", { sessionId: speechSessionId }],
+    ["append", { sessionId: speechSessionId, pcm16Base64: speechChunk }],
+    ["finish", { sessionId: speechSessionId }],
+    ["cancel", { sessionId: speechSessionId }],
+  ]) {
+    assert.equal((await fetch(`${origin}/api/streaming-speech/${route}`, {
+      method: "POST", headers: liveHeaders, body: JSON.stringify(body),
+    })).status, 200);
+  }
+  assert.equal(streamingSpeechCalls.length, 4);
+  for (const [, call] of streamingSpeechCalls) assert.equal(call.remoteTokenHash, liveStarts[0].remoteTokenHash);
+  assert.equal(streamingSpeechCalls[1][1].pcm16Base64, speechChunk);
+
   const handoff = await fetch(`${origin}/api/secure-handoff`, { method: "POST", headers: liveHeaders, body: "{}" });
   assert.equal(handoff.status, 200);
   assert.deepEqual(await handoff.json(), { url: "https://charadock.example.ts.net/#token=secure" });
@@ -305,10 +326,16 @@ test("the packaged phone surface keeps camera disabled and permits microphone on
   const html = await page.text();
   for (const id of ["companionView", "avatarTapTarget", "avatarReactionShell", "avatarFace", "messageForm", "microphoneButton", "remoteLiveAudio", "interruptButton", "artifactList", "historySheet", "settingsSheet", "settingsStatus", "characterSelect", "responseModeSelect", "ttsModelSettings", "ttsModelFields", "bubbleExpandButton", "pairingCodeInput", "approvalCard", "approveApprovalButton", "workProgressCard", "workProgressSheet", "progressFollowUpForm", "installAppButton", "notificationToggle", "wakeLockToggle"]) assert.match(html, new RegExp(`id="${id}"`));
   assert.match(html, /rel="manifest" href="\/manifest\.webmanifest"/);
-  assert.match(html, /<script src="\/audio-envelope\.js"><\/script>[\s\S]*<script src="\/remote\.js"><\/script>/);
+  assert.match(html, /<script src="\/audio-envelope\.js"><\/script>[\s\S]*<script src="\/realtime-turn-detection\.js"><\/script>[\s\S]*<script src="\/remote\.js"><\/script>/);
   const envelopeScript = await fetch(`${server.origin()}/audio-envelope.js`);
   assert.equal(envelopeScript.status, 200);
   assert.match(await envelopeScript.text(), /createThreeStageMouthTracker/);
+  const turnDetectionScript = await fetch(`${server.origin()}/realtime-turn-detection.js`);
+  assert.equal(turnDetectionScript.status, 200);
+  const turnDetectionSource = await turnDetectionScript.text();
+  assert.match(turnDetectionSource, /LIVE_INPUT_HANGOVER_MS = 650/);
+  assert.match(turnDetectionSource, /createInputBridge/);
+  assert.doesNotMatch(turnDetectionSource, /["']session\.update["']/);
   const script = await fetch(`${server.origin()}/remote.js`).then((response) => response.text());
   assert.match(script, /request\("\/api\/pet"/);
   assert.match(script, /remote-touch-spark/);

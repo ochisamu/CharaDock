@@ -708,6 +708,7 @@ test("Codex client starts WebRTC realtime and forwards transcript events", async
   assert.equal(calls[0].method, "thread/realtime/start");
   assert.equal(calls[0].params.outputModality, "audio");
   assert.equal(calls[0].params.version, "v3");
+  assert.equal(calls[0].params.model, "gpt-live-1-codex");
   assert.equal(calls[0].params.codexResponseHandoffMode, "thinking");
   assert.equal(calls[0].params.clientManagedHandoffs, true);
   assert.equal(calls[0].params.delegationAckFiller, false);
@@ -718,6 +719,37 @@ test("Codex client starts WebRTC realtime and forwards transcript events", async
   assert.deepEqual(calls[0].params.transport, { type: "webrtc", sdp: "v=0\r\n..." });
   client.handleLine(JSON.stringify({ method: "thread/realtime/transcript/delta", params: { threadId: "thread-voice", role: "user", delta: "こんにちは" } }));
   assert.equal(events.find((event) => event.method === "thread/realtime/transcript/delta")?.params.delta, "こんにちは");
+});
+
+test("Codex client uses the approved top-level Realtime model workaround without unsafe protocol fallback", async () => {
+  const calls = [];
+  const events = [];
+  const client = new CodexAppServerClient();
+  client.ensureStarted = async () => {};
+  client.ensureThread = async () => {
+    client.threadId = "thread-live-model-rejected";
+    return client.threadId;
+  };
+  client.request = async (method, params) => {
+    calls.push({ method, params });
+    if (method === "thread/realtime/start") {
+      queueMicrotask(() => client.handleLine(JSON.stringify({
+        method: "thread/realtime/error",
+        params: { threadId: params.threadId, message: "Field `session.model` is not allowed for this Codex realtime session" },
+      })));
+    }
+    return {};
+  };
+  await assert.rejects(
+    () => client.startRealtime({ sdp: "v=0\r\n...", voice: "maple", onEvent: (event) => events.push(event) }),
+    /session\.model.*not allowed/i,
+  );
+  const starts = calls.filter((call) => call.method === "thread/realtime/start");
+  assert.equal(starts.length, 1);
+  assert.deepEqual(starts[0].params.transport, { type: "webrtc", sdp: "v=0\r\n..." });
+  assert.equal(starts[0].params.model, "gpt-live-1-codex");
+  assert.equal(Object.hasOwn(starts[0].params, "session"), false, "The Realtime model must not be nested under session");
+  assert.equal(events.filter((event) => event.method === "thread/realtime/error").length, 1);
 });
 
 test("Codex client omits a Realtime prompt so app-server can retain native delegation", async () => {
@@ -765,7 +797,7 @@ test("Codex client does not expose Realtime until the started notification arriv
     method: "thread/realtime/started",
     params: { threadId: "thread-ready-gate" },
   }));
-  assert.deepEqual(await starting, { threadId: "thread-ready-gate" });
+  assert.deepEqual(await starting, { threadId: "thread-ready-gate", transport: "webrtc", version: "v3" });
   assert.equal(completed, true);
 });
 

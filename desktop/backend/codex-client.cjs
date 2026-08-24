@@ -6,6 +6,12 @@ const path = require("node:path");
 const readline = require("node:readline");
 const { mcpAppServerConfigArgs } = require("../lib/mcp-servers.cjs");
 
+// Temporary compatibility pin for ChatGPT-authenticated Codex Realtime v3.
+// app-server's current default model is rejected by the service, while the
+// server-supported top-level model below succeeds. Keep this out of `session`.
+// Tracking: https://github.com/openai/codex/issues/40140
+const CODEX_REALTIME_MODEL = "gpt-live-1-codex";
+
 const CODEX_INSTALL_REQUIRED_MESSAGE = [
   "Codexが見つかりません。Codex DesktopまたはCodex CLIをインストールし、CharaDockを再起動してください。",
   "Codex CLIは `npm install -g @openai/codex` でインストールできます。",
@@ -694,7 +700,8 @@ class CodexAppServerClient {
     requireMcpReady = false,
     onEvent,
   } = {}) {
-    if (!String(sdp || "").startsWith("v=0")) throw new Error("WebRTCの音声接続情報が正しくありません。");
+    const normalizedSdp = String(sdp || "");
+    if (!normalizedSdp.startsWith("v=0")) throw new Error("WebRTCの音声接続情報が正しくありません。");
     await this.ensureStarted();
     try {
       await this.ensureMcpServersReady();
@@ -724,14 +731,15 @@ class CodexAppServerClient {
     try {
       const params = {
         threadId,
+        model: CODEX_REALTIME_MODEL,
         outputModality: "audio",
         version: "v3",
         codexResponseHandoffMode: codexResponseHandoffMode === "thinking" ? "thinking" : "bemTags",
         includeStartupContext: includeStartupContext !== false,
         clientManagedHandoffs: Boolean(clientManagedHandoffs),
         flushTranscriptTailOnSessionEnd: true,
-        transport: { type: "webrtc", sdp: String(sdp) },
       };
+      params.transport = { type: "webrtc", sdp: normalizedSdp };
       // Omission and an empty value have intentionally different meanings in
       // app-server. Omit the field to retain Codex's built-in Realtime prompt
       // (including native delegation); an explicit value replaces it.
@@ -752,7 +760,7 @@ class CodexAppServerClient {
         this.request("thread/realtime/start", params, 60_000),
         startupReady,
       ]);
-      return { threadId };
+      return { threadId, transport: "webrtc", version: "v3" };
     } catch (error) {
       this.realtimeHandlers.delete(threadId);
       throw error;

@@ -133,7 +133,7 @@ test("Microsoft Store package uses the reserved Partner Center identity", () => 
   const storeManifest = fs.readFileSync(path.join(projectRoot, "packaging", "windows-store", "AppxManifest.xml"), "utf8");
   assert.match(storeManifest, /Name="ochisamu\.CharaDock"/);
   assert.match(storeManifest, /Publisher="CN=69C091B3-AED2-456C-BF7B-A39616771379"/);
-  assert.equal(packageJson.storePackageVersion, "0.3.0.0");
+  assert.equal(packageJson.storePackageVersion, "0.4.0.0");
   const storeVersionParts = packageJson.storePackageVersion.split(".").map(Number);
   assert.equal(storeVersionParts.length, 4);
   assert.equal(storeVersionParts[3], 0, "Microsoft Store reserves the revision component and requires zero");
@@ -275,7 +275,7 @@ test("voice input UI requires one explicit supported provider", () => {
   const html = fs.readFileSync(path.join(projectRoot, "desktop", "control.html"), "utf8");
   const main = fs.readFileSync(path.join(projectRoot, "desktop", "main.cjs"), "utf8");
   const select = html.match(/<select id="speechInputProviderSelect">([\s\S]*?)<\/select>/)?.[1] || "";
-  for (const provider of ["realtime", "sherpa-onnx", "browser", "openai"]) {
+  for (const provider of ["realtime", "streaming-local", "sherpa-onnx", "browser", "openai"]) {
     assert.match(select, new RegExp(`<option value="${provider}">`));
   }
   assert.doesNotMatch(select, /<option value="(?:auto|codex-audio)">/);
@@ -315,7 +315,7 @@ test("setup can be rerun and support diagnostics stay separate from private cont
   assert.match(control, /startOnboardingFirstWork\(\{ goal, theme, delivery \}\)/);
   assert.match(preload, /codex:detect/);
   assert.match(preload, /onboarding:startFirstWork/);
-  assert.match(mascot, /suppressPcAudio: !realtimePeer/);
+  assert.match(mascot, /suppressPcAudio: !hasRealtimeTransport()/);
   assert.match(main, /nextPreferences\.speechInputProvider = "realtime"/);
   assert.match(preload, /support:getDiagnostics/);
   assert.match(preload, /support:exportBundle/);
@@ -627,7 +627,7 @@ test("remote access exposes compact avatar dialogue, device controls, and Live r
   assert.match(remoteJs, /PC側のLiveからこの端末へ切り替え/);
   assert.match(remoteJs, /takeover:\s*appState\?\.voice\?\.liveConnected/);
   const remoteTapHandler = remoteJs.match(/async function tapCharacter\(event\) \{[\s\S]*?\n  \}\n\n  async function openArtifact/)?.[0] || "";
-  assert.match(remoteTapHandler, /voice\.responseMode === "live" && !livePeer/);
+  assert.match(remoteTapHandler, /voice\.responseMode === "live" && !hasRemoteLiveTransport\(\)/);
   assert.match(remoteTapHandler, /!microphoneAvailable\(\)[\s\S]*タップからLiveを始めるにはHTTPS/);
   assert.match(remoteTapHandler, /voice\.liveOwner !== "remote"[\s\S]*PC側のLiveが使用中/);
   assert.match(remoteTapHandler, /await startRemoteLive\(\{ microphone: true \}\)[\s\S]*request\("\/api\/pet"/);

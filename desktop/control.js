@@ -18,8 +18,15 @@
   let mediaRecorder = null;
   let recordedChunks = [];
   let recordingProvider = "openai";
+  let streamingSpeechSessionId = "";
+  let streamingSpeechContext = null;
+  let streamingSpeechSource = null;
+  let streamingSpeechProcessor = null;
+  let streamingSpeechQueue = Promise.resolve();
+  let streamingSpeechStopping = false;
   let realtimePeerConnection = null;
   let realtimeDataChannel = null;
+  let realtimeInputBridge = null;
   let realtimeRemoteAudio = null;
   let realtimeBeatriceConverter = null;
   let realtimeMeterContext = null;
@@ -924,6 +931,59 @@
     const downloadMb = Math.max(1, Math.round(Number(model.downloadBytes || 0) / 1024 / 1024));
     download.textContent = `ダウンロード（約${downloadMb}MB）`;
     hint.textContent = `${model.description || "日本語音声認識モデル"}。初回ダウンロード約${downloadMb}MB。認識処理と音声データは端末内で完結します。`;
+  }
+
+  function syncStreamingSpeechModelUi(model = {}) {
+    const status = $("#streamingSpeechModelStatus");
+    const progress = $("#streamingSpeechModelProgress");
+    const download = $("#streamingSpeechModelDownloadButton");
+    const remove = $("#streamingSpeechModelRemoveButton");
+    const select = $("#streamingSpeechModelSelect");
+    const hint = $("#streamingSpeechModelHint");
+    if (!status || !progress || !download || !remove || !select || !hint) return;
+    const models = Array.isArray(model.models) ? model.models : [];
+    const displayLabel = (item) => state?.language === "en" ? (item.labelEn || item.label) : item.label;
+    const displayDescription = (item) => state?.language === "en" ? (item.descriptionEn || item.description) : item.description;
+    if (models.length) {
+      select.replaceChildren(...models.map((item) => new Option(
+        `${displayLabel(item)}${item.recommended ? localized("（推奨）", " (recommended)") : ""}${item.experimental ? localized(" · 実験的", " · experimental") : ""}${item.installed ? localized(" · 導入済み", " · installed") : ""}`,
+        item.modelId,
+      )));
+      select.value = model.modelId || models[0].modelId;
+    }
+    const selected = models.find((item) => item.modelId === select.value) || model;
+    const transfer = model.progress || {};
+    const total = Number(transfer.totalBytes || selected.downloadBytes) || 1;
+    const received = Number(transfer.receivedBytes) || 0;
+    if (model.downloading || ["downloading", "extracting"].includes(transfer.phase)) {
+      progress.hidden = false;
+      if (transfer.phase === "extracting") {
+        progress.removeAttribute("value");
+        status.textContent = "モデルを展開しています…";
+      } else {
+        const percent = Math.min(100, Math.round(received / total * 100));
+        progress.value = percent;
+        status.textContent = `モデルをダウンロードしています… ${percent}%`;
+      }
+    } else {
+      progress.hidden = true;
+      progress.value = 0;
+      status.textContent = !selected.supported
+        ? "このOS・CPUでは利用できません。"
+        : selected.installed ? `${displayLabel(selected) || localized("ストリーミング音声モデル", "Streaming speech model")} · ${localized("利用できます", "Ready")}`
+          : "選択したモデルはまだダウンロードされていません。";
+    }
+    download.hidden = Boolean(selected.installed) || selected.supported === false;
+    download.disabled = Boolean(model.downloading);
+    remove.hidden = !selected.installed;
+    remove.disabled = Boolean(model.downloading);
+    select.disabled = Boolean(model.downloading);
+    const size = downloadSizeLabel(selected.downloadBytes);
+    download.textContent = `ダウンロード（約${size}）`;
+    const sharedNote = selected.shared
+      ? localized(" 従来のsherpa-onnx設定とモデルを共用し、削除も両方へ反映されます。", " It shares the model with the existing sherpa-onnx option; deleting it affects both.")
+      : "";
+    hint.textContent = `${displayDescription(selected) || localized("話している途中から認識結果を表示します", "Shows interim results while you speak")}${localized(`。初回ダウンロード約${size}。認識処理と音声データは端末内で完結します。`, `. First download: about ${size}. Recognition and audio stay on this device.`)}${sharedNote}`;
   }
 
   function downloadSizeLabel(bytes) {
@@ -2859,6 +2919,7 @@
     if (!state) return;
     const inputNames = {
       realtime: "GPT-Live / Codex Voice",
+      "streaming-local": localized("ストリーミング音声認識", "Streaming speech recognition"),
       "sherpa-onnx": "sherpa-onnx",
       browser: localized("端末音声認識", "System speech recognition"),
       openai: localized("OpenAI文字起こし", "OpenAI transcription"),
@@ -3479,7 +3540,8 @@
     $("#realtimeAutoStartOnTextToggle").checked = state.realtimeAutoStartOnText !== false;
     $("#realtimeAutoStartOnPetToggle").checked = state.realtimeAutoStartOnPet === true;
     $("#sherpaOnnxSettings").hidden = $("#speechInputProviderSelect").value !== "sherpa-onnx";
-    const recordedSpeechSelected = ["sherpa-onnx", "openai"].includes($("#speechInputProviderSelect").value);
+    $("#streamingSpeechSettings").hidden = $("#speechInputProviderSelect").value !== "streaming-local";
+    const recordedSpeechSelected = ["streaming-local", "sherpa-onnx", "openai"].includes($("#speechInputProviderSelect").value);
     $("#voiceActivationSettings").hidden = !recordedSpeechSelected;
     $("#voiceActivationModeSelect").value = state.voiceActivationMode || "vad";
     $("#vadSensitivitySelect").value = state.vadSensitivity || "normal";
@@ -3492,6 +3554,7 @@
     $("#voiceAutoSendCountdownToggle").disabled = !$("#voiceAutoSendToggle").checked;
     $("#voiceAutoSendDelaySelect").disabled = !$("#voiceAutoSendToggle").checked || !$("#voiceAutoSendCountdownToggle").checked;
     syncSherpaModelUi(state.sherpaModel);
+    syncStreamingSpeechModelUi(state.streamingSpeechModel);
     syncVoiceRoutingUi();
     $("#positionLockedToggle").checked = Boolean(state.positionLocked);
     $("#edgeSnapToggle").checked = Boolean(state.edgeSnap);
@@ -3656,6 +3719,7 @@
       realtimeAutoStartOnText: $("#realtimeAutoStartOnTextToggle").checked,
       realtimeAutoStartOnPet: $("#realtimeAutoStartOnPetToggle").checked,
       sherpaModelId: $("#sherpaModelSelect").value || state?.sherpaModelId,
+      streamingSpeechModelId: $("#streamingSpeechModelSelect").value || state?.streamingSpeechModelId,
       speechLanguage: state?.speechLanguage || "ja-JP",
       voiceActivationMode: $("#voiceActivationModeSelect").value,
       vadSensitivity: $("#vadSensitivitySelect").value,
@@ -3796,10 +3860,12 @@
     realtimeStartGeneration += 1;
     try { realtimeDataChannel?.close(); } catch {}
     try { realtimePeerConnection?.close(); } catch {}
+    realtimeInputBridge?.close();
     realtimeRemoteAudio?.pause();
     if (realtimeRemoteAudio) realtimeRemoteAudio.srcObject = null;
     realtimeDataChannel = null;
     realtimePeerConnection = null;
+    realtimeInputBridge = null;
     realtimeRemoteAudio = null;
     stopRealtimeOutputMeter();
     realtimeBeatriceConverter?.stop().catch(() => {});
@@ -3911,13 +3977,16 @@
     try {
       const stream = await ensureAudioStream();
       if (startGeneration !== realtimeStartGeneration) throw new Error("Live connection was cancelled.");
+      realtimeInputBridge?.close();
+      realtimeInputBridge = await window.CharaDockRealtimeTurnDetection.createInputBridge(stream);
+      const outgoingStream = realtimeInputBridge.stream;
       const peer = new RTCPeerConnection();
       realtimePeerConnection = peer;
       realtimeUserTranscript = "";
       realtimeAssistantMessage = null;
       realtimeAssistantText = "";
       realtimeAssistantActive = false;
-      for (const track of stream.getAudioTracks()) peer.addTrack(track, stream);
+      for (const track of outgoingStream.getAudioTracks()) peer.addTrack(track, outgoingStream);
       peer.addEventListener("track", async (event) => {
         const remoteStream = event.streams[0] || new MediaStream([event.track]);
         if (state.realtimeVoiceConversion === "beatrice-v2") {
@@ -4104,6 +4173,92 @@
     setStatus($("#chatStatus"), `${provider === "sherpa-onnx" ? "sherpa-onnx用に" : ""}録音中…もう一度押すと文字に変換します。`);
   }
 
+  function resampleSpeechChunk(samples, sourceRate) {
+    if (sourceRate === 16_000) return samples.slice();
+    const length = Math.max(1, Math.floor(samples.length * 16_000 / sourceRate));
+    const output = new Float32Array(length);
+    const ratio = sourceRate / 16_000;
+    for (let index = 0; index < length; index += 1) {
+      const start = Math.floor(index * ratio);
+      const end = Math.max(start + 1, Math.min(samples.length, Math.floor((index + 1) * ratio)));
+      let sum = 0;
+      for (let sourceIndex = start; sourceIndex < end; sourceIndex += 1) sum += samples[sourceIndex];
+      output[index] = sum / (end - start);
+    }
+    return output;
+  }
+
+  async function stopStreamingSpeechInput({ cancel = false } = {}) {
+    const sessionId = streamingSpeechSessionId;
+    if (!sessionId || streamingSpeechStopping) return;
+    streamingSpeechStopping = true;
+    $("#speechInputButton")?.setAttribute("aria-pressed", "false");
+    try { streamingSpeechProcessor?.disconnect(); } catch {}
+    try { streamingSpeechSource?.disconnect(); } catch {}
+    streamingSpeechProcessor = null;
+    streamingSpeechSource = null;
+    const context = streamingSpeechContext;
+    streamingSpeechContext = null;
+    await context?.close?.().catch(() => {});
+    try {
+      await streamingSpeechQueue;
+      if (streamingSpeechSessionId === sessionId) streamingSpeechSessionId = "";
+      if (cancel) {
+        await api.cancelStreamingSpeech({ sessionId });
+        return;
+      }
+      const result = await api.finishStreamingSpeech({ sessionId });
+      if (sessionId && result?.text) $("#chatInput").value = result.text;
+      setStatus($("#chatStatus"), result?.text ? "音声を入力欄へ追加しました。" : "音声を認識できませんでした。もう一度お試しください。");
+    } catch (error) {
+      if (streamingSpeechSessionId === sessionId) streamingSpeechSessionId = "";
+      await api.cancelStreamingSpeech({ sessionId }).catch(() => {});
+      setStatus($("#chatStatus"), error.message, true);
+    } finally {
+      streamingSpeechStopping = false;
+      streamingSpeechQueue = Promise.resolve();
+    }
+  }
+
+  async function toggleStreamingSpeechInput() {
+    if (streamingSpeechSessionId) {
+      await stopStreamingSpeechInput();
+      return;
+    }
+    const selected = state.streamingSpeechModel?.models?.find((item) => item.modelId === state.streamingSpeechModelId);
+    if (!selected?.installed) throw new Error("設定からストリーミング音声モデルをダウンロードしてください。");
+    const stream = await ensureAudioStream();
+    const sessionId = `control-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    await api.startStreamingSpeech({ sessionId, modelId: state.streamingSpeechModelId });
+    streamingSpeechSessionId = sessionId;
+    streamingSpeechQueue = Promise.resolve();
+    const context = new AudioContext({ latencyHint: "interactive" });
+    const source = context.createMediaStreamSource(stream);
+    const processor = context.createScriptProcessor(2048, 1, 1);
+    const silence = context.createGain();
+    silence.gain.value = 0;
+    source.connect(processor);
+    processor.connect(silence);
+    silence.connect(context.destination);
+    streamingSpeechContext = context;
+    streamingSpeechSource = source;
+    streamingSpeechProcessor = processor;
+    processor.onaudioprocess = (event) => {
+      if (streamingSpeechSessionId !== sessionId) return;
+      const samples = resampleSpeechChunk(event.inputBuffer.getChannelData(0), context.sampleRate);
+      streamingSpeechQueue = streamingSpeechQueue.then(async () => {
+        if (streamingSpeechSessionId !== sessionId) return;
+        const result = await api.appendStreamingSpeech({ sessionId, samples, sampleRate: 16_000 });
+        if (streamingSpeechSessionId === sessionId && result?.text) $("#chatInput").value = result.text;
+      }).catch((error) => {
+        if (streamingSpeechSessionId === sessionId) setStatus($("#chatStatus"), error.message, true);
+      });
+    };
+    await context.resume();
+    $("#speechInputButton")?.setAttribute("aria-pressed", "true");
+    setStatus($("#chatStatus"), "話してください…認識結果を途中から表示します。");
+  }
+
   async function toggleSpeechInput() {
     if (speechRecognition) {
       speechRecognition.stop();
@@ -4111,6 +4266,10 @@
     }
     if (mediaRecorder?.state === "recording") {
       await toggleRecordedSpeechInput();
+      return;
+    }
+    if (streamingSpeechSessionId) {
+      await stopStreamingSpeechInput();
       return;
     }
     if (realtimePeerConnection || realtimeStarting) {
@@ -4124,6 +4283,10 @@
     }
     if (provider === "sherpa-onnx") {
       await toggleRecordedSpeechInput("sherpa-onnx");
+      return;
+    }
+    if (provider === "streaming-local") {
+      await toggleStreamingSpeechInput();
       return;
     }
     if (provider === "openai") {
@@ -5552,8 +5715,12 @@
     }
     $("#speechInputProviderSelect").addEventListener("change", async () => {
       $("#sherpaOnnxSettings").hidden = $("#speechInputProviderSelect").value !== "sherpa-onnx";
-      $("#voiceActivationSettings").hidden = !["sherpa-onnx", "openai"].includes($("#speechInputProviderSelect").value);
+      $("#streamingSpeechSettings").hidden = $("#speechInputProviderSelect").value !== "streaming-local";
+      $("#voiceActivationSettings").hidden = !["streaming-local", "sherpa-onnx", "openai"].includes($("#speechInputProviderSelect").value);
       try {
+        if ($("#speechInputProviderSelect").value !== "streaming-local" && streamingSpeechSessionId) {
+          await stopStreamingSpeechInput({ cancel: true });
+        }
         if ($("#speechInputProviderSelect").value !== "realtime" && (realtimePeerConnection || realtimeStarting)) {
           await stopCodexRealtimeVoice({ quiet: true });
         }
@@ -5564,6 +5731,14 @@
     });
     $("#sherpaModelSelect").addEventListener("change", () => {
       saveSettings().catch((error) => setStatus($("#ttsStatus"), error.message, true));
+    });
+    $("#streamingSpeechModelSelect").addEventListener("change", async () => {
+      try {
+        await saveSettings();
+        syncStreamingSpeechModelUi(state.streamingSpeechModel);
+      } catch (error) {
+        setStatus($("#connectionStatus"), error.message, true);
+      }
     });
     ["#voiceActivationModeSelect", "#vadSensitivitySelect", "#voiceAutoSendToggle", "#voiceAutoSendCountdownToggle", "#voiceAutoSendDelaySelect"].forEach((selector) => $(selector).addEventListener("change", () => {
       saveSettings().catch((error) => setStatus($("#connectionStatus"), error.message, true));
@@ -5586,6 +5761,29 @@
       if (!window.confirm(localized(`${label}を削除しますか？`, `Delete ${label}?`))) return;
       state.sherpaModel = await api.removeSherpaModel($("#sherpaModelSelect").value);
       syncSherpaModelUi(state.sherpaModel);
+    });
+    $("#streamingSpeechModelDownloadButton").addEventListener("click", async () => {
+      try {
+        const modelId = $("#streamingSpeechModelSelect").value;
+        syncStreamingSpeechModelUi({ ...(state.streamingSpeechModel || {}), downloading: true, downloadingModelId: modelId, progress: { modelId, phase: "downloading", receivedBytes: 0, totalBytes: state.streamingSpeechModel?.models?.find((item) => item.modelId === modelId)?.downloadBytes || 1 } });
+        state.streamingSpeechModel = await api.downloadStreamingSpeechModel(modelId);
+        syncStreamingSpeechModelUi(state.streamingSpeechModel);
+      } catch (error) {
+        syncStreamingSpeechModelUi(state.streamingSpeechModel);
+        setStatus($("#connectionStatus"), error.message, true);
+      }
+    });
+    $("#streamingSpeechModelRemoveButton").addEventListener("click", async () => {
+      const modelId = $("#streamingSpeechModelSelect").value;
+      const selected = state.streamingSpeechModel?.models?.find((item) => item.modelId === modelId);
+      const label = selected?.label || localized("ダウンロード済みモデル", "the downloaded model");
+      if (!window.confirm(localized(`${label}を削除しますか？`, `Delete ${label}?`))) return;
+      try {
+        state.streamingSpeechModel = await api.removeStreamingSpeechModel(modelId);
+        syncStreamingSpeechModelUi(state.streamingSpeechModel);
+      } catch (error) {
+        setStatus($("#connectionStatus"), error.message, true);
+      }
     });
     ["#styleBertVits2UrlInput", "#styleBertVits2ModelIdInput", "#styleBertVits2SpeedInput", "#sbv2ModelSelect", "#sbv2StyleSelect", "#sbv2StyleWeightInput", "#sbv2SpeedInput", "#sbv2DeviceSelect", "#piperPlusSpeedInput", "#supertonicVoiceSelect", "#supertonicSpeedInput", "#supertonicStepsInput", "#kokoroVoiceSelect", "#kokoroSpeedInput", "#kokoroDeviceSelect", "#irodoriSpeedInput", "#irodoriSamplingModeSelect", "#irodoriStepsInput", "#irodoriSeedInput", "#irodoriCaptionInput", "#irodoriAutoEmotionToggle", "#irodoriEmotionStrengthSelect", "#englishPronunciationDictionaryInput"]
       .forEach((selector) => $(selector).addEventListener("change", () => {
@@ -5806,6 +6004,10 @@
     api.onSherpaModelProgress((model) => {
       state.sherpaModel = model;
       syncSherpaModelUi(model);
+    });
+    api.onStreamingSpeechModelProgress((model) => {
+      state.streamingSpeechModel = model;
+      syncStreamingSpeechModelUi(model);
     });
     api.onTtsModelProgress((model) => {
       const mapping = {

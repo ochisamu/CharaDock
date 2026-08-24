@@ -147,6 +147,7 @@ test("new installs enable onboarding and desktop positioning defaults", () => {
   assert.equal(state.realtimeAutoStartOnText, true);
   assert.equal(state.realtimeAutoStartOnPet, false);
   assert.equal(state.sherpaModelId, "reazonspeech-ja-int8");
+  assert.equal(state.streamingSpeechModelId, "reazonspeech-streaming");
   assert.equal(state.supertonicVoice, "F1");
   assert.equal(state.supertonicSpeed, 1);
   assert.equal(state.supertonicSteps, 8);
@@ -220,6 +221,14 @@ test("new installs enable onboarding and desktop positioning defaults", () => {
     assert.equal(profile.irodoriVersion, "500m-v3");
     assert.equal(profile.irodoriPrecision, "fp16");
   }
+});
+
+test("preferences migrate a removed streaming speech model to ReazonSpeech", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "charadock-prefs-streaming-stt-"));
+  const file = path.join(directory, "preferences.json");
+  fs.writeFileSync(file, JSON.stringify({ streamingSpeechModelId: "removed-streaming-model" }));
+  const preferences = new Preferences(file);
+  assert.equal(preferences.publicState().streamingSpeechModelId, "reazonspeech-streaming");
 });
 
 test("preferences retain private character and project continuation summaries", () => {

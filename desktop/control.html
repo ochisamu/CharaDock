@@ -529,6 +529,7 @@
               <h3>音声入力</h3>
               <label>認識方式<select id="speechInputProviderSelect">
                 <option value="realtime">GPT-Live / Codex Voice（実験的）</option>
+                <option value="streaming-local">ストリーミング音声認識（日本語・ローカル）</option>
                 <option value="sherpa-onnx">sherpa-onnx（ローカル）</option>
                 <option value="browser">端末音声認識</option>
                 <option value="openai">OpenAI文字起こし</option>
@@ -565,6 +566,16 @@
                   <button id="sherpaModelRemoveButton" class="button button-quiet" type="button" hidden>モデルを削除</button>
                 </div>
                 <p id="sherpaModelHint" class="hint">選択したモデルを初回だけ取得します。認識処理と音声データは端末内で完結します。</p>
+              </div>
+              <div id="streamingSpeechSettings" class="tts-provider-settings" hidden>
+                <label>ストリーミング認識モデル<select id="streamingSpeechModelSelect"></select></label>
+                <p id="streamingSpeechModelStatus" class="hint">ストリーミング音声モデルを確認しています…</p>
+                <progress id="streamingSpeechModelProgress" max="100" value="0" hidden></progress>
+                <div class="size-actions">
+                  <button id="streamingSpeechModelDownloadButton" class="button button-secondary" type="button">モデルをダウンロード</button>
+                  <button id="streamingSpeechModelRemoveButton" class="button button-quiet" type="button" hidden>モデルを削除</button>
+                </div>
+                <p id="streamingSpeechModelHint" class="hint">話している途中から認識結果を表示します。モデルは初回だけ取得し、音声は端末内で処理します。</p>
               </div>
             </div>
             <section id="characterVoiceCard" class="card settings-card character-voice-card">
@@ -1053,6 +1064,7 @@
   </section>
   <script src="./i18n.js"></script>
   <script src="./audio-envelope.js"></script>
+  <script src="./realtime-turn-detection.js"></script>
   <script src="./realtime-beatrice.js"></script>
   <script src="../vendor/highlightjs/11.11.1/highlight.min.js"></script>
   <script src="../vendor/markdown-it/14.3.0/markdown-it.min.js"></script>

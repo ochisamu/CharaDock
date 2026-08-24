@@ -97,6 +97,7 @@ const DEFAULTS = Object.freeze({
   realtimeAutoStartOnText: true,
   realtimeAutoStartOnPet: false,
   sherpaModelId: "reazonspeech-ja-int8",
+  streamingSpeechModelId: "reazonspeech-streaming",
   speechLanguage: "ja-JP",
   voiceActivationMode: "vad",
   vadSensitivity: "normal",
@@ -541,8 +542,11 @@ class Preferences {
         }]];
       }));
       this.data.realtimeVoice = normalizeRealtimeVoice(this.data.realtimeVoice);
-      if (!["realtime", "sherpa-onnx", "browser", "openai"].includes(this.data.speechInputProvider)) {
+      if (!["realtime", "streaming-local", "sherpa-onnx", "browser", "openai"].includes(this.data.speechInputProvider)) {
         this.data.speechInputProvider = "browser";
+      }
+      if (this.data.streamingSpeechModelId !== "reazonspeech-streaming") {
+        this.data.streamingSpeechModelId = "reazonspeech-streaming";
       }
       this.data.conversationHistories = normalizeConversationHistories(this.data.conversationHistories);
       this.data.characterMemories = normalizeCharacterMemories(this.data.characterMemories);

@@ -43,11 +43,17 @@ For each affected entry and route, cover:
 - System/transport status stays out of character speech and durable conversation history.
 - Errors always restore usable controls and preserve the last meaningful grounded response.
 - Supporting results open once without stealing focus, hiding the composer, or covering the character more than necessary.
+- Streaming speech may expose tentative text immediately, but only a separate, conservative utterance gate may commit or auto-send it; a partial result must never submit a turn.
+- For Japanese local streaming STT, treat Silero's completed segment as the authoritative final input, copy it before `pop()`, request a non-external Node buffer for Windows Electron, and preserve ReazonSpeech's required 0.9 seconds of boundary context on both sides. Never reuse the last partial as the final result.
+- Live transport compatibility must fail closed: never rewrite Codex authentication/provider settings, extract login tokens, retry an obsolete Realtime protocol, or silently switch to ordinary STT/TTS. A server-approved compatibility model belongs only in the top-level `thread/realtime/start` parameters and needs a real WebRTC regression test. Preserve upstream errors for diagnostics, restore all controls, and show a concise system-level compatibility notice outside character dialogue.
+- Codex Frameless Live owns its server-side endpointing and may reject Realtime `session.update` turn-detection fields. When a natural Japanese clause pause needs more grace, apply one shared, bounded microphone hangover to the outgoing Live track on settings chat, desktop mascot, and remote; do not send unsupported session fields or inject unrelated synthetic noise. Test a multi-clause utterance whose internal pause is shorter than the effective grace and confirm it becomes one turn.
 
 ## Evidence standard
 
 - Unit-test the coordinator, buffer, gate, readiness, and deduplication logic with interleaved and late events.
 - Integration-test every affected IPC/HTTP entry point and ensure it reaches the shared runtime exactly once.
+- Make Live smoke tests assert an actual WebRTC transport and a successful turn. Device STT/TTS fallback, a connected-looking microphone button, or a swallowed startup error must fail the test.
+- For optional local speech models, test the installed Windows Electron runtime with real audio through start, ordered pre-roll, partial display, finalization, and one commit; model-only transcription is insufficient evidence.
 - Use a real development profile for TTS/Live timing, MCP/Skill readiness, Windows/WSL workspaces, and third-party MCP Apps.
 - Capture at least one rendered PC surface and one remote/mobile surface for layout or embedded-content changes.
 - Run the full repository test suite after targeted tests pass.

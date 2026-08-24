@@ -47,6 +47,7 @@
   let wakeLockSentinel = null;
   let livePeer = null;
   let liveInputStream = null;
+  let liveInputBridge = null;
   let liveSyntheticInputContext = null;
   let liveSyntheticInputOscillator = null;
   let liveStarting = false;
@@ -77,6 +78,19 @@
   const cancelledRecognitions = new WeakSet();
   let dictationArmed = false;
   let dictationRestartTimer = 0;
+  let streamingSpeechStream = null;
+  let streamingSpeechContext = null;
+  let streamingSpeechSource = null;
+  let streamingSpeechProcessor = null;
+  let streamingSpeechSessionId = "";
+  let streamingSpeechQueue = Promise.resolve();
+  let streamingSpeechPreRoll = [];
+  let streamingSpeechSpeaking = false;
+  let streamingSpeechLoudSince = 0;
+  let streamingSpeechSilentSince = 0;
+  let streamingSpeechStartedAt = 0;
+  let streamingSpeechNoiseFloor = .006;
+  let streamingSpeechFinalizing = false;
   let seenStartupGreetingId = "";
   let pendingStartupGreeting = null;
   let seenMcpAppId = "";
@@ -685,8 +699,11 @@
     if (wasBusy && !busy) scheduleDictationResume();
   }
 
+  const hasRemoteLiveTransport = () => Boolean(livePeer || liveStarting);
+
   function closeRemoteLivePeer() {
     try { livePeer?.close(); } catch {}
+    liveInputBridge?.close();
     for (const track of liveInputStream?.getTracks?.() || []) track.stop();
     try { liveSyntheticInputOscillator?.stop(); } catch {}
     liveSyntheticInputOscillator = null;
@@ -706,6 +723,7 @@
     resetRemoteMouth();
     livePeer = null;
     liveInputStream = null;
+    liveInputBridge = null;
     liveStarting = false;
     liveSessionId = "";
     liveOutputSuppressed = false;
@@ -976,7 +994,7 @@
     const button = $("#microphoneButton");
     button.disabled = (!liveMode && !dictationArmed && busy)
       || (!liveMode && !microphoneAvailable() && !microphoneHandoffAvailable());
-    button.classList.toggle("is-live", Boolean(livePeer && (remoteOwnsLive || liveStarting)));
+    button.classList.toggle("is-live", Boolean(hasRemoteLiveTransport() && (remoteOwnsLive || liveStarting)));
     button.classList.toggle("is-listening", Boolean(dictationArmed));
     button.title = liveMode
       ? liveStarting ? text("Live接続を中止", "Cancel Live connection") : remoteOwnsLive ? text("Liveを停止", "Stop Live") : pcOwnsLive ? text("PC側のLiveからこの端末へ切り替え", "Move Live from the PC to this phone") : text("この端末でLiveを開始", "Start Live on this phone")
@@ -1001,7 +1019,7 @@
   }
 
   async function startRemoteLive({ microphone = true } = {}) {
-    if (livePeer || liveStarting) return true;
+    if (hasRemoteLiveTransport()) return true;
     stopDictation();
     stopMobileSpeech({ resumeDictation: false });
     stopLiveBeatricePipeline();
@@ -1020,7 +1038,9 @@
       if (microphone) {
         if (!microphoneAvailable()) throw new Error(text("マイクにはHTTPS接続が必要です。Tailscale Serveなどの安全なURLから開いてください。", "The microphone requires HTTPS. Open CharaDock through a secure URL such as Tailscale Serve."));
         liveInputStream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }, video: false });
-        for (const track of liveInputStream.getAudioTracks()) peer.addTrack(track, liveInputStream);
+        liveInputBridge = await window.CharaDockRealtimeTurnDetection.createInputBridge(liveInputStream);
+        const outgoingStream = liveInputBridge.stream;
+        for (const track of outgoingStream.getAudioTracks()) peer.addTrack(track, outgoingStream);
       } else {
         // Frameless Live expects an input-audio media section even when the
         // turn begins from typed text. A local zero-gain WebAudio track keeps
@@ -1098,7 +1118,7 @@
       throw error;
     } finally {
       liveStarting = false;
-      if (!livePeer) setConnection(true);
+      if (!hasRemoteLiveTransport()) setConnection(true);
       syncMicrophoneButton();
     }
   }
@@ -1309,6 +1329,7 @@
   function applyState(nextState) {
     if (!nextState) return;
     if (dictationArmed && nextState?.voice?.responseMode === "live") stopDictation();
+    if (streamingSpeechContext && nextState?.voice?.inputProvider !== "streaming-local") stopDictation();
     const changedCharacter = appState?.character?.id !== nextState.character?.id || appState?.character?.assetVersion !== nextState.character?.assetVersion;
     observeStateTransitions(nextState);
     appState = nextState;
@@ -1477,7 +1498,7 @@
     setBusy(true);
     try {
       if (appState?.voice?.responseMode === "live"
-        && (!livePeer || !appState.voice.liveConnected || appState.voice.liveOwner !== "remote")) {
+        && (!hasRemoteLiveTransport() || !appState.voice.liveConnected || appState.voice.liveOwner !== "remote")) {
         if (appState.voice.liveConnected && appState.voice.liveOwner === "remote") await stopRemoteLive();
         // Auto-started Live uses the same real microphone route as the mic
         // button. Never show an active microphone state for a silent synthetic
@@ -1521,7 +1542,171 @@
     speechRecognition = null;
     if (recognition) cancelledRecognitions.add(recognition);
     try { recognition?.abort(); } catch {}
+    if (streamingSpeechContext || streamingSpeechStream) stopStreamingDictation({ keepArmed });
     syncMicrophoneButton();
+  }
+
+  function pcm16Base64(samples) {
+    const bytes = new Uint8Array(samples.length * 2);
+    const view = new DataView(bytes.buffer);
+    for (let index = 0; index < samples.length; index += 1) {
+      const value = Math.max(-1, Math.min(1, samples[index]));
+      view.setInt16(index * 2, value < 0 ? Math.round(value * 32768) : Math.round(value * 32767), true);
+    }
+    let binary = "";
+    for (let offset = 0; offset < bytes.length; offset += 0x4000) {
+      binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x4000));
+    }
+    return btoa(binary);
+  }
+
+  function resampleStreamingSpeech(samples, sourceRate) {
+    if (sourceRate === 16_000) return samples.slice();
+    const length = Math.max(1, Math.floor(samples.length * 16_000 / sourceRate));
+    const output = new Float32Array(length);
+    const ratio = sourceRate / 16_000;
+    for (let index = 0; index < length; index += 1) {
+      const start = Math.floor(index * ratio);
+      const end = Math.max(start + 1, Math.min(samples.length, Math.floor((index + 1) * ratio)));
+      let sum = 0;
+      for (let sourceIndex = start; sourceIndex < end; sourceIndex += 1) sum += samples[sourceIndex];
+      output[index] = sum / (end - start);
+    }
+    return output;
+  }
+
+  function queueStreamingSpeechAppend(sessionId, samples) {
+    streamingSpeechQueue = streamingSpeechQueue.then(async () => {
+      if (!dictationArmed || streamingSpeechSessionId !== sessionId) return;
+      const result = await request("/api/streaming-speech/append", {
+        method: "POST",
+        body: JSON.stringify({ sessionId, pcm16Base64: pcm16Base64(samples) }),
+      });
+      if (streamingSpeechSessionId === sessionId && result?.text) {
+        $("#messageInput").value = result.text;
+        setComposerHint(text("聞き取っています…", "Listening…"));
+      }
+    });
+  }
+
+  function beginStreamingSpeechUtterance() {
+    if (!dictationArmed || streamingSpeechSpeaking || streamingSpeechFinalizing || busy) return;
+    const sessionId = `phone-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    streamingSpeechSessionId = sessionId;
+    streamingSpeechSpeaking = true;
+    streamingSpeechStartedAt = performance.now();
+    streamingSpeechSilentSince = 0;
+    const preRoll = streamingSpeechPreRoll.splice(0);
+    streamingSpeechQueue = request("/api/streaming-speech/start", {
+      method: "POST",
+      body: JSON.stringify({ sessionId }),
+    });
+    for (const samples of preRoll) queueStreamingSpeechAppend(sessionId, samples);
+    setComposerHint(text("聞き取っています…", "Listening…"));
+  }
+
+  async function finishStreamingSpeechUtterance() {
+    if (!streamingSpeechSpeaking || streamingSpeechFinalizing || !streamingSpeechSessionId) return;
+    streamingSpeechFinalizing = true;
+    streamingSpeechSpeaking = false;
+    const sessionId = streamingSpeechSessionId;
+    try {
+      await streamingSpeechQueue;
+      const result = await request("/api/streaming-speech/finish", {
+        method: "POST",
+        body: JSON.stringify({ sessionId }),
+      });
+      if (streamingSpeechSessionId !== sessionId) return;
+      streamingSpeechSessionId = "";
+      const transcript = String(result?.text || "").trim();
+      if (transcript) {
+        $("#messageInput").value = transcript;
+        if (!busy) $("#messageForm").requestSubmit();
+      } else {
+        setComposerHint(text("聞き取れませんでした · そのまま話し直せます", "No speech recognized · Try again"));
+      }
+    } catch (error) {
+      if (streamingSpeechSessionId === sessionId) streamingSpeechSessionId = "";
+      request("/api/streaming-speech/cancel", { method: "POST", body: JSON.stringify({ sessionId }) }).catch(() => {});
+      showRemoteSystemError(error);
+    } finally {
+      streamingSpeechFinalizing = false;
+      streamingSpeechPreRoll = [];
+      streamingSpeechLoudSince = 0;
+      streamingSpeechSilentSince = 0;
+    }
+  }
+
+  function stopStreamingDictation({ keepArmed = false } = {}) {
+    if (!keepArmed) dictationArmed = false;
+    const sessionId = streamingSpeechSessionId;
+    streamingSpeechSessionId = "";
+    streamingSpeechSpeaking = false;
+    streamingSpeechFinalizing = false;
+    streamingSpeechPreRoll = [];
+    try { streamingSpeechProcessor?.disconnect(); } catch {}
+    try { streamingSpeechSource?.disconnect(); } catch {}
+    streamingSpeechProcessor = null;
+    streamingSpeechSource = null;
+    for (const track of streamingSpeechStream?.getTracks?.() || []) track.stop();
+    streamingSpeechStream = null;
+    streamingSpeechContext?.close?.().catch(() => {});
+    streamingSpeechContext = null;
+    streamingSpeechQueue = Promise.resolve();
+    if (sessionId) request("/api/streaming-speech/cancel", { method: "POST", body: JSON.stringify({ sessionId }) }).catch(() => {});
+  }
+
+  async function startStreamingDictation() {
+    if (!microphoneAvailable()) throw new Error(text("音声入力にはHTTPS接続が必要です。Tailscale Serveなどの安全なURLを利用してください。", "Voice input requires HTTPS. Use a secure URL such as Tailscale Serve."));
+    const model = appState?.voice?.streamingSpeechModel;
+    if (!model?.installed) throw new Error(text("PCの設定からストリーミング音声モデルをダウンロードしてください。", "Download the streaming speech model in the PC settings first."));
+    if (streamingSpeechContext) return;
+    dictationArmed = true;
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }, video: false });
+    const context = new AudioContext({ latencyHint: "interactive" });
+    const source = context.createMediaStreamSource(stream);
+    const processor = context.createScriptProcessor(4096, 1, 1);
+    const silence = context.createGain();
+    silence.gain.value = 0;
+    source.connect(processor);
+    processor.connect(silence);
+    silence.connect(context.destination);
+    streamingSpeechStream = stream;
+    streamingSpeechContext = context;
+    streamingSpeechSource = source;
+    streamingSpeechProcessor = processor;
+    streamingSpeechNoiseFloor = .006;
+    processor.onaudioprocess = (event) => {
+      if (!dictationArmed || busy || mobileSpeechPending || activeAudioSource) return;
+      const samples = resampleStreamingSpeech(event.inputBuffer.getChannelData(0), context.sampleRate);
+      let energy = 0;
+      for (const sample of samples) energy += sample * sample;
+      const rms = Math.sqrt(energy / samples.length);
+      const now = performance.now();
+      if (!streamingSpeechSpeaking) {
+        streamingSpeechPreRoll.push(samples.slice());
+        if (streamingSpeechPreRoll.length > 8) streamingSpeechPreRoll.shift();
+        if (streamingSpeechFinalizing) return;
+        streamingSpeechNoiseFloor = Math.min(.04, Math.max(.0035, streamingSpeechNoiseFloor * .96 + rms * .04));
+        if (rms > Math.max(.012, streamingSpeechNoiseFloor * 2.6)) {
+          streamingSpeechLoudSince ||= now;
+          if (now - streamingSpeechLoudSince >= 100) beginStreamingSpeechUtterance();
+        } else streamingSpeechLoudSince = 0;
+        return;
+      }
+      queueStreamingSpeechAppend(streamingSpeechSessionId, samples);
+      if (rms < Math.max(.007, streamingSpeechNoiseFloor * 1.5)) streamingSpeechSilentSince ||= now;
+      else streamingSpeechSilentSince = 0;
+      // Streaming partials are visible immediately, but a natural pause must
+      // not submit a one-word prefix as a complete command. Keep a small merge
+      // window beyond the configured VAD silence only for local streaming.
+      const commitSilenceMs = Math.max(1350, Math.min(2050, (Number(appState?.voice?.commitSilenceMs) || 900) + 650));
+      if ((streamingSpeechSilentSince && now - streamingSpeechSilentSince >= commitSilenceMs && now - streamingSpeechStartedAt >= 500)
+        || now - streamingSpeechStartedAt >= 25_000) finishStreamingSpeechUtterance();
+    };
+    await context.resume();
+    syncMicrophoneButton();
+    setComposerHint(text(`${model.label} · そのまま話してください`, `${model.label} · Start speaking`));
   }
 
   function scheduleDictationResume(delay = 420) {
@@ -1540,6 +1725,14 @@
   }
 
   function startDictation({ resumed = false } = {}) {
+    if (appState?.voice?.inputProvider === "streaming-local") {
+      startStreamingDictation().catch((error) => {
+        dictationArmed = false;
+        showRemoteSystemError(error);
+        syncMicrophoneButton();
+      });
+      return;
+    }
     if (!microphoneAvailable()) throw new Error(text("音声入力にはHTTPS接続が必要です。Tailscale Serveなどの安全なURLを利用してください。", "Voice input requires HTTPS. Use a secure URL such as Tailscale Serve."));
     const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!Recognition) throw new Error(text("このブラウザは音声文字起こしに対応していません。GPT-Liveを選ぶとマイク音声を直接送れます。", "This browser does not support speech dictation. Choose GPT-Live to send microphone audio directly."));
@@ -1615,7 +1808,7 @@
         return;
       }
       if (voice.responseMode === "live") {
-        if (livePeer || (voice.liveConnected && voice.liveOwner === "remote")) await stopRemoteLive();
+        if (hasRemoteLiveTransport() || (voice.liveConnected && voice.liveOwner === "remote")) await stopRemoteLive();
         else await startRemoteLive({ microphone: true });
       } else {
         if (dictationArmed) stopDictation();
@@ -1949,7 +2142,7 @@
     $("#avatarTapTarget").setAttribute("aria-busy", "true");
     try {
       const voice = appState?.voice || {};
-      if (voice.responseMode === "live" && !livePeer) {
+      if (voice.responseMode === "live" && !hasRemoteLiveTransport()) {
         if (liveStarting) {
           setComposerHint(text("Liveへ接続しています…", "Connecting to Live…"));
           return;
@@ -2195,6 +2388,7 @@
   window.addEventListener("pagehide", () => {
     clearInterval(approvalCountdownTimer);
     clearInterval(workElapsedTimer);
+    if (streamingSpeechContext || streamingSpeechStream) stopStreamingDictation();
     const currentWakeLock = wakeLockSentinel;
     wakeLockSentinel = null;
     currentWakeLock?.release?.().catch(() => {});

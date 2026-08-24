@@ -497,7 +497,8 @@ class RemoteCompanionServer {
     this.validateHost(request);
     const url = new URL(request.url, this.origin());
     const liveAudioRequest = request.method === "POST" && url.pathname === "/api/live/beatrice/audio";
-    this.enforceRateLimit(request, liveAudioRequest ? "live-audio" : "all", liveAudioRequest ? 1200 : 180);
+    const streamingSpeechChunkRequest = request.method === "POST" && url.pathname === "/api/streaming-speech/append";
+    this.enforceRateLimit(request, liveAudioRequest ? "live-audio" : streamingSpeechChunkRequest ? "streaming-speech" : "all", liveAudioRequest || streamingSpeechChunkRequest ? 1200 : 180);
     if (request.method === "GET" && url.pathname === "/") return this.sendStatic(response, "index.html", "text/html; charset=utf-8");
     if (request.method === "GET" && url.pathname === "/remote.css") return this.sendStatic(response, "remote.css", "text/css; charset=utf-8");
     if (request.method === "GET" && url.pathname === "/remote.js") return this.sendStatic(response, "remote.js", "text/javascript; charset=utf-8");
@@ -509,6 +510,15 @@ class RemoteCompanionServer {
     }
     if (request.method === "GET" && url.pathname === "/audio-envelope.js") {
       const body = fs.readFileSync(path.resolve(this.rootDir, "..", "audio-envelope.js"));
+      response.writeHead(200, {
+        ...securityHeaders("text/javascript; charset=utf-8"),
+        "Content-Security-Policy": "default-src 'none'",
+      });
+      response.end(body);
+      return;
+    }
+    if (request.method === "GET" && url.pathname === "/realtime-turn-detection.js") {
+      const body = fs.readFileSync(path.resolve(this.rootDir, "..", "realtime-turn-detection.js"));
       response.writeHead(200, {
         ...securityHeaders("text/javascript; charset=utf-8"),
         "Content-Security-Policy": "default-src 'none'",
@@ -608,7 +618,7 @@ class RemoteCompanionServer {
       return;
     }
 
-    if (request.method === "POST" && ["/api/message", "/api/pet", "/api/interrupt", "/api/settings", "/api/approval", "/api/secure-handoff", "/api/live/start", "/api/live/stop", "/api/live/beatrice/audio", "/api/live/beatrice/stop", "/api/tts", "/api/tts/next", "/api/tts/cancel", "/api/mcp-app/bridge", "/api/disconnect"].includes(url.pathname)) {
+    if (request.method === "POST" && ["/api/message", "/api/pet", "/api/interrupt", "/api/settings", "/api/approval", "/api/secure-handoff", "/api/live/start", "/api/live/stop", "/api/live/beatrice/audio", "/api/live/beatrice/stop", "/api/streaming-speech/start", "/api/streaming-speech/append", "/api/streaming-speech/finish", "/api/streaming-speech/cancel", "/api/tts", "/api/tts/next", "/api/tts/cancel", "/api/mcp-app/bridge", "/api/disconnect"].includes(url.pathname)) {
       const { session, tokenHash } = this.authenticate(request, { csrf: true });
       const body = await jsonBody(request);
       if (url.pathname === "/api/message") {
@@ -648,6 +658,18 @@ class RemoteCompanionServer {
       }
       if (url.pathname === "/api/live/beatrice/stop") {
         return this.sendJson(response, 200, await this.callbacks.stopLiveBeatrice?.({ sessionId: body.sessionId, remoteTokenHash: tokenHash }));
+      }
+      if (url.pathname === "/api/streaming-speech/start") {
+        return this.sendJson(response, 200, await this.callbacks.startStreamingSpeech?.({ ...body, remoteTokenHash: tokenHash }));
+      }
+      if (url.pathname === "/api/streaming-speech/append") {
+        return this.sendJson(response, 200, await this.callbacks.appendStreamingSpeech?.({ ...body, remoteTokenHash: tokenHash }));
+      }
+      if (url.pathname === "/api/streaming-speech/finish") {
+        return this.sendJson(response, 200, await this.callbacks.finishStreamingSpeech?.({ ...body, remoteTokenHash: tokenHash }));
+      }
+      if (url.pathname === "/api/streaming-speech/cancel") {
+        return this.sendJson(response, 200, await this.callbacks.cancelStreamingSpeech?.({ ...body, remoteTokenHash: tokenHash }));
       }
       if (url.pathname === "/api/tts") return this.sendJson(response, 200, await this.callbacks.synthesizeTts?.(body.text));
       if (url.pathname === "/api/tts/next") return this.sendJson(response, 200, await this.callbacks.nextTtsChunk?.(body.streamId));

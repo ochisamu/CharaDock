@@ -175,7 +175,8 @@ const {
   validatePiperPlusModel,
 } = require("./lib/piper-plus.cjs");
 const { EmbeddedSherpaOnnx } = require("./lib/sherpa-embedded.cjs");
-const { EmbeddedSherpaVad } = require("./lib/sherpa-vad.cjs");
+const { EmbeddedSherpaVad, SILERO_VAD_PROFILES } = require("./lib/sherpa-vad.cjs");
+const { StreamingSpeechRecognition } = require("./lib/streaming-speech-recognition.cjs");
 const { supertonicStatus, validateSupertonicDirectory } = require("./lib/supertonic-tts.cjs");
 const { synthesizeSupertonicInWorker } = require("./lib/supertonic-worker-client.cjs");
 const { IRODORI_CHUNK_LENGTH, IRODORI_CHUNK_OVERFLOW, irodoriModelStatus, splitIrodoriText, validateIrodoriModelDirectory } = require("./lib/irodori-webgpu.cjs");
@@ -340,6 +341,7 @@ let wslCodexCommand = "";
 let openAIClient;
 let embeddedSherpaOnnx;
 let embeddedSherpaVad;
+let streamingSpeechRecognition;
 let embeddedTtsModels;
 let irodoriVoiceLibrary;
 let sbv2ModelLibrary;
@@ -1862,6 +1864,13 @@ function publicRemoteState(context = {}) {
     secureMicrophoneHandoff: Boolean(remoteStatus.securePairing && remoteStatus.pairingUrl),
     voice: {
       responseMode: preferences.data.remoteResponseMode === "live" ? "live" : "tts",
+      inputProvider: preferences.data.speechInputProvider,
+      commitSilenceMs: Math.round((SILERO_VAD_PROFILES[preferences.data.vadSensitivity]
+        || SILERO_VAD_PROFILES.normal).minSilenceDuration * 1000),
+      streamingSpeechModel: (() => {
+        const status = streamingSpeechRecognition?.status();
+        return status ? { modelId: status.modelId, label: interfaceLanguage() === "en" ? status.labelEn : status.label, installed: status.installed, supported: status.supported } : null;
+      })(),
       pcAudioEnabled: preferences.data.remotePcAudioEnabled !== false,
       ttsProvider: characterTts.provider,
       ttsProviderOptions: remoteTtsProviderOptions(),
@@ -2247,6 +2256,10 @@ function createRemoteServer(address, sessionMinutes = preferences.data.remoteSes
       stopLive: stopRemoteRealtime,
       processLiveBeatriceAudio: processRemoteBeatriceAudio,
       stopLiveBeatrice: stopRemoteBeatrice,
+      startStreamingSpeech: remoteStreamingSpeechStart,
+      appendStreamingSpeech: remoteStreamingSpeechAppend,
+      finishStreamingSpeech: remoteStreamingSpeechFinish,
+      cancelStreamingSpeech: remoteStreamingSpeechCancel,
       setSettings: applyRemoteClientSettings,
       resolveApproval: resolveRemoteApproval,
       secureHandoff: () => {
@@ -2660,6 +2673,7 @@ function publicAppState() {
     }),
     canGenerateCharacters: preferences.data.backend === "codex",
     sherpaModel: embeddedSherpaOnnx?.status() || { installed: false, downloading: false, progress: null },
+    streamingSpeechModel: streamingSpeechRecognition?.status() || { installed: false, downloading: false, progress: null, models: [] },
     piperPlus: {
       ...piperPlusStatus({
         executablePath: preferences.data.piperPlusExecutablePath,
@@ -2769,6 +2783,7 @@ async function supportDiagnostics() {
       interactionMode: state.interactionMode,
       continuationStartupSpeechEnabled: state.continuationStartupSpeechEnabled,
       speechInputProvider: state.speechInputProvider,
+      streamingSpeechModelId: state.streamingSpeechModelId,
       realtimeAutoStartOnText: state.realtimeAutoStartOnText,
       realtimeAutoStartOnPet: state.realtimeAutoStartOnPet,
       voiceActivationMode: state.voiceActivationMode,
@@ -2788,6 +2803,7 @@ async function supportDiagnostics() {
       codexCli: Boolean(state.codexAvailable),
       openAiConfigured: Boolean(state.hasApiKey),
       sherpaOnnx: { installed: Boolean(state.sherpaModel?.installed), modelId: state.sherpaModel?.modelId || state.sherpaModelId || "" },
+      streamingSpeech: { installed: Boolean(state.streamingSpeechModel?.installed), modelId: state.streamingSpeechModel?.modelId || state.streamingSpeechModelId || "" },
       piperPlus: { ready: Boolean(state.piperPlus?.ready), sampleInstalled: Boolean(state.piperPlus?.sampleModel?.installed) },
       supertonic3: { ready: Boolean(state.supertonic?.ready), sampleInstalled: Boolean(state.supertonic?.sampleModel?.installed) },
       irodori: { ready: Boolean(state.irodori?.ready), webgpu: state.irodori?.webgpuAvailable, sampleInstalled: Boolean(state.irodori?.sampleModel?.installed) },
@@ -3842,6 +3858,8 @@ function broadcastAppState() {
     voiceAutoSendDelayMs: state.voiceAutoSendDelayMs,
     sherpaModelId: state.sherpaModelId,
     sherpaModel: state.sherpaModel,
+    streamingSpeechModelId: state.streamingSpeechModelId,
+    streamingSpeechModel: state.streamingSpeechModel,
   });
   publishRemoteState();
   return state;
@@ -5375,7 +5393,7 @@ async function runSmokeTest() {
       [...provider.options].some((option) => option.value === 'kokoro') &&
       [...provider.options].some((option) => option.value === 'irodori-webgpu') &&
       ![...inputProvider.options].some((option) => ['auto', 'codex-audio'].includes(option.value)) &&
-      ['realtime', 'sherpa-onnx', 'browser', 'openai'].every((value) =>
+      ['realtime', 'streaming-local', 'sherpa-onnx', 'browser', 'openai'].every((value) =>
         [...inputProvider.options].some((option) => option.value === value)) &&
       document.querySelector('#styleBertVits2UrlInput') &&
       document.querySelector('#styleBertVits2ModelIdInput') &&
@@ -5440,6 +5458,20 @@ async function runSmokeTest() {
   if (!sherpaSettingsReady) throw new Error("embedded sherpa-onnx setting check failed");
   await new Promise((resolve) => setTimeout(resolve, 120));
   fs.writeFileSync(path.join(outputDir, "control-desktop-sherpa-onnx.png"), (await controlWindow.capturePage()).toPNG());
+  const streamingSpeechSettingsReady = await controlWindow.webContents.executeJavaScript(`(() => {
+    const provider = document.querySelector('#speechInputProviderSelect');
+    provider.value = 'streaming-local';
+    document.querySelector('#sherpaOnnxSettings').hidden = true;
+    document.querySelector('#streamingSpeechSettings').hidden = false;
+    document.querySelector('#streamingSpeechSettings').scrollIntoView({ block: 'center' });
+    return Boolean(document.querySelector('#streamingSpeechModelDownloadButton') &&
+      document.querySelector('#streamingSpeechModelRemoveButton') &&
+      document.querySelector('#streamingSpeechModelProgress') &&
+      document.querySelector('#streamingSpeechModelSelect')?.options.length === 1);
+  })()`);
+  if (!streamingSpeechSettingsReady) throw new Error("streaming speech recognition setting check failed");
+  await new Promise((resolve) => setTimeout(resolve, 120));
+  fs.writeFileSync(path.join(outputDir, "control-desktop-streaming-speech.png"), (await controlWindow.capturePage()).toPNG());
   const characterVoicePageOpened = await controlWindow.webContents.executeJavaScript(`(async () => {
     document.querySelector('[data-page="voice"]').click();
     await new Promise((resolve) => setTimeout(resolve, 80));
@@ -5800,6 +5832,7 @@ async function runSmokeTest() {
     }
   }
   if (process.argv.includes("--verify-realtime")) {
+    const verifyRealtimeTurnDetection = process.argv.includes("--verify-realtime-turn-detection");
     const recordRealtimeSampleArgument = process.argv.find((argument) => argument.startsWith("--record-realtime-sample="));
     const recordRealtimeSamplePath = recordRealtimeSampleArgument
       ? path.resolve(recordRealtimeSampleArgument.slice("--record-realtime-sample=".length))
@@ -5811,6 +5844,14 @@ async function runSmokeTest() {
     const realtimeWorkAudioData = realtimeWorkAudioPath && fs.existsSync(realtimeWorkAudioPath)
       ? fs.readFileSync(realtimeWorkAudioPath).toString("base64")
       : "";
+    const realtimePauseAudioArgument = process.argv.find((argument) => argument.startsWith("--realtime-pause-audio="));
+    const realtimePauseAudioPath = realtimePauseAudioArgument
+      ? path.resolve(realtimePauseAudioArgument.slice("--realtime-pause-audio=".length))
+      : "";
+    const realtimePauseAudioData = realtimePauseAudioPath && fs.existsSync(realtimePauseAudioPath)
+      ? fs.readFileSync(realtimePauseAudioPath).toString("base64")
+      : "";
+    const verifyRealtimePauseAudio = Boolean(realtimePauseAudioData);
     const verifyRealtimeWorkMode = process.argv.includes("--verify-realtime-work-mode");
     const previousRealtimeWorkState = {
       interactionMode: preferences.data.interactionMode,
@@ -5828,17 +5869,25 @@ async function runSmokeTest() {
       const realtimeMode = await controlWindow.webContents.executeJavaScript(`(async () => {
       const shouldRecord = ${JSON.stringify(Boolean(recordRealtimeSamplePath))};
       const verifyWorkMode = ${JSON.stringify(Boolean(verifyRealtimeWorkMode))};
+      const verifyTurnDetection = ${JSON.stringify(Boolean(verifyRealtimeTurnDetection))};
       const workAudioBase64 = ${JSON.stringify(realtimeWorkAudioData)};
+      const pauseAudioBase64 = ${JSON.stringify(realtimePauseAudioData)};
+      const verifyPauseAudio = ${JSON.stringify(Boolean(verifyRealtimePauseAudio))};
+      const inputAudioBase64 = pauseAudioBase64 || workAudioBase64;
       let peer;
       let stream;
       let context;
       let oscillator;
       let testAudioSource;
       let testAudioStarted = false;
+      let realtimeRemoteDescriptionReady = false;
+      let inputBridge;
       let remoteAudio;
       let recorder;
       const recordedChunks = [];
       const trace = [];
+      const pauseTranscripts = [];
+      let pauseTranscriptTimer = 0;
       let unsubscribe = () => {};
       try {
         context = new AudioContext();
@@ -5851,8 +5900,8 @@ async function runSmokeTest() {
         silenceGain.gain.value = 0;
         oscillator.connect(silenceGain).connect(destination);
         oscillator.start();
-        if (workAudioBase64) {
-          const audioBytes = Uint8Array.from(atob(workAudioBase64), (value) => value.charCodeAt(0));
+        if (inputAudioBase64) {
+          const audioBytes = Uint8Array.from(atob(inputAudioBase64), (value) => value.charCodeAt(0));
           const audioBuffer = await context.decodeAudioData(audioBytes.buffer);
           testAudioSource = context.createBufferSource();
           testAudioSource.buffer = audioBuffer;
@@ -5860,10 +5909,37 @@ async function runSmokeTest() {
         }
         await context.resume();
         stream = destination.stream;
+        inputBridge = await window.CharaDockRealtimeTurnDetection.createInputBridge(stream);
+        const outgoingStream = inputBridge.stream;
         peer = new RTCPeerConnection();
+        const scheduleTestAudioStart = () => {
+          if (!testAudioSource || testAudioStarted || !realtimeRemoteDescriptionReady || peer.connectionState !== 'connected') return;
+          testAudioStarted = true;
+          // Do not race the first microphone frames against DTLS/media setup;
+          // this verifier is meant to test endpointing, not connection startup.
+          testAudioSource.start(context.currentTime + 0.8);
+          if (verifyPauseAudio) {
+            trace.push({ method: 'smoke/audio-scheduled', role: '', text: peer.connectionState, status: '' });
+            testAudioSource.addEventListener('ended', () => {
+              trace.push({ method: 'smoke/audio-ended', role: '', text: '', status: '' });
+              setTimeout(async () => {
+                const reports = await peer.getStats().catch(() => null);
+                let bytesSent = 0;
+                reports?.forEach?.((report) => {
+                  if (report.type === 'outbound-rtp' && report.kind === 'audio') bytesSent += Number(report.bytesSent || 0);
+                });
+                trace.push({ method: 'smoke/audio-bytes', role: '', text: String(bytesSent), status: '' });
+              }, 1200);
+            }, { once: true });
+          }
+        };
+        peer.addEventListener('connectionstatechange', () => {
+          if (verifyPauseAudio) trace.push({ method: 'smoke/peer-state', role: '', text: peer.connectionState, status: '' });
+          scheduleTestAudioStart();
+        });
         remoteAudio = new Audio();
         remoteAudio.autoplay = true;
-        for (const track of stream.getAudioTracks()) peer.addTrack(track, stream);
+        for (const track of outgoingStream.getAudioTracks()) peer.addTrack(track, outgoingStream);
         peer.addEventListener('track', (event) => {
           const remoteStream = event.streams[0] || new MediaStream([event.track]);
           remoteAudio.srcObject = remoteStream;
@@ -5884,9 +5960,9 @@ async function runSmokeTest() {
             clearTimeout(timer);
             resolve(value);
           };
-          const timer = setTimeout(() => finish({ mode: 'device-fallback', bytes: [], trace }), verifyWorkMode ? 60_000 : 30_000);
+          const timer = setTimeout(() => finish({ mode: 'device-fallback', bytes: [], trace, pauseTranscripts }), verifyWorkMode ? 60_000 : 30_000);
           unsubscribe = window.mascotDesktop.onCodexRealtime(async (message) => {
-            if (verifyWorkMode && !String(message?.method || '').endsWith('/delta')) {
+            if ((verifyWorkMode || verifyPauseAudio) && !String(message?.method || '').endsWith('/delta')) {
               trace.push({
                 method: String(message?.method || ''),
                 role: String(message?.params?.role || ''),
@@ -5897,15 +5973,22 @@ async function runSmokeTest() {
             }
             if (message?.method === 'thread/realtime/sdp') {
               await peer.setRemoteDescription({ type: 'answer', sdp: message.params.sdp });
-              if (testAudioSource && !testAudioStarted) {
-                testAudioStarted = true;
-                testAudioSource.start(context.currentTime + 0.5);
-              }
+              realtimeRemoteDescriptionReady = true;
+              scheduleTestAudioStart();
             }
             if (message?.method === 'thread/realtime/error') {
               finish({ mode: 'device-fallback', bytes: [] });
             }
             if (message?.method === 'thread/realtime/started') {
+              if (verifyTurnDetection) {
+                // Keep a real Frameless WebRTC session alive long enough to
+                // prove the processed microphone track is accepted. The
+                // deterministic pause/phrase behavior is covered separately
+                // by realtime-turn-detection.test.cjs.
+                setTimeout(() => finish({ mode: 'webrtc-turn-detection', bytes: [], trace }), 1200);
+                return;
+              }
+              if (verifyPauseAudio) return;
               try {
                 const appended = verifyWorkMode && !workAudioBase64
                   ? await window.mascotDesktop.appendCodexRealtimeText('Create RESULT.txt in the current workspace containing exactly charadock-realtime-native-handoff-ok followed by a newline. Do not create any other files.')
@@ -5918,6 +6001,18 @@ async function runSmokeTest() {
             }
             if (verifyWorkMode && message?.method === 'turn/completed') {
               finish({ mode: message.params?.turn?.status === 'completed' ? 'webrtc-work' : 'device-fallback', bytes: [], trace });
+            }
+            if (verifyPauseAudio
+              && message?.method === 'thread/realtime/transcript/done'
+              && message.params?.role === 'user') {
+              pauseTranscripts.push(String(message.params?.text || '').trim());
+              clearTimeout(pauseTranscriptTimer);
+              pauseTranscriptTimer = setTimeout(() => finish({
+                mode: 'webrtc-pause-audio',
+                bytes: [],
+                trace,
+                pauseTranscripts,
+              }), 2500);
             }
             if (shouldRecord && message?.method === 'thread/realtime/transcript/done' && message.params?.role === 'assistant') {
               setTimeout(() => {
@@ -5939,10 +6034,12 @@ async function runSmokeTest() {
         return { mode: 'device-fallback', bytes: [] };
       } finally {
         unsubscribe();
+        clearTimeout(pauseTranscriptTimer);
         await window.mascotDesktop.stopCodexRealtime().catch(() => {});
         remoteAudio?.pause();
         if (remoteAudio) remoteAudio.srcObject = null;
         peer?.close();
+        inputBridge?.close();
         for (const track of stream?.getTracks?.() || []) track.stop();
         try { oscillator?.stop(); } catch {}
         try { testAudioSource?.stop(); } catch {}
@@ -5954,7 +6051,19 @@ async function runSmokeTest() {
         fs.writeFileSync(recordRealtimeSamplePath, Buffer.from(realtimeMode.bytes));
         console.log(`codex-realtime-sample: ${recordRealtimeSamplePath}`);
       }
-      if (verifyRealtimeWorkMode) {
+      if (verifyRealtimeTurnDetection) {
+        if (realtimeMode.mode !== "webrtc-turn-detection") {
+          throw new Error(`realtime turn detection was not accepted: ${JSON.stringify(realtimeMode)}`);
+        }
+      } else if (verifyRealtimePauseAudio) {
+        const transcript = String(realtimeMode.pauseTranscripts?.[0] || "").replace(/[\s。、,.!?！？]/g, "");
+        if (realtimeMode.mode !== "webrtc-pause-audio"
+          || realtimeMode.pauseTranscripts?.length !== 1
+          || !transcript.includes("次の音声")
+          || !transcript.includes("反映")) {
+          throw new Error(`realtime split a natural clause pause: ${JSON.stringify(realtimeMode)}`);
+        }
+      } else if (verifyRealtimeWorkMode) {
         const expectedFile = realtimeWorkAudioData ? "VOICE.txt" : "RESULT.txt";
         const expectedOutput = realtimeWorkAudioData ? "voice test passed\n" : "charadock-realtime-native-handoff-ok\n";
         const resultPath = path.join(realtimeWorkDirectory, expectedFile);
@@ -5965,8 +6074,10 @@ async function runSmokeTest() {
         if (realtimeMode.mode !== "webrtc-work" || !outputMatches) {
           throw new Error(`native realtime Work handoff did not edit the selected workspace: ${JSON.stringify(realtimeMode)}`);
         }
+      } else if (realtimeMode.mode !== "webrtc") {
+        throw new Error(`realtime transport did not start: ${JSON.stringify(realtimeMode)}`);
       }
-      console.log(`${verifyRealtimeWorkMode ? "codex-realtime-work" : "codex-realtime"}: ${realtimeMode.mode}`);
+      console.log(`${verifyRealtimeTurnDetection ? "codex-realtime-turn-detection" : verifyRealtimePauseAudio ? "codex-realtime-pause-audio" : verifyRealtimeWorkMode ? "codex-realtime-work" : "codex-realtime"}: ${realtimeMode.mode}`);
     } finally {
       await stopActiveRealtime().catch(() => {});
       if (verifyRealtimeWorkMode) {
@@ -7581,7 +7692,11 @@ async function startCodexRealtimeVoice(payload, target = "control") {
       }
       if (target === "control") sendControlRealtimeEvent(forwarded);
       if (target === "mascot") sendMascotRealtimeEvent(forwarded);
-      if (target === "remote") remoteServer?.publish("live", forwarded);
+      if (target === "remote") {
+        const ownerHash = String(payload?.remoteTokenHash || "");
+        if (ownerHash) remoteServer?.publishTo(ownerHash, "live", forwarded);
+        else diagnosticLog?.write("warn", "remote-live-event-owner-missing", { method });
+      }
       if (target === "remote" && (method.startsWith("thread/realtime/transcript/") || ["thread/realtime/started", "thread/realtime/closed", "thread/realtime/error"].includes(method))) {
         diagnosticLog?.write("info", "remote-live-event", { method, role: String(params.role || "") });
       }
@@ -8191,6 +8306,94 @@ async function removeBeatriceModel(modelId) {
   return broadcastAppState();
 }
 
+function rendererStreamingSpeechSessionId(event, requestedId) {
+  const id = String(requestedId || "").trim().slice(0, 120);
+  if (!id) throw new Error("音声認識セッションIDがありません。");
+  return `renderer:${event.sender.id}:${id}`;
+}
+
+function publicStreamingSpeechResult(result, requestedId) {
+  return { ...result, sessionId: String(requestedId || "").trim().slice(0, 120) };
+}
+
+function remoteStreamingSpeechSessionId(payload = {}) {
+  const tokenHash = String(payload.remoteTokenHash || "");
+  const requestedId = String(payload.sessionId || "").trim();
+  if (!/^[a-f0-9]{64}$/.test(tokenHash) || !/^[A-Za-z0-9_-]{8,120}$/.test(requestedId)) {
+    throw new Error("音声認識セッションを確認できません。");
+  }
+  return `remote:${tokenHash.slice(0, 24)}:${requestedId}`;
+}
+
+async function remoteStreamingSpeechStart(payload = {}) {
+  if (preferences.data.speechInputProvider !== "streaming-local") throw new Error("PC設定でストリーミング音声認識を選択してください。");
+  const sessionId = remoteStreamingSpeechSessionId(payload);
+  return publicStreamingSpeechResult(
+    await startStreamingSpeechSession(sessionId, preferences.data.streamingSpeechModelId),
+    payload.sessionId,
+  );
+}
+
+async function remoteStreamingSpeechAppend(payload = {}) {
+  const sessionId = remoteStreamingSpeechSessionId(payload);
+  const encoded = String(payload.pcm16Base64 || "");
+  if (!encoded || encoded.length > 48_000 || !/^[A-Za-z0-9+/]+={0,2}$/.test(encoded)) throw new Error("音声チャンクが正しくありません。");
+  const pcm = Buffer.from(encoded, "base64");
+  if (!pcm.length || pcm.length > 32_768 || pcm.length % 2) throw new Error("音声チャンクの長さが正しくありません。");
+  const samples = new Float32Array(pcm.length / 2);
+  for (let index = 0; index < samples.length; index += 1) samples[index] = pcm.readInt16LE(index * 2) / 32768;
+  return publicStreamingSpeechResult(
+    await appendStreamingSpeechSession(sessionId, { samples, sampleRate: 16_000 }),
+    payload.sessionId,
+  );
+}
+
+async function remoteStreamingSpeechFinish(payload = {}) {
+  return publicStreamingSpeechResult(
+    await finishStreamingSpeechSession(remoteStreamingSpeechSessionId(payload)),
+    payload.sessionId,
+  );
+}
+
+function remoteStreamingSpeechCancel(payload = {}) {
+  return streamingSpeechRecognition.cancel(remoteStreamingSpeechSessionId(payload));
+}
+
+function debugStreamingSpeech(event, detail = {}) {
+  if (app.isPackaged) return;
+  console.info(`[Streaming STT] ${event}: ${JSON.stringify(detail)}`);
+}
+
+async function startStreamingSpeechSession(sessionId, modelId) {
+  const startedAt = Date.now();
+  try {
+    const result = await streamingSpeechRecognition.start(sessionId, modelId);
+    debugStreamingSpeech("ready", { modelId: result.modelId, elapsedMs: Date.now() - startedAt });
+    return result;
+  } catch (error) {
+    debugStreamingSpeech("start-failed", { modelId: String(modelId || ""), elapsedMs: Date.now() - startedAt, error: String(error?.message || error) });
+    throw error;
+  }
+}
+
+async function appendStreamingSpeechSession(sessionId, payload) {
+  const result = await streamingSpeechRecognition.append(sessionId, payload);
+  if (result.changed) debugStreamingSpeech("partial", { modelId: result.modelId, textLength: String(result.text || "").length });
+  return result;
+}
+
+async function finishStreamingSpeechSession(sessionId) {
+  const startedAt = Date.now();
+  try {
+    const result = await streamingSpeechRecognition.finish(sessionId);
+    debugStreamingSpeech("final", { modelId: result.modelId, textLength: String(result.text || "").length, elapsedMs: Date.now() - startedAt });
+    return result;
+  } catch (error) {
+    debugStreamingSpeech("finish-failed", { elapsedMs: Date.now() - startedAt, error: String(error?.message || error) });
+    throw error;
+  }
+}
+
 function registerIpc() {
   ipcMain.on("beatrice:audio", (event, audio) => {
     assertTrustedAppSender(event);
@@ -8451,6 +8654,29 @@ function registerIpc() {
     assertTrustedSender(event, "mascot");
     return embeddedSherpaOnnx.transcribe(payload);
   });
+  ipcMain.handle("mascotInline:streamingSpeechStart", async (event, payload = {}) => {
+    assertTrustedSender(event, "mascot");
+    const sessionId = rendererStreamingSpeechSessionId(event, payload.sessionId);
+    return publicStreamingSpeechResult(await startStreamingSpeechSession(sessionId, payload.modelId), payload.sessionId);
+  });
+  ipcMain.handle("mascotInline:streamingSpeechAppend", async (event, payload = {}) => {
+    assertTrustedSender(event, "mascot");
+    const sessionId = rendererStreamingSpeechSessionId(event, payload.sessionId);
+    return publicStreamingSpeechResult(await appendStreamingSpeechSession(sessionId, payload), payload.sessionId);
+  });
+  ipcMain.handle("mascotInline:streamingSpeechFinish", async (event, payload = {}) => {
+    assertTrustedSender(event, "mascot");
+    const sessionId = rendererStreamingSpeechSessionId(event, payload.sessionId);
+    return publicStreamingSpeechResult(await finishStreamingSpeechSession(sessionId), payload.sessionId);
+  });
+  ipcMain.handle("mascotInline:streamingSpeechCancel", (event, payload = {}) => {
+    assertTrustedSender(event, "mascot");
+    return streamingSpeechRecognition.cancel(rendererStreamingSpeechSessionId(event, payload.sessionId));
+  });
+  ipcMain.handle("mascotInline:transcribeStreamingSpeech", async (event, payload = {}) => {
+    assertTrustedSender(event, "mascot");
+    return streamingSpeechRecognition.transcribe(payload, payload.modelId);
+  });
   ipcMain.handle("mascotInline:vadStart", async (event, sensitivity) => {
     assertTrustedSender(event, "mascot");
     return embeddedSherpaVad.start(sensitivity);
@@ -8583,10 +8809,12 @@ function registerIpc() {
     const ttsProvider = ["system", "style-bert-vits2", "piper-plus", "supertonic-3", "irodori-webgpu", "kokoro", "sbv2-jp-extra"].includes(patch?.ttsProvider) ? patch.ttsProvider : "system";
     const styleBertVits2Url = String(patch?.styleBertVits2Url || preferences.data.styleBertVits2Url || "http://localhost:5000").trim().slice(0, 300);
     if (ttsProvider === "style-bert-vits2") styleBertVoiceEndpoint(styleBertVits2Url);
-    const speechInputProvider = ["realtime", "sherpa-onnx", "browser", "openai"].includes(patch?.speechInputProvider)
+    const speechInputProvider = ["realtime", "streaming-local", "sherpa-onnx", "browser", "openai"].includes(patch?.speechInputProvider)
       ? patch.speechInputProvider : "browser";
     const sherpaModelId = embeddedSherpaOnnx.hasModel(patch?.sherpaModelId)
       ? String(patch.sherpaModelId) : preferences.data.sherpaModelId;
+    const streamingSpeechModelId = streamingSpeechRecognition.hasModel(patch?.streamingSpeechModelId)
+      ? String(patch.streamingSpeechModelId) : preferences.data.streamingSpeechModelId;
     const voiceActivationMode = ["manual", "vad"].includes(patch?.voiceActivationMode)
       ? patch.voiceActivationMode
       : ["manual", "vad"].includes(preferences.data.voiceActivationMode) ? preferences.data.voiceActivationMode : "vad";
@@ -8717,6 +8945,7 @@ function registerIpc() {
       realtimeAutoStartOnText: patch?.realtimeAutoStartOnText !== false,
       realtimeAutoStartOnPet: patch?.realtimeAutoStartOnPet === true,
       sherpaModelId,
+      streamingSpeechModelId,
       speechLanguage: String(patch?.speechLanguage || "ja-JP").slice(0, 32),
       voiceActivationMode,
       vadSensitivity,
@@ -8754,6 +8983,13 @@ function registerIpc() {
     }
     scheduleIrodoriPrewarm();
     embeddedSherpaOnnx.selectModel(allowed.sherpaModelId);
+    streamingSpeechRecognition.selectModel(allowed.streamingSpeechModelId);
+    if (allowed.speechInputProvider === "streaming-local"
+      && streamingSpeechRecognition.status().installed) {
+      streamingSpeechRecognition.prepare().catch((error) => {
+        if (!app.isPackaged) console.warn("Streaming speech model prewarm failed:", error.message);
+      });
+    }
     if (allowed.backend !== "codex" && preferences.data.interactionMode === "work") {
       preferences.patch({ interactionMode: "chat" });
     }
@@ -8781,6 +9017,8 @@ function registerIpc() {
       voiceAutoSendDelayMs: allowed.voiceAutoSendDelayMs,
       sherpaModelId: allowed.sherpaModelId,
       sherpaModel: embeddedSherpaOnnx.status(),
+      streamingSpeechModelId: allowed.streamingSpeechModelId,
+      streamingSpeechModel: streamingSpeechRecognition.status(),
     });
     mascotWindow?.webContents.send("mascot:windowSettings", {
       positionLocked: allowed.positionLocked,
@@ -9703,6 +9941,29 @@ function registerIpc() {
     assertTrustedSender(event);
     return embeddedSherpaOnnx.transcribe(payload);
   });
+  ipcMain.handle("audio:streamingSpeechStart", async (event, payload = {}) => {
+    assertTrustedSender(event);
+    const sessionId = rendererStreamingSpeechSessionId(event, payload.sessionId);
+    return publicStreamingSpeechResult(await startStreamingSpeechSession(sessionId, payload.modelId), payload.sessionId);
+  });
+  ipcMain.handle("audio:streamingSpeechAppend", async (event, payload = {}) => {
+    assertTrustedSender(event);
+    const sessionId = rendererStreamingSpeechSessionId(event, payload.sessionId);
+    return publicStreamingSpeechResult(await appendStreamingSpeechSession(sessionId, payload), payload.sessionId);
+  });
+  ipcMain.handle("audio:streamingSpeechFinish", async (event, payload = {}) => {
+    assertTrustedSender(event);
+    const sessionId = rendererStreamingSpeechSessionId(event, payload.sessionId);
+    return publicStreamingSpeechResult(await finishStreamingSpeechSession(sessionId), payload.sessionId);
+  });
+  ipcMain.handle("audio:streamingSpeechCancel", (event, payload = {}) => {
+    assertTrustedSender(event);
+    return streamingSpeechRecognition.cancel(rendererStreamingSpeechSessionId(event, payload.sessionId));
+  });
+  ipcMain.handle("audio:transcribeStreamingSpeech", async (event, payload = {}) => {
+    assertTrustedSender(event);
+    return streamingSpeechRecognition.transcribe(payload, payload.modelId);
+  });
   ipcMain.handle("sherpa:modelDownload", async (event, modelId) => {
     assertTrustedSender(event);
     await embeddedSherpaOnnx.download((status) => {
@@ -9716,6 +9977,22 @@ function registerIpc() {
   ipcMain.handle("sherpa:modelRemove", (event, modelId) => {
     assertTrustedSender(event);
     const status = embeddedSherpaOnnx.remove(modelId);
+    broadcastAppState();
+    return status;
+  });
+  ipcMain.handle("streamingSpeech:modelDownload", async (event, modelId) => {
+    assertTrustedSender(event);
+    await streamingSpeechRecognition.download((status) => {
+      controlWindow?.webContents.send("streamingSpeech:modelProgress", status);
+    }, modelId);
+    const status = streamingSpeechRecognition.status();
+    controlWindow?.webContents.send("streamingSpeech:modelProgress", status);
+    broadcastAppState();
+    return status;
+  });
+  ipcMain.handle("streamingSpeech:modelRemove", (event, modelId) => {
+    assertTrustedSender(event);
+    const status = streamingSpeechRecognition.remove(modelId);
     broadcastAppState();
     return status;
   });
@@ -11450,6 +11727,18 @@ async function boot() {
     modelId: preferences.data.sherpaModelId,
   });
   embeddedSherpaVad = new EmbeddedSherpaVad(path.join(app.getPath("userData"), "sherpa-onnx-models"));
+  streamingSpeechRecognition = new StreamingSpeechRecognition(path.join(app.getPath("userData"), "streaming-speech-models"), {
+    modelId: preferences.data.streamingSpeechModelId,
+    sherpaBaseDirectory: path.join(app.getPath("userData"), "sherpa-onnx-models"),
+  });
+  if (preferences.data.speechInputProvider === "streaming-local"
+    && streamingSpeechRecognition.status().installed) {
+    setTimeout(() => {
+      streamingSpeechRecognition.prepare().catch((error) => {
+        if (!app.isPackaged) console.warn("Streaming speech model prewarm failed:", error.message);
+      });
+    }, 800);
+  }
   embeddedTtsModels = new EmbeddedTtsModels(path.join(app.getPath("userData"), "tts-models"));
   sbv2ModelLibrary = new Sbv2ModelLibrary(path.join(app.getPath("userData"), "sbv2-models"));
   sbv2Worker = new Sbv2WorkerClient({
@@ -11558,6 +11847,7 @@ app.on("before-quit", () => {
   if (artifactPreviewWindow && !artifactPreviewWindow.isDestroyed()) artifactPreviewWindow.destroy();
   destroyIrodoriWindow();
   destroyKokoroWindow();
+  streamingSpeechRecognition?.close();
   sbv2Worker?.stop();
   remoteServer?.stop().catch(() => {});
   localServer?.stop();

@@ -8,6 +8,114 @@ const VAD_PROFILES = Object.freeze({
   high: { startMin: .014, startFactor: 2.8, onsetMs: 80, stopMin: .006, stopFactor: 1.25, silenceMs: 850 },
 });
 const vadProfile = (sensitivity) => VAD_PROFILES[sensitivity] || VAD_PROFILES.normal;
+// Sandboxed preloads cannot import the renderer helper. Keep this bounded
+// microphone hangover aligned with realtime-turn-detection.js: it repeats a
+// quiet fragment of the user's own voice, only on the outgoing Live track, so
+// Frameless Codex does not split a natural clause pause at its fixed endpoint.
+const createRealtimeHangoverProcessor = ({ sampleRate = 48_000, hangoverMs = 650 } = {}) => {
+  const maximumSilenceSamples = Math.max(1, Math.round(sampleRate * hangoverMs / 1000));
+  const tailSamples = Math.max(80, Math.round(sampleRate * .02));
+  let noiseFloor = .0015;
+  let voiceTail = new Float32Array(0);
+  let voiceTailRms = 0;
+  let tailCursor = 0;
+  let silentSamples = maximumSilenceSamples + 1;
+  const rms = (samples, start = 0, end = samples.length) => {
+    let sum = 0;
+    for (let index = start; index < end; index += 1) sum += samples[index] * samples[index];
+    return Math.sqrt(sum / Math.max(1, end - start));
+  };
+  const rememberTail = (samples) => {
+    const length = Math.min(tailSamples, samples.length);
+    let bestStart = Math.max(0, samples.length - length);
+    let bestRms = 0;
+    for (let end = samples.length; end >= length; end -= Math.max(1, Math.floor(length / 2))) {
+      const start = end - length;
+      const candidateRms = rms(samples, start, end);
+      if (candidateRms > bestRms) {
+        bestRms = candidateRms;
+        bestStart = start;
+      }
+    }
+    voiceTail = samples.slice(bestStart, bestStart + length);
+    voiceTailRms = Math.max(bestRms, rms(voiceTail));
+    tailCursor = 0;
+  };
+  return {
+    process(source) {
+      const input = source instanceof Float32Array ? source : new Float32Array(source || []);
+      const output = input.slice();
+      if (!input.length) return output;
+      const level = rms(input);
+      const speechThreshold = Math.max(.006, noiseFloor * 3.2);
+      if (level >= speechThreshold) {
+        rememberTail(input);
+        silentSamples = 0;
+        return output;
+      }
+      noiseFloor = noiseFloor * .985 + Math.min(level, .006) * .015;
+      if (!voiceTail.length || silentSamples > maximumSilenceSamples) return output;
+      const startSilentSamples = silentSamples;
+      silentSamples += input.length;
+      const baseScale = Math.min(1, .012 / Math.max(voiceTailRms, .0001));
+      for (let index = 0; index < output.length; index += 1) {
+        const elapsed = startSilentSamples + index;
+        if (elapsed >= maximumSilenceSamples) break;
+        const remainingRatio = (maximumSilenceSamples - elapsed) / maximumSilenceSamples;
+        const envelope = .45 + .55 * Math.min(1, remainingRatio * 3);
+        output[index] += voiceTail[tailCursor] * baseScale * envelope;
+        tailCursor = (tailCursor + 1) % voiceTail.length;
+      }
+      return output;
+    },
+  };
+};
+const createRealtimeInputBridge = async (sourceStream) => {
+  let context;
+  let source;
+  let processor;
+  let destination;
+  let silentMonitor;
+  try {
+    context = new AudioContext({ latencyHint: "interactive" });
+    if (typeof context.createScriptProcessor !== "function") throw new Error("Audio processing is unavailable.");
+    source = context.createMediaStreamSource(sourceStream);
+    processor = context.createScriptProcessor(1024, 1, 1);
+    destination = context.createMediaStreamDestination();
+    silentMonitor = context.createGain();
+    silentMonitor.gain.value = 0;
+    const hangover = createRealtimeHangoverProcessor({ sampleRate: context.sampleRate });
+    processor.onaudioprocess = (event) => {
+      event.outputBuffer.getChannelData(0).set(hangover.process(event.inputBuffer.getChannelData(0)));
+    };
+    source.connect(processor);
+    processor.connect(destination);
+    processor.connect(silentMonitor);
+    silentMonitor.connect(context.destination);
+    await context.resume();
+  } catch {
+    try { source?.disconnect(); } catch {}
+    try { processor?.disconnect(); } catch {}
+    try { silentMonitor?.disconnect(); } catch {}
+    for (const track of destination?.stream?.getTracks?.() || []) track.stop();
+    await context?.close?.().catch(() => {});
+    return { stream: sourceStream, close() {} };
+  }
+  let closed = false;
+  return {
+    stream: destination.stream,
+    close() {
+      if (closed) return;
+      closed = true;
+      processor.onaudioprocess = null;
+      try { source.disconnect(); } catch {}
+      try { processor.disconnect(); } catch {}
+      try { silentMonitor.disconnect(); } catch {}
+      for (const track of destination.stream.getTracks()) track.stop();
+      context.close().catch(() => {});
+    },
+  };
+};
 
 window.addEventListener("DOMContentLoaded", () => {
   const stylesheet = document.createElement("link");
@@ -152,6 +260,7 @@ window.addEventListener("DOMContentLoaded", () => {
   let appState;
   let realtimePeer = null;
   let realtimeDataChannel = null;
+  let realtimeInputBridge = null;
   let realtimeSessionState = "idle";
   let realtimeRemoteAudio = null;
   let realtimeOutputSuppressed = false;
@@ -185,6 +294,12 @@ window.addEventListener("DOMContentLoaded", () => {
   let recordedSpeechRecorder;
   let recordedSpeechChunks = [];
   let recordedSpeechProvider = "openai";
+  let manualStreamingSpeechStream = null;
+  let manualStreamingSpeechContext = null;
+  let manualStreamingSpeechSource = null;
+  let manualStreamingSpeechProcessor = null;
+  let manualStreamingSpeechSessionId = "";
+  let manualStreamingSpeechQueue = Promise.resolve();
   let vadActive = false;
   let vadStream = null;
   let vadContext = null;
@@ -194,6 +309,7 @@ window.addEventListener("DOMContentLoaded", () => {
   let vadEngine = "energy";
   let vadSileroDetected = false;
   let vadSileroSegmentComplete = false;
+  let vadSileroSegmentSamples = null;
   let vadSileroQueue = Promise.resolve();
   let vadFrame = 0;
   let vadRecorder = null;
@@ -208,6 +324,10 @@ window.addEventListener("DOMContentLoaded", () => {
   let vadLoudSince = 0;
   let vadSilentSince = 0;
   let vadSpeechStartedAt = 0;
+  let vadStreamingSessionId = "";
+  let vadStreamingQueue = Promise.resolve();
+  let vadStreamingPreRoll = [];
+  let vadStreamingError = null;
   let realtimeUnavailable = false;
   let voiceInputTransitioning = false;
   let lastStreamPulseAt = 0;
@@ -752,7 +872,7 @@ window.addEventListener("DOMContentLoaded", () => {
       const status = document.createElement("em");
       status.textContent = record.unavailable
         ? uiText("要設定", "Setup")
-        : !isMcp && realtimePeer && appState?.interactionMode !== "work"
+        : !isMcp && hasRealtimeTransport() && appState?.interactionMode !== "work"
           ? uiText("Live Workのみ", "Live Work only")
           : selected ? uiText("選択中", "Selected") : record.active ? uiText("使用中", "Active") : uiText("今回のみ", "This turn");
       button.disabled = Boolean(record.unavailable);
@@ -783,7 +903,7 @@ window.addEventListener("DOMContentLoaded", () => {
   };
   const toggleMascotSkill = (skillId) => {
     const removing = mascotSelectedSkillIds.includes(skillId);
-    if (!removing && realtimePeer && appState?.interactionMode !== "work") {
+    if (!removing && hasRealtimeTransport() && appState?.interactionMode !== "work") {
       setStatus(uiText("LiveでSkillを指定できるのはWorkモードだけです", "Skills can be selected in Live Work only"), 5000);
       return;
     }
@@ -798,7 +918,7 @@ window.addEventListener("DOMContentLoaded", () => {
     }
     renderMascotSelectedSkills();
     renderMascotSkillPicker();
-    if (realtimePeer && appState?.interactionMode === "work") {
+    if (hasRealtimeTransport() && appState?.interactionMode === "work") {
       ipcRenderer.invoke("mascotInline:realtimeTurnSkills", mascotSelectedSkillIds).catch((error) => setStatus(error.message, 5000));
     }
   };
@@ -821,7 +941,7 @@ window.addEventListener("DOMContentLoaded", () => {
     }
     renderMascotSelectedSkills();
     renderMascotSkillPicker();
-    if (realtimePeer) {
+    if (hasRealtimeTransport()) {
       ipcRenderer.invoke("mascotInline:realtimeTurnMcp", mascotSelectedMcpServerIds).catch((error) => setStatus(error.message, 6000));
     }
   };
@@ -1666,7 +1786,7 @@ window.addEventListener("DOMContentLoaded", () => {
   });
   const sendMascotMessage = async (message, attachments = [], selectedSkillIds = [], selectedMcpServerIds = [], deliveryOptions = {}) => {
     setSendingControls(true);
-    const useActiveRealtime = Boolean(realtimePeer);
+    const useActiveRealtime = hasRealtimeTransport();
     let streamOwnsBusyState = false;
     setStatus(useActiveRealtime ? "Live音声で応答を生成…" : appState?.interactionMode === "work" ? "作業を開始…" : "考え中…", 30_000);
     try {
@@ -1757,7 +1877,7 @@ window.addEventListener("DOMContentLoaded", () => {
       setStatus("Liveへの接続が完了してから送信してください", 5000);
       return;
     }
-    const shouldAutoStartLive = !realtimePeer
+    const shouldAutoStartLive = !hasRealtimeTransport()
       && appState?.backend === "codex"
       && appState?.speechInputProvider === "realtime"
       && appState?.realtimeAutoStartOnText !== false;
@@ -1785,11 +1905,11 @@ window.addEventListener("DOMContentLoaded", () => {
         return;
       }
     }
-    if (realtimePeer && attachments.length) {
+    if (hasRealtimeTransport() && attachments.length) {
       setStatus(uiText("ファイル添付はLiveを停止してから送信してください", "Stop Live before sending file attachments"), 6000);
       return;
     }
-    if (realtimePeer && selectedSkillIds.length && appState?.interactionMode !== "work") {
+    if (hasRealtimeTransport() && selectedSkillIds.length && appState?.interactionMode !== "work") {
       setStatus(uiText("Skillを指定できるのはLive Workだけです", "Selected Skills are available in Live Work only"), 6000);
       return;
     }
@@ -1802,7 +1922,7 @@ window.addEventListener("DOMContentLoaded", () => {
     renderMascotSelectedSkills();
     closeMascotAddPopover();
     resizeInput();
-    const liveWorkFollowUp = sending && Boolean(realtimePeer) && appState?.interactionMode === "work";
+    const liveWorkFollowUp = sending && hasRealtimeTransport() && appState?.interactionMode === "work";
     if (liveWorkFollowUp) {
       setRealtimeOutputSuppressed(false);
       setStatus(uiText("追加の指示を同じ作業へ反映しています…", "Applying the follow-up to the current Work…"), 7000);
@@ -1989,7 +2109,7 @@ window.addEventListener("DOMContentLoaded", () => {
       return;
     }
     try {
-      const shouldAutoStartLive = !realtimePeer
+      const shouldAutoStartLive = !hasRealtimeTransport()
         && appState?.backend === "codex"
         && appState?.speechInputProvider === "realtime"
         && appState?.realtimeAutoStartOnPet === true;
@@ -2068,6 +2188,15 @@ window.addEventListener("DOMContentLoaded", () => {
 
   const transcribeRecordedBlob = async (blob, provider) => {
     if (provider === "sherpa-onnx") return transcribeWithSherpaOnnx(blob);
+    if (provider === "streaming-local") {
+      const { samples, sampleRate } = await decodeRecordedAudio(blob);
+      if (!samples.length) throw new Error("録音された音声が空です");
+      return ipcRenderer.invoke("mascotInline:transcribeStreamingSpeech", {
+        samples,
+        sampleRate,
+        modelId: appState?.streamingSpeechModelId,
+      });
+    }
     const bytes = new Uint8Array(await blob.arrayBuffer());
     return ipcRenderer.invoke("mascotInline:transcribe", { bytes, mimeType: blob.type });
   };
@@ -2090,6 +2219,13 @@ window.addEventListener("DOMContentLoaded", () => {
     vadHeaderChunk = null;
     vadChunks = [];
     vadPreRoll = [];
+    if (vadStreamingSessionId) {
+      ipcRenderer.invoke("mascotInline:streamingSpeechCancel", { sessionId: vadStreamingSessionId }).catch(() => {});
+      vadStreamingSessionId = "";
+    }
+    vadStreamingQueue = Promise.resolve();
+    vadStreamingPreRoll = [];
+    vadStreamingError = null;
     try { vadProcessor?.disconnect?.(); } catch {}
     try { vadSource?.disconnect?.(); } catch {}
     vadProcessor = null;
@@ -2098,6 +2234,7 @@ window.addEventListener("DOMContentLoaded", () => {
     vadEngine = "energy";
     vadSileroDetected = false;
     vadSileroSegmentComplete = false;
+    vadSileroSegmentSamples = null;
     for (const track of vadStream?.getTracks?.() || []) track.stop();
     vadStream = null;
     vadAnalyser = null;
@@ -2117,7 +2254,9 @@ window.addEventListener("DOMContentLoaded", () => {
     vadProcessing = true;
     setVadUi("processing");
     try {
-      setStatus(provider === "sherpa-onnx" ? "sherpa-onnxで認識中…" : "OpenAIで文字起こし中…", 30_000);
+      setStatus(provider === "streaming-local"
+        ? `${appState?.streamingSpeechModel?.label || "ReazonSpeech"}で確定中…`
+        : provider === "sherpa-onnx" ? "sherpa-onnxで認識中…" : "OpenAIで文字起こし中…", 30_000);
       const transcript = String(await transcribeRecordedBlob(blob, provider) || "").trim();
       if (!transcript) {
         setStatus(waitingVoiceStatus(), 30_000);
@@ -2146,12 +2285,135 @@ window.addEventListener("DOMContentLoaded", () => {
     }
   };
 
-  const finishVadUtterance = () => {
+  const processVadRecognizedText = async (transcript) => {
+    vadProcessing = true;
+    setVadUi("processing");
+    try {
+      const command = String(transcript || "").trim();
+      if (!command) {
+        setStatus(waitingVoiceStatus(), 30_000);
+        return;
+      }
+      input.value = command;
+      resizeInput();
+      setOpen(true, { focus: true });
+      setStatus(`認識: ${command}`, 5000);
+      beginAutoSendCountdown(command);
+    } finally {
+      vadProcessing = false;
+      if (vadActive) {
+        vadResumeAt = performance.now() + Math.max(700, autoSendCountdownEndsAt ? autoSendCountdownEndsAt - performance.now() + 250 : 0);
+        vadPreRoll = [];
+        vadStreamingPreRoll = [];
+        vadLoudSince = 0;
+        vadSilentSince = 0;
+        setVadUi("waiting");
+        if (!input.value.trim()) setStatus(waitingVoiceStatus(), 30_000);
+      } else {
+        cleanupVadMedia();
+      }
+    }
+  };
+
+  const appendVadStreamingSamples = (sessionId, samples) => {
+    vadStreamingQueue = vadStreamingQueue.then(async () => {
+      if (!vadActive || vadStreamingSessionId !== sessionId) return;
+      const result = await ipcRenderer.invoke("mascotInline:streamingSpeechAppend", {
+        sessionId,
+        samples,
+        sampleRate: 16_000,
+      });
+      if (vadStreamingSessionId === sessionId && result?.text) {
+        input.value = result.text;
+        resizeInput();
+      }
+    });
+    vadStreamingQueue.catch((error) => {
+      if (vadStreamingSessionId !== sessionId || vadStreamingError) return;
+      vadStreamingError = error;
+      setStatus(`音声認識: ${error.message}`, 5000);
+    });
+    return vadStreamingQueue;
+  };
+
+  const beginVadStreamingSession = () => {
+    const sessionId = `mascot-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    vadStreamingSessionId = sessionId;
+    vadStreamingError = null;
+    const preRoll = vadStreamingPreRoll.splice(0);
+    // Build one immutable start -> pre-roll chain. Live processor callbacks can
+    // now append only after every pre-roll frame; previously they could race
+    // ahead while model startup was still pending, which starved short
+    // utterances of their beginning.
+    vadStreamingQueue = (async () => {
+      await ipcRenderer.invoke("mascotInline:streamingSpeechStart", {
+        sessionId,
+        modelId: appState?.streamingSpeechModelId,
+      });
+      for (const samples of preRoll) {
+        if (!vadActive || vadStreamingSessionId !== sessionId) return;
+        const result = await ipcRenderer.invoke("mascotInline:streamingSpeechAppend", {
+          sessionId,
+          samples,
+          sampleRate: 16_000,
+        });
+        if (vadStreamingSessionId === sessionId && result?.text) {
+          input.value = result.text;
+          resizeInput();
+        }
+      }
+    })();
+    vadStreamingQueue.catch((error) => {
+      if (vadStreamingSessionId !== sessionId || vadStreamingError) return;
+      vadStreamingError = error;
+      setStatus(`音声認識: ${error.message}`, 5000);
+    });
+  };
+
+  const finishVadUtterance = (sileroSegmentSamples = null) => {
     if (!vadSpeaking) return;
     vadSpeaking = false;
     setVadUi("processing");
     const chunks = vadChunks;
     vadChunks = [];
+    if (vadProvider === "streaming-local" && vadStreamingSessionId) {
+      const sessionId = vadStreamingSessionId;
+      vadProcessing = true;
+      setVadUi("processing");
+      // Partials are only visual feedback. The final command is decoded again
+      // from Silero's authoritative segment (Mojicast-style), never committed
+      // from the last renderer-assembled partial. If Silero is unavailable,
+      // fall back to the same MediaRecorder blob path used by the proven
+      // regular sherpa-onnx input.
+      vadStreamingQueue.catch(() => {}).then(async () => {
+        await ipcRenderer.invoke("mascotInline:streamingSpeechCancel", { sessionId }).catch(() => {});
+        if (vadStreamingSessionId === sessionId) vadStreamingSessionId = "";
+        const exactSegment = sileroSegmentSamples instanceof Float32Array
+          ? sileroSegmentSamples
+          : new Float32Array(sileroSegmentSamples || []);
+        if (exactSegment.length) {
+          return ipcRenderer.invoke("mascotInline:transcribeStreamingSpeech", {
+            samples: exactSegment,
+            sampleRate: 16_000,
+            modelId: appState?.streamingSpeechModelId,
+          });
+        }
+        const blob = new Blob(chunks, { type: vadRecorder?.mimeType || "audio/webm" });
+        if (blob.size <= 512) return "";
+        return transcribeRecordedBlob(blob, "streaming-local");
+      })
+        .then((result) => {
+          const text = typeof result === "string" ? result : result?.text;
+          return processVadRecognizedText(text);
+        })
+        .catch((error) => {
+          if (vadStreamingSessionId === sessionId) vadStreamingSessionId = "";
+          ipcRenderer.invoke("mascotInline:streamingSpeechCancel", { sessionId }).catch(() => {});
+          setStatus(`音声認識: ${error.message}`, 5000);
+          return processVadRecognizedText("");
+        });
+      return;
+    }
     const blob = new Blob(chunks, { type: vadRecorder?.mimeType || "audio/webm" });
     if (blob.size > 512) processVadTranscript(blob, vadProvider);
     else if (vadActive) {
@@ -2167,6 +2429,7 @@ window.addEventListener("DOMContentLoaded", () => {
     vadSpeaking = true;
     vadSpeechStartedAt = performance.now();
     vadSilentSince = 0;
+    if (vadProvider === "streaming-local") beginVadStreamingSession();
     setVadUi("speaking");
     setStatus("聞いています…話し終えると自動で認識します", 30_000);
   };
@@ -2185,7 +2448,9 @@ window.addEventListener("DOMContentLoaded", () => {
       if (!vadSpeaking && vadSileroDetected) beginVadUtterance();
       if (vadSpeaking && vadSileroSegmentComplete) {
         vadSileroSegmentComplete = false;
-        finishVadUtterance();
+        const segmentSamples = vadSileroSegmentSamples;
+        vadSileroSegmentSamples = null;
+        finishVadUtterance(segmentSamples);
       }
     } else if (vadEngine !== "silero" && !paused && !vadSpeaking) {
       vadNoiseFloor = Math.min(.04, Math.max(.0035, vadNoiseFloor * .96 + rms * .04));
@@ -2200,7 +2465,8 @@ window.addEventListener("DOMContentLoaded", () => {
       const stopThreshold = Math.max(profile.stopMin, vadNoiseFloor * profile.stopFactor);
       if (rms < stopThreshold) vadSilentSince ||= now;
       else vadSilentSince = 0;
-      if ((vadSilentSince && now - vadSilentSince >= profile.silenceMs && now - vadSpeechStartedAt >= 550)
+      const commitSilenceMs = profile.silenceMs + (vadProvider === "streaming-local" ? 650 : 0);
+      if ((vadSilentSince && now - vadSilentSince >= commitSilenceMs && now - vadSpeechStartedAt >= 550)
         || now - vadSpeechStartedAt >= 20_000) finishVadUtterance();
     } else {
       vadLoudSince = 0;
@@ -2217,15 +2483,24 @@ window.addEventListener("DOMContentLoaded", () => {
     vadSpeaking = false;
     vadChunks = [];
     vadPreRoll = [];
+    vadStreamingPreRoll = [];
+    vadStreamingError = null;
+    if (vadStreamingSessionId) {
+      ipcRenderer.invoke("mascotInline:streamingSpeechCancel", { sessionId: vadStreamingSessionId }).catch(() => {});
+      vadStreamingSessionId = "";
+    }
     if (!vadProcessing) cleanupVadMedia();
     setVadUi("off");
   };
 
   const startVadListening = async (provider) => {
     if (vadActive) return;
-    if (!["sherpa-onnx", "openai"].includes(provider)) throw new Error("この音声入力方式ではVADを利用できません");
+    if (!["streaming-local", "sherpa-onnx", "openai"].includes(provider)) throw new Error("この音声入力方式ではVADを利用できません");
     if (provider === "sherpa-onnx" && !appState?.sherpaModel?.installed) {
       throw new Error("設定からsherpa-onnx日本語モデルをダウンロードしてください");
+    }
+    if (provider === "streaming-local" && !appState?.streamingSpeechModel?.installed) {
+      throw new Error("設定からストリーミング音声モデルをダウンロードしてください");
     }
     if (provider === "openai" && !appState?.hasApiKey) throw new Error("OpenAI APIキーを設定してください");
     vadProvider = provider;
@@ -2240,38 +2515,52 @@ window.addEventListener("DOMContentLoaded", () => {
     vadSource = vadContext.createMediaStreamSource(vadStream);
     vadSource.connect(vadAnalyser);
     setStatus("Silero VADを準備しています…", 30_000);
+    vadProcessor = vadContext.createScriptProcessor(2048, 1, 1);
+    vadProcessor.onaudioprocess = (event) => {
+      if (!vadActive || sending || ttsBusy || vadProcessing) return;
+      const source = event.inputBuffer.getChannelData(0);
+      const ratio = vadContext.sampleRate / 16_000;
+      const length = Math.max(1, Math.floor(source.length / ratio));
+      const samples = new Float32Array(length);
+      for (let index = 0; index < length; index += 1) {
+        const start = Math.floor(index * ratio);
+        const end = Math.max(start + 1, Math.min(source.length, Math.floor((index + 1) * ratio)));
+        let sum = 0;
+        for (let sourceIndex = start; sourceIndex < end; sourceIndex += 1) sum += source[sourceIndex];
+        samples[index] = sum / (end - start);
+      }
+      if (vadProvider === "streaming-local") {
+        if (vadSpeaking && vadStreamingSessionId) appendVadStreamingSamples(vadStreamingSessionId, samples);
+        else {
+          vadStreamingPreRoll.push(samples.slice());
+          if (vadStreamingPreRoll.length > 8) vadStreamingPreRoll.shift();
+        }
+      }
+      if (vadEngine !== "silero") return;
+      vadSileroQueue = vadSileroQueue.then(async () => {
+        if (!vadActive || vadEngine !== "silero") return;
+        const result = await ipcRenderer.invoke("mascotInline:vadAccept", samples);
+        vadSileroDetected = Boolean(result?.detected);
+        if (result?.segmentComplete) {
+          vadSileroSegmentComplete = true;
+          vadSileroSegmentSamples = result.segmentSamples instanceof Float32Array
+            ? result.segmentSamples
+            : new Float32Array(result.segmentSamples || []);
+        }
+      }).catch(() => {
+        vadEngine = "energy";
+        vadSileroDetected = false;
+        vadSileroSegmentComplete = false;
+      });
+    };
+    vadSource.connect(vadProcessor);
+    vadProcessor.connect(vadContext.destination);
     try {
       await ipcRenderer.invoke("mascotInline:vadStart", appState?.vadSensitivity || "normal");
       vadEngine = "silero";
       vadSileroDetected = false;
       vadSileroSegmentComplete = false;
-      vadProcessor = vadContext.createScriptProcessor(2048, 1, 1);
-      vadProcessor.onaudioprocess = (event) => {
-        if (!vadActive || sending || ttsBusy || vadProcessing) return;
-        const source = event.inputBuffer.getChannelData(0);
-        const ratio = vadContext.sampleRate / 16_000;
-        const length = Math.max(1, Math.floor(source.length / ratio));
-        const samples = new Float32Array(length);
-        for (let index = 0; index < length; index += 1) {
-          const start = Math.floor(index * ratio);
-          const end = Math.max(start + 1, Math.min(source.length, Math.floor((index + 1) * ratio)));
-          let sum = 0;
-          for (let sourceIndex = start; sourceIndex < end; sourceIndex += 1) sum += source[sourceIndex];
-          samples[index] = sum / (end - start);
-        }
-        vadSileroQueue = vadSileroQueue.then(async () => {
-          if (!vadActive || vadEngine !== "silero") return;
-          const result = await ipcRenderer.invoke("mascotInline:vadAccept", samples);
-          vadSileroDetected = Boolean(result?.detected);
-          if (result?.segmentComplete) vadSileroSegmentComplete = true;
-        }).catch(() => {
-          vadEngine = "energy";
-          vadSileroDetected = false;
-          vadSileroSegmentComplete = false;
-        });
-      };
-      vadSource.connect(vadProcessor);
-      vadProcessor.connect(vadContext.destination);
+      vadSileroSegmentSamples = null;
     } catch {
       vadEngine = "energy";
       setStatus("Silero VADを準備できないため音量検出を使用します", 5000);
@@ -2303,6 +2592,10 @@ window.addEventListener("DOMContentLoaded", () => {
       recordedSpeechRecorder.stop();
       return;
     }
+    if (manualStreamingSpeechSessionId) {
+      await stopManualStreamingSpeech();
+      return;
+    }
     recordedSpeechProvider = provider;
     recordedSpeechChunks = [];
     recordedSpeechStream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true }, video: false });
@@ -2327,6 +2620,104 @@ window.addEventListener("DOMContentLoaded", () => {
     recordedSpeechRecorder.start();
     micButton.setAttribute("aria-pressed", "true");
     setStatus("録音中…もう一度押すと認識", 30_000);
+  };
+
+  const resampleStreamingSpeechSamples = (source, sourceRate) => {
+    if (sourceRate === 16_000) return source.slice();
+    const ratio = sourceRate / 16_000;
+    const length = Math.max(1, Math.floor(source.length / ratio));
+    const samples = new Float32Array(length);
+    for (let index = 0; index < length; index += 1) {
+      const start = Math.floor(index * ratio);
+      const end = Math.max(start + 1, Math.min(source.length, Math.floor((index + 1) * ratio)));
+      let sum = 0;
+      for (let sourceIndex = start; sourceIndex < end; sourceIndex += 1) sum += source[sourceIndex];
+      samples[index] = sum / (end - start);
+    }
+    return samples;
+  };
+
+  const stopManualStreamingSpeech = async ({ cancel = false } = {}) => {
+    const sessionId = manualStreamingSpeechSessionId;
+    if (!sessionId) return;
+    micButton.setAttribute("aria-pressed", "false");
+    try { manualStreamingSpeechProcessor?.disconnect(); } catch {}
+    try { manualStreamingSpeechSource?.disconnect(); } catch {}
+    manualStreamingSpeechProcessor = null;
+    manualStreamingSpeechSource = null;
+    for (const track of manualStreamingSpeechStream?.getTracks?.() || []) track.stop();
+    manualStreamingSpeechStream = null;
+    const context = manualStreamingSpeechContext;
+    manualStreamingSpeechContext = null;
+    await context?.close?.().catch(() => {});
+    try {
+      await manualStreamingSpeechQueue;
+      if (manualStreamingSpeechSessionId === sessionId) manualStreamingSpeechSessionId = "";
+      if (cancel) {
+        await ipcRenderer.invoke("mascotInline:streamingSpeechCancel", { sessionId });
+        return;
+      }
+      const result = await ipcRenderer.invoke("mascotInline:streamingSpeechFinish", { sessionId });
+      if (result?.text) {
+        input.value = result.text;
+        resizeInput();
+        input.focus();
+        setStatus("音声を入力しました");
+      } else setStatus("音声を認識できませんでした。もう一度お試しください", 5000);
+    } catch (error) {
+      if (manualStreamingSpeechSessionId === sessionId) manualStreamingSpeechSessionId = "";
+      ipcRenderer.invoke("mascotInline:streamingSpeechCancel", { sessionId }).catch(() => {});
+      setStatus(error.message, 5000);
+    } finally {
+      manualStreamingSpeechQueue = Promise.resolve();
+    }
+  };
+
+  const toggleManualStreamingSpeech = async () => {
+    if (manualStreamingSpeechSessionId) {
+      await stopManualStreamingSpeech();
+      return;
+    }
+    if (!appState?.streamingSpeechModel?.installed) throw new Error("設定からストリーミング音声モデルをダウンロードしてください");
+    const sessionId = `mascot-manual-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }, video: false });
+    try {
+      await ipcRenderer.invoke("mascotInline:streamingSpeechStart", { sessionId, modelId: appState?.streamingSpeechModelId });
+    } catch (error) {
+      for (const track of stream.getTracks()) track.stop();
+      throw error;
+    }
+    manualStreamingSpeechSessionId = sessionId;
+    manualStreamingSpeechQueue = Promise.resolve();
+    const context = new AudioContext({ latencyHint: "interactive" });
+    const source = context.createMediaStreamSource(stream);
+    const processor = context.createScriptProcessor(2048, 1, 1);
+    const silence = context.createGain();
+    silence.gain.value = 0;
+    source.connect(processor);
+    processor.connect(silence);
+    silence.connect(context.destination);
+    manualStreamingSpeechStream = stream;
+    manualStreamingSpeechContext = context;
+    manualStreamingSpeechSource = source;
+    manualStreamingSpeechProcessor = processor;
+    processor.onaudioprocess = (event) => {
+      if (manualStreamingSpeechSessionId !== sessionId) return;
+      const samples = resampleStreamingSpeechSamples(event.inputBuffer.getChannelData(0), context.sampleRate);
+      manualStreamingSpeechQueue = manualStreamingSpeechQueue.then(async () => {
+        if (manualStreamingSpeechSessionId !== sessionId) return;
+        const result = await ipcRenderer.invoke("mascotInline:streamingSpeechAppend", { sessionId, samples, sampleRate: 16_000 });
+        if (manualStreamingSpeechSessionId === sessionId && result?.text) {
+          input.value = result.text;
+          resizeInput();
+        }
+      }).catch((error) => {
+        if (manualStreamingSpeechSessionId === sessionId) setStatus(`音声認識: ${error.message}`, 5000);
+      });
+    };
+    await context.resume();
+    micButton.setAttribute("aria-pressed", "true");
+    setStatus("話してください…認識結果を途中から表示します", 30_000);
   };
 
   const stopRealtimeBeatrice = async () => {
@@ -2612,14 +3003,20 @@ window.addEventListener("DOMContentLoaded", () => {
     if (realtimeOutputSuppressed) ipcRenderer.invoke("mascotInline:voice", 0).catch(() => {});
   };
 
+  const hasRealtimeTransport = () => Boolean(
+    realtimePeer || realtimeSessionState === "connecting" || realtimeSessionState === "live",
+  );
+
   const closeRealtime = () => {
     try { realtimeDataChannel?.close(); } catch {}
     try { realtimePeer?.close(); } catch {}
+    realtimeInputBridge?.close();
     realtimeRemoteAudio?.pause();
     if (realtimeRemoteAudio) realtimeRemoteAudio.srcObject = null;
     for (const track of realtimeStream?.getTracks?.() || []) track.stop();
     realtimePeer = null;
     realtimeDataChannel = null;
+    realtimeInputBridge = null;
     realtimeRemoteAudio = null;
     stopRealtimeOutputMeter();
     stopRealtimeBeatrice().catch(() => {});
@@ -2636,8 +3033,10 @@ window.addEventListener("DOMContentLoaded", () => {
     realtimeSessionState = "connecting";
     updateVoiceContext();
     realtimeStream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true }, video: false });
+    realtimeInputBridge = await createRealtimeInputBridge(realtimeStream);
+    const outgoingStream = realtimeInputBridge.stream;
     realtimePeer = new RTCPeerConnection();
-    for (const track of realtimeStream.getAudioTracks()) realtimePeer.addTrack(track, realtimeStream);
+    for (const track of outgoingStream.getAudioTracks()) realtimePeer.addTrack(track, outgoingStream);
     realtimePeer.addEventListener("track", async (event) => {
       const remoteStream = event.streams[0] || new MediaStream([event.track]);
       if (appState?.realtimeVoiceConversion === "beatrice-v2") {
@@ -2680,7 +3079,7 @@ window.addEventListener("DOMContentLoaded", () => {
       speechRecognition.stop();
       return;
     }
-    if (realtimePeer) {
+    if (hasRealtimeTransport()) {
       await ipcRenderer.invoke("mascotInline:realtimeStop").catch(() => {});
       closeRealtime();
       setStatus("音声入力を終了しました");
@@ -2696,12 +3095,13 @@ window.addEventListener("DOMContentLoaded", () => {
       ensureFallbackRecognition();
       return;
     }
-    if (provider === "sherpa-onnx" || provider === "openai") {
+    if (provider === "streaming-local" || provider === "sherpa-onnx" || provider === "openai") {
       if ((appState?.voiceActivationMode || "vad") !== "manual") {
         await startVadListening(provider).catch((error) => setStatus(`音声入力: ${error.message}`, 5000));
         return;
       }
-      await toggleRecordedSpeech(provider).catch((error) => setStatus(`音声入力: ${error.message}`, 5000));
+      if (provider === "streaming-local") await toggleManualStreamingSpeech().catch((error) => setStatus(`音声入力: ${error.message}`, 5000));
+      else await toggleRecordedSpeech(provider).catch((error) => setStatus(`音声入力: ${error.message}`, 5000));
       return;
     }
     if (provider === "realtime" && appState?.backend !== "codex") {
@@ -2762,7 +3162,7 @@ window.addEventListener("DOMContentLoaded", () => {
       if (payload.delivery === "live") {
         setStatus(uiText("マイクを有効にして最初のLiveへ接続しています…", "Enabling the microphone for your first Live session…"), 30_000);
         try {
-          if (!realtimePeer) await startRealtime();
+          if (!hasRealtimeTransport()) await startRealtime();
         } catch (error) {
           await ipcRenderer.invoke("mascotInline:realtimeStop").catch(() => {});
           closeRealtime();
@@ -2773,7 +3173,7 @@ window.addEventListener("DOMContentLoaded", () => {
       input.value = "";
       resizeInput();
       await sendMascotMessage(message, [], [], [], {
-        suppressPcAudio: !realtimePeer,
+        suppressPcAudio: !hasRealtimeTransport(),
         forceWork: true,
       });
     } finally {
@@ -3024,6 +3424,9 @@ window.addEventListener("DOMContentLoaded", () => {
     const previousSensitivity = appState?.vadSensitivity;
     appState = { ...appState, ...payload };
     if (previousProvider === "realtime" && appState.speechInputProvider !== "realtime") closeRealtime();
+    if (manualStreamingSpeechSessionId && appState.speechInputProvider !== "streaming-local") {
+      stopManualStreamingSpeech({ cancel: true }).catch(() => {});
+    }
     updateVoiceContext();
     if (appState.voiceAutoSend === false) clearAutoSendCountdown();
     if (vadActive && (previousProvider !== appState.speechInputProvider

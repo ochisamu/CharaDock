@@ -72,8 +72,15 @@ contextBridge.exposeInMainWorld("mascotDesktop", {
   openLogs: () => ipcRenderer.invoke("support:openLogs"),
   transcribe: (payload) => ipcRenderer.invoke("audio:transcribe", payload),
   transcribeSherpa: (payload) => ipcRenderer.invoke("audio:transcribeSherpa", payload),
+  startStreamingSpeech: (payload) => ipcRenderer.invoke("audio:streamingSpeechStart", payload),
+  appendStreamingSpeech: (payload) => ipcRenderer.invoke("audio:streamingSpeechAppend", payload),
+  finishStreamingSpeech: (payload) => ipcRenderer.invoke("audio:streamingSpeechFinish", payload),
+  cancelStreamingSpeech: (payload) => ipcRenderer.invoke("audio:streamingSpeechCancel", payload),
+  transcribeStreamingSpeech: (payload) => ipcRenderer.invoke("audio:transcribeStreamingSpeech", payload),
   downloadSherpaModel: (modelId) => ipcRenderer.invoke("sherpa:modelDownload", modelId),
   removeSherpaModel: (modelId) => ipcRenderer.invoke("sherpa:modelRemove", modelId),
+  downloadStreamingSpeechModel: (modelId) => ipcRenderer.invoke("streamingSpeech:modelDownload", modelId),
+  removeStreamingSpeechModel: (modelId) => ipcRenderer.invoke("streamingSpeech:modelRemove", modelId),
   synthesizeTts: (text) => ipcRenderer.invoke("tts:synthesize", text),
   nextTtsChunk: (streamId) => ipcRenderer.invoke("tts:nextChunk", streamId),
   cancelTtsStream: (streamId) => ipcRenderer.invoke("tts:cancelStream", streamId),
@@ -184,6 +191,11 @@ contextBridge.exposeInMainWorld("mascotDesktop", {
     const listener = (_event, payload) => callback(payload);
     ipcRenderer.on("sherpa:modelProgress", listener);
     return () => ipcRenderer.removeListener("sherpa:modelProgress", listener);
+  },
+  onStreamingSpeechModelProgress: (callback) => {
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on("streamingSpeech:modelProgress", listener);
+    return () => ipcRenderer.removeListener("streamingSpeech:modelProgress", listener);
   },
   onTtsModelProgress: (callback) => {
     const listener = (_event, payload) => callback(payload);
