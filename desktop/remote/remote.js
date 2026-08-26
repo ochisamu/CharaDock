@@ -1152,7 +1152,7 @@
       return;
     }
     if (method.startsWith("thread/realtime/transcript/") && params.role === "assistant") {
-      setRemoteLiveOutputSuppressed(Boolean(params.suppressed));
+      setRemoteLiveOutputSuppressed(Boolean(params.suppressed) && method !== "thread/realtime/transcript/done");
       if (params.suppressed) return;
     }
     if (method.startsWith("thread/realtime/transcript/") && params.role === "user") {
@@ -1834,6 +1834,7 @@
       : payload.audioRoute === "mobile-tts" ? "mobile-tts" : "none";
     if (audioRoute === "live") stopMobileSpeech();
     if (payload.phase === "follow-up") {
+      setBusy(true);
       setComposerHint(payload.statusText || text("追加の指示を同じ作業へ反映しています…", "Applying the follow-up to the current Work…"));
       return;
     }

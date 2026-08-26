@@ -400,7 +400,8 @@ test("conversation and work surfaces expose history, folder access, interruption
   assert.match(control, /api\.followUpChat\([\s\S]*route\?\.accepted/);
   assert.match(main, /async function steerActiveInteraction\([\s\S]*client\.steerActiveTurn/);
   assert.match(main, /phase === "start"\) remoteBusy = true/);
-  assert.match(main, /\["thinking", "working", "speaking"\]\.includes\(activeTurnStatus\)/);
+  assert.match(main, /normalConversationSubmitRoute\(\{[\s\S]*turnStatus: turnCoordinator\.snapshot\(\)\.status/);
+  assert.match(main, /submitRoute === "follow-up"[\s\S]*steerActiveInteraction\(requestText/);
   assert.match(main, /A second response cannot start at the same time/);
   assert.match(main, /ipcMain\.handle\("chat:followUp"/);
   assert.match(main, /ipcMain\.handle\("mascotInline:followUp"/);
@@ -641,7 +642,7 @@ test("remote access exposes compact avatar dialogue, device controls, and Live r
   assert.match(remoteJs, /liveSessionId: stoppedSessionId \|\| undefined/);
   assert.match(remoteJs, /charadock\.remote\.audio"\) !== "0"/);
   assert.match(remoteJs, /gain\.gain\.value = audioEnabled && !liveBeatriceActive && !liveOutputSuppressed \? 1 : 0/);
-  assert.match(remoteJs, /setRemoteLiveOutputSuppressed\(Boolean\(params\.suppressed\)\)/);
+  assert.match(remoteJs, /setRemoteLiveOutputSuppressed\(Boolean\(params\.suppressed\) && method !== "thread\/realtime\/transcript\/done"\)/);
   assert.match(remoteJs, /\/api\/live\/beatrice\/audio/);
   assert.match(remoteJs, /\/api\/live\/beatrice\/stop/);
   assert.match(remoteJs, /createThreeStageMouthTracker/);

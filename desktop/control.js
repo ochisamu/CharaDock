@@ -4105,8 +4105,14 @@
       }
       if (params.role === "assistant") {
         if (params.suppressed) {
-          setRealtimeOutputSuppressed(true);
+          setRealtimeOutputSuppressed(method !== "thread/realtime/transcript/done");
           realtimeAssistantActive = false;
+          if (method === "thread/realtime/transcript/done" && state?.interactionMode !== "work") {
+            realtimePendingTypedText = "";
+            realtimeTypedChatTurnActive = false;
+            setChatBusy(false);
+            setStatus($("#chatStatus"), "Codex Realtime音声入力中。もう一度押すと終了します。");
+          }
           return;
         }
         if (text) {
@@ -4636,6 +4642,7 @@
     }
     setChatBusy(true);
     setStatus($("#chatStatus"), "応答を待っています…");
+    let autoFollowUpAccepted = false;
     try {
       const result = await api.sendChat({
         message,
@@ -4643,6 +4650,13 @@
         selectedSkillIds,
         selectedMcpServerIds,
       });
+      if (result?.followUp) {
+        autoFollowUpAccepted = true;
+        setStatus($("#chatStatus"), result.mode === "work"
+          ? localized("追加の指示を同じ作業へ反映しています…", "Applying the follow-up to the current Work…")
+          : localized("追加の指示を同じ会話へ反映しています…", "Applying the follow-up to the current conversation…"));
+        return;
+      }
       const resultMode = result?.mode === "work" ? "work" : "chat";
       if (resultMode !== requestedMode) setChatHistoryView(historyViewForMode(resultMode));
       setStatus($("#chatStatus"), result.provider === "codex" ? "Codexから応答しました。" : "OpenAI APIから応答しました。");
@@ -4659,13 +4673,15 @@
       setStatus($("#chatStatus"), interrupted ? localized("応答を中断しました。続けて修正を送れます。", "Response stopped. You can send a revision now.") : friendlyConversationErrorMessage(error), !interrupted);
     } finally {
       localChatSendPending = false;
-      setChatBusy(false);
-      streamingMessage = null;
-      streamingMessageMode = "";
+      if (!autoFollowUpAccepted) {
+        setChatBusy(false);
+        streamingMessage = null;
+        streamingMessageMode = "";
+      }
       input.focus();
       const followUp = pendingChatFollowUp;
       pendingChatFollowUp = null;
-      if (followUp) {
+      if (followUp && !autoFollowUpAccepted) {
         input.value = followUp.message;
         chatAttachments = followUp.attachments;
         chatSelectedSkillIds = followUp.selectedSkillIds || [];
@@ -4723,6 +4739,10 @@
       const mode = payload?.mode === "work" ? "work" : "chat";
       const turnId = String(payload?.turnId || "");
       if (phase === "follow-up") {
+        activeStreamMode = mode;
+        activeStreamTurnId = turnId || activeStreamTurnId;
+        activeStreamWorkRunId = String(payload?.workRunId || activeStreamWorkRunId || "");
+        setChatBusy(true);
         setStatus($("#chatStatus"), String(payload.statusText || localized("追加の指示を同じ作業へ反映しています…", "Applying the follow-up to the current Work…")));
         return;
       }

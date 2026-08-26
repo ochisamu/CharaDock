@@ -439,10 +439,12 @@ class CodexAppServerClient {
     }
     if (String(message.method || "").startsWith("thread/realtime/")) {
       const threadId = String(message.params?.threadId || "");
-      this.realtimeHandlers.get(threadId)?.(message);
-      if (["thread/realtime/closed", "thread/realtime/error"].includes(message.method)) {
-        this.realtimeHandlers.delete(threadId);
-      }
+      const handler = this.realtimeHandlers.get(threadId);
+      // Terminal notifications must release local ownership before observers
+      // publish their next state. Otherwise Live can remain visible as
+      // connected until another unrelated event happens to refresh the UI.
+      if (["thread/realtime/closed", "thread/realtime/error"].includes(message.method)) this.realtimeHandlers.delete(threadId);
+      handler?.(message);
       return;
     }
     const eventCollector = this.turnCollectors.get(message.params?.turnId);
@@ -772,8 +774,22 @@ class CodexAppServerClient {
   async stopRealtime() {
     const threadId = this.threadId;
     if (!threadId || !this.realtimeHandlers.has(threadId)) return false;
-    await this.request("thread/realtime/stop", { threadId }, 30_000);
-    return true;
+    const handler = this.realtimeHandlers.get(threadId);
+    try {
+      await this.request("thread/realtime/stop", { threadId }, 30_000);
+      return true;
+    } finally {
+      // Some app-server builds acknowledge stop before emitting `closed`, and
+      // a failed stop request must fail closed locally too. The caller must
+      // return with one settled route so TTS is never blocked by ghost Live.
+      if (this.realtimeHandlers.get(threadId) === handler) {
+        this.realtimeHandlers.delete(threadId);
+        handler?.({
+          method: "thread/realtime/closed",
+          params: { threadId, reason: "client_stop" },
+        });
+      }
+    }
   }
 
   hasActiveRealtime() {

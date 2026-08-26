@@ -41,7 +41,10 @@ For each affected entry and route, cover:
 - Mode, project, work directory, character, thread, Skill, and MCP scope do not drift between surfaces.
 - Reconnect restores the prior valid scope before accepting work; an invalid workspace fails visibly and recoverably.
 - System/transport status stays out of character speech and durable conversation history.
+- Switching from Live to local voice/TTS must release the Live owner before settings save returns. Settle a non-delegated Live turn, but preserve an active delegated Codex turn and route the next submit into it as a follow-up instead of rejecting it or starting a competing answer.
 - Errors always restore usable controls and preserve the last meaningful grounded response.
+- A latency filler may express only neutral waiting or thinking. It must not invent a request-specific method such as comparing, searching, verifying, organizing, or editing before the runtime has observed that work.
+- A native Live handoff owns every segmented assistant utterance until its grounded result has had time to start. Do not consume authorization on an early acknowledgement and then mute the final answer; suppression must also release its audio mute and transient thinking state when that suppressed utterance ends.
 - Supporting results open once without stealing focus, hiding the composer, or covering the character more than necessary.
 - Streaming speech may expose tentative text immediately, but only a separate, conservative utterance gate may commit or auto-send it; a partial result must never submit a turn.
 - For Japanese local streaming STT, treat Silero's completed segment as the authoritative final input, copy it before `pop()`, request a non-external Node buffer for Windows Electron, and preserve ReazonSpeech's required 0.9 seconds of boundary context on both sides. Never reuse the last partial as the final result.

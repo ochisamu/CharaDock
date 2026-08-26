@@ -931,6 +931,44 @@ test("Codex client appends typed user input as realtime text", async () => {
   });
 });
 
+test("stopping Realtime settles local ownership before returning", async () => {
+  const client = new CodexAppServerClient();
+  client.threadId = "thread-stop";
+  const events = [];
+  client.realtimeHandlers.set("thread-stop", (event) => {
+    events.push({ method: event.method, activeDuringCallback: client.hasActiveRealtime() });
+  });
+  client.request = async (method, params) => {
+    assert.equal(method, "thread/realtime/stop");
+    assert.deepEqual(params, { threadId: "thread-stop" });
+    return {};
+  };
+
+  assert.equal(await client.stopRealtime(), true);
+  assert.equal(client.hasActiveRealtime(), false);
+  assert.deepEqual(events, [{
+    method: "thread/realtime/closed",
+    activeDuringCallback: false,
+  }]);
+});
+
+test("a failed Realtime stop still fails closed locally", async () => {
+  const client = new CodexAppServerClient();
+  client.threadId = "thread-stop-error";
+  const events = [];
+  client.realtimeHandlers.set("thread-stop-error", (event) => {
+    events.push({ method: event.method, activeDuringCallback: client.hasActiveRealtime() });
+  });
+  client.request = async () => { throw new Error("stop failed"); };
+
+  await assert.rejects(client.stopRealtime(), /stop failed/);
+  assert.equal(client.hasActiveRealtime(), false);
+  assert.deepEqual(events, [{
+    method: "thread/realtime/closed",
+    activeDuringCallback: false,
+  }]);
+});
+
 test("Codex client forwards realtime handoff work events and tracks the active turn", () => {
   const client = new CodexAppServerClient();
   client.threadId = "thread-work-voice";

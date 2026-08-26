@@ -1808,6 +1808,16 @@ window.addEventListener("DOMContentLoaded", () => {
         suppressPcAudio: Boolean(deliveryOptions.suppressPcAudio),
         forceWork: Boolean(deliveryOptions.forceWork),
       });
+      if (result?.followUp) {
+        streamOwnsBusyState = true;
+        streamWorkMode = result.mode === "work";
+        detachedRealtimeWorkBusy = streamWorkMode;
+        detachedRealtimeWorkRunId = String(result.workRunId || "");
+        setStatus(streamWorkMode
+          ? uiText("追加の指示を同じ作業へ反映しています…", "Applying the follow-up to the current Work…")
+          : uiText("追加の指示を同じ会話へ反映しています…", "Applying the follow-up to the current conversation…"), 7000);
+        return;
+      }
       if (["screen", "browser", "computer"].includes(result.permissionRequest?.type)) {
         showPermission(result);
         setStatus("「いいよ」「やめて」と話しても選べます", 9000);
@@ -3191,6 +3201,10 @@ window.addEventListener("DOMContentLoaded", () => {
   });
   ipcRenderer.on("mascot:stream", (_event, payload) => {
     if (payload?.phase === "follow-up") {
+      streamWorkMode = payload?.mode === "work";
+      detachedRealtimeWorkBusy = streamWorkMode;
+      detachedRealtimeWorkRunId = String(payload?.workRunId || detachedRealtimeWorkRunId || "");
+      setSendingControls(true);
       const statusText = String(payload.statusText || uiText("追加の指示を同じ作業へ反映しています…", "Applying the follow-up to the current Work…"));
       setWorkActivity(statusText, { trackElapsed: true });
       setStatus(statusText, 7000);
@@ -3343,8 +3357,18 @@ window.addEventListener("DOMContentLoaded", () => {
       return;
     }
     if (method.startsWith("thread/realtime/transcript/") && params.role === "assistant") {
-      setRealtimeOutputSuppressed(Boolean(params.suppressed));
-      if (params.suppressed) return;
+      const suppressed = Boolean(params.suppressed);
+      setRealtimeOutputSuppressed(suppressed && method !== "thread/realtime/transcript/done");
+      if (suppressed) {
+        if (method === "thread/realtime/transcript/done") {
+          releaseRealtimeBeatriceCaption();
+          if (!detachedRealtimeWorkBusy) {
+            setWorkActivity("");
+            setStatus(appState?.language === "en" ? "Listening…" : "話してください…", 30_000);
+          }
+        }
+        return;
+      }
     }
     if (method === "thread/realtime/transcript/delta" && params.role === "user") {
       setRealtimeOutputSuppressed(false);

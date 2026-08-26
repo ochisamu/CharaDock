@@ -99,6 +99,7 @@ const { screenShareConversationAction } = require("./lib/screen-share-intent.cjs
 const { computerContinuationAction, computerConversationAction, normalizeComputerToolName } = require("./lib/computer-use-intent.cjs");
 const { runWindowsInput } = require("./lib/windows-input.cjs");
 const { StreamingTextSegmenter, sanitizeSpeechText } = require("./lib/speech-stream.cjs");
+const { normalConversationSubmitRoute } = require("./lib/conversation-submit.cjs");
 const { consumeInjectedSpeech, recentInjectedSpeech } = require("./lib/realtime-injected-speech.cjs");
 const { completionMinimumAssistantSequence, completionTranscriptEligible } = require("./lib/realtime-completion-gate.cjs");
 const { normalizeSpeechPronunciation } = require("./lib/speech-pronunciation.cjs");
@@ -135,6 +136,7 @@ const { REALTIME_VOICES, normalizeRealtimeVoice, normalizeRealtimeVoiceList } = 
 const { normalizeMascotPointerMode, shouldAutoHideMascot } = require("./lib/mascot-pointer-mode.cjs");
 const { localAttachmentInstructions, normalizeLocalAttachments } = require("./lib/local-attachments.cjs");
 const { RealtimeTurnBuffer, normalizedText } = require("./lib/realtime-turn-buffer.cjs");
+const { realtimeReplyAuthorized } = require("./lib/realtime-reply-authorization.cjs");
 const { realtimeDelegationHistoryText, realtimeDelegationInput } = require("./lib/realtime-delegation.cjs");
 const {
   assignedSkillIds,
@@ -242,12 +244,12 @@ const CHARACTERS = Object.freeze([
   {
     id: "amber-avatar", name: "コハク", assetDir: "assets/amber-avatar",
     personality: "明るく好奇心旺盛。少しお茶目で、ユーザーの挑戦を素直に喜び、元気に背中を押す。親しみやすい短めの口調。",
-    thinkingFillers: ["うん、ちょっと考えるね。", "少しだけ待ってね。", "えっとね、確認してみる。", "なるほど。ちょっと見てくるね。", "うんうん、今まとめてるよ。"],
+    thinkingFillers: ["ちょっと待ってね。", "うん、もう少しだけ。", "今考えてるよ。"],
     petPhrases: ["えへへ、なあに？", "呼んだ？", "今日も一緒にがんばろうね。", "そこ、くすぐったいよ！", "よーし、元気を分けてあげる！", "もう一回？ いいよ！", "びっくりしたー！", "ちゃんとここにいるよ。"],
     locales: { en: {
       name: "Kohaku",
       personality: "Bright, curious, and a little playful. She genuinely celebrates the user's challenges and gives them an upbeat push, speaking in short, friendly sentences.",
-      thinkingFillers: ["Okay, let me think for a moment.", "Give me just a second.", "Let me check that.", "I see—I'll take a quick look.", "Almost there. I'm putting it together now."],
+      thinkingFillers: ["Give me a moment.", "Almost there.", "Let me think for a second."],
       petPhrases: ["Hehe, what's up?", "Did you call me?", "Let's do our best together today!", "Hey, that tickles!", "Here—have some extra energy!", "Again? Sure!", "You surprised me!", "I'm right here."],
     } },
     ui: { bubbleLeft: 18, bubbleTop: 24, bubbleWidth: 68, petLeft: 0, petTop: 27, petWidth: 56, petHeight: 42 },
@@ -255,12 +257,12 @@ const CHARACTERS = Object.freeze([
   {
     id: "bronze-avatar", name: "セピア", assetDir: "assets/bronze-avatar",
     personality: "落ち着いた頼れるお姉さん気質。包容力があり、少し洒落た冗談を交えながら現実的に助言する。温かく余裕のある口調。",
-    thinkingFillers: ["少し待って。整理してみるわ。", "そうね、少し考えさせて。", "確認してくるから、少しだけ待ってね。", "なるほど。順番に見てみましょう。", "今ちょうど、答えをまとめているところよ。"],
+    thinkingFillers: ["少しだけ待ってね。", "そうね、もう少しだけ。", "今考えているところよ。"],
     petPhrases: ["ふふ、甘えたいの？", "ちゃんと見ているわ。", "無理はしないこと。いい？", "こら、いたずらっ子ね。", "少し休憩にしましょうか。", "そんなに構ってほしいの？", "驚かせるなんて、いい度胸ね。", "はいはい、ここにいるわ。"],
     locales: { en: {
       name: "Sepia",
       personality: "Calm, dependable, and warmly self-assured. She offers practical advice with the occasional polished joke, speaking with the easy confidence of a supportive older sister.",
-      thinkingFillers: ["Give me a moment to sort this out.", "Let me think about that.", "I'll check—just a moment.", "I see. Let's take it in order.", "I'm bringing the answer together now."],
+      thinkingFillers: ["Give me a moment.", "Just a little longer.", "I'm thinking."],
       petPhrases: ["Oh? Feeling affectionate?", "I'm keeping an eye on things.", "Don't overdo it, all right?", "Such a little troublemaker.", "Shall we take a short break?", "Do you need that much attention?", "Bold of you to surprise me.", "Yes, yes—I'm right here."],
     } },
     ui: { bubbleLeft: 18, bubbleTop: 24, bubbleWidth: 68, petLeft: 0, petTop: 29, petWidth: 56, petHeight: 48 },
@@ -268,12 +270,12 @@ const CHARACTERS = Object.freeze([
   {
     id: "towa-avatar", name: "トワ", assetDir: "assets/towa-avatar",
     personality: "明るく機転が利き、親しみやすい口調で話す。道具や発見の話になると少し熱が入り、ユーザーと一緒に試すことを楽しむ。",
-    thinkingFillers: ["よし、ちょっと考えるね。", "なるほど。順番に見てみよう。", "今、使えそうな手を探してるよ。", "少し待って、仕組みを確かめてみる。", "見えてきた。もう少しだけ！"],
+    thinkingFillers: ["ちょっとだけ待ってね。", "今考えてるよ。", "あと少しだけ！"],
     petPhrases: ["よし、いこう！", "なるほどね！", "任せて！", "なになに、面白そう。", "その発見、もう少し見せて！", "おっと、くすぐったいよ。", "呼んだ？ すぐ行くよ。", "道具は使ってこそ、だよね。"],
     locales: { en: {
       name: "Towa",
       personality: "Cheerful, quick-witted, and approachable. She gets especially enthusiastic about tools and discoveries, and loves trying things alongside the user.",
-      thinkingFillers: ["All right, let me think.", "Got it. Let's look at this step by step.", "I'm looking for the best tool for this.", "One moment—I'm checking how it works.", "I can see it now. Just a little longer!"],
+      thinkingFillers: ["Give me a second.", "I'm thinking.", "Almost there!"],
       petPhrases: ["All right, let's go!", "Now that makes sense!", "Leave it to me!", "Oh, that sounds interesting.", "Show me more of that discovery!", "Whoa, that tickles.", "You called? I'm on it.", "Tools are meant to be used, right?"],
     } },
     ui: { bubbleLeft: 18, bubbleTop: 24, bubbleWidth: 68, petLeft: 0, petTop: 25, petWidth: 58, petHeight: 48 },
@@ -281,12 +283,12 @@ const CHARACTERS = Object.freeze([
   {
     id: "sage-avatar", name: "セージ", assetDir: "assets/sage-avatar",
     personality: "穏やかで観察力に優れ、複雑なことを筋道立てて整理する知性派。丁寧で簡潔に話し、必要なときだけ少し乾いた冗談を添える。",
-    thinkingFillers: ["少し整理してみるよ。", "順番に考えてみよう。", "必要なところを確認しているよ。", "少し待って。筋道を整えてみる。", "だいぶ絞れてきた。もう少しだけ。"],
+    thinkingFillers: ["少しだけ待ってね。", "今考えているよ。", "もう少しだけ。"],
     petPhrases: ["焦らなくて大丈夫。順番に見ていこう。", "面白いね。もう少し掘り下げようか。", "ひと息入れるのも、悪くないよ。", "ちゃんとここにいるよ。", "今の進め方、悪くないと思う。", "触れるなら、もう少し静かにね。", "驚いた。これは少し興味深いね。", "呼んだかな？"],
     locales: { en: {
       name: "Sage",
       personality: "Gentle, observant, and analytical. He organizes complex ideas into a clear path, speaks politely and concisely, and adds a dry joke only when it helps.",
-      thinkingFillers: ["Let me organize this for a moment.", "Let's reason through it in order.", "I'm checking the parts that matter.", "One moment—I'm putting the logic in place.", "I've narrowed it down. Just a little longer."],
+      thinkingFillers: ["Give me a moment.", "I'm thinking.", "Just a little longer."],
       petPhrases: ["No need to rush. Let's take it in order.", "Interesting. Shall we dig a little deeper?", "A short pause isn't a bad idea.", "I'm right here.", "I think this approach is working well.", "A little more gently, please.", "That surprised me. How intriguing.", "Were you calling me?"],
     } },
     ui: { bubbleLeft: 18, bubbleTop: 24, bubbleWidth: 68, petLeft: 0, petTop: 27, petWidth: 58, petHeight: 48 },
@@ -294,7 +296,7 @@ const CHARACTERS = Object.freeze([
   {
     id: "nike-avatar", name: "AIニケちゃん", assetDir: "assets/nike-avatar",
     personality: "設定上17歳の日本の女子高生AIアシスタント。自分を「私」、利用者を「マスター」と呼び、思いやりのある敬語で親しみやすく簡潔に話す。調査・実装・整理・発信を支え、分からないことや未確認の結果は正直に伝える。",
-    thinkingFillers: ["確認します。少しお待ちください。", "順番に整理しています。", "必要な情報を確かめています。", "実際の内容を確認してまとめます。", "もう少しで整理できます。"],
+    thinkingFillers: ["マスター、少々お待ちください。", "いま考えています。", "もう少しだけお待ちくださいね。", "少々お時間をください。"],
     petPhrases: ["なあに？", "ここにいるよ。", "一緒にやってみよう。"],
     creditText: "AIニケちゃんは、tegnikeさんの許可を受けて収録しています。",
     credits: [
@@ -304,7 +306,7 @@ const CHARACTERS = Object.freeze([
     locales: { en: {
       name: "AI Nike-chan",
       personality: "A 17-year-old Japanese high-school AI assistant in her character setting. She refers to herself as watashi, calls the user Master, and speaks in concise, caring, approachable polite language. She supports research, implementation, organization, and communication while being honest about uncertainty and unverified results.",
-      thinkingFillers: ["Let me check that.", "I'm organizing this in order.", "I'm verifying the information that matters.", "I'll review the actual result and summarize it.", "I have almost finished organizing it."],
+      thinkingFillers: ["One moment, Master.", "I'm thinking.", "Just a little longer, please.", "Please give me a moment."],
       petPhrases: ["What's up?", "I'm right here.", "Let's try it together."],
       creditText: "AI Nike-chan is included with permission from tegnike.",
     } },
@@ -1971,15 +1973,17 @@ async function sendRemoteMessage(payload = {}) {
   }
   remoteBusy = true;
   publishRemoteState();
+  let keepBusyForFollowUp = false;
   try {
     const result = await handleMascotConversation(message, {
       suppressPcAudio: preferences.data.remotePcAudioEnabled === false,
       remoteTtsOutput: true,
     });
+    keepBusyForFollowUp = Boolean(result?.followUp);
     if (result?.text && result?.permissionRequest) remoteLastDisplayText = remotePublicText(result.text);
     return { completed: !result?.permissionRequest, result };
   } finally {
-    remoteBusy = false;
+    if (!keepBusyForFollowUp) remoteBusy = false;
     publishRemoteState();
   }
 }
@@ -6845,6 +6849,23 @@ function setActiveRealtimeTurnMcpServers(value) {
   return { selectedMcpServerIds: [...ids] };
 }
 
+function settleStoppedRealtimeTurn(client, { errorMessage = "" } = {}) {
+  const snapshot = turnCoordinator.snapshot();
+  const activeStatus = ["listening", "thinking", "working", "speaking"].includes(snapshot.status);
+  // Closing Live is not the same as cancelling a delegated Codex turn. Keep
+  // active Work steerable and let its verified completion settle the turn.
+  if (!activeStatus || activeWorkRunId || client?.hasActiveTurn?.() || activeCodexInteractionClient()) return null;
+  return turnCoordinator.apply({
+    phase: errorMessage ? "error" : "done",
+    mode: snapshot.mode,
+    text: snapshot.authoritativeText,
+    displayText: snapshot.authoritativeText || remoteLastDisplayText,
+    message: errorMessage,
+    realtimeOutput: true,
+    audioRoute: "live",
+  });
+}
+
 async function stopActiveRealtime() {
   activeRealtimeWorkDispatcher?.close?.();
   activeRealtimeWorkDispatcher = null;
@@ -6872,6 +6893,7 @@ async function stopActiveRealtime() {
     activeRealtimeTurnBuffer = null;
     activeRealtimeInjectedSpeech = [];
     remoteBusy = false;
+    settleStoppedRealtimeTurn(client);
     publishRemoteState();
   }
 }
@@ -7189,6 +7211,7 @@ async function startCodexRealtimeVoice(payload, target = "control") {
   const pendingNativeConversationTurns = [];
   const nativeConversationTurnIds = new Set();
   const nativeChatTurnIds = new Set();
+  let lastNativeChatHandoffCompletedAt = 0;
   let nativeWorkTrackingClosed = false;
   let nativeCompletionAwaitingSpeech = null;
   let nativeCompletionTimer = null;
@@ -7492,6 +7515,7 @@ async function startCodexRealtimeVoice(payload, target = "control") {
     const turnId = String(turn.id || message?.params?.turnId || "");
     if (method === "turn/started" && turnId) {
       nativeChatTurnIds.add(turnId);
+      lastNativeChatHandoffCompletedAt = 0;
       remoteBusy = true;
       publishRemoteState();
       diagnosticLog?.write("info", "realtime-chat-native-handoff-started", { turnId });
@@ -7499,6 +7523,7 @@ async function startCodexRealtimeVoice(payload, target = "control") {
     }
     if (method !== "turn/completed") return;
     if (turnId) nativeChatTurnIds.delete(turnId);
+    if (String(turn.status || "completed") === "completed") lastNativeChatHandoffCompletedAt = Date.now();
     if (String(turn.status || "completed") !== "completed") {
       publishChatStream({
         phase: "error",
@@ -7677,13 +7702,27 @@ async function startCodexRealtimeVoice(payload, target = "control") {
         assistantTranscript.text = "";
         assistantTranscript.startedAt = Date.now();
         assistantTranscript.sequence += 1;
-        assistantTranscript.authorized = realtimeTurnBuffer.hasPendingInput()
-          || recentInjectedSpeech(activeRealtimeInjectedSpeech).length > 0;
+        const pendingInput = realtimeTurnBuffer.hasPendingInput();
+        const injectedSpeech = recentInjectedSpeech(activeRealtimeInjectedSpeech).length > 0;
+        const activeNativeHandoff = nativeChatTurnIds.size > 0
+          || nativeConversationTurnIds.size > 0
+          || pendingNativeConversationTurns.length > 0
+          || Boolean(nativeWorkTurn?.turnId);
+        assistantTranscript.authorized = realtimeReplyAuthorized({
+          pendingInput,
+          injectedSpeech,
+          activeNativeHandoff,
+          completionPending: Boolean(nativeCompletionAwaitingSpeech),
+          lastNativeHandoffCompletedAt: lastNativeChatHandoffCompletedAt,
+        });
         if (!assistantTranscript.authorized) {
           diagnosticLog?.write("warn", "realtime-unsolicited-assistant-suppressed", {
             target,
             method,
             preview: String(params.text || params.delta || "").slice(0, 120),
+            pendingInput,
+            activeNativeHandoff,
+            completionPending: Boolean(nativeCompletionAwaitingSpeech),
           });
         }
       }
@@ -7873,18 +7912,9 @@ async function startCodexRealtimeVoice(payload, target = "control") {
         voiceFollowUpListeningShown = false;
       }
       if (["thread/realtime/error", "thread/realtime/closed"].includes(method)) {
-        const currentTurnStatus = turnCoordinator.snapshot().status;
-        const terminalTurnPayload = !workMode && ["thinking", "speaking"].includes(currentTurnStatus)
-          ? turnCoordinator.apply({
-            phase: method.endsWith("error") ? "error" : "done",
-            mode: "chat",
-            text: assistantTranscript.text,
-            displayText: assistantTranscript.text || remoteLastDisplayText,
-            message: method.endsWith("error") ? forwarded?.params?.message : "",
-            realtimeOutput: true,
-            audioRoute: "live",
-          })
-          : null;
+        const terminalTurnPayload = settleStoppedRealtimeTurn(realtimeClient, {
+          errorMessage: method.endsWith("error") ? String(forwarded?.params?.message || "") : "",
+        });
         if (assistantTranscript.active && !workMode) {
           sendMascotStream(terminalTurnPayload || { phase: "done", mode: "chat", text: assistantTranscript.text });
         }
@@ -10955,18 +10985,50 @@ async function sendChatMessage(message, {
   const text = String(message || "").trim().slice(0, 12_000);
   if (!text && !localAttachments.length) throw new Error("メッセージを入力してください。");
   const requestText = text || mainText("添付したファイルを確認してください。", "Please review the attached files.");
-  const activeTurnStatus = turnCoordinator.snapshot().status;
-  if (!realtimeOutput && (
-    activeWorkRunId
-    || activeCodexInteractionClient()
-    || ["thinking", "working", "speaking"].includes(activeTurnStatus)
-  )) {
+  let submitRoute = normalConversationSubmitRoute({
+    realtimeOutput,
+    activeWork: Boolean(activeWorkRunId),
+    activeInteraction: Boolean(activeCodexInteractionClient()),
+    activeRealtime: Boolean(activeRealtimeStarting || activeRealtimeTarget || currentRealtimeClient() || remoteRealtimeStartReservation),
+    turnStatus: turnCoordinator.snapshot().status,
+  });
+  if (submitRoute === "follow-up") {
+    const followUp = await steerActiveInteraction(requestText, {
+      localAttachments,
+      selectedSkillIds,
+      selectedMcpServerIds,
+    });
+    if (followUp?.accepted) {
+      diagnosticLog?.write("info", "conversation-submit-auto-follow-up", {
+        mode: followUp.mode,
+        afterRealtime: !currentRealtimeClient(),
+        length: requestText.length,
+      });
+      return {
+        ...followUp,
+        provider: "codex",
+        streamed: true,
+        followUp: true,
+      };
+    }
+    // The active turn may have completed during the short steering wait. In
+    // that race, re-evaluate once and allow the user's message to become the
+    // next turn instead of forcing them to submit it again.
+    submitRoute = normalConversationSubmitRoute({
+      realtimeOutput,
+      activeWork: Boolean(activeWorkRunId),
+      activeInteraction: Boolean(activeCodexInteractionClient()),
+      activeRealtime: Boolean(activeRealtimeStarting || activeRealtimeTarget || currentRealtimeClient() || remoteRealtimeStartReservation),
+      turnStatus: turnCoordinator.snapshot().status,
+    });
+  }
+  if (submitRoute === "busy" || submitRoute === "follow-up") {
     throw new Error(mainText(
       "いまの応答へ追加する場合は、差し込みとして送信してください。別の応答は同時に開始できません。",
       "Send this as a follow-up to the current response. A second response cannot start at the same time.",
     ));
   }
-  if (!realtimeOutput && (activeRealtimeStarting || activeRealtimeTarget || currentRealtimeClient() || remoteRealtimeStartReservation)) {
+  if (submitRoute === "active-live") {
     throw new Error(mainText(
       "Live接続中の入力はLiveへ送ってください。通常TTSとの同時実行はできません。",
       "Send input through the active Live session. Standard TTS cannot run at the same time.",

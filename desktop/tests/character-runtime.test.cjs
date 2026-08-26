@@ -45,6 +45,19 @@ test("built-in characters have distinct structured roles and dialogue examples",
   assert.equal(exampleReplies.size, builtIns.length);
 });
 
+test("automatic thinking phrases stay neutral about unverified work", () => {
+  const unsupportedProgress = /(?:確認|確かめ|調べ|検索|比較|比べ|整理|順番|仕組み|推測|事実|実際に使える|check|verify|search|compar|sort|organiz|how .* works|fact|inference)/iu;
+  for (const [id] of builtIns) {
+    const profile = resolveCharacterProfile(id);
+    for (const phrase of profile.phrases.thinking) {
+      assert.doesNotMatch(phrase.ja, unsupportedProgress, `${id} must not invent a Japanese thinking action`);
+      assert.doesNotMatch(phrase.en, unsupportedProgress, `${id} must not invent an English thinking action`);
+      assert.ok(phrase.ja.length <= 24, `${id} Japanese thinking phrase should remain brief`);
+      assert.ok(phrase.en.length <= 40, `${id} English thinking phrase should remain brief`);
+    }
+  }
+});
+
 test("AI Nike-chan keeps the official identity while adapting its output to CharaDock", () => {
   const profile = resolveCharacterProfile("nike-avatar");
   assert.match(profile.role.ja, /17歳/);
