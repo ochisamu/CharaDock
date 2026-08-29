@@ -4,6 +4,15 @@ All notable changes to CharaDock will be documented here.
 
 ## Unreleased
 
+## 0.5.0 - 2026-08-29
+
+- Add the first CharaDock ESP32 voice-device integration for ATOM Echo, with authenticated Wi-Fi or USB transport, push-to-talk and hands-free VAD, Chat/Work parity, standard TTS, GPT-Live, Beatrice 2, speaker DSP, adjustable gain, and microphone threshold controls.
+- Separate CharaDock Link and ESP32 devices into focused settings pages, with device-specific controls isolated for future expansion.
+- Add an opt-in five-minute idle close for the ATOM Echo GPT-Live session, disabled by default.
+- Recover a standard Chat/Work voice follow-up as a new turn when it races the previous turn's completion, instead of leaving the device on a red error state.
+- Recreate the ATOM Echo WebRTC audio bridge when switching between standard TTS and GPT-Live, and retain initial audio until the peer connection is ready.
+- Reset the ATOM Echo audio session when switching between Work and Chat, discard in-flight input from the previous mode, and prevent a new Chat utterance from being steered into an older Work turn.
+
 - Adopt the CharaDock identity across the application, package metadata, documentation, landing pages, release workflows, and internal service/storage identifiers; add the new format-neutral CharaDock icon.
 - Route typed messages through the active GPT-Live session so its selected Live voice produces the reply, while keeping Realtime sessions record-button-only.
 - Preserve every GPT-Live conversation turn when transcript events arrive consecutively or out of order, and let idle Live sessions speak character-click reactions without adding those reactions to conversation history.

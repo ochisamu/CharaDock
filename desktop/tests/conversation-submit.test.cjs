@@ -2,7 +2,7 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
 
-const { normalConversationSubmitRoute } = require("../lib/conversation-submit.cjs");
+const { isMissingActiveTurnError, normalConversationSubmitRoute } = require("../lib/conversation-submit.cjs");
 
 test("normal submit follows a delegated turn after Live has closed", () => {
   assert.equal(normalConversationSubmitRoute({
@@ -35,4 +35,18 @@ test("normal submit preserves non-Live busy and idle boundaries", () => {
     activeRealtime: true,
     turnStatus: "speaking",
   }), "new-turn");
+});
+
+test("normal submit never steers across a Chat or Work mode switch", () => {
+  assert.equal(normalConversationSubmitRoute({
+    conflictingInteraction: true,
+    activeInteraction: false,
+    turnStatus: "working",
+  }), "busy");
+});
+
+test("a follow-up that races turn completion can retry as a new turn", () => {
+  assert.equal(isMissingActiveTurnError(new Error("no active turn to steer")), true);
+  assert.equal(isMissingActiveTurnError(new Error("no active turn to interrupt")), true);
+  assert.equal(isMissingActiveTurnError(new Error("network unavailable")), false);
 });

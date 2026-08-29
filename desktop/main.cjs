@@ -99,7 +99,7 @@ const { screenShareConversationAction } = require("./lib/screen-share-intent.cjs
 const { computerContinuationAction, computerConversationAction, normalizeComputerToolName } = require("./lib/computer-use-intent.cjs");
 const { runWindowsInput } = require("./lib/windows-input.cjs");
 const { StreamingTextSegmenter, sanitizeSpeechText } = require("./lib/speech-stream.cjs");
-const { normalConversationSubmitRoute } = require("./lib/conversation-submit.cjs");
+const { isMissingActiveTurnError, normalConversationSubmitRoute } = require("./lib/conversation-submit.cjs");
 const { consumeInjectedSpeech, recentInjectedSpeech } = require("./lib/realtime-injected-speech.cjs");
 const { completionMinimumAssistantSequence, completionTranscriptEligible } = require("./lib/realtime-completion-gate.cjs");
 const { normalizeSpeechPronunciation } = require("./lib/speech-pronunciation.cjs");
@@ -168,6 +168,15 @@ const {
 } = require("./lib/beatrice-v2.cjs");
 const { MascotStaticServer } = require("./lib/static-server.cjs");
 const { RemoteCompanionServer, isPrivateIpv4 } = require("./lib/remote-server.cjs");
+const { AtomEchoHub } = require("./lib/atom-echo-hub.cjs");
+const { AtomEchoLiveAudioRoute } = require("./lib/atom-echo-live-audio.cjs");
+const { LiveIdleTimer } = require("./lib/live-idle-timer.cjs");
+const {
+  atomEchoConversationRoute,
+  atomEchoStandardCaptureRoute,
+  atomEchoStandardDeliveryOptions,
+} = require("./lib/atom-echo-conversation-route.cjs");
+const { decodePcmWaveDataUrl } = require("./lib/device-audio.cjs");
 const { TailscaleServeManager, preferredRemotePairingDestination } = require("./lib/tailscale-serve.cjs");
 const { splitTtsText, styleBertVoiceEndpoint, synthesizeStyleBertVits2 } = require("./lib/style-bert-vits2.cjs");
 const {
@@ -321,6 +330,17 @@ let webPreviewRuntime;
 let diagnosticLog;
 let localServer;
 let remoteServer;
+let atomEchoGateway;
+let atomEchoCapture = null;
+let atomEchoTurnGeneration = 0;
+let atomEchoLiveWindow = null;
+let atomEchoLiveReady = false;
+let atomEchoLivePendingCommands = [];
+let atomEchoLiveAudioRoute = null;
+let atomEchoLiveIdleTimer = null;
+let atomEchoLiveStatus = { state: "idle", error: "", beatrice: false };
+let atomEchoVadStatus = null;
+let atomEchoVadLastLoggedAt = 0;
 let remoteQrDataUrl = "";
 let remoteQrPairingUrl = "";
 let remoteLastError = "";
@@ -329,6 +349,7 @@ let remoteLastDisplayText = "";
 let tailscaleServeManager = new TailscaleServeManager();
 let remoteTailscaleStatus = { installed: null, active: false, managed: false, url: "", output: "", error: "" };
 const REMOTE_TTS_OWNER_ID = "charadock-link";
+const ATOM_ECHO_TTS_OWNER_ID = "atom-echo";
 let codexClient;
 let workCodexClient;
 const activeInteractionFollowUps = new WeakMap();
@@ -2356,6 +2377,421 @@ async function applyRemoteConfiguration(patch = {}) {
   return broadcastAppState();
 }
 
+function atomEchoUsesRealtime() {
+  return preferences?.data?.speechInputProvider === "realtime";
+}
+
+function atomEchoOutputProfile() {
+  return {
+    outputGain: Math.max(.5, Math.min(1.5, (Number(preferences?.data?.atomEchoOutputGain) || 100) / 100)),
+  };
+}
+
+function sendAtomEchoLiveCommand(command = {}) {
+  const payload = { ...command };
+  if (!atomEchoLiveReady || !atomEchoLiveWindow || atomEchoLiveWindow.isDestroyed()) {
+    atomEchoLivePendingCommands.push(payload);
+    atomEchoLivePendingCommands = atomEchoLivePendingCommands.slice(-80);
+    return false;
+  }
+  atomEchoLiveWindow.webContents.send("atomEcho:liveCommand", payload);
+  return true;
+}
+
+function flushAtomEchoLiveCommands() {
+  if (!atomEchoLiveReady || !atomEchoLiveWindow || atomEchoLiveWindow.isDestroyed()) return;
+  const commands = atomEchoLivePendingCommands;
+  atomEchoLivePendingCommands = [];
+  for (const command of commands) atomEchoLiveWindow.webContents.send("atomEcho:liveCommand", command);
+}
+
+function ensureAtomEchoLiveSession() {
+  const route = atomEchoConversationRoute({
+    speechInputProvider: preferences.data.speechInputProvider,
+    backend: preferences.data.backend,
+    activeRealtime: Boolean(activeRealtimeStarting || activeRealtimeTarget || currentRealtimeClient() || remoteRealtimeStartReservation),
+    activeRealtimeTarget,
+    activeWork: Boolean(activeWorkRunId),
+  });
+  if (route.blocked === "backend") throw new Error(mainText(
+    "PC版のAI接続をCodex app-serverへ変更すると、ATOM EchoでGPT-Liveを使えます。",
+    "Select the Codex app-server connection on the PC to use GPT-Live with ATOM Echo.",
+  ));
+  if (route.blocked === "other-live") throw new Error(mainText(
+    "PCまたはスマートフォン側のLiveを停止してから、ATOM Echoのボタンを押してください。",
+    "Stop Live on the PC or phone before pressing the ATOM Echo button.",
+  ));
+  if (route.blocked === "work") throw new Error(mainText(
+    "実行中のWorkを完了または中断してから、ATOM Echoのボタンを押してください。",
+    "Finish or stop the active Work run before pressing the ATOM Echo button.",
+  ));
+  if (!route.startLive || ["connecting", "live"].includes(atomEchoLiveStatus.state)) return;
+  atomEchoLiveStatus = { state: "connecting", error: "", beatrice: characterTtsSettings().realtimeVoiceConversion === "beatrice-v2" };
+  sendAtomEchoLiveCommand({
+    type: "start",
+    beatrice: atomEchoLiveStatus.beatrice,
+    selectedSkillIds: [],
+    selectedMcpServerIds: [],
+  });
+  broadcastAppState();
+}
+
+async function closeAtomEchoLiveAfterIdle() {
+  if (activeRealtimeTarget !== "atom-echo") return false;
+  atomEchoTurnGeneration += 1;
+  atomEchoCapture = null;
+  atomEchoLiveAudioRoute?.interrupt().catch(() => {});
+  sendAtomEchoLiveCommand({ type: "stop", stopServer: false });
+  let stopped = false;
+  try {
+    stopped = await stopActiveRealtime();
+  } catch (error) {
+    diagnosticLog?.write("warn", "atom-echo-live-idle-stop-failed", String(error?.message || error));
+  }
+  atomEchoLiveStatus = { state: "idle", error: "", beatrice: false };
+  await atomEchoGateway?.setDeviceState("idle").catch(() => {});
+  diagnosticLog?.write("info", "atom-echo-live-idle-closed", { timeoutMinutes: 5, stopped });
+  broadcastAppState();
+  return true;
+}
+
+function publicAtomEchoState() {
+  const runtime = atomEchoGateway?.status() || {
+    enabled: Boolean(preferences?.data?.atomEchoEnabled),
+    requestedPort: String(preferences?.data?.atomEchoPort || ""),
+    port: "",
+    connectionState: preferences?.data?.atomEchoEnabled ? "connecting" : "off",
+    deviceState: "idle",
+    connected: false,
+    wirelessConnected: false,
+    transport: "",
+    device: null,
+    error: "",
+  };
+  const speechStatus = streamingSpeechRecognition?.status();
+  return {
+    ...runtime,
+    enabled: Boolean(preferences?.data?.atomEchoEnabled),
+    requestedPort: String(preferences?.data?.atomEchoPort || runtime.requestedPort || ""),
+    streamingSpeechReady: Boolean(speechStatus?.installed),
+    streamingSpeechModel: speechStatus?.label || speechStatus?.modelId || "",
+    ttsReady: characterTtsSettings().provider !== "system",
+    ttsProvider: characterTtsSettings().provider,
+    inputMode: atomEchoUsesRealtime() ? "live" : "standard",
+    interactionMode: preferences?.data?.interactionMode === "work" ? "work" : "chat",
+    liveState: atomEchoLiveStatus.state,
+    liveConnected: activeRealtimeTarget === "atom-echo" && Boolean(currentRealtimeClient()),
+    liveError: atomEchoLiveStatus.error,
+    beatriceActive: Boolean(atomEchoLiveStatus.beatrice && ["connecting", "live"].includes(atomEchoLiveStatus.state)),
+    paired: Boolean(preferences?.data?.atomEchoDeviceId && preferences?.getAtomEchoPairingToken()),
+    wifiSsid: String(preferences?.data?.atomEchoWifiSsid || ""),
+    outputGain: Math.max(50, Math.min(150, Math.round(Number(preferences?.data?.atomEchoOutputGain) || 100))),
+    captureMode: preferences?.data?.atomEchoCaptureMode === "hands-free" ? "hands-free" : "push-to-talk",
+    vadThreshold: Math.max(80, Math.min(800, Math.round(Number(preferences?.data?.atomEchoVadThreshold) || 120))),
+    liveIdleTimeoutEnabled: preferences?.data?.atomEchoLiveIdleTimeoutEnabled === true,
+    vadStatus: atomEchoVadStatus && Date.now() - atomEchoVadStatus.receivedAt < 5_000 ? { ...atomEchoVadStatus } : null,
+  };
+}
+
+function pcm16Samples(bytes) {
+  const pcm = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes || []);
+  if (!pcm.length || pcm.length % 2) throw new Error("ATOM Echoの音声チャンクが正しくありません。");
+  const samples = new Float32Array(pcm.length / 2);
+  for (let index = 0; index < samples.length; index += 1) samples[index] = pcm.readInt16LE(index * 2) / 32768;
+  return samples;
+}
+
+async function atomEchoPttStart() {
+  if (!atomEchoGateway?.status().connected) throw new Error("ATOM Echoが接続されていません。");
+  if (atomEchoUsesRealtime()) {
+    atomEchoLiveIdleTimer?.cancel();
+    ensureAtomEchoLiveSession();
+    const generation = ++atomEchoTurnGeneration;
+    atomEchoCapture = { generation, mode: "live", samples: 0 };
+    sendAtomEchoLiveCommand({ type: "input-start" });
+    await atomEchoGateway.setDeviceState("listening");
+    diagnosticLog?.write("info", "atom-echo-live-ptt-start", {
+      transport: atomEchoGateway.status().transport,
+      beatrice: characterTtsSettings().realtimeVoiceConversion === "beatrice-v2",
+    });
+    return;
+  }
+  const interactionMode = preferences.data.interactionMode === "work" ? "work" : "chat";
+  const captureRoute = atomEchoStandardCaptureRoute(normalConversationSubmitRouteForMode(interactionMode));
+  if (!captureRoute.allowed) throw new Error(mainText(
+    "いまの応答を止めてから、ATOM Echoのボタンをもう一度長押ししてください。",
+    "Stop the current response, then hold the ATOM Echo button again.",
+  ));
+  const status = streamingSpeechRecognition.status();
+  if (!status.installed) throw new Error(mainText(
+    "音声設定からストリーミング音声認識モデルをダウンロードしてください。",
+    "Download a streaming speech recognition model in Voice settings.",
+  ));
+  const generation = ++atomEchoTurnGeneration;
+  const sessionId = `atom-echo:${Date.now().toString(36)}:${generation.toString(36)}`;
+  atomEchoCapture = { generation, mode: "standard", sessionId, samples: 0, submitRoute: captureRoute.route, interactionMode };
+  await startStreamingSpeechSession(sessionId, preferences.data.streamingSpeechModelId);
+  await atomEchoGateway.setDeviceState("listening");
+  diagnosticLog?.write("info", "atom-echo-ptt-start", {
+    transport: atomEchoGateway.status().transport,
+    modelId: status.modelId,
+    interactionMode,
+    submitRoute: captureRoute.route,
+  });
+}
+
+async function atomEchoPcmChunk(bytes) {
+  const capture = atomEchoCapture;
+  if (!capture || capture.generation !== atomEchoTurnGeneration) return;
+  if (capture.mode === "live") {
+    const pcm = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes || []);
+    if (!pcm.length || pcm.length % 2) throw new Error("ATOM Echoの音声チャンクが正しくありません。");
+    capture.samples += pcm.length / 2;
+    if (capture.samples > 16_000 * 30) {
+      atomEchoCapture = null;
+      sendAtomEchoLiveCommand({ type: "interrupt" });
+      throw new Error(mainText("1回の発話は30秒以内にしてください。", "Keep one utterance under 30 seconds."));
+    }
+    sendAtomEchoLiveCommand({
+      type: "input",
+      audio: pcm.buffer.slice(pcm.byteOffset, pcm.byteOffset + pcm.byteLength),
+    });
+    return;
+  }
+  const samples = pcm16Samples(bytes);
+  capture.samples += samples.length;
+  if (capture.samples > 16_000 * 30) {
+    streamingSpeechRecognition.cancel(capture.sessionId);
+    atomEchoCapture = null;
+    throw new Error(mainText("1回の発話は30秒以内にしてください。", "Keep one utterance under 30 seconds."));
+  }
+  await appendStreamingSpeechSession(capture.sessionId, { samples, sampleRate: 16_000 });
+}
+
+async function playAtomEchoSpeech(text) {
+  const spokenText = configuredSpeechText(String(text || "").slice(0, 4_000));
+  if (!spokenText) return { spoken: false };
+  const provider = characterTtsSettings().provider;
+  if (provider === "system") throw new Error(mainText(
+    "ATOM EchoにはPCM音声が必要です。キャラクターの声をIrodori TTSなどの通常TTSへ変更してください。",
+    "ATOM Echo needs PCM audio. Choose a standard TTS provider such as Irodori TTS for the character voice.",
+  ));
+  const result = await synthesizeConfiguredTts(spokenText, ATOM_ECHO_TTS_OWNER_ID, { enabled: true });
+  let sources = Array.isArray(result?.audioDataUrls) ? result.audioDataUrls : [];
+  let streamId = String(result?.streamId || "");
+  if (!sources.length) throw new Error(mainText(
+    "選択中の音声からPCM WAVを生成できませんでした。",
+    "The selected voice did not produce PCM WAV audio.",
+  ));
+  let playbackError = null;
+  const playbackRoute = new AtomEchoLiveAudioRoute({
+    gateway: atomEchoGateway,
+    maxPendingBytes: 16_000 * 2 * 60,
+    processorOptions: atomEchoOutputProfile,
+    onError: (error) => { playbackError ||= error; },
+  });
+  playbackRoute.start();
+  let playbackEnded = false;
+  try {
+    while (sources.length) {
+      const nextPromise = streamId ? nextIrodoriTtsChunk(streamId, ATOM_ECHO_TTS_OWNER_ID) : null;
+      for (const source of sources) {
+        const decoded = decodePcmWaveDataUrl(source);
+        if (!playbackRoute.push(decoded.samples, decoded.sampleRate)) {
+          throw playbackError || new Error(mainText(
+            "ATOM Echoへ送る音声が長すぎます。",
+            "The audio queued for ATOM Echo is too long.",
+          ));
+        }
+      }
+      if (!nextPromise) break;
+      const next = await nextPromise;
+      sources = next?.audioDataUrl ? [next.audioDataUrl] : [];
+      if (next?.done) streamId = "";
+    }
+    const playback = await playbackRoute.end();
+    playbackEnded = true;
+    return playback.interrupted ? { spoken: false, interrupted: true } : { spoken: true };
+  } finally {
+    if (!playbackEnded) await playbackRoute.interrupt().catch(() => {});
+    if (streamId) cancelIrodoriTtsStream(streamId, ATOM_ECHO_TTS_OWNER_ID);
+  }
+}
+
+async function atomEchoPttEnd() {
+  const capture = atomEchoCapture;
+  atomEchoCapture = null;
+  if (!capture || capture.generation !== atomEchoTurnGeneration) return;
+  if (capture.mode === "live") {
+    await atomEchoGateway.setDeviceState("thinking");
+    atomEchoLiveIdleTimer?.touch();
+    diagnosticLog?.write("info", "atom-echo-live-ptt-end", { samples: capture.samples });
+    return;
+  }
+  await atomEchoGateway.setDeviceState("thinking");
+  let transcription;
+  try {
+    transcription = await finishStreamingSpeechSession(capture.sessionId);
+  } catch (error) {
+    streamingSpeechRecognition.cancel(capture.sessionId);
+    throw error;
+  }
+  if (capture.generation !== atomEchoTurnGeneration) return;
+  const message = String(transcription?.text || "").trim().slice(0, 12_000);
+  if (!message) throw new Error(mainText(
+    "声を聞き取れませんでした。ボタンを押したまま、もう一度話してください。",
+    "I couldn't hear that. Hold the button and try speaking again.",
+  ));
+  diagnosticLog?.write("info", "atom-echo-transcribed", {
+    length: message.length,
+    samples: capture.samples,
+    interactionMode: capture.interactionMode,
+    submitRoute: capture.submitRoute,
+  });
+  const result = await handleMascotConversation(message, atomEchoStandardDeliveryOptions());
+  if (capture.generation !== atomEchoTurnGeneration) return;
+  if (result?.followUp) {
+    // The active Work/Chat turn remains the only answer owner. Keep the LED in
+    // its working state; the original ATOM turn will play the final response.
+    await atomEchoGateway.setDeviceState("thinking");
+    diagnosticLog?.write("info", "atom-echo-follow-up-accepted", { mode: result.mode || "steer" });
+    return;
+  }
+  const speech = String(result?.displayText || result?.text || "").trim();
+  if (speech) await playAtomEchoSpeech(speech);
+  else await atomEchoGateway.setDeviceState("idle");
+}
+
+async function atomEchoInterrupt() {
+  atomEchoTurnGeneration += 1;
+  const capture = atomEchoCapture;
+  atomEchoCapture = null;
+  if (capture?.mode === "standard") streamingSpeechRecognition.cancel(capture.sessionId);
+  atomEchoLiveAudioRoute?.interrupt().catch(() => {});
+  sendAtomEchoLiveCommand({ type: "interrupt" });
+  await atomEchoGateway?.stopPlayback().catch(() => {});
+  await interruptActiveInteraction().catch(() => false);
+  if (activeRealtimeTarget === "atom-echo") atomEchoLiveIdleTimer?.touch();
+  diagnosticLog?.write("info", "atom-echo-interrupted");
+}
+
+function createAtomEchoGateway() {
+  return new AtomEchoHub({
+    onPttStart: atomEchoPttStart,
+    onPcmChunk: atomEchoPcmChunk,
+    onPttEnd: atomEchoPttEnd,
+    onInterrupt: atomEchoInterrupt,
+    onCaptureStatus: async (status = {}) => {
+      const now = Date.now();
+      const previousActive = atomEchoVadStatus?.active;
+      atomEchoVadStatus = { ...status, receivedAt: now };
+      const contents = controlWindow && !controlWindow.isDestroyed() ? controlWindow.webContents : null;
+      if (contents && !contents.isDestroyed()) contents.send("atomEcho:captureStatus", atomEchoVadStatus);
+      if (status.speechChunks || status.active !== previousActive || now - atomEchoVadLastLoggedAt >= 5_000) {
+        atomEchoVadLastLoggedAt = now;
+        diagnosticLog?.write("info", "atom-echo-vad-status", status);
+      }
+    },
+    onWifiStatus: async (status = {}) => {
+      const deviceId = /^atom-echo-[a-f0-9]{12}$/.test(String(status.deviceId || "").toLowerCase())
+        ? String(status.deviceId).toLowerCase()
+        : preferences.data.atomEchoDeviceId;
+      const wifiSsid = String(status.ssid || preferences.data.atomEchoWifiSsid || "").replace(/[\u0000-\u001f\u007f]/g, "").slice(0, 32);
+      if (deviceId !== preferences.data.atomEchoDeviceId || wifiSsid !== preferences.data.atomEchoWifiSsid) {
+        preferences.patch({ atomEchoDeviceId: deviceId, atomEchoWifiSsid: wifiSsid });
+      }
+      broadcastAppState();
+    },
+    onStatus: () => {
+      if (preferences) broadcastAppState();
+    },
+    logger: (level, event, detail) => diagnosticLog?.write(level, event, detail),
+  });
+}
+
+async function configureAtomEcho(patch = {}) {
+  const previous = {
+    enabled: Boolean(preferences.data.atomEchoEnabled),
+    port: String(preferences.data.atomEchoPort || ""),
+    captureMode: preferences.data.atomEchoCaptureMode === "hands-free" ? "hands-free" : "push-to-talk",
+    vadThreshold: Math.max(80, Math.min(800, Math.round(Number(preferences.data.atomEchoVadThreshold) || 120))),
+    liveIdleTimeoutEnabled: preferences.data.atomEchoLiveIdleTimeoutEnabled === true,
+  };
+  const enabled = patch.enabled === true;
+  const requestedPort = String(patch.port || "").trim();
+  const port = /^(?:COM\d{1,3}|\/dev\/[A-Za-z0-9._/-]{1,100})$/i.test(requestedPort) ? requestedPort.slice(0, 120) : "";
+  const outputGain = Math.max(50, Math.min(150, Math.round(Number(patch.outputGain ?? preferences.data.atomEchoOutputGain) || 100)));
+  const captureMode = (patch.captureMode ?? preferences.data.atomEchoCaptureMode) === "hands-free" ? "hands-free" : "push-to-talk";
+  const vadThreshold = Math.max(80, Math.min(800, Math.round(Number(patch.vadThreshold ?? preferences.data.atomEchoVadThreshold) || 120)));
+  const liveIdleTimeoutEnabled = typeof patch.liveIdleTimeoutEnabled === "boolean"
+    ? patch.liveIdleTimeoutEnabled
+    : preferences.data.atomEchoLiveIdleTimeoutEnabled === true;
+  preferences.patch({
+    atomEchoEnabled: enabled,
+    atomEchoPort: port,
+    atomEchoOutputGain: outputGain,
+    atomEchoCaptureMode: captureMode,
+    atomEchoVadThreshold: vadThreshold,
+    atomEchoLiveIdleTimeoutEnabled: liveIdleTimeoutEnabled,
+  });
+  atomEchoLiveIdleTimer?.setEnabled(liveIdleTimeoutEnabled, {
+    arm: liveIdleTimeoutEnabled && activeRealtimeTarget === "atom-echo" && !atomEchoCapture,
+  });
+  if (!enabled && activeRealtimeTarget === "atom-echo") await stopActiveRealtime().catch(() => {});
+  if (!enabled) {
+    atomEchoLiveAudioRoute?.interrupt().catch(() => {});
+    sendAtomEchoLiveCommand({ type: "stop", stopServer: false });
+    atomEchoLiveStatus = { state: "idle", error: "", beatrice: false };
+  }
+  if (previous.enabled !== enabled || previous.port !== port || atomEchoGateway.status().enabled !== enabled) {
+    await atomEchoGateway.configure({
+      enabled,
+      port,
+      deviceId: preferences.data.atomEchoDeviceId,
+      token: preferences.getAtomEchoPairingToken(),
+      captureMode,
+      vadThreshold,
+    });
+  } else if (enabled && (previous.captureMode !== captureMode || previous.vadThreshold !== vadThreshold)) {
+    await atomEchoGateway.setCaptureMode(captureMode, vadThreshold);
+  }
+  diagnosticLog?.write("info", "atom-echo-configured", { enabled, captureMode, vadThreshold, outputGain, liveIdleTimeoutEnabled });
+  return broadcastAppState();
+}
+
+async function provisionAtomEchoWifi(patch = {}) {
+  if (!preferences.data.atomEchoEnabled) throw new Error(mainText(
+    "先にATOM Echoを有効にしてください。",
+    "Enable ATOM Echo first.",
+  ));
+  const ssid = String(patch.ssid || "").trim();
+  const password = String(patch.password || "");
+  if (!ssid || Buffer.byteLength(ssid, "utf8") > 32) throw new Error(mainText(
+    "Wi-Fi名は32バイト以内で入力してください。",
+    "Enter a Wi-Fi name up to 32 bytes.",
+  ));
+  if (Buffer.byteLength(password, "utf8") > 64) throw new Error(mainText(
+    "Wi-Fiパスワードは64バイト以内で入力してください。",
+    "Enter a Wi-Fi password up to 64 bytes.",
+  ));
+  const usb = atomEchoGateway.status().usb;
+  const deviceId = String(usb?.device?.deviceId || "").toLowerCase();
+  if (!usb?.connected || !/^atom-echo-[a-f0-9]{12}$/.test(deviceId)) throw new Error(mainText(
+    "初回設定のため、MVPファームを書き込んだATOM EchoをUSBで接続してください。",
+    "Connect an ATOM Echo with the MVP firmware over USB for initial setup.",
+  ));
+  let token = preferences.getAtomEchoPairingToken();
+  if (!token || preferences.data.atomEchoDeviceId !== deviceId) {
+    token = randomBytes(32).toString("hex");
+    preferences.setAtomEchoPairingToken(token);
+  }
+  preferences.patch({ atomEchoDeviceId: deviceId, atomEchoWifiSsid: ssid });
+  await atomEchoGateway.setPairing({ deviceId, token });
+  await atomEchoGateway.provisionWifi({ ssid, password, token });
+  diagnosticLog?.write("info", "atom-echo-wifi-provisioned", { deviceId });
+  return broadcastAppState();
+}
+
 function managedSkillRoot() {
   return path.join(app.getPath("userData"), "skills");
 }
@@ -2600,6 +3036,7 @@ function publicAppState() {
   return {
     ...preferences.publicState(),
     remote: remoteServerStatus(),
+    atomEcho: publicAtomEchoState(),
     appUpdate: publicAppUpdateStatus(),
     ttsProvider: characterTts.provider,
     styleBertVits2ModelId: characterTts.styleBertVits2ModelId,
@@ -3751,6 +4188,26 @@ function activeCodexInteractionClient() {
   return clients.find((client, index) => clients.indexOf(client) === index && client.hasActiveTurn?.()) || null;
 }
 
+function activeNormalInteractionMode(activeClient = activeCodexInteractionClient()) {
+  if (activeWorkRunId || activeClient === workCodexClient) return "work";
+  return activeClient ? "chat" : "";
+}
+
+function normalConversationSubmitRouteForMode(mode, { realtimeOutput = false } = {}) {
+  const requestedMode = mode === "work" ? "work" : "chat";
+  const activeClient = activeCodexInteractionClient();
+  const activeMode = activeNormalInteractionMode(activeClient);
+  const matchingMode = !activeMode || activeMode === requestedMode;
+  return normalConversationSubmitRoute({
+    realtimeOutput,
+    activeWork: matchingMode && Boolean(activeWorkRunId),
+    activeInteraction: matchingMode && Boolean(activeClient),
+    conflictingInteraction: Boolean(activeMode && !matchingMode),
+    activeRealtime: Boolean(activeRealtimeStarting || activeRealtimeTarget || currentRealtimeClient() || remoteRealtimeStartReservation),
+    turnStatus: turnCoordinator.snapshot().status,
+  });
+}
+
 function rememberActiveInteractionFollowUp(client, message) {
   if (!client) return;
   const normalized = String(message || "").trim().slice(0, 12_000);
@@ -3822,7 +4279,21 @@ async function steerActiveInteraction(message, {
     workMode ? activeCharacterSkillItems() : [builtInSkillCreatorItem()],
     explicitTurnSkillItems(selectedSkillIds),
   );
-  const accepted = await client.steerActiveTurn(normalized, { skillItems });
+  let accepted = false;
+  try {
+    accepted = await client.steerActiveTurn(normalized, { skillItems });
+  } catch (error) {
+    // The turn can complete after hasActiveTurn() selected this client but
+    // before app-server receives the steer request. Treat that boundary as a
+    // new-turn retry, not as a device error that leaves ATOM Echo red.
+    if (isMissingActiveTurnError(error)) {
+      diagnosticLog?.write("info", "conversation-follow-up-raced-completion", {
+        mode: preferences.data.interactionMode === "work" ? "work" : "chat",
+      });
+      return { accepted: false, retryAsNewTurn: true, mode: preferences.data.interactionMode };
+    }
+    throw error;
+  }
   if (!accepted) return { accepted: false, retryAsNewTurn: true, mode: workMode ? "work" : "chat" };
   rememberActiveInteractionFollowUp(client, normalized);
   const run = workMode ? workHistory.find((item) => item.id === activeWorkRunId) : null;
@@ -4050,8 +4521,10 @@ async function setInteractionMode(mode) {
     if (preferences.data.backend !== "codex") throw new Error("WorkはCodex app-server接続時のみ利用できます。");
     if (!validWorkDirectory()) return chooseWorkDirectory();
   }
-  if (nextMode !== preferences.data.interactionMode) await stopActiveRealtime().catch(() => {});
+  const previousMode = preferences.data.interactionMode === "work" ? "work" : "chat";
+  if (nextMode !== previousMode) await stopActiveRealtime().catch(() => {});
   preferences.patch({ interactionMode: nextMode });
+  await resetAtomEchoLiveBridgeForInteractionModeChange(previousMode, nextMode);
   const state = broadcastAppState();
   scheduleMcpPrewarm(100);
   return state;
@@ -4061,12 +4534,16 @@ function isTrustedSender(event, role = "control") {
   const frameUrl = event.senderFrame?.url || "";
   const expected = role === "mascot" ? "/?mode=obs"
     : role === "preview" ? "/desktop/artifact-preview.html"
+      : role === "atom-echo-live" ? "/desktop/atom-echo-live.html"
       : "/desktop/control.html";
   return frameUrl.startsWith(localServer.origin()) && frameUrl.includes(expected);
 }
 
 function assertTrustedAppSender(event) {
-  if (!isTrustedSender(event, "control") && !isTrustedSender(event, "mascot") && !isTrustedSender(event, "preview")) {
+  if (!isTrustedSender(event, "control")
+    && !isTrustedSender(event, "mascot")
+    && !isTrustedSender(event, "preview")
+    && !isTrustedSender(event, "atom-echo-live")) {
     throw new Error("Untrusted IPC sender");
   }
 }
@@ -4430,6 +4907,88 @@ function createControlWindow() {
       event.preventDefault();
       controlWindow.hide();
     }
+  });
+}
+
+function createAtomEchoLiveWindow() {
+  if (atomEchoLiveWindow && !atomEchoLiveWindow.isDestroyed()) return atomEchoLiveWindow;
+  atomEchoLiveReady = false;
+  atomEchoLiveWindow = new BrowserWindow({
+    width: 320,
+    height: 180,
+    show: false,
+    skipTaskbar: true,
+    webPreferences: {
+      preload: path.join(__dirname, "preload-atom-echo-live.cjs"),
+      autoplayPolicy: "no-user-gesture-required",
+      nodeIntegration: false,
+      contextIsolation: true,
+      sandbox: true,
+      backgroundThrottling: false,
+    },
+  });
+  atomEchoLiveWindow.setMenuBarVisibility(false);
+  secureWindow(atomEchoLiveWindow, `${localServer.origin()}/desktop/`);
+  atomEchoLiveWindow.webContents.on("did-fail-load", (_event, code, description) => {
+    diagnosticLog?.write("warn", "atom-echo-live-bridge-load-failed", { code, description });
+  });
+  atomEchoLiveWindow.webContents.on("render-process-gone", (_event, detail) => {
+    diagnosticLog?.write("warn", "atom-echo-live-bridge-renderer-gone", { reason: detail.reason, exitCode: detail.exitCode });
+  });
+  atomEchoLiveWindow.loadURL(`${localServer.origin()}/desktop/atom-echo-live.html`);
+  atomEchoLiveWindow.on("closed", () => {
+    atomEchoLiveWindow = null;
+    atomEchoLiveReady = false;
+    atomEchoLivePendingCommands = [];
+    atomEchoLiveStatus = { state: "idle", error: "", beatrice: false };
+  });
+  return atomEchoLiveWindow;
+}
+
+async function resetAtomEchoLiveBridge({ reason, from, to }) {
+  if (from === to || !preferences?.data?.atomEchoEnabled) return;
+  atomEchoTurnGeneration += 1;
+  const capture = atomEchoCapture;
+  atomEchoCapture = null;
+  if (capture?.mode === "standard") streamingSpeechRecognition.cancel(capture.sessionId);
+  atomEchoLiveIdleTimer?.cancel();
+  sendAtomEchoLiveCommand({ type: "stop", stopServer: false });
+  await atomEchoLiveAudioRoute?.interrupt().catch(() => {});
+  await atomEchoGateway?.stopPlayback().catch(() => {});
+  atomEchoLiveStatus = { state: "idle", error: "", beatrice: false };
+
+  // Recreate the hidden WebRTC renderer when changing between standard TTS
+  // and Live. Reusing its old AudioContext can leave the outbound ATOM track
+  // silent even though the Realtime server reports a successful connection.
+  const bridge = atomEchoLiveWindow;
+  if (bridge && !bridge.isDestroyed()) {
+    await new Promise((resolve) => {
+      const fallback = setTimeout(resolve, 1_000);
+      bridge.once("closed", () => {
+        clearTimeout(fallback);
+        resolve();
+      });
+      bridge.destroy();
+    });
+  }
+  createAtomEchoLiveWindow();
+  await atomEchoGateway?.setDeviceState("idle").catch(() => {});
+  diagnosticLog?.write("info", reason, { from, to });
+}
+
+async function resetAtomEchoLiveBridgeForProviderChange(fromProvider, toProvider) {
+  return resetAtomEchoLiveBridge({
+    reason: "atom-echo-audio-mode-reset",
+    from: fromProvider,
+    to: toProvider,
+  });
+}
+
+async function resetAtomEchoLiveBridgeForInteractionModeChange(fromMode, toMode) {
+  return resetAtomEchoLiveBridge({
+    reason: "atom-echo-interaction-mode-reset",
+    from: fromMode,
+    to: toMode,
   });
 }
 
@@ -7205,6 +7764,14 @@ async function startCodexRealtimeVoice(payload, target = "control") {
     } catch {
       // A final caption is non-critical once the renderer is closing.
     }
+    if (target === "atom-echo") {
+      try {
+        const contents = controlWindow && !controlWindow.isDestroyed() ? controlWindow.webContents : null;
+        if (contents && !contents.isDestroyed()) contents.send("chat:stream", message);
+      } catch {
+        // ATOM Echo remains usable when the settings renderer is closing.
+      }
+    }
   };
   let pendingNativeWorkRequest = "";
   let nativeWorkTurn = null;
@@ -7703,6 +8270,7 @@ async function startCodexRealtimeVoice(payload, target = "control") {
         assistantTranscript.startedAt = Date.now();
         assistantTranscript.sequence += 1;
         const pendingInput = realtimeTurnBuffer.hasPendingInput();
+        const transcribingInput = userTranscriptStartedAt > 0;
         const injectedSpeech = recentInjectedSpeech(activeRealtimeInjectedSpeech).length > 0;
         const activeNativeHandoff = nativeChatTurnIds.size > 0
           || nativeConversationTurnIds.size > 0
@@ -7710,6 +8278,7 @@ async function startCodexRealtimeVoice(payload, target = "control") {
           || Boolean(nativeWorkTurn?.turnId);
         assistantTranscript.authorized = realtimeReplyAuthorized({
           pendingInput,
+          transcribingInput,
           injectedSpeech,
           activeNativeHandoff,
           completionPending: Boolean(nativeCompletionAwaitingSpeech),
@@ -7721,6 +8290,7 @@ async function startCodexRealtimeVoice(payload, target = "control") {
             method,
             preview: String(params.text || params.delta || "").slice(0, 120),
             pendingInput,
+            transcribingInput,
             activeNativeHandoff,
             completionPending: Boolean(nativeCompletionAwaitingSpeech),
           });
@@ -7731,6 +8301,9 @@ async function startCodexRealtimeVoice(payload, target = "control") {
       }
       if (target === "control") sendControlRealtimeEvent(forwarded);
       if (target === "mascot") sendMascotRealtimeEvent(forwarded);
+      if (target === "atom-echo" && atomEchoLiveWindow && !atomEchoLiveWindow.isDestroyed()) {
+        atomEchoLiveWindow.webContents.send("atomEcho:realtimeEvent", forwarded);
+      }
       if (target === "remote") {
         const ownerHash = String(payload?.remoteTokenHash || "");
         if (ownerHash) remoteServer?.publishTo(ownerHash, "live", forwarded);
@@ -8766,6 +9339,101 @@ function registerIpc() {
     assertTrustedSender(event);
     return remoteServerStatus();
   });
+  ipcMain.handle("atomEcho:listPorts", async (event) => {
+    assertTrustedSender(event);
+    return atomEchoGateway.listPorts();
+  });
+  ipcMain.handle("atomEcho:setConfig", async (event, patch) => {
+    assertTrustedSender(event);
+    return configureAtomEcho(patch);
+  });
+  ipcMain.handle("atomEcho:provisionWifi", async (event, patch) => {
+    assertTrustedSender(event);
+    return provisionAtomEchoWifi(patch);
+  });
+  ipcMain.handle("atomEcho:testSpeaker", async (event) => {
+    assertTrustedSender(event);
+    if (!atomEchoGateway?.status().connected) throw new Error(mainText(
+      "ATOM Echoを接続してから試してください。",
+      "Connect ATOM Echo before testing it.",
+    ));
+    try {
+      await playAtomEchoSpeech(mainText("接続できたよ。", "We're connected."));
+      return broadcastAppState();
+    } catch (error) {
+      await atomEchoGateway.setDeviceState("error").catch(() => {});
+      throw error;
+    }
+  });
+  ipcMain.on("atomEcho:liveReady", (event) => {
+    assertTrustedSender(event, "atom-echo-live");
+    if (event.sender !== atomEchoLiveWindow?.webContents) return;
+    atomEchoLiveReady = true;
+    diagnosticLog?.write("info", "atom-echo-live-bridge-ready");
+    flushAtomEchoLiveCommands();
+  });
+  ipcMain.handle("atomEcho:liveStart", async (event, payload) => {
+    assertTrustedSender(event, "atom-echo-live");
+    if (event.sender !== atomEchoLiveWindow?.webContents || !atomEchoUsesRealtime()) {
+      throw new Error("ATOM EchoのGPT-Live入力は現在選択されていません。");
+    }
+    return startCodexRealtimeVoice(payload, "atom-echo");
+  });
+  ipcMain.handle("atomEcho:liveStop", async (event) => {
+    assertTrustedSender(event, "atom-echo-live");
+    if (event.sender !== atomEchoLiveWindow?.webContents || activeRealtimeTarget !== "atom-echo") return false;
+    return stopActiveRealtime();
+  });
+  ipcMain.on("atomEcho:liveStatus", (event, payload = {}) => {
+    assertTrustedSender(event, "atom-echo-live");
+    if (event.sender !== atomEchoLiveWindow?.webContents) return;
+    const state = ["idle", "connecting", "live", "fallback", "error"].includes(payload.state) ? payload.state : "error";
+    const previousState = atomEchoLiveStatus.state;
+    atomEchoLiveStatus = {
+      state,
+      error: String(payload.error || "").replace(/[\u0000-\u001f\u007f]/g, " ").slice(0, 500),
+      beatrice: payload.beatrice === true,
+    };
+    if (state !== previousState || atomEchoLiveStatus.error) {
+      diagnosticLog?.write(atomEchoLiveStatus.error ? "warn" : "info", "atom-echo-live-status", {
+        state,
+        beatrice: atomEchoLiveStatus.beatrice,
+        error: atomEchoLiveStatus.error,
+      });
+    }
+    if (state === "idle") atomEchoGateway?.setDeviceState("idle").catch(() => {});
+    if (["idle", "error"].includes(state)) atomEchoLiveIdleTimer?.cancel();
+    if (state === "error") atomEchoGateway?.setDeviceState("error").catch(() => {});
+    broadcastAppState();
+  });
+  ipcMain.on("atomEcho:liveOutputStart", (event) => {
+    assertTrustedSender(event, "atom-echo-live");
+    if (event.sender !== atomEchoLiveWindow?.webContents || activeRealtimeTarget !== "atom-echo") return;
+    atomEchoLiveIdleTimer?.cancel();
+    atomEchoLiveAudioRoute?.start();
+  });
+  ipcMain.on("atomEcho:liveOutputChunk", (event, payload = {}) => {
+    assertTrustedSender(event, "atom-echo-live");
+    if (event.sender !== atomEchoLiveWindow?.webContents || activeRealtimeTarget !== "atom-echo") return;
+    const data = payload.audio instanceof ArrayBuffer
+      ? payload.audio
+      : ArrayBuffer.isView(payload.audio)
+        ? payload.audio.buffer.slice(payload.audio.byteOffset, payload.audio.byteOffset + payload.audio.byteLength)
+        : null;
+    const sampleRate = Math.round(Number(payload.sampleRate) || 0);
+    if (!data || !data.byteLength || data.byteLength > 192_000 || data.byteLength % Float32Array.BYTES_PER_ELEMENT
+      || sampleRate < 8_000 || sampleRate > 192_000) return;
+    const samples = new Float32Array(data);
+    for (const sample of samples) if (!Number.isFinite(sample) || Math.abs(sample) > 8) return;
+    atomEchoLiveAudioRoute?.push(samples, sampleRate);
+  });
+  ipcMain.on("atomEcho:liveOutputEnd", (event) => {
+    assertTrustedSender(event, "atom-echo-live");
+    if (event.sender !== atomEchoLiveWindow?.webContents) return;
+    atomEchoLiveAudioRoute?.end().then(() => {
+      if (activeRealtimeTarget === "atom-echo") atomEchoLiveIdleTimer?.touch();
+    }).catch(() => {});
+  });
   ipcMain.handle("remote:setConfig", async (event, patch) => {
     assertTrustedSender(event);
     return applyRemoteConfiguration(patch);
@@ -8999,6 +9667,7 @@ function registerIpc() {
       });
     }
     preferences.patch(allowed);
+    await resetAtomEchoLiveBridgeForProviderChange(previousSpeechInputProvider, allowed.speechInputProvider);
     if (allowed.updateChannel !== previousUpdateChannel) appUpdateStatus = null;
     if (allowed.updateChecksEnabled && (!previousUpdateChecksEnabled || allowed.updateChannel !== previousUpdateChannel)) scheduleAppUpdateCheck();
     if (!allowed.updateChecksEnabled) clearTimeout(appUpdateCheckTimer);
@@ -10978,6 +11647,7 @@ async function sendChatMessage(message, {
   suppressPcAudio = false,
   artifactTarget = null,
   forceWork = false,
+  forceChat = false,
   selectedSkillIds = [],
   selectedMcpServerIds = [],
   remoteTtsOutput = false,
@@ -10985,13 +11655,9 @@ async function sendChatMessage(message, {
   const text = String(message || "").trim().slice(0, 12_000);
   if (!text && !localAttachments.length) throw new Error("メッセージを入力してください。");
   const requestText = text || mainText("添付したファイルを確認してください。", "Please review the attached files.");
-  let submitRoute = normalConversationSubmitRoute({
-    realtimeOutput,
-    activeWork: Boolean(activeWorkRunId),
-    activeInteraction: Boolean(activeCodexInteractionClient()),
-    activeRealtime: Boolean(activeRealtimeStarting || activeRealtimeTarget || currentRealtimeClient() || remoteRealtimeStartReservation),
-    turnStatus: turnCoordinator.snapshot().status,
-  });
+  const requestedInteractionMode = forceWork ? "work" : forceChat ? "chat"
+    : preferences.data.interactionMode === "work" ? "work" : "chat";
+  let submitRoute = normalConversationSubmitRouteForMode(requestedInteractionMode, { realtimeOutput });
   if (submitRoute === "follow-up") {
     const followUp = await steerActiveInteraction(requestText, {
       localAttachments,
@@ -11014,13 +11680,7 @@ async function sendChatMessage(message, {
     // The active turn may have completed during the short steering wait. In
     // that race, re-evaluate once and allow the user's message to become the
     // next turn instead of forcing them to submit it again.
-    submitRoute = normalConversationSubmitRoute({
-      realtimeOutput,
-      activeWork: Boolean(activeWorkRunId),
-      activeInteraction: Boolean(activeCodexInteractionClient()),
-      activeRealtime: Boolean(activeRealtimeStarting || activeRealtimeTarget || currentRealtimeClient() || remoteRealtimeStartReservation),
-      turnStatus: turnCoordinator.snapshot().status,
-    });
+    submitRoute = normalConversationSubmitRouteForMode(requestedInteractionMode, { realtimeOutput });
   }
   if (submitRoute === "busy" || submitRoute === "follow-up") {
     throw new Error(mainText(
@@ -11034,7 +11694,7 @@ async function sendChatMessage(message, {
       "Send input through the active Live session. Standard TTS cannot run at the same time.",
     ));
   }
-  const selectedWorkMode = forceWork || preferences.data.interactionMode === "work";
+  const selectedWorkMode = requestedInteractionMode === "work";
   const conversationalWorkTurn = !forceWork && selectedWorkMode && !localAttachments.length && isSocialConversationTurn(requestText);
   const workMode = selectedWorkMode && !conversationalWorkTurn;
   const explicitSkills = explicitTurnSkillItems(selectedSkillIds);
@@ -11836,6 +12496,20 @@ async function boot() {
   codexCommand = await resolveCodexCommand({ cacheDirectory: path.join(app.getPath("userData"), "codex-bin") });
       wslCodexCommand = resolveWslCodexCommand({ cacheDirectory: path.join(app.getPath("userData"), "codex-bin") });
   codexClient = createConversationCodexClient();
+  atomEchoGateway = createAtomEchoGateway();
+  atomEchoLiveAudioRoute = new AtomEchoLiveAudioRoute({
+    gateway: atomEchoGateway,
+    processorOptions: atomEchoOutputProfile,
+    onError: (error) => {
+      atomEchoLiveStatus = { ...atomEchoLiveStatus, state: "error", error: String(error?.message || error) };
+      diagnosticLog?.write("warn", "atom-echo-live-output-failed", atomEchoLiveStatus.error);
+      broadcastAppState();
+    },
+  });
+  atomEchoLiveIdleTimer = new LiveIdleTimer({
+    onTimeout: closeAtomEchoLiveAfterIdle,
+  });
+  atomEchoLiveIdleTimer.setEnabled(preferences.data.atomEchoLiveIdleTimeoutEnabled === true);
   registerIpc();
 
   session.defaultSession.setPermissionRequestHandler((webContents, permission, callback) => {
@@ -11851,8 +12525,21 @@ async function boot() {
 
   createMascotWindow();
   createControlWindow();
+  createAtomEchoLiveWindow();
   createTray();
   registerShortcuts();
+  if (preferences.data.atomEchoEnabled && !process.argv.includes("--smoke-test")) {
+    atomEchoGateway.configure({
+      enabled: true,
+      port: preferences.data.atomEchoPort,
+      deviceId: preferences.data.atomEchoDeviceId,
+      token: preferences.getAtomEchoPairingToken(),
+      captureMode: preferences.data.atomEchoCaptureMode,
+      vadThreshold: preferences.data.atomEchoVadThreshold,
+    }).catch((error) => {
+      diagnosticLog?.write("warn", "atom-echo-startup-failed", String(error?.message || error));
+    });
+  }
   startCursorLoop();
   scheduleIrodoriPrewarm();
   scheduleMcpPrewarm();
@@ -11905,6 +12592,9 @@ app.on("before-quit", () => {
   webPreviewRuntime?.stop().catch(() => {});
   macComputerSkillClient?.stop();
   stopBeatriceHost();
+  atomEchoLiveAudioRoute?.interrupt().catch(() => {});
+  atomEchoLiveIdleTimer?.cancel();
+  if (atomEchoLiveWindow && !atomEchoLiveWindow.isDestroyed()) atomEchoLiveWindow.destroy();
   if (browserWindow && !browserWindow.isDestroyed()) browserWindow.destroy();
   if (artifactPreviewWindow && !artifactPreviewWindow.isDestroyed()) artifactPreviewWindow.destroy();
   destroyIrodoriWindow();
@@ -11912,6 +12602,7 @@ app.on("before-quit", () => {
   streamingSpeechRecognition?.close();
   sbv2Worker?.stop();
   remoteServer?.stop().catch(() => {});
+  atomEchoGateway?.disconnect().catch(() => {});
   localServer?.stop();
 });
 

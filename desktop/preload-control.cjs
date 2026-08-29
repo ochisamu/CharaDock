@@ -8,6 +8,10 @@ contextBridge.exposeInMainWorld("mascotDesktop", {
   saveSettings: (settings) => ipcRenderer.invoke("settings:save", settings),
   getRemoteStatus: () => ipcRenderer.invoke("remote:getStatus"),
   setRemoteConfig: (settings) => ipcRenderer.invoke("remote:setConfig", settings),
+  listAtomEchoPorts: () => ipcRenderer.invoke("atomEcho:listPorts"),
+  setAtomEchoConfig: (settings) => ipcRenderer.invoke("atomEcho:setConfig", settings),
+  provisionAtomEchoWifi: (settings) => ipcRenderer.invoke("atomEcho:provisionWifi", settings),
+  testAtomEchoSpeaker: () => ipcRenderer.invoke("atomEcho:testSpeaker"),
   regenerateRemotePairing: () => ipcRenderer.invoke("remote:regeneratePairing"),
   revokeRemoteSessions: () => ipcRenderer.invoke("remote:revokeAll"),
   revokeRemoteSession: (sessionId) => ipcRenderer.invoke("remote:revokeSession", sessionId),
@@ -141,6 +145,11 @@ contextBridge.exposeInMainWorld("mascotDesktop", {
     const listener = (_event, payload) => callback(payload);
     ipcRenderer.on("app:stateChanged", listener);
     return () => ipcRenderer.removeListener("app:stateChanged", listener);
+  },
+  onAtomEchoCaptureStatus: (callback) => {
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on("atomEcho:captureStatus", listener);
+    return () => ipcRenderer.removeListener("atomEcho:captureStatus", listener);
   },
   onNavigateSettings: (callback) => {
     const listener = (_event, payload) => callback(payload);

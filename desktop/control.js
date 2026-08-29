@@ -8,6 +8,7 @@
   const $$ = (selector) => [...document.querySelectorAll(selector)];
   const localized = (japanese, english) => state?.language === "en" ? english : japanese;
   let state = null;
+  let atomEchoPorts = [];
   let audioStream = null;
   let audioContext = null;
   let analyser = null;
@@ -128,6 +129,7 @@
     { page: "chat", target: "#chatLog", ja: "Chat履歴", en: "Chat history", detailJa: "過去のChatとWorkを見る", detailEn: "Review past chats and work", keywords: "chat conversation history work 作業" , popular: true },
     { page: "chat", target: "#chatWorkProjectSelect", ja: "作業先プロジェクト", en: "Work project", detailJa: "キャラクターホームや担当プロジェクトを切り替える", detailEn: "Switch between Character Home and attached projects", keywords: "directory folder project home output 成果物 担当 ホーム" },
     { page: "remote", target: "#remoteAccessCard", ja: "リモートアクセス", en: "Remote access", detailJa: "同じWi-FiからChatとWorkを操作", detailEn: "Use Chat and Work from the same Wi-Fi", keywords: "remote mobile lan qr smartphone スマホ リモート", popular: true },
+    { page: "esp32", target: "#atomEchoCard", ja: "ESP32デバイス", en: "ESP32 devices", detailJa: "ATOM Echoなどの専用デバイスを管理", detailEn: "Manage ATOM Echo and other companion devices", keywords: "atom echo stackchan rlcd wifi device voice satellite ハンズフリー", popular: true },
     { page: "character", target: "#characterLibraryTitle", ja: "キャラクター一覧", en: "Character library", detailJa: "使うキャラクターを切り替える", detailEn: "Switch the active character", keywords: "avatar select library キャラ", popular: true },
     { page: "character", target: "#characterProfileCard", ja: "名前・性格・メモリ", en: "Name, personality, and memory", detailJa: "選択中のキャラクターを編集", detailEn: "Edit the selected character", keywords: "profile persona memory bubble 名前 性格 記憶 吹き出し" },
     { page: "character", target: "#characterContinuation", ja: "キャラクター継続モード", en: "Character Continuation", detailJa: "前回の目的と次の一手を確認・編集", detailEn: "Review and edit the previous goal and next step", keywords: "continuation resume summary 継続 再開 前回 次の一手", popular: true },
@@ -1361,6 +1363,7 @@
     const labels = {
       chat: ["Chat", "Chat"],
       remote: ["リモート", "Remote"],
+      esp32: ["ESP32デバイス", "ESP32 Devices"],
       character: ["キャラクター", "Character"],
       skills: ["Skills", "Skills"],
       mcp: ["MCP連携", "MCP Connections"],
@@ -3446,6 +3449,188 @@
     }
   }
 
+  function renderAtomEchoPorts() {
+    const select = $("#atomEchoPortSelect");
+    const selected = String(state?.atomEcho?.requestedPort || "");
+    select.replaceChildren(new Option(localized("自動検出（FTDI 0403:6001）", "Auto-detect (FTDI 0403:6001)"), ""));
+    for (const port of atomEchoPorts) {
+      const detail = [port.path, port.manufacturer || port.friendlyName, port.vendorId && port.productId ? `${port.vendorId}:${port.productId}` : ""].filter(Boolean).join(" · ");
+      select.appendChild(new Option(detail, port.path));
+    }
+    if (selected && ![...select.options].some((option) => option.value === selected)) {
+      select.appendChild(new Option(localized(`${selected}（現在見つかりません）`, `${selected} (not currently found)`), selected));
+    }
+    select.value = selected;
+  }
+
+  function atomEchoVadThresholdLabel(value) {
+    const threshold = Math.max(80, Math.min(800, Math.round(Number(value) || 120)));
+    const sensitivity = threshold <= 140
+      ? localized("高感度", "High sensitivity")
+      : threshold <= 280
+        ? localized("標準", "Standard")
+        : localized("控えめ", "Reduced sensitivity");
+    return `${threshold} · ${sensitivity}`;
+  }
+
+  function renderAtomEchoVadStatus() {
+    const atom = state?.atomEcho || {};
+    const handsFree = atom.captureMode === "hands-free";
+    const settings = $("#atomEchoVadThresholdSettings");
+    const input = $("#atomEchoVadThresholdInput");
+    settings.classList.toggle("is-disabled", !handsFree);
+    input.disabled = !handsFree;
+    const status = atom.vadStatus;
+    let message = localized(
+      "小さい値ほど離れた声を拾いやすくなります。周囲の音には自動で追従します。",
+      "Lower values pick up voices from farther away. Ambient noise is compensated automatically.",
+    );
+    if (!handsFree) {
+      message = localized("ハンズフリーを選ぶと調整できます。", "Choose hands-free to adjust this setting.");
+    } else if (status?.calibrationChunks) {
+      message = localized("周囲の音を確認しています…", "Measuring ambient sound…");
+    } else if (status?.monitoring || status?.active) {
+      message = localized(
+        `現在の音声 ${status.rms} · 実効しきい値 ${status.startThreshold} · 周囲ノイズ ${status.noiseFloor}`,
+        `Current voice ${status.rms} · effective threshold ${status.startThreshold} · ambient noise ${status.noiseFloor}`,
+      );
+    }
+    setStatus($("#atomEchoVadStatus"), message);
+  }
+
+  function syncAtomEchoUi() {
+    const atom = state?.atomEcho || {};
+    const enabled = Boolean(atom.enabled);
+    $("#atomEchoEnabledToggle").checked = enabled;
+    $("#atomEchoEnabledSettings").hidden = !enabled;
+    $("#atomEchoLiveIdleTimeoutToggle").checked = atom.liveIdleTimeoutEnabled === true;
+    renderAtomEchoPorts();
+    const captureMode = atom.captureMode === "hands-free" ? "hands-free" : "push-to-talk";
+    $("#atomEchoCaptureModeSelect").value = captureMode;
+    const vadThresholdInput = $("#atomEchoVadThresholdInput");
+    if (document.activeElement !== vadThresholdInput) vadThresholdInput.value = String(Math.max(80, Math.min(800, Number(atom.vadThreshold) || 120)));
+    $("#atomEchoVadThresholdOutput").textContent = atomEchoVadThresholdLabel(vadThresholdInput.value);
+    updateRangeProgress(vadThresholdInput);
+    renderAtomEchoVadStatus();
+    const outputGainInput = $("#atomEchoOutputGainInput");
+    if (document.activeElement !== outputGainInput) outputGainInput.value = String(Math.max(50, Math.min(150, Number(atom.outputGain) || 100)));
+    $("#atomEchoOutputGainOutput").textContent = `${Math.round(Number(outputGainInput.value) || 100)}%`;
+    updateRangeProgress(outputGainInput);
+    const badge = $("#atomEchoStatusBadge");
+    const labels = {
+      off: localized("停止中", "Off"),
+      connecting: localized("接続中", "Connecting"),
+      "setup-required": localized("初期設定", "Setup required"),
+      "usb-ready": localized("USB設定可", "USB setup ready"),
+      ready: localized("Wi-Fi接続済み", "Wi-Fi connected"),
+      error: localized("要確認", "Needs attention"),
+    };
+    badge.textContent = labels[atom.connectionState] || labels.off;
+    badge.classList.toggle("is-ready", Boolean(atom.wirelessConnected));
+    $("#testAtomEchoSpeakerButton").disabled = !atom.connected || !atom.ttsReady;
+    $("#provisionAtomEchoWifiButton").disabled = !atom.usb?.connected;
+    const ssidInput = $("#atomEchoWifiSsidInput");
+    if (document.activeElement !== ssidInput && !ssidInput.value && atom.wifiSsid) ssidInput.value = atom.wifiSsid;
+    const setup = atom.wifiSetup || {};
+    let setupMessage = "";
+    if (setup.error) setupMessage = setup.error;
+    else if (setup.phase === "connected") setupMessage = localized("Wi-Fi設定を保存し、ネットワークへ接続しました。", "Wi-Fi settings were saved and the device joined the network.");
+    else if (setup.phase === "connecting") setupMessage = localized("ATOM EchoをWi-Fiへ接続しています…", "Connecting ATOM Echo to Wi-Fi…");
+    else if (atom.usb?.connected) setupMessage = localized("USBを認識しました。Wi-Fi情報を入力して設定できます。", "USB detected. Enter Wi-Fi details to configure the device.");
+    else setupMessage = localized("初期設定するときだけATOM EchoをPCへUSB接続します。", "Connect ATOM Echo to this PC over USB only for initial setup.");
+    setStatus($("#atomEchoWifiSetupStatus"), setupMessage, Boolean(setup.error));
+    let message = atom.error || "";
+    if (!message && atom.liveError) message = atom.liveError;
+    if (!message && atom.wirelessConnected) {
+      const interaction = atom.interactionMode === "work"
+        ? localized("Work", "Work")
+        : localized("Chat", "Chat");
+      const route = atom.inputMode === "live"
+        ? atom.beatriceActive
+          ? localized(`GPT-Live ${interaction} · Beatrice 2`, `GPT-Live ${interaction} · Beatrice 2`)
+          : localized(`GPT-Live ${interaction}`, `GPT-Live ${interaction}`)
+        : localized(`${interaction} · キャラクターTTS`, `${interaction} · character TTS`);
+      message = localized(
+        captureMode === "hands-free"
+          ? `${atom.wifiSsid || "Wi-Fi"}から無線接続中 · ${route} · ハンズフリー待受中です。そのまま話しかけてください。`
+          : `${atom.wifiSsid || "Wi-Fi"}から無線接続中 · ${route} · ボタンを押したまま話してください。`,
+        captureMode === "hands-free"
+          ? `Connected wirelessly through ${atom.wifiSsid || "Wi-Fi"} · ${route} · Hands-free listening is active. Just start speaking.`
+          : `Connected wirelessly through ${atom.wifiSsid || "Wi-Fi"} · ${route} · Hold the button while speaking.`,
+      );
+    } else if (!message && atom.usb?.connected) {
+      message = localized("USB接続済みです。上のWi-Fi初期設定を完了してください。", "Connected over USB. Complete Wi-Fi setup above.");
+    } else if (!message && atom.paired) {
+      message = localized(`${atom.wifiSsid || "設定済みWi-Fi"}上のATOM Echoを待っています…`, `Waiting for ATOM Echo on ${atom.wifiSsid || "the configured Wi-Fi"}…`);
+    } else if (!message && enabled) {
+      message = localized("初期設定用USBまたは設定済みATOM Echoを探しています…", "Looking for setup USB or a configured ATOM Echo…");
+    } else if (!message) {
+      message = localized("ATOM Echoは停止しています。", "ATOM Echo is off.");
+    }
+    if (enabled && atom.inputMode !== "live" && !atom.streamingSpeechReady) {
+      message += localized(" 音声入力にはストリーミング音声認識モデルの導入が必要です。", " Install a streaming speech model for voice input.");
+    }
+    if (enabled && atom.inputMode !== "live" && !atom.ttsReady) {
+      message += localized(" 音声出力にはWindows標準以外の通常TTSを選んでください。", " Choose a non-system standard TTS provider for audio output.");
+    }
+    setStatus($("#atomEchoStatus"), message, Boolean(atom.error));
+  }
+
+  async function refreshAtomEchoPorts() {
+    const button = $("#refreshAtomEchoPortsButton");
+    button.disabled = true;
+    try {
+      atomEchoPorts = await api.listAtomEchoPorts();
+      renderAtomEchoPorts();
+      if (!atomEchoPorts.length) setStatus($("#atomEchoStatus"), localized("USBシリアルポートが見つかりません。", "No USB serial ports were found."), true);
+    } catch (error) {
+      setStatus($("#atomEchoStatus"), error.message, true);
+    } finally {
+      button.disabled = false;
+    }
+  }
+
+  async function saveAtomEchoSettings() {
+    const toggle = $("#atomEchoEnabledToggle");
+    toggle.disabled = true;
+    try {
+      state = await api.setAtomEchoConfig({
+        enabled: toggle.checked,
+        port: $("#atomEchoPortSelect").value,
+        outputGain: Number($("#atomEchoOutputGainInput").value),
+        captureMode: $("#atomEchoCaptureModeSelect").value,
+        vadThreshold: Number($("#atomEchoVadThresholdInput").value),
+        liveIdleTimeoutEnabled: $("#atomEchoLiveIdleTimeoutToggle").checked,
+      });
+      syncUi();
+    } catch (error) {
+      state = await api.getState().catch(() => state);
+      if (state?.atomEcho) state.atomEcho.error = error.message;
+      syncAtomEchoUi();
+    } finally {
+      toggle.disabled = false;
+    }
+  }
+
+  async function provisionAtomEchoWifi() {
+    const button = $("#provisionAtomEchoWifiButton");
+    button.disabled = true;
+    setStatus($("#atomEchoWifiSetupStatus"), localized("Wi-Fi情報をATOM Echoへ安全に渡しています…", "Sending Wi-Fi settings directly to ATOM Echo…"));
+    try {
+      state = await api.provisionAtomEchoWifi({
+        ssid: $("#atomEchoWifiSsidInput").value,
+        password: $("#atomEchoWifiPasswordInput").value,
+      });
+      $("#atomEchoWifiPasswordInput").value = "";
+      syncUi();
+      setStatus($("#atomEchoWifiSetupStatus"), localized("設定を保存しました。無線接続を待っています…", "Settings saved. Waiting for the wireless connection…"));
+    } catch (error) {
+      setStatus($("#atomEchoWifiSetupStatus"), error.message, true);
+    } finally {
+      button.disabled = !state?.atomEcho?.usb?.connected;
+    }
+  }
+
   function syncUi() {
     i18n?.setLanguage(state.language || "ja");
     document.documentElement.dataset.character = state.characterId || "amber-avatar";
@@ -3465,6 +3650,7 @@
     $("#interactionModeBadge").textContent = state.interactionMode === "work" ? "Work" : "Chat";
     renderCharacterWorkspace();
     syncRemoteUi();
+    syncAtomEchoUi();
     $("#openChatWorkDirectoryButton").disabled = !state.hasWorkDirectory;
     $("#chatComposerHint").textContent = state.interactionMode === "work"
       ? localized("Work · 選択フォルダー内へ書き込みできます", "Work · Can write inside the selected folder")
@@ -4724,6 +4910,11 @@
       if (previousProvider === "realtime" && state?.speechInputProvider !== "realtime") closeRealtimeAudio();
       syncUi();
     });
+    api.onAtomEchoCaptureStatus?.((status) => {
+      if (!state?.atomEcho) return;
+      state.atomEcho.vadStatus = status;
+      renderAtomEchoVadStatus();
+    });
     api.onUpdateStatus?.((update) => {
       state.appUpdate = update;
       syncUpdateUi();
@@ -4922,6 +5113,38 @@
     $("#remoteAccessToggle").addEventListener("change", saveRemoteSettings);
     ["#remoteAddressSelect", "#remotePortInput", "#remoteSessionSelect", "#remoteResponseModeSelect", "#remoteWorkToggle", "#remoteTtsToggle", "#remoteStartupGreetingToggle", "#remotePcAudioToggle", "#remoteTailscaleHttpsPortInput"].forEach((selector) => {
       $(selector).addEventListener("change", saveRemoteSettings);
+    });
+    $("#atomEchoEnabledToggle").addEventListener("change", saveAtomEchoSettings);
+    $("#atomEchoPortSelect").addEventListener("change", saveAtomEchoSettings);
+    $("#atomEchoCaptureModeSelect").addEventListener("change", saveAtomEchoSettings);
+    $("#atomEchoLiveIdleTimeoutToggle").addEventListener("change", saveAtomEchoSettings);
+    $("#atomEchoVadThresholdInput").addEventListener("input", () => {
+      const input = $("#atomEchoVadThresholdInput");
+      $("#atomEchoVadThresholdOutput").textContent = atomEchoVadThresholdLabel(input.value);
+      updateRangeProgress(input);
+    });
+    $("#atomEchoVadThresholdInput").addEventListener("change", saveAtomEchoSettings);
+    $("#atomEchoOutputGainInput").addEventListener("input", () => {
+      const input = $("#atomEchoOutputGainInput");
+      $("#atomEchoOutputGainOutput").textContent = `${Math.round(Number(input.value) || 100)}%`;
+      updateRangeProgress(input);
+    });
+    $("#atomEchoOutputGainInput").addEventListener("change", saveAtomEchoSettings);
+    $("#refreshAtomEchoPortsButton").addEventListener("click", refreshAtomEchoPorts);
+    $("#provisionAtomEchoWifiButton").addEventListener("click", provisionAtomEchoWifi);
+    $("#testAtomEchoSpeakerButton").addEventListener("click", async () => {
+      const button = $("#testAtomEchoSpeakerButton");
+      button.disabled = true;
+      setStatus($("#atomEchoStatus"), localized("キャラクターの声を準備しています…", "Preparing the character voice…"));
+      try {
+        state = await api.testAtomEchoSpeaker();
+        syncUi();
+        setStatus($("#atomEchoStatus"), localized("ATOM Echoからテスト音声を再生しました。", "The test voice played on ATOM Echo."));
+      } catch (error) {
+        setStatus($("#atomEchoStatus"), error.message, true);
+      } finally {
+        button.disabled = !state?.atomEcho?.connected || !state?.atomEcho?.ttsReady;
+      }
     });
     $("#refreshRemoteTailscaleButton").addEventListener("click", async () => {
       const button = $("#refreshRemoteTailscaleButton");
@@ -6017,7 +6240,7 @@
     state = await api.getState();
     api.onNavigateSettings?.((payload = {}) => {
       const page = String(payload.page || "");
-      if (!["chat", "remote", "character", "skills", "mcp", "voice", "connection", "desktop", "support"].includes(page)) return;
+      if (!["chat", "remote", "esp32", "character", "skills", "mcp", "voice", "connection", "desktop", "support"].includes(page)) return;
       showPage(page);
       if (page === "skills") queueMicrotask(() => loadTrustedSkills());
     });
@@ -6056,8 +6279,9 @@
     });
     bindEvents();
     syncUi();
+    if (state?.atomEcho?.enabled) queueMicrotask(() => refreshAtomEchoPorts());
     const page = sessionStorage.getItem("charadock.activePage") || "chat";
-    showPage(["chat", "remote", "character", "skills", "mcp", "voice", "connection", "desktop", "support"].includes(page) ? page : "chat");
+    showPage(["chat", "remote", "esp32", "character", "skills", "mcp", "voice", "connection", "desktop", "support"].includes(page) ? page : "chat");
     if (page === "support") refreshSupportDiagnostics();
     if (page === "skills") queueMicrotask(() => loadTrustedSkills());
     refreshCodexAccount();

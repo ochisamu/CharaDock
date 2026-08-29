@@ -12,6 +12,8 @@ const packageJson = JSON.parse(fs.readFileSync(path.join(projectRoot, "package.j
 test("main-process libraries are production dependencies included in packaged apps", () => {
   assert.equal(packageJson.dependencies["js-yaml"], "4.3.1");
   assert.equal(packageJson.devDependencies["js-yaml"], undefined);
+  assert.equal(typeof packageJson.dependencies.serialport, "string");
+  assert.equal(packageJson.build.npmRebuild, false);
 });
 
 test("desktop distribution contains only approved character, voice, and interface assets", () => {
@@ -680,6 +682,28 @@ test("remote access exposes compact avatar dialogue, device controls, and Live r
   assert.match(remoteJs, /if \(!result\?\.deferDisplayToRealtime\) setResponseText\(result\?\.text\)/);
   assert.match(remoteHtml, /PCでも音を出す<\/strong><small>初期状態はOFF/);
   assert.match(remoteHtml, /この端末で回答音声を再生<\/strong><small>初期状態はON/);
+});
+
+test("ESP32 devices have a scalable settings page independent of CharaDock Link", () => {
+  const html = fs.readFileSync(path.join(projectRoot, "desktop", "control.html"), "utf8");
+  const main = fs.readFileSync(path.join(projectRoot, "desktop", "main.cjs"), "utf8");
+  const liveBridge = fs.readFileSync(path.join(projectRoot, "desktop", "atom-echo-live.js"), "utf8");
+  const remoteSettings = html.match(/data-page-panel="remote"[\s\S]*?(?=<section class="page" data-page-panel="esp32")/)?.[0] || "";
+  const atomSettings = html.match(/data-page-panel="esp32"[\s\S]*?(?=<section class="page" data-page-panel="character")/)?.[0] || "";
+  assert.match(html, /data-page="remote"[\s\S]*CharaDock Link/);
+  assert.match(html, /data-page="esp32"[\s\S]*ESP32デバイス/);
+  assert.doesNotMatch(remoteSettings, /id="atomEchoAudioOutputTitle"/);
+  assert.match(atomSettings, /id="atomEchoEnabledSettings"[\s\S]*id="atomEchoAudioOutputTitle"/);
+  assert.match(atomSettings, /id="atomEchoAudioOutputTitle"[\s\S]*内蔵スピーカー[\s\S]*id="testAtomEchoSpeakerButton"/);
+  assert.match(atomSettings, /id="atomEchoCaptureModeSelect"[\s\S]*ハンズフリーで話す/);
+  assert.match(atomSettings, /id="atomEchoVadThresholdInput"[\s\S]*min="80"[\s\S]*max="800"/);
+  assert.match(atomSettings, /id="atomEchoOutputGainInput"[\s\S]*min="50"[\s\S]*max="150"/);
+  assert.match(atomSettings, /5分使わなければLiveを終了[\s\S]*初期状態はOFF[\s\S]*id="atomEchoLiveIdleTimeoutToggle"/);
+  assert.doesNotMatch(atomSettings, /StackChan|RLCD 4\.2|検討中/);
+  assert.doesNotMatch(atomSettings, /Bluetooth|atomEchoAudioOutputSelect/);
+  assert.match(main, /resetAtomEchoLiveBridgeForProviderChange\(previousSpeechInputProvider, allowed\.speechInputProvider\)/);
+  assert.match(main, /atom-echo-audio-mode-reset/);
+  assert.match(liveBridge, /peerConnected = peer\?\.connectionState === "connected";[\s\S]*if \(peerConnected\) flushInput\(\)/);
 });
 
 test("WSL can launch Windows Electron from a persistent isolated development mirror", () => {

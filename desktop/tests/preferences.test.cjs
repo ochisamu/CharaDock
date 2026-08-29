@@ -36,6 +36,55 @@ test("preferences keeps API key in memory when encryption is unavailable", () =>
   assert.equal(fs.readFileSync(preferences.filePath, "utf8").includes("sk-session-only"), false);
 });
 
+test("preferences encrypts the ATOM Echo pairing token and exposes only pairing metadata", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "charadock-atom-prefs-"));
+  const file = path.join(directory, "preferences.json");
+  const safeStorage = {
+    isEncryptionAvailable: () => true,
+    encryptString: (value) => Buffer.from(`encrypted:${value}`),
+    decryptString: (value) => value.toString().replace(/^encrypted:/, ""),
+  };
+  const preferences = new Preferences(file, safeStorage);
+  const token = "ab".repeat(32);
+  preferences.patch({ atomEchoDeviceId: "atom-echo-5002918f0974", atomEchoWifiSsid: "Studio Wi-Fi" });
+  preferences.setAtomEchoPairingToken(token);
+  const disk = fs.readFileSync(file, "utf8");
+  assert.equal(disk.includes(token), false);
+  assert.equal(preferences.getAtomEchoPairingToken(), token);
+  assert.equal(preferences.publicState().atomEchoPaired, true);
+  assert.equal(preferences.publicState().atomEchoWifiSsid, "Studio Wi-Fi");
+  assert.equal(Object.prototype.hasOwnProperty.call(preferences.publicState(), "encryptedAtomEchoPairingToken"), false);
+});
+
+test("preferences discard retired ATOM Echo Bluetooth output settings", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "charadock-atom-output-"));
+  const file = path.join(directory, "preferences.json");
+  fs.writeFileSync(file, JSON.stringify({
+    atomEchoAudioOutput: "bluetooth",
+    atomEchoBluetoothSpeakerName: "Desk Speaker\u0000  ",
+  }));
+  const preferences = new Preferences(file);
+  assert.equal("atomEchoAudioOutput" in preferences.data, false);
+  assert.equal("atomEchoBluetoothSpeakerName" in preferences.data, false);
+});
+
+test("preferences bound ATOM Echo controls and keep Live idle auto-close opt-in", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "charadock-atom-controls-"));
+  const file = path.join(directory, "preferences.json");
+  fs.writeFileSync(file, JSON.stringify({ atomEchoOutputGain: 900, atomEchoCaptureMode: "hands-free", atomEchoVadThreshold: 5_000 }));
+  let state = new Preferences(file).publicState();
+  assert.equal(state.atomEchoOutputGain, 150);
+  assert.equal(state.atomEchoCaptureMode, "hands-free");
+  assert.equal(state.atomEchoVadThreshold, 800);
+  assert.equal(state.atomEchoLiveIdleTimeoutEnabled, false);
+  fs.writeFileSync(file, JSON.stringify({ atomEchoOutputGain: 10, atomEchoCaptureMode: "always-on", atomEchoVadThreshold: 2, atomEchoLiveIdleTimeoutEnabled: true }));
+  state = new Preferences(file).publicState();
+  assert.equal(state.atomEchoOutputGain, 50);
+  assert.equal(state.atomEchoCaptureMode, "push-to-talk");
+  assert.equal(state.atomEchoVadThreshold, 80);
+  assert.equal(state.atomEchoLiveIdleTimeoutEnabled, true);
+});
+
 test("preferences encrypts MCP API keys and exposes only connection metadata", () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "charadock-mcp-prefs-"));
   const file = path.join(directory, "preferences.json");

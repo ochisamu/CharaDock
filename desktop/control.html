@@ -26,7 +26,8 @@
       <nav class="nav-tabs" aria-label="設定カテゴリ">
         <p class="nav-section-label">コンパニオン</p>
         <button class="nav-tab is-active" type="button" data-page="chat"><span class="ui-symbol ui-symbol-chat" aria-hidden="true"></span>Chat</button>
-        <button class="nav-tab" type="button" data-page="remote"><span class="ui-symbol ui-symbol-settings" aria-hidden="true"></span>リモート</button>
+        <button class="nav-tab" type="button" data-page="remote"><span class="ui-symbol ui-symbol-connection" aria-hidden="true"></span>CharaDock Link</button>
+        <button class="nav-tab" type="button" data-page="esp32"><span class="ui-symbol ui-symbol-settings" aria-hidden="true"></span>ESP32デバイス</button>
         <button class="nav-tab" type="button" data-page="character"><span class="ui-symbol ui-symbol-character" aria-hidden="true"></span>キャラクター</button>
         <button class="nav-tab" type="button" data-page="voice"><span class="ui-symbol ui-symbol-voice" aria-hidden="true"></span>音声</button>
         <p class="nav-section-label">拡張</p>
@@ -125,10 +126,10 @@
       </section>
 
       <section class="page" data-page-panel="remote">
-        <header class="page-header"><div><p class="eyebrow">CharaDock Link · Beta</p><h1>リモートアクセス</h1></div><span id="remoteStatusBadge" class="remote-status-badge">停止中</span></header>
-        <p class="page-lead">同じWi-Fiにある端末へキャラクターとChat / Workを表示します。HTTPS接続ならマイク、GPT-Live、操作承認、ホーム画面アプリ、完了通知も利用できます。</p>
+        <header class="page-header"><div><p class="eyebrow">CharaDock Link · Beta</p><h1>スマートフォンとつなぐ</h1></div><span id="remoteStatusBadge" class="remote-status-badge">停止中</span></header>
+        <p class="page-lead">キャラクターとのChat / Workを、同じWi-Fiのスマートフォンへ。まず接続を有効にして、表示されたQRコードを読み取ります。</p>
         <section id="remoteAccessCard" class="card settings-card remote-access-card">
-          <label class="switch-row remote-master-switch"><span><strong>リモート接続を有効にする</strong><small>初期状態はOFF。選んだプライベートLANと任意のTailscale Serveを受け付けます</small></span><input id="remoteAccessToggle" type="checkbox" /><i></i></label>
+          <label class="switch-row remote-master-switch"><span><strong>CharaDock Linkを使う</strong><small>初期状態はOFF。信頼できるプライベートネットワークからだけ接続できます</small></span><input id="remoteAccessToggle" type="checkbox" /><i></i></label>
           <div id="remoteEnabledSettings" class="remote-enabled-settings" hidden>
             <div class="remote-pairing-layout">
               <div class="remote-qr-panel">
@@ -138,24 +139,31 @@
               <div class="remote-pairing-copy">
                 <div class="remote-pairing-kicker"><p class="eyebrow">PAIR THIS DEVICE</p><span id="remotePairingTransport" class="remote-route-badge">LAN</span></div>
                 <h2 id="remotePairingTitle">QRコードを読み取る</h2>
-                <p>端末ごとに標準カメラで1回読み取ります。URLは最初のペアリングまたは10分で無効になりますが、ペアリング済み端末は操作セッションが切れても自動再接続します。</p>
+                <p>スマートフォンの標準カメラで1回読み取ります。ペアリング後は、次回から同じ端末を自動で認識します。</p>
                 <div class="remote-url-row"><code id="remoteAccessUrl">接続先を準備中</code><button id="copyRemoteUrlButton" class="button button-secondary" type="button">URLをコピー</button></div>
                 <p id="remotePairingRouteHint" class="remote-route-hint" role="status">Tailscale HTTPSを開始すると、QRコードも安全なURLへ切り替わります。</p>
                 <div class="remote-pairing-code"><span>ペアリングコード</span><strong id="remotePairingCode">--------</strong><small>HTTPSやTailscale ServeのURLから開いた場合に入力します</small></div>
                 <p id="remoteConnectionSummary" class="inline-status" role="status"></p>
-                <p class="remote-firewall-hint">接続できない場合は、Windows Defenderの確認で「プライベート ネットワーク」を許可し、両端末が同じWi-Fiか確認してください。</p>
+                <p class="remote-firewall-hint">接続できないときは、Windows Defenderで「プライベート ネットワーク」を許可し、両端末が同じWi-Fiか確認してください。</p>
               </div>
             </div>
-            <div class="settings-stack remote-options">
-              <label>接続に使うネットワーク<select id="remoteAddressSelect"></select></label>
-              <label>ローカル待受ポート<input id="remotePortInput" type="number" min="1024" max="65535" step="1" /></label>
-              <label>操作セッションの再確認間隔<select id="remoteSessionSelect"><option value="15">15分</option><option value="30">30分</option><option value="60">1時間</option><option value="120">2時間</option><option value="480">8時間</option></select></label>
+            <section class="remote-experience-card" aria-labelledby="remoteExperienceTitle">
+              <div class="section-row"><div><strong id="remoteExperienceTitle">スマートフォンでできること</strong><small>必要な機能だけを選べます</small></div></div>
               <label>リモートの応答音声<select id="remoteResponseModeSelect"><option value="tts">通常TTS</option><option value="live">GPT-Live（スマートフォンで開始）</option></select></label>
               <label class="switch-row"><span><strong>スマートフォンでWorkを許可</strong><small>現在の作業先と、このキャラのホーム内で作業できます</small></span><input id="remoteWorkToggle" type="checkbox" /><i></i></label>
               <label class="switch-row"><span><strong>スマートフォンでキャラ音声を再生</strong><small>通常TTSの設定済み音声をスマートフォン側でも生成します</small></span><input id="remoteTtsToggle" type="checkbox" /><i></i></label>
               <label class="switch-row"><span><strong>リモートを開いたときに声をかける</strong><small>作業の続きがある場合だけ、端末ごとに一度話します。Live選択時は接続後の声を使います</small></span><input id="remoteStartupGreetingToggle" type="checkbox" /><i></i></label>
               <label class="switch-row"><span><strong>PCでも回答音声を再生</strong><small>OFFにするとリモートから送った通常TTSをPCでは鳴らしません</small></span><input id="remotePcAudioToggle" type="checkbox" /><i></i></label>
-              <section class="remote-tailscale-note" aria-labelledby="remoteTailscaleTitle">
+            </section>
+            <details class="remote-advanced-disclosure">
+              <summary><span><strong id="remoteAdvancedTitle">接続とセキュリティ</strong><small>ネットワーク、セッション、外出先接続の詳細</small></span></summary>
+              <div class="remote-advanced-content">
+                <div class="remote-network-grid">
+                  <label>接続に使うネットワーク<select id="remoteAddressSelect"></select></label>
+                  <label>ローカル待受ポート<input id="remotePortInput" type="number" min="1024" max="65535" step="1" /></label>
+                  <label>操作セッションの再確認間隔<select id="remoteSessionSelect"><option value="15">15分</option><option value="30">30分</option><option value="60">1時間</option><option value="120">2時間</option><option value="480">8時間</option></select></label>
+                </div>
+                <section class="remote-tailscale-note" aria-labelledby="remoteTailscaleTitle">
                 <div class="remote-tailscale-heading"><strong id="remoteTailscaleTitle">Tailscale HTTPS（任意）</strong><span id="remoteTailscaleBadge" class="setup-state-badge">未確認</span></div>
                 <p>マイク、操作承認、ホーム画面アプリ、通知、外出先からの接続に使います。CharaDockは既存のServe設定を上書きせず、ここで開始した設定だけ停止します。</p>
                 <label>Tailscale側のHTTPSポート<input id="remoteTailscaleHttpsPortInput" type="number" min="1" max="65535" step="1" /></label>
@@ -163,8 +171,9 @@
                 <a id="remoteTailscaleUrl" href="#" hidden>HTTPS URLを開く</a>
                 <div class="remote-tailscale-actions"><button id="refreshRemoteTailscaleButton" class="button button-secondary" type="button">状態を確認</button><button id="startRemoteTailscaleButton" class="button button-primary" type="button">HTTPS接続を開始</button><button id="stopRemoteTailscaleButton" class="button button-danger" type="button" hidden>停止</button></div>
                 <p id="remoteTailscaleStatus" class="inline-status" role="status"></p>
-              </section>
-            </div>
+                </section>
+              </div>
+            </details>
             <section class="remote-device-section" aria-labelledby="remoteDeviceTitle">
               <div class="section-row"><div><strong id="remoteDeviceTitle">ペアリング済み端末</strong><small>操作セッションが切れても自動再接続します。端末の信頼は180日または解除まで保持されます</small></div><span id="remoteDeviceCount" class="setup-state-badge">0台</span></div>
               <div id="remoteDeviceList" class="remote-device-list"></div>
@@ -177,8 +186,55 @@
         </section>
         <aside class="remote-security-note">
           <span class="ui-symbol ui-symbol-support" aria-hidden="true"></span>
-          <div><strong>通常LANまたは任意のTailscale接続に対応する実験機能です</strong><p>通常LANは信頼できる自宅・社内Wi-Fiでのみ使用してください。マイクと画面撮影・ブラウザ・PC操作への承認はTailscale HTTPSだけで利用できます。外出先から利用する場合もルーターのポートは開放しないでください。</p></div>
+          <div><strong>自宅・社内の信頼できるネットワークで使ってください</strong><p>マイク、操作承認、ホーム画面アプリ、完了通知、外出先からの利用にはTailscale HTTPSが必要です。ルーターのポート開放はしないでください。</p></div>
         </aside>
+      </section>
+
+      <section class="page" data-page-panel="esp32">
+        <header class="page-header"><div><p class="eyebrow">CharaDock Devices</p><h1>ESP32デバイス</h1></div></header>
+        <p class="page-lead">キャラクターをPCの外へ連れ出す専用デバイスを管理します。会話・Work・声・キャラクターはPC版の設定を引き継ぎます。</p>
+        <section id="atomEchoCard" class="card settings-card atom-echo-card" aria-labelledby="atomEchoTitle">
+          <div class="section-row">
+            <div><p class="eyebrow">Voice Satellite</p><strong id="atomEchoTitle">ATOM Echo</strong><small>Wi-Fiで話しかけ、選択中のキャラクターの声を再生します</small></div>
+            <span id="atomEchoStatusBadge" class="setup-state-badge">停止中</span>
+          </div>
+          <label class="switch-row esp32-device-switch"><span><strong>このデバイスを使う</strong><small>初回だけUSBでWi-Fiを設定し、その後は無線で自動接続します</small></span><input id="atomEchoEnabledToggle" type="checkbox" /><i></i></label>
+          <div id="atomEchoEnabledSettings" class="esp32-device-settings" hidden>
+            <section class="remote-tailscale-card esp32-setup-card" aria-labelledby="atomEchoWifiSetupTitle">
+              <div class="section-row"><div><strong id="atomEchoWifiSetupTitle">Wi-Fi初期設定</strong><small>最初の1回だけUSBで接続します。パスワードはATOM Echo本体へ直接保存され、CharaDockには残りません</small></div></div>
+              <label>Wi-Fi名（SSID）<input id="atomEchoWifiSsidInput" type="text" maxlength="32" autocomplete="off" placeholder="自宅のWi-Fi名" /></label>
+              <label>Wi-Fiパスワード<input id="atomEchoWifiPasswordInput" type="password" maxlength="64" autocomplete="new-password" placeholder="設定時だけ入力" /></label>
+              <label>初期設定用USBポート<select id="atomEchoPortSelect"><option value="">自動検出（FTDI 0403:6001）</option></select></label>
+              <div class="remote-actions">
+                <button id="refreshAtomEchoPortsButton" class="button button-secondary" type="button">USBを再確認</button>
+                <button id="provisionAtomEchoWifiButton" class="button button-primary" type="button">Wi-Fiへ接続</button>
+              </div>
+              <p id="atomEchoWifiSetupStatus" class="inline-status" role="status"></p>
+            </section>
+            <section class="remote-tailscale-card" aria-labelledby="atomEchoCaptureTitle">
+              <div class="section-row"><div><strong id="atomEchoCaptureTitle">話しかけ方</strong><small>会話の開始方法を選びます。ボタンはどちらの設定でも応答の割り込みに使えます</small></div></div>
+              <label>マイクの開始<select id="atomEchoCaptureModeSelect"><option value="push-to-talk">ボタンを押して話す</option><option value="hands-free">ハンズフリーで話す</option></select></label>
+              <label id="atomEchoVadThresholdSettings" class="parameter-slider"><span><strong>開始しきい値</strong><output id="atomEchoVadThresholdOutput">120 · 高感度</output></span><input id="atomEchoVadThresholdInput" type="range" min="80" max="800" step="20" value="120" /></label>
+              <p id="atomEchoVadStatus" class="inline-status" role="status">小さい値ほど離れた声を拾いやすくなります。周囲の音には自動で追従します。</p>
+              <p class="inline-status">ハンズフリーでは、応答再生中を除いてマイクが待受します。青いLEDが待受、シアンが発話開始の目印です。</p>
+              <label class="switch-row atom-echo-live-cost-switch"><span><strong>5分使わなければLiveを終了</strong><small>GPT-Liveの接続だけを閉じます。次に話すと自動で再接続します（初期状態はOFF）</small></span><input id="atomEchoLiveIdleTimeoutToggle" type="checkbox" /><i></i></label>
+            </section>
+            <section class="remote-tailscale-card" aria-labelledby="atomEchoAudioOutputTitle">
+              <div class="section-row"><div><strong id="atomEchoAudioOutputTitle">内蔵スピーカー</strong><small>キャラクターの声に合わせて、PC側で音割れと不要な低音を抑えてから再生します</small></div><span class="setup-state-badge is-ready">音声向け</span></div>
+              <label class="parameter-slider"><span><strong>全体の音量</strong><output id="atomEchoOutputGainOutput">100%</output></span><input id="atomEchoOutputGainInput" type="range" min="50" max="150" step="5" value="100" /></label>
+              <p class="inline-status">16 kHz音声を安全な音量へ整え、ATOM Echo側で途切れにくく連続再生します。</p>
+              <p class="remote-firewall-hint">通常TTS・GPT-Live・Beatrice 2、Chat・Workのすべてに同じ補正を適用します。</p>
+            </section>
+            <div class="remote-actions esp32-device-actions">
+              <button id="testAtomEchoSpeakerButton" class="button button-primary" type="button">キャラ音声をテスト</button>
+            </div>
+            <p id="atomEchoStatus" class="inline-status esp32-device-status" role="status">ATOM Echoは停止しています。</p>
+            <details class="device-help-disclosure">
+              <summary><span><strong>接続の仕組みと注意</strong><small>音声経路、Work、ネットワークについて</small></span></summary>
+              <p>PCとATOM Echoを同じ信頼できるLANへ接続してください。GPT-LiveではLive音声とBeatrice 2変換を、通常音声入力ではキャラクターTTSを使います。Workの進行・成果物・許可確認はPCにも表示されます。</p>
+            </details>
+          </div>
+        </section>
       </section>
 
       <section class="page" data-page-panel="character">

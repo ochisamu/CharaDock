@@ -1,7 +1,7 @@
 {
   "name": "charadock",
-  "version": "0.4.1",
-  "storePackageVersion": "0.4.1.0",
+  "version": "0.5.0",
+  "storePackageVersion": "0.5.0.0",
   "description": "CharaDock is a transparent Windows desktop companion powered by PuruPuru PNGTuber, Codex app-server, and the OpenAI Responses API.",
   "main": "desktop/main.cjs",
   "author": "ochisamu",
@@ -39,6 +39,7 @@
     "productName": "CharaDock",
     "copyright": "Copyright © 2026 ochisamu",
     "asar": true,
+    "npmRebuild": false,
     "files": [
       "app.js",
       "motion-runtime.js",
@@ -68,6 +69,7 @@
       "node_modules/sherpa-onnx-*/**/*",
       "node_modules/onnxruntime-web/dist/**/*",
       "node_modules/onnxruntime-node/**/*",
+      "node_modules/@serialport/bindings-cpp/prebuilds/**/*",
       "node_modules/piper-plus/dist/**/*.wasm"
     ],
     "win": {
@@ -190,6 +192,7 @@
     "piper-plus": "0.6.0",
     "pngjs": "^7.0.0",
     "qrcode": "1.5.4",
+    "serialport": "^13.0.0",
     "sherpa-onnx-node": "^1.13.4"
   },
   "overrides": {

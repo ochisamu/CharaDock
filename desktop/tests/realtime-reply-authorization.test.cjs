@@ -12,6 +12,13 @@ test("an active native handoff keeps segmented Live answers authorized after inp
   assert.equal(realtimeReplyAuthorized({ pendingInput: false, completionPending: true }), true);
 });
 
+test("a user transcript delta authorizes its reply before transcript finalization", () => {
+  assert.equal(realtimeReplyAuthorized({
+    pendingInput: false,
+    transcribingInput: true,
+  }), true);
+});
+
 test("a native handoff result may begin just after the Codex turn completes", () => {
   const completedAt = 10_000;
   assert.equal(realtimeReplyAuthorized({

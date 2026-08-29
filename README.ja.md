@@ -74,6 +74,14 @@ CharaDockは、[rotejin/PuruPuruPNGTuber](https://github.com/rotejin/PuruPuruPNG
 
 通常のローカルLAN経路はHTTPのままなので文字操作用です。ブラウザのマイクAPIにはHTTPSが必要なため、音声入力や外出先からの利用には、任意で[Tailscale Serve](https://tailscale.com/docs/features/tailscale-serve)を利用できます。設定画面からローカル待受ポートとTailscale HTTPSポートを選び、状態確認、開始、停止まで行えます。CharaDockは既存のServe設定を検出した場合は上書きせず、CharaDock自身が開始した設定だけを停止します。Tailscaleは必須ではなく、ルーターのポート開放や公開用のTailscale Funnelは使用しないでください。
 
+### ESP32音声デバイス
+
+別リポジトリの [CharaDock-ESP32](https://github.com/ochisamu/CharaDock-ESP32) は、旧M5Stack ATOM Echoを小型の無線音声デバイスとして使うファームウェアを提供します。USB経由で一度Wi-Fi設定を行うと、ボタンまたはハンズフリーで話し、通常TTS、GPT-Live、Beatrice 2の音声を内蔵スピーカーで再生できます。Chat／Work、キャラクター、声、作業フォルダーはPC版の設定を引き継ぎます。
+
+設定には独立した **ESP32デバイス** ページがあり、全体ゲイン、リアルタイムのマイクレベルと開始閾値、デバイスのLive接続だけを最後の会話から5分で終了する任意設定を用意しています。自動終了は初期状態OFFです。機種固有の設定を分離し、将来のハードウェアをATOM Echoの設定へ混在させず追加できる構成です。
+
+通信は信頼できるプライベートLAN向けで、設定時に生成したランダムなペアリング鍵によりデバイスを認証します。ルーターのポートを公開せず、OpenAI認証情報をファームウェアへ保存しません。動作とトラブルシューティングは [ATOM Echoガイド](./docs/atom-echo-mvp.md) を参照してください。
+
 ### 声を選べる
 
 音声入力方式は設定で明示的に選びます。Codex Realtimeを自動起動したり、失敗時に別方式へ勝手に切り替えたりしません。

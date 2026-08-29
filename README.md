@@ -74,6 +74,14 @@ The pairing URL expires after its first use or 10 minutes. Trusted-device record
 
 The normal local-LAN route remains plain HTTP and is intended for text control. Browser microphone APIs require HTTPS, so voice input and remote access outside the LAN can optionally use [Tailscale Serve](https://tailscale.com/docs/features/tailscale-serve). Settings lets you choose both the local listening port and Tailscale HTTPS port, then inspect, start, and stop the route. CharaDock refuses to overwrite an existing Serve root and stops only a route it started. Tailscale is optional; do not forward the router port or use the public Tailscale Funnel mode.
 
+### ESP32 voice devices
+
+The separate [CharaDock-ESP32](https://github.com/ochisamu/CharaDock-ESP32) project provides firmware that turns the original M5Stack ATOM Echo into a compact wireless voice device. After one USB-assisted Wi-Fi pairing, it can use button or hands-free input and play standard character TTS, GPT-Live, or Beatrice 2 audio through its built-in speaker. Chat/Work, character, voice, and workspace remain authoritative on the PC.
+
+Settings has an independent **ESP32 devices** page with output gain, live microphone level and threshold controls, and an optional five-minute idle close for the device's Live connection. The idle close is off by default. Device-specific controls are isolated so future hardware can be added without mixing its settings into ATOM Echo.
+
+The device protocol is intended for a trusted private LAN and authenticates the provisioned device with a random pairing secret. CharaDock does not expose the router port or place OpenAI credentials in the firmware. See the [ATOM Echo guide](./docs/atom-echo-mvp.md) for behavior and troubleshooting.
+
 ### Choose how the character listens and speaks
 
 The input provider is always selected explicitly. CharaDock does not start Codex Realtime automatically or silently fall back to another provider after a failure.

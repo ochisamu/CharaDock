@@ -887,10 +887,26 @@ input[type="range"]:active::-webkit-slider-thumb { transform: scale(1.16); box-s
 .remote-pairing-code span { color: var(--text-secondary); font-size: 9px; font-weight: 700; }
 .remote-pairing-code strong { font: 750 17px/1.2 ui-monospace, SFMono-Regular, Consolas, monospace; letter-spacing: .1em; }
 .remote-pairing-code small { grid-column: 1 / -1; color: var(--text-tertiary); font-size: 9px; }
-.remote-options { grid-template-columns: repeat(2, minmax(0, 1fr)); padding: 16px; background: var(--field); border: 1px solid var(--line); border-radius: 14px; }
-.remote-options > label:not(.switch-row), .remote-tailscale-note > label { display: grid; gap: 6px; color: var(--text-secondary); font-size: 10px; font-weight: 680; }
-.remote-options input[type="number"] { width: 100%; min-height: 35px; border: 1px solid var(--line); border-radius: 9px; padding: 0 10px; color: var(--text); background: var(--surface); }
-.remote-options .switch-row { min-height: 52px; }
+.remote-experience-card { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 18px; padding: 16px; background: var(--field); border: 1px solid var(--line); border-radius: 14px; }
+.remote-experience-card > .section-row { grid-column: 1 / -1; margin-bottom: 6px; padding-bottom: 12px; border-bottom: 1px solid var(--line); }
+.remote-experience-card > .section-row small { display: block; margin-top: 3px; color: var(--muted); font-size: 9px; }
+.remote-experience-card > label:not(.switch-row) { display: grid; grid-column: 1 / -1; gap: 6px; margin: 6px 0 4px; color: var(--text-secondary); font-size: 10px; font-weight: 680; }
+.remote-experience-card .switch-row { min-height: 58px; }
+.remote-experience-card .switch-row:nth-of-type(even) { border-left: 1px solid var(--line); padding-left: 18px; }
+.remote-advanced-disclosure, .device-help-disclosure { overflow: hidden; border: 1px solid var(--line); border-radius: 14px; background: color-mix(in srgb, var(--surface-soft) 72%, transparent); }
+.remote-advanced-disclosure > summary, .device-help-disclosure > summary { position: relative; display: flex; align-items: center; min-height: 62px; padding: 13px 48px 13px 16px; color: var(--text-secondary); list-style: none; cursor: pointer; }
+.remote-advanced-disclosure > summary::-webkit-details-marker, .device-help-disclosure > summary::-webkit-details-marker { display: none; }
+.remote-advanced-disclosure > summary::after, .device-help-disclosure > summary::after { content: "+"; position: absolute; right: 17px; display: grid; place-items: center; width: 24px; height: 24px; color: var(--muted); border-radius: 50%; background: var(--field); font-size: 16px; line-height: 1; transition: transform 160ms var(--ease-out), color 140ms ease; }
+.remote-advanced-disclosure[open] > summary::after, .device-help-disclosure[open] > summary::after { color: var(--accent); transform: rotate(45deg); }
+.remote-advanced-disclosure > summary:hover, .device-help-disclosure > summary:hover { color: var(--text); background: rgba(255, 255, 255, .025); }
+.remote-advanced-disclosure > summary span, .remote-advanced-disclosure > summary strong, .remote-advanced-disclosure > summary small, .device-help-disclosure > summary span, .device-help-disclosure > summary strong, .device-help-disclosure > summary small { display: block; }
+.remote-advanced-disclosure > summary strong, .device-help-disclosure > summary strong { font-size: 11px; }
+.remote-advanced-disclosure > summary small, .device-help-disclosure > summary small { margin-top: 3px; color: var(--muted); font-size: 9px; }
+.remote-advanced-content { display: grid; gap: 14px; padding: 0 16px 16px; border-top: 1px solid var(--line); }
+.remote-network-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; padding-top: 15px; }
+.remote-network-grid > label, .remote-tailscale-note > label { display: grid; gap: 6px; color: var(--text-secondary); font-size: 10px; font-weight: 680; }
+.remote-network-grid > label:last-child { grid-column: 1 / -1; }
+.remote-network-grid input[type="number"] { width: 100%; min-height: 35px; border: 1px solid var(--line); border-radius: 9px; padding: 0 10px; color: var(--text); background: var(--surface); }
 .remote-tailscale-note { grid-column: 1 / -1; padding: 13px 14px; border: 1px solid color-mix(in srgb, var(--accent) 24%, var(--line)); border-radius: 12px; background: color-mix(in srgb, var(--accent) 6%, var(--surface)); }
 .remote-tailscale-note strong { font-size: 11px; }
 .remote-tailscale-note p { margin: 5px 0 0; color: var(--text-secondary); font-size: 9px; line-height: 1.6; }
@@ -918,6 +934,19 @@ input[type="range"]:active::-webkit-slider-thumb { transform: scale(1.16); box-s
 .remote-security-note > .ui-symbol { width: 23px; height: 23px; color: var(--accent); }
 .remote-security-note strong { color: var(--text-secondary); font-size: 11px; }
 .remote-security-note p { margin: 4px 0 0; font-size: 9px; line-height: 1.65; }
+.atom-echo-card { gap: 0; overflow: hidden; padding: 0; }
+.atom-echo-card > .section-row { min-height: 76px; padding: 17px 20px; }
+.atom-echo-card > .section-row small { display: block; margin-top: 4px; color: var(--muted); font-size: 10px; }
+.esp32-device-switch { min-height: 70px; padding: 15px 20px; border-top: 1px solid var(--line); background: color-mix(in srgb, var(--accent) 4%, transparent); }
+.esp32-device-settings { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; padding: 18px 20px 20px; border-top: 1px solid var(--line); }
+.esp32-device-settings[hidden] { display: none; }
+.esp32-device-settings > .remote-tailscale-card { min-width: 0; margin: 0; }
+.esp32-device-settings > .esp32-setup-card { grid-column: 1 / -1; }
+.atom-echo-live-cost-switch { min-height: 61px; margin-top: 4px; padding-top: 13px; border-top: 1px solid var(--line); }
+.esp32-device-actions { align-self: center; justify-content: flex-start; }
+.esp32-device-status { align-self: center; min-height: 40px; margin: 0; padding: 10px 12px; color: var(--text-secondary); background: var(--field); border: 1px solid var(--line); border-radius: 11px; }
+.device-help-disclosure { grid-column: 1 / -1; }
+.device-help-disclosure > p { margin: 0; padding: 13px 16px 16px; color: var(--muted); border-top: 1px solid var(--line); font-size: 9px; line-height: 1.65; }
 .tts-settings, .tts-provider-settings { display: grid; gap: 11px; }
 .tts-settings { padding: 13px; background: var(--field); border: 1px solid var(--line); border-radius: 13px; }
 .tts-provider-settings[hidden] { display: none; }
@@ -1259,7 +1288,9 @@ input[type="range"]:active::-webkit-slider-thumb { transform: scale(1.16); box-s
   .web-preview-launch-controls { grid-template-columns: 1fr; }
   .remote-pairing-layout { grid-template-columns: 1fr; }
   .remote-qr-panel { width: min(210px, 100%); justify-self: center; }
-  .remote-options { grid-template-columns: 1fr; }
+  .remote-experience-card, .remote-network-grid, .esp32-device-settings { grid-template-columns: 1fr; }
+  .remote-experience-card .switch-row:nth-of-type(even) { border-left: 0; padding-left: 0; }
+  .remote-network-grid > label:last-child, .esp32-device-settings > .esp32-setup-card { grid-column: 1; }
 }
 
 @media (prefers-color-scheme: light) {
@@ -1544,6 +1575,7 @@ input[type="range"]:active::-webkit-slider-thumb { transform: scale(1.16); box-s
   .skill-catalog-skeleton { animation: none; }
   .confirmation-sheet, .character-director-sheet { animation: none; }
   .character-director-advanced > summary::after { transition: none; }
+  .remote-advanced-disclosure > summary::after, .device-help-disclosure > summary::after { transition: none; }
 }
 
 @media (prefers-reduced-transparency: reduce) {

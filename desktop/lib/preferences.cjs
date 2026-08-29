@@ -119,6 +119,14 @@ const DEFAULTS = Object.freeze({
   remoteTailscaleManaged: false,
   remoteStartupGreetingEnabled: true,
   remoteTrustedDevices: [],
+  atomEchoEnabled: false,
+  atomEchoPort: "",
+  atomEchoDeviceId: "",
+  atomEchoWifiSsid: "",
+  atomEchoOutputGain: 100,
+  atomEchoCaptureMode: "push-to-talk",
+  atomEchoVadThreshold: 120,
+  atomEchoLiveIdleTimeoutEnabled: false,
   onboardingComplete: false,
   positionLocked: false,
   edgeSnap: true,
@@ -320,6 +328,7 @@ class Preferences {
       }])),
     };
     this.sessionApiKey = "";
+    this.sessionAtomEchoPairingToken = "";
     this.sessionMcpApiKeys = new Map();
     this.load();
   }
@@ -381,6 +390,20 @@ class Preferences {
           expiresAt,
         }];
       });
+      if (typeof this.data.atomEchoEnabled !== "boolean") this.data.atomEchoEnabled = false;
+      this.data.atomEchoPort = /^(?:COM\d{1,3}|\/dev\/[A-Za-z0-9._/-]{1,100})$/i.test(String(this.data.atomEchoPort || ""))
+        ? String(this.data.atomEchoPort).slice(0, 120)
+        : "";
+      this.data.atomEchoDeviceId = /^atom-echo-[a-f0-9]{12}$/.test(String(this.data.atomEchoDeviceId || "").toLowerCase())
+        ? String(this.data.atomEchoDeviceId).toLowerCase()
+        : "";
+      this.data.atomEchoWifiSsid = String(this.data.atomEchoWifiSsid || "").replace(/[\u0000-\u001f\u007f]/g, "").slice(0, 32);
+      this.data.atomEchoOutputGain = Math.max(50, Math.min(150, Math.round(Number(this.data.atomEchoOutputGain) || 100)));
+      this.data.atomEchoCaptureMode = this.data.atomEchoCaptureMode === "hands-free" ? "hands-free" : "push-to-talk";
+      this.data.atomEchoVadThreshold = Math.max(80, Math.min(800, Math.round(Number(this.data.atomEchoVadThreshold) || 120)));
+      if (typeof this.data.atomEchoLiveIdleTimeoutEnabled !== "boolean") this.data.atomEchoLiveIdleTimeoutEnabled = false;
+      delete this.data.atomEchoAudioOutput;
+      delete this.data.atomEchoBluetoothSpeakerName;
       if (typeof this.data.englishPronunciationEnabled !== "boolean") this.data.englishPronunciationEnabled = true;
       if (typeof this.data.englishPronunciationDictionary !== "string") this.data.englishPronunciationDictionary = "";
       this.data.englishPronunciationDictionary = this.data.englishPronunciationDictionary.slice(0, 12_000);
@@ -568,6 +591,9 @@ class Preferences {
         : {};
       this.data.workHistory = normalizeWorkHistory(this.data.workHistory);
       if (typeof parsed.encryptedApiKey === "string") this.data.encryptedApiKey = parsed.encryptedApiKey;
+      if (typeof parsed.encryptedAtomEchoPairingToken === "string" && parsed.encryptedAtomEchoPairingToken.length <= 8_192) {
+        this.data.encryptedAtomEchoPairingToken = parsed.encryptedAtomEchoPairingToken;
+      }
       this.data.encryptedMcpApiKeys = parsed.encryptedMcpApiKeys && typeof parsed.encryptedMcpApiKeys === "object" && !Array.isArray(parsed.encryptedMcpApiKeys)
         ? Object.fromEntries(Object.entries(parsed.encryptedMcpApiKeys).flatMap(([serverId, encrypted]) =>
           normalizeMcpServerId(serverId) && typeof encrypted === "string" && encrypted.length <= 8_192
@@ -601,6 +627,8 @@ class Preferences {
     state.mcpServers = publicMcpServers(this.data.mcpServers, (serverId) => Boolean(this.getMcpApiKey(serverId)));
     state.mcpAssignments = normalizeMcpAssignments(this.data.mcpAssignments, this.data.mcpServers.map((server) => server.id));
     state.mcpApiKeyPersistence = this.canEncrypt() ? "encrypted" : "session";
+    state.atomEchoPaired = Boolean(this.data.atomEchoDeviceId && this.getAtomEchoPairingToken());
+    state.atomEchoPairingPersistence = this.canEncrypt() ? "encrypted" : "session";
     return state;
   }
 
@@ -640,6 +668,31 @@ class Preferences {
       return this.safeStorage.decryptString(Buffer.from(this.data.encryptedApiKey, "base64"));
     } catch (error) {
       console.warn("API key decrypt failed:", error);
+      return "";
+    }
+  }
+
+  setAtomEchoPairingToken(token) {
+    const normalized = String(token || "").toLowerCase();
+    if (normalized && !/^[a-f0-9]{64}$/.test(normalized)) throw new Error("ATOM Echoのペアリング情報が正しくありません。");
+    this.sessionAtomEchoPairingToken = normalized;
+    delete this.data.encryptedAtomEchoPairingToken;
+    if (normalized && this.canEncrypt()) {
+      this.data.encryptedAtomEchoPairingToken = this.safeStorage.encryptString(normalized).toString("base64");
+      this.sessionAtomEchoPairingToken = "";
+    }
+    this.save();
+    return this.publicState();
+  }
+
+  getAtomEchoPairingToken() {
+    if (this.sessionAtomEchoPairingToken) return this.sessionAtomEchoPairingToken;
+    if (!this.data.encryptedAtomEchoPairingToken || !this.canEncrypt()) return "";
+    try {
+      const value = this.safeStorage.decryptString(Buffer.from(this.data.encryptedAtomEchoPairingToken, "base64"));
+      return /^[a-f0-9]{64}$/.test(value) ? value : "";
+    } catch (error) {
+      console.warn("ATOM Echo pairing token decrypt failed:", error);
       return "";
     }
   }
