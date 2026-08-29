@@ -8,7 +8,7 @@
   <Identity
     Name="ochisamu.CharaDock"
     Publisher="CN=69C091B3-AED2-456C-BF7B-A39616771379"
-    Version="0.5.0.0"
+    Version="0.5.1.0"
     ProcessorArchitecture="x64" />
   <Properties>
     <DisplayName>CharaDock</DisplayName>

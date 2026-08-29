@@ -18,6 +18,7 @@ const DEFAULT_AUDIO_PORT = 41722;
 const DISCOVERY_PREFIX = "CHARADOCK_ATOM_DISCOVER_V1 ";
 const HOST_PREFIX = "CHARADOCK_ATOM_HOST_V1 ";
 const PLAYBACK_CHUNK_BYTES = 1024;
+const PLAYBACK_ACK_WINDOW = 6;
 
 function validDeviceId(value) {
   return /^atom-echo-[a-f0-9]{12}$/.test(String(value || "").toLowerCase());
@@ -58,6 +59,7 @@ class AtomEchoWifiGateway {
     this.sequence = 0;
     this.pendingAcks = new Map();
     this.playbackGeneration = 0;
+    this.playbackChunkAcks = [];
     this.captureQueue = Promise.resolve();
     this.interactionActive = false;
   }
@@ -318,6 +320,7 @@ class AtomEchoWifiGateway {
     }
     if (frame.type === FRAME_TYPES.INTERRUPT) {
       this.playbackGeneration += 1;
+      this.playbackChunkAcks = [];
       this.interactionActive = false;
       Promise.resolve(this.callbacks.onInterrupt()).catch((error) => this.reportCallbackError(error));
       return;
@@ -376,6 +379,7 @@ class AtomEchoWifiGateway {
 
   async stopPlayback() {
     this.playbackGeneration += 1;
+    this.playbackChunkAcks = [];
     this.interactionActive = false;
     if (this.status().connected) await this.writeFrame(FRAME_TYPES.AUDIO_STOP).catch(() => {});
     await this.setDeviceState("idle").catch(() => {});
@@ -383,6 +387,7 @@ class AtomEchoWifiGateway {
 
   async beginPcm16Playback(sampleRate = 16_000) {
     const generation = ++this.playbackGeneration;
+    this.playbackChunkAcks = [];
     await this.setDeviceState("speaking");
     const begin = Buffer.allocUnsafe(8);
     begin.writeUInt32LE(Math.round(Number(sampleRate) || 16_000), 0);
@@ -394,17 +399,48 @@ class AtomEchoWifiGateway {
     return generation;
   }
 
+  trackPlaybackChunkAck(ackPromise, generation) {
+    const tracked = Promise.resolve(ackPromise).then(
+      () => ({ generation, error: null }),
+      (error) => ({ generation, error }),
+    );
+    this.playbackChunkAcks.push(tracked);
+  }
+
+  async waitForOldestPlaybackChunkAck(generation) {
+    const tracked = this.playbackChunkAcks.shift();
+    if (!tracked) return;
+    const result = await tracked;
+    if (generation !== this.playbackGeneration || result.generation !== generation) return;
+    if (result.error) throw result.error;
+  }
+
+  async flushPlaybackChunkAcks(generation) {
+    while (this.playbackChunkAcks.length) {
+      await this.waitForOldestPlaybackChunkAck(generation);
+      if (generation !== this.playbackGeneration) return;
+    }
+  }
+
   async writePcm16PlaybackChunk(pcm, generation) {
     const bytes = Buffer.isBuffer(pcm) ? pcm : Buffer.from(pcm || []);
     if (!bytes.length || bytes.length % 2 || bytes.length > PLAYBACK_CHUNK_BYTES) {
       throw new Error("ATOM Echoへ送るPCM音声チャンクが正しくありません。");
     }
     if (generation !== this.playbackGeneration) return { interrupted: true };
-    await this.writeFrame(FRAME_TYPES.AUDIO_CHUNK, bytes, { waitForAck: true });
+    this.trackPlaybackChunkAck(
+      this.writeFrame(FRAME_TYPES.AUDIO_CHUNK, bytes, { waitForAck: true }),
+      generation,
+    );
+    if (this.playbackChunkAcks.length >= PLAYBACK_ACK_WINDOW) {
+      await this.waitForOldestPlaybackChunkAck(generation);
+    }
     return { interrupted: generation !== this.playbackGeneration };
   }
 
   async endPcm16Playback(generation) {
+    if (generation !== this.playbackGeneration) return { interrupted: true };
+    await this.flushPlaybackChunkAcks(generation);
     if (generation !== this.playbackGeneration) return { interrupted: true };
     await this.writeFrame(FRAME_TYPES.AUDIO_END, null, { waitForAck: true });
     this.interactionActive = false;
@@ -459,5 +495,6 @@ module.exports = {
   DEFAULT_DISCOVERY_PORT,
   DISCOVERY_PREFIX,
   HOST_PREFIX,
+  PLAYBACK_ACK_WINDOW,
   validDeviceId,
 };

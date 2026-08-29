@@ -14,6 +14,7 @@ const {
   AtomEchoWifiGateway,
   DISCOVERY_PREFIX,
   HOST_PREFIX,
+  PLAYBACK_ACK_WINDOW,
 } = require("../lib/atom-echo-wifi.cjs");
 
 function waitFor(predicate, timeoutMs = 2_000) {
@@ -63,6 +64,10 @@ test("ATOM Echo Wi-Fi gateway discovers, authenticates, and streams one ordered 
   let sequence = 0;
   let sawHostHello = false;
   let captureModePayload = null;
+  const delayedPlaybackChunks = [];
+  let maximumUnacknowledgedPlaybackChunks = 0;
+  let playbackAcksReleased = false;
+  let audioEndedAfterPlaybackAcks = false;
   socket.on("data", (chunk) => {
     for (const frame of decoder.push(chunk)) {
       if (frame.type === FRAME_TYPES.AUTH_CHALLENGE) {
@@ -73,7 +78,22 @@ test("ATOM Echo Wi-Fi gateway discovers, authenticates, and streams one ordered 
       } else if (frame.type === FRAME_TYPES.CAPTURE_CONFIG) {
         captureModePayload = Buffer.from(frame.payload);
         socket.write(encodeFrame(FRAME_TYPES.ACK, ++sequence, ackPayload(frame.type, frame.sequence)));
-      } else if ([FRAME_TYPES.AUDIO_BEGIN, FRAME_TYPES.AUDIO_CHUNK, FRAME_TYPES.AUDIO_END, FRAME_TYPES.AUDIO_STOP, FRAME_TYPES.CAPTURE_CONFIG].includes(frame.type)) {
+      } else if (frame.type === FRAME_TYPES.AUDIO_CHUNK) {
+        delayedPlaybackChunks.push(frame);
+        maximumUnacknowledgedPlaybackChunks = Math.max(maximumUnacknowledgedPlaybackChunks, delayedPlaybackChunks.length);
+        if (delayedPlaybackChunks.length === PLAYBACK_ACK_WINDOW) {
+          const pendingChunks = delayedPlaybackChunks.splice(0);
+          setTimeout(() => {
+            for (const pending of pendingChunks) {
+              socket.write(encodeFrame(FRAME_TYPES.ACK, ++sequence, ackPayload(pending.type, pending.sequence)));
+            }
+            playbackAcksReleased = true;
+          }, 25);
+        }
+      } else if (frame.type === FRAME_TYPES.AUDIO_END) {
+        audioEndedAfterPlaybackAcks = playbackAcksReleased;
+        socket.write(encodeFrame(FRAME_TYPES.ACK, ++sequence, ackPayload(frame.type, frame.sequence)));
+      } else if ([FRAME_TYPES.AUDIO_BEGIN, FRAME_TYPES.AUDIO_STOP, FRAME_TYPES.CAPTURE_CONFIG].includes(frame.type)) {
         socket.write(encodeFrame(FRAME_TYPES.ACK, ++sequence, ackPayload(frame.type, frame.sequence)));
       }
     }
@@ -107,7 +127,9 @@ test("ATOM Echo Wi-Fi gateway discovers, authenticates, and streams one ordered 
   await waitFor(() => events.length === 3);
   assert.deepEqual(events, ["start", "pcm:320", "end"]);
 
-  assert.deepEqual(await gateway.playPcm16(Buffer.alloc(2_400), 16_000), { interrupted: false });
+  assert.deepEqual(await gateway.playPcm16(Buffer.alloc(PLAYBACK_ACK_WINDOW * 1_024), 16_000), { interrupted: false });
+  assert.equal(maximumUnacknowledgedPlaybackChunks, PLAYBACK_ACK_WINDOW);
+  assert.equal(audioEndedAfterPlaybackAcks, true);
   assert.equal(gateway.status().remoteAddress, "127.0.0.1");
 });
 

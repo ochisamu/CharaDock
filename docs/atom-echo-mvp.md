@@ -2,7 +2,7 @@
 
 CharaDock can use an M5Stack ATOM Voice, formerly sold as ATOM Echo, as a small wireless voice body. The Windows app remains the single conversation runtime; the device captures microphone audio, shows state with its LED, and plays the selected character's voice over the local network.
 
-Product code `M5STACK-C008-C` was renamed from **ATOM Echo** to **ATOM Voice** in April 2026 and remains the same original ESP32-PICO-D4 hardware. See the [Switch Science ATOM Voice product page](https://www.switch-science.com/products/6347) for purchasing and specifications. CharaDock v0.5.0 keeps the “ATOM Echo” label in its settings and firmware names for compatibility.
+Product code `M5STACK-C008-C` was renamed from **ATOM Echo** to **ATOM Voice** in April 2026 and remains the same original ESP32-PICO-D4 hardware. See the [Switch Science ATOM Voice product page](https://www.switch-science.com/products/6347) for purchasing and specifications. CharaDock v0.5.1 keeps the “ATOM Echo” label in its settings and firmware names for compatibility.
 
 ## What the MVP supports
 
@@ -85,5 +85,5 @@ The PC and device must be able to reach each other on the local network. Guest W
 - If GPT-Live does not start, select the Codex app-server backend and stop an existing PC or phone Live session first.
 - If Beatrice falls back to the original Live voice, verify that the selected character has a ready Beatrice 2 VST3, model, and voice in the PC settings.
 - The original ATOM Echo speaker is intended for speech rather than high-fidelity music or strong bass. The voice profile favors clean dialogue over maximum loudness.
-- Keep the ATOM Echo near the access point if audio breaks up. The firmware prebuffers output before starting I2S playback to absorb short Wi-Fi timing variations.
+- Keep the ATOM Echo near the access point if audio breaks up. CharaDock pipelines a bounded six-chunk playback window, while firmware v0.5.2 keeps the Wi-Fi radio responsive and prebuffers about 200 ms before I2S playback to absorb timing variations.
 - The microphone and speaker share the ATOM Echo audio interface, so recording and playback are half-duplex by design.

@@ -78,7 +78,7 @@ CharaDockは、[rotejin/PuruPuruPNGTuber](https://github.com/rotejin/PuruPuruPNG
 
 別リポジトリの [CharaDock-ESP32](https://github.com/ochisamu/CharaDock-ESP32) は、M5Stack ATOM Voice（旧製品名 ATOM Echo）を小型の無線音声デバイスとして使うファームウェアを提供します。USB経由で一度Wi-Fi設定を行うと、ボタンまたはハンズフリーで話し、通常TTS、GPT-Live、Beatrice 2の音声を内蔵スピーカーで再生できます。Chat／Work、キャラクター、声、作業フォルダーはPC版の設定を引き継ぎます。
 
-> **対応製品名について:** 商品コード `M5STACK-C008-C` は、2026年4月に販売名が「ATOM Echo」から「ATOM Voice」へ変更されました。同じ旧ESP32-PICO-D4搭載製品です。購入・仕様確認は [スイッチサイエンスのATOM Voice商品ページ](https://www.switch-science.com/products/6347) を参照してください。CharaDock v0.5.0の設定画面とファームウェア名では互換性のため「ATOM Echo」表記を使用しています。
+> **対応製品名について:** 商品コード `M5STACK-C008-C` は、2026年4月に販売名が「ATOM Echo」から「ATOM Voice」へ変更されました。同じ旧ESP32-PICO-D4搭載製品です。購入・仕様確認は [スイッチサイエンスのATOM Voice商品ページ](https://www.switch-science.com/products/6347) を参照してください。CharaDock v0.5.1の設定画面とファームウェア名では互換性のため「ATOM Echo」表記を使用しています。
 
 設定には独立した **ESP32デバイス** ページがあり、全体ゲイン、リアルタイムのマイクレベルと開始閾値、デバイスのLive接続だけを最後の会話から5分で終了する任意設定を用意しています。自動終了は初期状態OFFです。機種固有の設定を分離し、将来のハードウェアをATOM Echoの設定へ混在させず追加できる構成です。
 

@@ -4,6 +4,10 @@ All notable changes to CharaDock will be documented here.
 
 ## Unreleased
 
+## 0.5.1 - 2026-08-29
+
+- Smooth ATOM Voice Wi-Fi playback by keeping a bounded six-chunk PCM window in flight instead of serializing every 32 ms chunk behind a network round trip.
+
 ## 0.5.0 - 2026-08-29
 
 - Add the first CharaDock ESP32 voice-device integration for ATOM Echo, with authenticated Wi-Fi or USB transport, push-to-talk and hands-free VAD, Chat/Work parity, standard TTS, GPT-Live, Beatrice 2, speaker DSP, adjustable gain, and microphone threshold controls.
