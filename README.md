@@ -76,7 +76,9 @@ The normal local-LAN route remains plain HTTP and is intended for text control. 
 
 ### ESP32 voice devices
 
-The separate [CharaDock-ESP32](https://github.com/ochisamu/CharaDock-ESP32) project provides firmware that turns the original M5Stack ATOM Echo into a compact wireless voice device. After one USB-assisted Wi-Fi pairing, it can use button or hands-free input and play standard character TTS, GPT-Live, or Beatrice 2 audio through its built-in speaker. Chat/Work, character, voice, and workspace remain authoritative on the PC.
+The separate [CharaDock-ESP32](https://github.com/ochisamu/CharaDock-ESP32) project provides firmware that turns the M5Stack ATOM Voice (formerly sold as ATOM Echo) into a compact wireless voice device. After one USB-assisted Wi-Fi pairing, it can use button or hands-free input and play standard character TTS, GPT-Live, or Beatrice 2 audio through its built-in speaker. Chat/Work, character, voice, and workspace remain authoritative on the PC.
+
+> **Product-name note:** Product code `M5STACK-C008-C` was renamed from “ATOM Echo” to “ATOM Voice” in April 2026; it remains the same original ESP32-PICO-D4 device. See the [Switch Science ATOM Voice product page](https://www.switch-science.com/products/6347) for purchasing and specifications. CharaDock v0.5.0 retains “ATOM Echo” in its settings and firmware names for compatibility.
 
 Settings has an independent **ESP32 devices** page with output gain, live microphone level and threshold controls, and an optional five-minute idle close for the device's Live connection. The idle close is off by default. Device-specific controls are isolated so future hardware can be added without mixing its settings into ATOM Echo.
 

@@ -1,6 +1,8 @@
-# ATOM Echo Wireless Voice Satellite MVP
+# ATOM Voice (formerly ATOM Echo) Wireless Voice Satellite MVP
 
-CharaDock can use an M5Stack ATOM Echo as a small wireless voice body. The Windows app remains the single conversation runtime; the device captures microphone audio, shows state with its LED, and plays the selected character's voice over the local network.
+CharaDock can use an M5Stack ATOM Voice, formerly sold as ATOM Echo, as a small wireless voice body. The Windows app remains the single conversation runtime; the device captures microphone audio, shows state with its LED, and plays the selected character's voice over the local network.
+
+Product code `M5STACK-C008-C` was renamed from **ATOM Echo** to **ATOM Voice** in April 2026 and remains the same original ESP32-PICO-D4 hardware. See the [Switch Science ATOM Voice product page](https://www.switch-science.com/products/6347) for purchasing and specifications. CharaDock v0.5.0 keeps the “ATOM Echo” label in its settings and firmware names for compatibility.
 
 ## What the MVP supports
 
