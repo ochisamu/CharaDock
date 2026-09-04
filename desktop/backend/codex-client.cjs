@@ -160,6 +160,22 @@ function isOfficialComputerUseSkill(skill) {
   return OFFICIAL_COMPUTER_USE_SKILL_PATH.test(String(skill.path || "").replace(/\\/g, "/"));
 }
 
+// Observers must not interrupt protocol bookkeeping or leave promises pending.
+function observe(callback, ...args) {
+  if (typeof callback !== "function") return;
+  const report = (error) => console.warn("codex observer:", error?.message || error);
+  try { Promise.resolve(callback(...args)).catch(report); } catch (error) { report(error); }
+}
+
+function withSignal(promise, signal) {
+  return new Promise((resolve, reject) => {
+    const abort = () => reject(signal.reason);
+    if (signal.aborted) abort();
+    else signal.addEventListener("abort", abort, { once: true });
+    Promise.resolve(promise).then(resolve, reject).finally(() => signal.removeEventListener("abort", abort));
+  });
+}
+
 class CodexAppServerClient {
   constructor({
     cwd,
@@ -224,13 +240,27 @@ class CodexAppServerClient {
     this.mcpReadyStatuses = [];
     this.queue = Promise.resolve();
     this.turnStartSkillItems = [];
+    this.conversationController = new AbortController();
+    this.threadVersion = 0;
+    this.threadStartPromise = null;
+    this.messageRun = null;
+    this.activeTurnThreadId = null;
+    this.earlyTurnError = null;
+    this.settledTurnIds = new Set();
+    this.realtimeStartPromise = null;
+  }
+
+  invalidateThread() {
+    this.threadId = null;
+    this.threadVersion += 1;
+    this.threadStartPromise = null;
   }
 
   setModel(model) {
     const normalized = String(model || "").trim();
     if (normalized !== this.model) {
       this.model = normalized;
-      this.threadId = null;
+      this.invalidateThread();
     }
   }
 
@@ -238,7 +268,7 @@ class CodexAppServerClient {
     const normalized = String(reasoningEffort || "").trim();
     if (normalized !== this.reasoningEffort) {
       this.reasoningEffort = normalized;
-      this.threadId = null;
+      this.invalidateThread();
     }
   }
 
@@ -246,14 +276,14 @@ class CodexAppServerClient {
     const normalized = String(persona || "").trim();
     if (normalized !== this.persona) {
       this.persona = normalized;
-      this.threadId = null;
+      this.invalidateThread();
     }
   }
 
   setDynamicTools(dynamicTools, onDynamicToolCall = null) {
     this.dynamicTools = Array.isArray(dynamicTools) ? dynamicTools : [];
     this.onDynamicToolCall = typeof onDynamicToolCall === "function" ? onDynamicToolCall : null;
-    this.threadId = null;
+    this.invalidateThread();
   }
 
   setTurnStartSkillItems(skillItems) {
@@ -265,7 +295,7 @@ class CodexAppServerClient {
     const previousSignature = JSON.stringify(this.turnStartSkillItems || []);
     const nextSignature = JSON.stringify(next);
     this.turnStartSkillItems = next;
-    if (previousSignature !== nextSignature) this.threadId = null;
+    if (previousSignature !== nextSignature) this.invalidateThread();
   }
 
   async listSkills({ forceReload = false } = {}) {
@@ -288,9 +318,10 @@ class CodexAppServerClient {
   async ensureStarted() {
     if (this.startPromise) return this.startPromise;
     if (this.proc && !this.proc.killed) return;
-    this.startPromise = this.start().finally(() => {
-      this.startPromise = null;
+    const starting = this.start().finally(() => {
+      if (this.startPromise === starting) this.startPromise = null;
     });
+    this.startPromise = starting;
     return this.startPromise;
   }
 
@@ -307,58 +338,58 @@ class CodexAppServerClient {
       windowsHide: true,
     });
     this.proc = child;
-    await new Promise((resolve, reject) => {
-      child.once("spawn", resolve);
-      child.once("error", (error) => {
-        this.proc = null;
-        reject(new Error(`Codex CLIを起動できません。codexコマンドとPATHを確認してください: ${error.message}`));
+    child.on("error", (error) => this.handleExit(null, error.message, child));
+    child.stdin.on("error", (error) => {
+      this.handleExit(null, error.message, child);
+      child.kill();
+    });
+    child.once("exit", (code, signal) => this.handleExit(code, signal, child));
+    try {
+      await new Promise((resolve, reject) => {
+        child.once("spawn", resolve);
+        child.once("error", (error) => {
+          reject(new Error(`Codex CLIを起動できません。codexコマンドとPATHを確認してください: ${error.message}`));
+        });
       });
-    });
-    child.on("error", (error) => this.handleExit(null, error.message));
-    child.stderr.on("data", (chunk) => {
-      const text = String(chunk || "").trim();
-      if (text && !isBenignCodexStderr(text)) console.warn("codex app-server:", text);
-    });
-    child.once("exit", (code, signal) => this.handleExit(code, signal));
-    this.readline = readline.createInterface({ input: child.stdout });
-    this.readline.on("line", (line) => this.handleLine(line));
-    await this.request("initialize", {
-      clientInfo: {
-        name: "charadock",
-        title: "CharaDock",
-        version: "0.1.0",
-      },
-      capabilities: { experimentalApi: true },
-    }, 30_000);
-    this.notify("initialized", {});
+      if (this.proc !== child) throw new Error("Codex app-server startup cancelled");
+      child.stderr.on("data", (chunk) => {
+        const text = String(chunk || "").trim();
+        if (text && !isBenignCodexStderr(text)) console.warn("codex app-server:", text);
+      });
+      this.readline = readline.createInterface({ input: child.stdout });
+      this.readline.on("line", (line) => { if (this.proc === child) this.handleLine(line); });
+      await this.request("initialize", {
+        clientInfo: {
+          name: "charadock",
+          title: "CharaDock",
+          version: "0.1.0",
+        },
+        capabilities: { experimentalApi: true },
+      }, 30_000);
+      if (this.proc !== child) throw new Error("Codex app-server startup cancelled");
+      this.notify("initialized", {});
+    } catch (error) {
+      this.handleExit(null, error.message, child);
+      child.kill();
+      throw error;
+    }
   }
 
-  handleExit(code, signal) {
+  handleExit(code, signal, child = this.proc) {
+    if (child !== this.proc) return;
     const error = new Error(`Codex app-serverが終了しました (${code ?? signal ?? "unknown"})`);
+    this.proc = null;
+    this.readline?.close();
+    this.readline = null;
+    this.startPromise = null;
     for (const { reject, timer } of this.pending.values()) {
       clearTimeout(timer);
       reject(error);
     }
     this.pending.clear();
-    for (const collector of this.turnCollectors.values()) {
-      clearTimeout(collector.timer);
-      collector.reject(error);
-    }
-    this.turnCollectors.clear();
-    this.earlyTurnMessages.clear();
-    for (const [threadId, handler] of this.realtimeHandlers) {
-      handler?.({ method: "thread/realtime/error", params: { threadId, message: error.message } });
-    }
-    this.realtimeHandlers.clear();
-    this.activeTurnId = null;
-    this.activeTurnSource = "";
-    this.turnStarting = false;
-    this.interruptRequested = false;
-    this.threadId = null;
+    this.cancelConversation(error, "thread/realtime/error");
     this.mcpReadyPromise = null;
     this.mcpReadyStatuses = [];
-    this.proc = null;
-    this.readline = null;
   }
 
   handleLine(line) {
@@ -368,18 +399,39 @@ class CodexAppServerClient {
     } catch {
       return;
     }
+    if (!message || typeof message !== "object" || Array.isArray(message)) return;
+    const messageTurnId = String(message.params?.turnId || message.params?.turn?.id || "");
+    const messageThreadId = String(message.params?.threadId || "");
+    const collectorForMessage = this.turnCollectors.get(messageTurnId);
+    if (collectorForMessage?.threadId && messageThreadId && collectorForMessage.threadId !== messageThreadId) return;
+    // Buffer before dispatch (including deltas and interactive requests). Only
+    // the pending turn/start owns these events; unrelated Live events continue.
+    if (this.turnStarting && messageTurnId && !collectorForMessage
+        && (!messageThreadId || messageThreadId === this.messageRun?.threadId)
+        && (message.method === "turn/started" || message.method === "turn/completed"
+          || String(message.method || "").startsWith("item/")
+          || message.method === "tool/requestUserInput" || message.method === "mcpServer/elicitation/request"
+          || /requestApproval$/.test(message.method || ""))
+        && !(message.id !== undefined && message.method === "item/tool/call")) {
+      const buffered = this.earlyTurnMessages.get(messageTurnId) || [];
+      if ((!this.earlyTurnMessages.has(messageTurnId) && this.earlyTurnMessages.size >= 4) || buffered.length >= 256) {
+        this.earlyTurnError = new Error("Codex early turn notification buffer overflow");
+      } else {
+        buffered.push(message.id === undefined ? message : { method: message.method, params: message.params });
+        this.earlyTurnMessages.set(messageTurnId, buffered);
+      }
+      // Requests still need a response immediately; replay only the local
+      // rejection once the collector has been installed.
+      if (message.id === undefined) return;
+      if (!this.rejectInteractiveRequests) return;
+      message = { ...message, params: { ...message.params, turnId: messageTurnId } };
+    }
     if (this.rejectInteractiveRequests && (message.method === "tool/requestUserInput" || message.method === "mcpServer/elicitation/request" || /requestApproval$/.test(message.method || ""))) {
       const error = new Error("追加の確認または入力が必要なため、この操作は実行しませんでした。CharaDockではまだこの確認に応答できません。 / This action requires confirmation or input that CharaDock cannot provide yet.");
       const turnId = message.params?.turnId || this.activeTurnId;
       const collector = turnId && this.turnCollectors.get(turnId);
       if (collector) {
-        clearTimeout(collector.timer);
-        this.turnCollectors.delete(turnId);
-        if (this.activeTurnId === turnId) {
-          this.activeTurnId = null;
-          this.activeTurnSource = "";
-        }
-        collector.reject(error);
+        this.failTurn(turnId, error);
       }
       if (message.id !== undefined && this.proc?.stdin?.writable) {
         this.send({ id: message.id, error: { code: -32601, message: error.message } });
@@ -387,7 +439,7 @@ class CodexAppServerClient {
       return;
     }
     if (message.id !== undefined && message.method === "item/tool/call") {
-      this.handleDynamicToolCall(message);
+      this.handleDynamicToolCall(message).catch((error) => console.warn("codex dynamic tool:", error.message));
       return;
     }
     if (message.id !== undefined && (message.result !== undefined || message.error)) {
@@ -403,21 +455,25 @@ class CodexAppServerClient {
     const realtimeHandler = this.realtimeHandlers.get(realtimeThreadId);
     if (realtimeHandler && !String(message.method || "").startsWith("thread/realtime/")) {
       if (message.method === "turn/started" && message.params?.turn?.id) {
-        this.activeTurnId = message.params.turn.id;
-        this.activeTurnSource = "realtime";
+        if (!this.activeTurnId || this.activeTurnId === message.params.turn.id) {
+          this.activeTurnId = message.params.turn.id;
+          this.activeTurnThreadId = realtimeThreadId;
+          if (!collectorForMessage) this.activeTurnSource = "realtime";
+        }
       }
       if (message.method === "turn/completed" && this.activeTurnId === message.params?.turn?.id) {
         this.activeTurnId = null;
         this.activeTurnSource = "";
+        this.activeTurnThreadId = null;
       }
-      realtimeHandler(message);
+      observe(realtimeHandler, message);
     }
     const item = message.params?.item;
     const itemCollector = this.turnCollectors.get(message.params?.turnId);
     if (itemCollector && ["item/started", "item/completed"].includes(message.method)
       && String(item?.type || "") === "agentMessage") {
       const itemId = String(item?.id || message.params?.itemId || "");
-      const phase = String(item?.phase || "");
+      const phase = String(item?.phase || itemCollector.agentMessagePhases?.get(itemId) || "");
       itemCollector.agentMessagePhases ||= new Map();
       if (itemId) itemCollector.agentMessagePhases.set(itemId, phase);
       if (message.method === "item/started") itemCollector.activeAgentMessagePhase = phase;
@@ -445,7 +501,7 @@ class CodexAppServerClient {
         );
         if (phase !== "commentary") {
           collector.finalText = `${collector.finalText || ""}${delta}`;
-          if (delta) collector.onDelta?.(delta, collector.finalText);
+          if (delta) observe(collector.onDelta, delta, collector.finalText);
         }
       }
       return;
@@ -457,47 +513,38 @@ class CodexAppServerClient {
       // publish their next state. Otherwise Live can remain visible as
       // connected until another unrelated event happens to refresh the UI.
       if (["thread/realtime/closed", "thread/realtime/error"].includes(message.method)) this.realtimeHandlers.delete(threadId);
-      handler?.(message);
+      observe(handler, message);
       return;
     }
-    const messageTurnId = String(message.params?.turnId || message.params?.turn?.id || "");
-    if (this.turnStarting && messageTurnId && !this.turnCollectors.has(messageTurnId)
-        && (message.method === "turn/started" || message.method === "turn/completed" || String(message.method || "").startsWith("item/"))) {
-      // app-server may emit a complete, very short turn before the turn/start
-      // response gives us its id. Keep those notifications until the
-      // collector is installed; dropping turn/completed here leaves a ghost
-      // activeTurnId that blocks every later microphone submission.
-      if (!this.earlyTurnMessages.has(messageTurnId) && this.earlyTurnMessages.size >= 4) {
-        this.earlyTurnMessages.delete(this.earlyTurnMessages.keys().next().value);
-      }
-      const buffered = this.earlyTurnMessages.get(messageTurnId) || [];
-      if (buffered.length < 256) buffered.push(message);
-      this.earlyTurnMessages.set(messageTurnId, buffered);
-      return;
-    }
-    const eventCollector = this.turnCollectors.get(message.params?.turnId);
-    eventCollector?.onEvent?.(message);
+    const eventCollector = this.turnCollectors.get(messageTurnId);
     if (message.method === "turn/completed") {
       const turn = message.params?.turn;
-      if (this.activeTurnId === turn?.id) {
+      if (this.activeTurnId === turn?.id && (!messageThreadId || !this.activeTurnThreadId || this.activeTurnThreadId === messageThreadId)) {
         this.activeTurnId = null;
         this.activeTurnSource = "";
+        this.activeTurnThreadId = null;
+      }
+      if (turn?.id) {
+        this.settledTurnIds.add(turn.id);
+        if (this.settledTurnIds.size > 256) this.settledTurnIds.delete(this.settledTurnIds.values().next().value);
       }
       const collector = this.turnCollectors.get(turn?.id);
       if (!collector) return;
       this.turnCollectors.delete(turn.id);
       clearTimeout(collector.timer);
       if (turn.status === "completed") {
-        const text = String(collector.finalText || collector.text || "").trim();
-        if (text) collector.resolve({ text, transcriptText: collector.text.trim(), provider: "codex", threadId: this.threadId });
+        const text = String(collector.finalText || "").trim();
+        if (text) collector.resolve({ text, transcriptText: collector.text.trim(), provider: "codex", threadId: collector.threadId });
         else collector.reject(new Error("Codexからテキスト応答を取得できませんでした。"));
       } else {
         collector.reject(new Error(turn.error?.message || `Codex turn ${turn.status || "failed"}`));
       }
     }
+    observe(eventCollector?.onEvent, message);
   }
 
   async handleDynamicToolCall(message) {
+    const child = this.proc;
     let result;
     try {
       if (!this.onDynamicToolCall) throw new Error("このターンでは動的ツールを利用できません。");
@@ -510,32 +557,55 @@ class CodexAppServerClient {
         contentItems: [{ type: "inputText", text: `ツールエラー: ${error.message}` }],
       };
     }
-    if (this.proc?.stdin?.writable) this.send({ id: message.id, result });
+    if (child === this.proc && child?.stdin?.writable) this.send({ id: message.id, result });
   }
 
-  send(payload) {
+  send(payload, onWriteError) {
     if (!this.proc?.stdin?.writable) throw new Error("Codex app-serverへ接続できません。");
-    this.proc.stdin.write(`${JSON.stringify(payload)}\n`);
+    const child = this.proc;
+    child.stdin.write(`${JSON.stringify(payload)}\n`, (error) => {
+      if (!error) return;
+      if (onWriteError) onWriteError(error);
+      else this.handleExit(null, error.message, child);
+    });
   }
 
   notify(method, params) {
     this.send({ method, params });
   }
 
-  request(method, params, timeoutMs = 60_000) {
+  request(method, params, timeoutMs = 60_000, signal) {
     const id = this.nextId++;
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
+      const settle = (callback, value) => {
         this.pending.delete(id);
-        reject(new Error(`Codex app-server ${method} timed out`));
-      }, timeoutMs);
-      this.pending.set(id, { resolve, reject, timer });
-      this.send({ method, id, params });
+        clearTimeout(timer);
+        signal?.removeEventListener("abort", abort);
+        callback(value);
+      };
+      const abort = () => settle(reject, signal.reason);
+      const fail = (error) => settle(reject, error);
+      const timer = setTimeout(() => fail(new Error(`Codex app-server ${method} timed out`)), timeoutMs);
+      this.pending.set(id, { resolve: (result) => settle(resolve, result), reject: fail, timer });
+      if (signal?.aborted) { abort(); return; }
+      signal?.addEventListener("abort", abort, { once: true });
+      try { this.send({ method, id, params }, fail); } catch (error) { fail(error); }
     });
   }
 
   async ensureThread() {
     if (this.threadId) return this.threadId;
+    if (this.threadStartPromise) return this.threadStartPromise;
+    const signal = this.conversationController.signal;
+    const version = this.threadVersion;
+    const starting = this.createThread(signal, version).finally(() => {
+      if (this.threadStartPromise === starting) this.threadStartPromise = null;
+    });
+    this.threadStartPromise = starting;
+    return starting;
+  }
+
+  async createThread(signal, version) {
     const params = {
       cwd: this.cwd,
       approvalPolicy: this.approvalPolicy,
@@ -552,15 +622,17 @@ class CodexAppServerClient {
     if (this.dynamicTools.length) params.dynamicTools = this.dynamicTools;
     let result;
     try {
-      result = await this.request("thread/start", params, 60_000);
-      this.usesPermissionProfile = Boolean(permissionProfile);
+      result = await withSignal(this.request("thread/start", params, 60_000), signal);
     } catch (error) {
-      if (!permissionProfile) throw error;
+      signal.throwIfAborted();
+      if (!permissionProfile || version !== this.threadVersion) throw error;
       delete params.permissions;
       params.sandbox = this.sandbox;
-      result = await this.request("thread/start", params, 60_000);
-      this.usesPermissionProfile = false;
+      result = await withSignal(this.request("thread/start", params, 60_000), signal);
     }
+    signal.throwIfAborted();
+    if (version !== this.threadVersion) throw new Error("Codex thread configuration changed during startup");
+    this.usesPermissionProfile = Boolean(params.permissions);
     this.threadId = result?.thread?.id || null;
     if (!this.threadId) throw new Error("Codexスレッドを開始できませんでした。");
     return this.threadId;
@@ -641,6 +713,7 @@ class CodexAppServerClient {
   }
 
   async ensureMcpServersReady({ timeoutMs = 20_000, pollIntervalMs = 250 } = {}) {
+    const signal = this.conversationController.signal;
     const expectedNames = [...new Set(this.mcpServers
       .map((server) => String(server?.name || "").trim())
       .filter(Boolean))];
@@ -656,10 +729,12 @@ class CodexAppServerClient {
       do {
         const remainingMs = Math.max(1_000, deadline - Date.now());
         try {
-          lastStatuses = await this.listMcpServerStatus({
+          signal.throwIfAborted();
+          lastStatuses = await withSignal(this.listMcpServerStatus({
             detail: "toolsAndAuthOnly",
             requestTimeoutMs: Math.min(20_000, remainingMs),
-          });
+          }), signal);
+          signal.throwIfAborted();
           const byName = new Map(lastStatuses.map((status) => [String(status?.name || ""), status]));
           const ready = expectedNames.every((name) => {
             const status = byName.get(name);
@@ -677,13 +752,14 @@ class CodexAppServerClient {
             return this.mcpReadyStatuses;
           }
         } catch (error) {
+          signal.throwIfAborted();
           lastError = error;
         }
         if (Date.now() >= deadline) break;
-        await new Promise((resolve) => setTimeout(resolve, Math.min(
+        await withSignal(new Promise((resolve) => setTimeout(resolve, Math.min(
           Math.max(50, Number(pollIntervalMs) || 250),
           Math.max(0, deadline - Date.now()),
-        )));
+        ))), signal);
       } while (Date.now() < deadline);
 
       const foundNames = new Set(lastStatuses.map((status) => String(status?.name || "")));
@@ -694,9 +770,10 @@ class CodexAppServerClient {
       throw new Error(`MCP接続の準備が完了しませんでした。接続を確認して、もう一度お試しください。 / MCP connections were not ready. Check the connection and try again. (${detail})`);
     };
 
-    this.mcpReadyPromise = waitForReady().finally(() => {
-      this.mcpReadyPromise = null;
+    const waiting = waitForReady().finally(() => {
+      if (this.mcpReadyPromise === waiting) this.mcpReadyPromise = null;
     });
+    this.mcpReadyPromise = waiting;
     return this.mcpReadyPromise;
   }
 
@@ -717,11 +794,21 @@ class CodexAppServerClient {
   async logout() {
     await this.ensureStarted();
     await this.request("account/logout", null, 30_000);
-    this.threadId = null;
+    this.reset();
     return true;
   }
 
-  async startRealtime({
+  startRealtime(options = {}) {
+    if (this.realtimeStartPromise) return Promise.reject(new Error("Codex Realtime startup already in progress"));
+    if (this.hasActiveTurn()) return Promise.reject(new Error("Codex turn is still active"));
+    const starting = this.beginRealtime(options).finally(() => {
+      if (this.realtimeStartPromise === starting) this.realtimeStartPromise = null;
+    });
+    this.realtimeStartPromise = starting;
+    return starting;
+  }
+
+  async beginRealtime({
     sdp,
     prompt,
     voice = "",
@@ -735,32 +822,37 @@ class CodexAppServerClient {
   } = {}) {
     const normalizedSdp = String(sdp || "");
     if (!normalizedSdp.startsWith("v=0")) throw new Error("WebRTCの音声接続情報が正しくありません。");
-    await this.ensureStarted();
+    const signal = this.conversationController.signal;
+    await withSignal(this.ensureStarted(), signal);
     try {
-      await this.ensureMcpServersReady();
+      await withSignal(this.ensureMcpServersReady(), signal);
     } catch (error) {
+      signal.throwIfAborted();
       if (requireMcpReady) throw error;
     }
-    if (this.realtimeHandlers.size) await this.stopRealtime().catch(() => {});
-    this.realtimeHandlers.clear();
+    if (this.realtimeHandlers.size) await withSignal(this.stopRealtime().catch(() => {}), signal);
+    signal.throwIfAborted();
     // GPT-Live/Codex Voice sessions must begin as a new empty voice task.
     // Reusing a text task can be rejected even when voice is enabled for the account.
-    this.threadId = null;
-    const threadId = await this.ensureThread();
+    this.invalidateThread();
+    const threadId = await withSignal(this.ensureThread(), signal);
     let resolveStartup;
-    let rejectStartup;
-    const startupReady = new Promise((resolve, reject) => {
+    const startupReady = new Promise((resolve) => {
       resolveStartup = resolve;
-      rejectStartup = reject;
     });
-    const startupTimer = setTimeout(() => rejectStartup(new Error("Codex Realtime音声接続の開始確認がタイムアウトしました。")), 20_000);
-    this.realtimeHandlers.set(threadId, (message) => {
-      onEvent?.(message);
+    const startup = new AbortController();
+    const startupTimer = setTimeout(() => startup.abort(new Error("Codex Realtime音声接続の開始確認がタイムアウトしました。")), 20_000);
+    const handler = (message) => {
       if (message?.method === "thread/realtime/started") resolveStartup();
       if (message?.method === "thread/realtime/error") {
-        rejectStartup(new Error(message.params?.message || "Codex Realtime音声接続を開始できませんでした。"));
+        startup.abort(new Error(message.params?.message || "Codex Realtime音声接続を開始できませんでした。"));
       }
-    });
+      if (message?.method === "thread/realtime/closed") startup.abort(new Error("Codex Realtime closed during startup"));
+      observe(onEvent, message);
+    };
+    handler.ready = false;
+    this.realtimeHandlers.set(threadId, handler);
+    const child = this.proc;
     try {
       const params = {
         threadId,
@@ -789,42 +881,41 @@ class CodexAppServerClient {
       // in the short gap before `thread/realtime/started` is acknowledged by
       // app-server but can be dropped without producing a reply. Do not expose
       // the session to callers until the transport is actually ready.
-      await Promise.all([
-        this.request("thread/realtime/start", params, 60_000),
+      await withSignal(withSignal(Promise.all([
+        this.request("thread/realtime/start", params, 60_000, startup.signal),
         startupReady,
-      ]);
+      ]), startup.signal), signal);
+      signal.throwIfAborted();
+      startup.signal.throwIfAborted();
+      if (this.realtimeHandlers.get(threadId) !== handler) throw new Error("Codex Realtime closed during startup");
+      handler.ready = true;
       return { threadId, transport: "webrtc", version: "v3" };
     } catch (error) {
-      this.realtimeHandlers.delete(threadId);
+      if (this.realtimeHandlers.get(threadId) === handler) this.realtimeHandlers.delete(threadId);
+      if (this.proc === child && child?.stdin?.writable) this.request("thread/realtime/stop", { threadId }, 30_000).catch(() => {});
       throw error;
     } finally {
       clearTimeout(startupTimer);
+      startup.abort(new Error("Codex Realtime startup settled"));
     }
   }
 
   async stopRealtime() {
-    const threadId = this.threadId;
+    const threadId = this.realtimeHandlers.keys().next().value;
     if (!threadId || !this.realtimeHandlers.has(threadId)) return false;
     const handler = this.realtimeHandlers.get(threadId);
-    try {
-      await this.request("thread/realtime/stop", { threadId }, 30_000);
-      return true;
-    } finally {
-      // Some app-server builds acknowledge stop before emitting `closed`, and
-      // a failed stop request must fail closed locally too. The caller must
-      // return with one settled route so TTS is never blocked by ghost Live.
-      if (this.realtimeHandlers.get(threadId) === handler) {
-        this.realtimeHandlers.delete(threadId);
-        handler?.({
-          method: "thread/realtime/closed",
-          params: { threadId, reason: "client_stop" },
-        });
-      }
-    }
+    // Release ownership before the RPC so appends cannot race a closing route.
+    this.realtimeHandlers.delete(threadId);
+    observe(handler, {
+      method: "thread/realtime/closed",
+      params: { threadId, reason: "client_stop" },
+    });
+    await this.request("thread/realtime/stop", { threadId }, 30_000);
+    return true;
   }
 
   hasActiveRealtime() {
-    return Boolean(this.threadId && this.realtimeHandlers.has(this.threadId));
+    return [...this.realtimeHandlers.values()].some((handler) => handler.ready !== false);
   }
 
   hasActiveTurn() {
@@ -839,37 +930,36 @@ class CodexAppServerClient {
       hasTurnId: Boolean(turnId),
       source: String(this.activeTurnSource || ""),
       hasCollector: Boolean(turnId && this.turnCollectors.has(turnId)),
-      hasRealtime: Boolean(this.threadId && this.realtimeHandlers.has(this.threadId)),
+      hasRealtime: this.hasActiveRealtime(),
     };
   }
 
   recoverOrphanedActiveTurn() {
     const state = this.activeTurnState();
-    // A normal send owns a collector until its terminal notification resolves
-    // or rejects the caller. If that collector is gone while the same turn id
-    // remains, only the local ownership flag is stale. Realtime-delegated turns
-    // intentionally have no collector, so never recover those here.
+    // Absence of a collector is not evidence that server work has stopped.
+    // Keep the public recovery API, but require an observed terminal event.
     if (state.turnStarting || !state.hasTurnId || state.hasCollector || state.hasRealtime
-        || state.source === "realtime") return false;
+        || !this.settledTurnIds.has(this.activeTurnId)) return false;
     this.activeTurnId = null;
     this.activeTurnSource = "";
+    this.activeTurnThreadId = null;
     this.interruptRequested = false;
     return true;
   }
 
   async appendRealtimeSpeech(text) {
-    const threadId = this.threadId;
+    const threadId = this.realtimeHandlers.keys().next().value;
     const normalized = String(text || "").trim().slice(0, 1000);
-    if (!normalized || !threadId || !this.realtimeHandlers.has(threadId)) return false;
+    if (!normalized || !threadId || !this.hasActiveRealtime()) return false;
     await this.request("thread/realtime/appendSpeech", { threadId, text: normalized }, 30_000);
     return true;
   }
 
   async appendRealtimeText(text, role = "user") {
-    const threadId = this.threadId;
+    const threadId = this.realtimeHandlers.keys().next().value;
     const normalized = String(text || "").trim().slice(0, 1000);
     const normalizedRole = ["user", "developer", "assistant"].includes(role) ? role : "user";
-    if (!normalized || !threadId || !this.realtimeHandlers.has(threadId)) return false;
+    if (!normalized || !threadId || !this.hasActiveRealtime()) return false;
     await this.request("thread/realtime/appendText", { threadId, text: normalized, role: normalizedRole }, 30_000);
     return true;
   }
@@ -887,7 +977,7 @@ class CodexAppServerClient {
         await new Promise((resolve) => setTimeout(resolve, 20));
       }
     }
-    const threadId = this.threadId;
+    const threadId = this.activeTurnThreadId || this.threadId;
     const expectedTurnId = String(turnId || this.activeTurnId || "").trim();
     if (!threadId || !expectedTurnId) return false;
     const input = [{ type: "text", text: normalized }];
@@ -902,77 +992,130 @@ class CodexAppServerClient {
   }
 
   sendMessage(message, { onDelta, onEvent, localImagePath = "", localImagePaths = [], localAudioPath = "", skillItems = null, outputSchema = null, timeoutMs = 180_000, requireMcpReady = false } = {}) {
+    const signal = this.conversationController.signal;
     const run = async () => {
+      signal.throwIfAborted();
+      if (this.activeTurnId) throw new Error("Codex turn is still active");
+      if (this.realtimeStartPromise) throw new Error("Codex Realtime startup is still active");
+      const operation = {};
+      this.messageRun = operation;
       this.turnStarting = true;
       this.interruptRequested = false;
-      await this.ensureStarted();
+      this.earlyTurnMessages.clear();
+      this.earlyTurnError = null;
       try {
-        await this.ensureMcpServersReady();
-      } catch (error) {
-        if (requireMcpReady) throw error;
-      }
-      const threadId = await this.ensureThread();
-      const input = [{ type: "text", text: String(message || "").trim() }];
-      const turnSkills = Array.isArray(skillItems) ? skillItems : this.turnStartSkillItems;
-      for (const skill of turnSkills) {
-        if (skill && typeof skill === "object" && String(skill.name || "").trim()) {
-          input.push({ type: "skill", name: String(skill.name), path: String(this.pathMapper(skill.path || "")) });
+        await withSignal(this.ensureStarted(), signal);
+        try {
+          await withSignal(this.ensureMcpServersReady(), signal);
+        } catch (error) {
+          signal.throwIfAborted();
+          if (requireMcpReady) throw error;
+        }
+        const threadId = await withSignal(this.ensureThread(), signal);
+        operation.threadId = threadId;
+        const input = [{ type: "text", text: String(message || "").trim() }];
+        const turnSkills = Array.isArray(skillItems) ? skillItems : this.turnStartSkillItems;
+        for (const skill of turnSkills) {
+          if (skill && typeof skill === "object" && String(skill.name || "").trim()) {
+            input.push({ type: "skill", name: String(skill.name), path: String(this.pathMapper(skill.path || "")) });
+          }
+        }
+        const images = [...new Set([localImagePath, ...(Array.isArray(localImagePaths) ? localImagePaths : [])].filter(Boolean).map(String))];
+        for (const imagePath of images.slice(0, 8)) input.push({ type: "localImage", path: String(this.pathMapper(imagePath)), detail: "original" });
+        if (localAudioPath) input.push({ type: "localAudio", path: String(this.pathMapper(localAudioPath)) });
+        const params = {
+          threadId,
+          input,
+        };
+        if (this.model) params.model = this.model;
+        if (this.reasoningEffort) params.effort = this.reasoningEffort;
+        const sandboxPolicy = this.usesPermissionProfile
+          ? null
+          : workspaceSandboxPolicy(this.sandbox, this.cwd, this.workspaceRoots, this.networkAccess);
+        if (sandboxPolicy) params.sandboxPolicy = sandboxPolicy;
+        if (outputSchema) params.outputSchema = outputSchema;
+        const child = this.proc;
+        const starting = this.request("turn/start", params, 60_000);
+        // Reset can settle the caller before the server tells us the turn id.
+        // Interrupt that late turn only on the transport that created it.
+        starting.then((result) => {
+          if (signal.aborted && this.proc === child && result?.turn?.id) {
+            this.request("turn/interrupt", { threadId, turnId: result.turn.id }, 30_000).catch(() => {});
+          }
+        }, () => {});
+        let result;
+        try { result = await withSignal(starting, signal); } catch (error) {
+          if (!signal.aborted && this.threadId === threadId) this.invalidateThread();
+          throw error;
+        }
+        signal.throwIfAborted();
+        const turnId = result?.turn?.id;
+        if (!turnId) throw new Error("Codexターンを開始できませんでした。");
+        this.activeTurnId = turnId;
+        this.activeTurnSource = "message";
+        this.activeTurnThreadId = threadId;
+        const completion = new Promise((resolve, reject) => {
+          const timer = setTimeout(() => {
+            this.failTurn(turnId, new Error("Codexの応答がタイムアウトしました。"));
+          }, Math.max(30_000, Number(timeoutMs) || 180_000));
+          this.turnCollectors.set(turnId, {
+            text: "",
+            finalText: "",
+            agentMessagePhases: new Map(),
+            activeAgentMessagePhase: "",
+            resolve,
+            reject,
+            timer,
+            onDelta,
+            onEvent,
+            threadId,
+          });
+          this.turnStarting = false;
+          const buffered = this.earlyTurnMessages.get(turnId) || [];
+          this.earlyTurnMessages.clear();
+          if (this.earlyTurnError) {
+            this.failTurn(turnId, this.earlyTurnError);
+            return;
+          }
+          for (const message of buffered) this.handleLine(JSON.stringify(message));
+        });
+        if (this.interruptRequested && this.turnCollectors.has(turnId)) {
+          this.request("turn/interrupt", { threadId, turnId }, 30_000)
+            .catch((error) => this.failTurn(turnId, error));
+        }
+        return await withSignal(completion, signal);
+      } finally {
+        if (this.messageRun === operation) {
+          this.messageRun = null;
+          this.turnStarting = false;
+          this.interruptRequested = false;
+          this.earlyTurnMessages.clear();
+          this.earlyTurnError = null;
         }
       }
-      const images = [...new Set([localImagePath, ...(Array.isArray(localImagePaths) ? localImagePaths : [])].filter(Boolean).map(String))];
-      for (const imagePath of images.slice(0, 8)) input.push({ type: "localImage", path: String(this.pathMapper(imagePath)), detail: "original" });
-      if (localAudioPath) input.push({ type: "localAudio", path: String(this.pathMapper(localAudioPath)) });
-      const params = {
-        threadId,
-        input,
-      };
-      if (this.model) params.model = this.model;
-      if (this.reasoningEffort) params.effort = this.reasoningEffort;
-      const sandboxPolicy = this.usesPermissionProfile
-        ? null
-        : workspaceSandboxPolicy(this.sandbox, this.cwd, this.workspaceRoots, this.networkAccess);
-      if (sandboxPolicy) params.sandboxPolicy = sandboxPolicy;
-      if (outputSchema) params.outputSchema = outputSchema;
-      const result = await this.request("turn/start", params, 60_000);
-      const turnId = result?.turn?.id;
-      if (!turnId) throw new Error("Codexターンを開始できませんでした。");
-      this.activeTurnId = turnId;
-      this.activeTurnSource = "message";
-      this.turnStarting = false;
-      if (this.interruptRequested) {
-        await this.request("turn/interrupt", { threadId, turnId }, 30_000);
-      }
-      return new Promise((resolve, reject) => {
-        const timer = setTimeout(() => {
-          this.turnCollectors.delete(turnId);
-          if (this.activeTurnId === turnId) {
-            this.activeTurnId = null;
-            this.activeTurnSource = "";
-          }
-          reject(new Error("Codexの応答がタイムアウトしました。"));
-        }, Math.max(30_000, Number(timeoutMs) || 180_000));
-        this.turnCollectors.set(turnId, {
-          text: "",
-          finalText: "",
-          agentMessagePhases: new Map(),
-          activeAgentMessagePhase: "",
-          resolve,
-          reject,
-          timer,
-          onDelta,
-          onEvent,
-        });
-        const buffered = this.earlyTurnMessages.get(turnId) || [];
-        this.earlyTurnMessages.clear();
-        for (const message of buffered) this.handleLine(JSON.stringify(message));
-      });
     };
     const result = this.queue.then(run, run);
     this.queue = result.catch(() => {});
-    return result.finally(() => {
-      this.turnStarting = false;
-      if (!this.activeTurnId) this.interruptRequested = false;
-    });
+    return result;
+  }
+
+  failTurn(turnId, error) {
+    const collector = this.turnCollectors.get(turnId);
+    if (!collector) return;
+    this.turnCollectors.delete(turnId);
+    clearTimeout(collector.timer);
+    if (this.activeTurnId === turnId) {
+      this.activeTurnId = null;
+      this.activeTurnSource = "";
+      this.activeTurnThreadId = null;
+    }
+    // Failure of local collection is not a terminal server notification. Stop
+    // the remote work and never reuse its thread while its state is uncertain.
+    if (collector.threadId) {
+      if (this.threadId === collector.threadId) this.invalidateThread();
+      this.request("turn/interrupt", { threadId: collector.threadId, turnId }, 30_000).catch(() => {});
+    }
+    collector.reject(error);
   }
 
   async interruptActiveTurn() {
@@ -980,29 +1123,58 @@ class CodexAppServerClient {
       this.interruptRequested = true;
       return true;
     }
-    if (!this.activeTurnId || !this.threadId) return false;
+    const threadId = this.activeTurnThreadId || this.threadId;
+    if (!this.activeTurnId || !threadId) return false;
     this.interruptRequested = true;
     await this.request("turn/interrupt", {
-      threadId: this.threadId,
+      threadId,
       turnId: this.activeTurnId,
     }, 30_000);
     return true;
   }
 
   reset() {
-    this.stopRealtime().catch(() => {});
-    this.threadId = null;
+    const threadId = this.activeTurnThreadId || this.threadId;
+    const turnId = this.activeTurnId;
+    const realtimeThreadIds = [...this.realtimeHandlers.keys()];
+    this.cancelConversation(new Error("Codex conversation reset"));
+    if (turnId && threadId) this.request("turn/interrupt", { threadId, turnId }, 30_000).catch(() => {});
+    for (const voiceThreadId of realtimeThreadIds) this.request("thread/realtime/stop", { threadId: voiceThreadId }, 30_000).catch(() => {});
+  }
+
+  cancelConversation(error, realtimeMethod = "thread/realtime/closed") {
+    const controller = this.conversationController;
+    this.conversationController = new AbortController();
+    this.invalidateThread();
     this.usesPermissionProfile = false;
     this.activeTurnId = null;
     this.activeTurnSource = "";
+    this.activeTurnThreadId = null;
     this.turnStarting = false;
     this.interruptRequested = false;
     this.earlyTurnMessages.clear();
+    this.earlyTurnError = null;
+    this.messageRun = null;
+    this.queue = Promise.resolve();
+    this.mcpReadyPromise = null;
+    this.mcpReadyStatuses = [];
+    this.realtimeStartPromise = null;
+    this.settledTurnIds.clear();
+    for (const collector of this.turnCollectors.values()) {
+      clearTimeout(collector.timer);
+      collector.reject(error);
+    }
+    this.turnCollectors.clear();
+    const handlers = [...this.realtimeHandlers];
+    this.realtimeHandlers.clear();
+    controller.abort(error);
+    for (const [threadId, handler] of handlers) observe(handler, { method: realtimeMethod, params: { threadId, message: error.message } });
   }
 
   stop() {
-    if (!this.proc) return;
-    this.proc.kill();
+    const child = this.proc;
+    this.handleExit(null, "client_stop", child);
+    child?.kill();
   }
 }
 

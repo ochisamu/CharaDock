@@ -45,7 +45,7 @@ function matchingLocalAddress(remoteAddress) {
 }
 
 class SocketPortAdapter extends EventEmitter {
-  constructor(socket) {
+  constructor(socket, { receiveData = true } = {}) {
     super();
     // A socket may fail in the tiny interval before the protocol gateway
     // attaches its listener. Keep EventEmitter's special `error` event from
@@ -53,15 +53,30 @@ class SocketPortAdapter extends EventEmitter {
     this.on("error", () => {});
     this.socket = socket;
     this.isOpen = Boolean(socket && !socket.destroyed);
-    this.onData = (bytes) => this.emit("data", bytes);
+    this.inputReady = false;
+    this.pendingData = [];
+    this.onData = (bytes) => {
+      if (this.inputReady) this.emit("data", bytes);
+      else this.pendingData.push(Buffer.from(bytes));
+    };
     this.onError = (error) => this.emit("error", error);
     this.onClose = () => {
       this.isOpen = false;
       this.emit("close");
     };
-    socket.on("data", this.onData);
+    if (receiveData) socket.on("data", this.onData);
     socket.on("error", this.onError);
     socket.on("close", this.onClose);
+  }
+
+  resumeInput() {
+    this.inputReady = true;
+    const pending = this.pendingData;
+    this.pendingData = [];
+    for (const bytes of pending) {
+      if (!this.isOpen) break;
+      this.emit("data", bytes);
+    }
   }
 
   write(bytes, callback) {
@@ -281,7 +296,13 @@ class Rlcd42WifiGateway {
   }
 
   receiveCandidate(candidate, chunk) {
-    for (const frame of candidate.decoder.push(chunk)) this.handleAuthenticationFrame(candidate, frame);
+    if (!this.candidates.has(candidate) || candidate.socket.destroyed) return;
+    for (const frame of candidate.decoder.push(chunk)) {
+      if (!candidate.authenticated) this.handleAuthenticationFrame(candidate, frame);
+      else if (candidate === this.activeCandidate) {
+        candidate.adapter.onData(encodeFrame(frame.type, frame.sequence, frame.payload));
+      }
+    }
   }
 
   handleAuthenticationFrame(candidate, frame) {
@@ -313,7 +334,7 @@ class Rlcd42WifiGateway {
   async activateCandidate(candidate) {
     clearTimeout(candidate.timer);
     candidate.timer = null;
-    candidate.socket.off("data", candidate.onData);
+    // Keep the candidate decoder: it owns any partial frame following AUTH.
     candidate.authenticated = true;
     if (this.activeCandidate && this.activeCandidate !== candidate) this.activeCandidate.socket.destroy();
     this.activeCandidate = candidate;
@@ -321,7 +342,7 @@ class Rlcd42WifiGateway {
     this.connectionState = "authenticating";
     this.lastError = "";
     this.notify();
-    const adapter = new SocketPortAdapter(candidate.socket);
+    const adapter = new SocketPortAdapter(candidate.socket, { receiveData: false });
     candidate.adapter = adapter;
     const hostProof = crypto.createHmac("sha256", Buffer.from(this.pairingToken, "hex"))
       .update(HOST_PROOF_DOMAIN)

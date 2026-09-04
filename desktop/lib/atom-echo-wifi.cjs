@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+const { handleCaptureFrame, resetCaptureQueue } = require("./device-capture-queue.cjs");
 const crypto = require("node:crypto");
 const dgram = require("node:dgram");
 const net = require("node:net");
@@ -181,6 +182,7 @@ class AtomEchoWifiGateway {
   }
 
   receiveCandidate(candidate, chunk) {
+    if (!this.candidates.has(candidate) || candidate.socket.destroyed) return;
     for (const frame of candidate.decoder.push(chunk)) {
       if (!candidate.authenticated) this.handleAuthenticationFrame(candidate, frame);
       else if (candidate === this.activeCandidate) this.handleFrame(frame);
@@ -209,6 +211,7 @@ class AtomEchoWifiGateway {
     candidate.timer = null;
     candidate.authenticated = true;
     if (this.activeCandidate && this.activeCandidate !== candidate) this.activeCandidate.socket.destroy();
+    resetCaptureQueue(this);
     this.activeCandidate = candidate;
     this.deviceInfo = candidate.deviceInfo;
     this.remoteAddress = String(candidate.socket.remoteAddress || "").replace(/^::ffff:/, "");
@@ -219,7 +222,7 @@ class AtomEchoWifiGateway {
     this.writeFrame(FRAME_TYPES.HOST_HELLO, Buffer.from(JSON.stringify({ protocol: 1, host: "CharaDock", transport: "wifi" }), "utf8"))
       .then(() => this.setDeviceState(this.deviceState))
       .then(() => this.setCaptureMode(this.captureMode, this.vadThreshold))
-      .catch((error) => this.activeFailure(error));
+      .catch((error) => { if (this.activeCandidate === candidate) this.activeFailure(error); });
   }
 
   rejectCandidate(candidate, reason) {
@@ -232,6 +235,7 @@ class AtomEchoWifiGateway {
     candidate.timer = null;
     this.candidates.delete(candidate);
     if (candidate !== this.activeCandidate) return;
+    resetCaptureQueue(this);
     this.activeCandidate = null;
     this.deviceInfo = null;
     this.remoteAddress = "";
@@ -304,21 +308,10 @@ class AtomEchoWifiGateway {
       }
       return;
     }
-    if (frame.type === FRAME_TYPES.PTT_START) {
-      this.interactionActive = true;
-      this.captureQueue = Promise.resolve(this.callbacks.onPttStart()).catch((error) => this.reportCallbackError(error));
-      return;
-    }
-    if (frame.type === FRAME_TYPES.PCM_CHUNK) {
-      const payload = Buffer.from(frame.payload);
-      this.captureQueue = this.captureQueue.then(() => this.callbacks.onPcmChunk(payload)).catch((error) => this.reportCallbackError(error));
-      return;
-    }
-    if (frame.type === FRAME_TYPES.PTT_END) {
-      this.captureQueue = this.captureQueue.then(() => this.callbacks.onPttEnd()).catch((error) => this.reportCallbackError(error));
-      return;
-    }
+    if (frame.type === FRAME_TYPES.PTT_START) this.interactionActive = true;
+    if (handleCaptureFrame(this, frame, FRAME_TYPES)) return;
     if (frame.type === FRAME_TYPES.INTERRUPT) {
+      resetCaptureQueue(this);
       this.playbackGeneration += 1;
       this.playbackChunkAcks = [];
       this.interactionActive = false;
@@ -461,6 +454,7 @@ class AtomEchoWifiGateway {
   }
 
   async stopServers() {
+    resetCaptureQueue(this);
     for (const candidate of this.candidates) {
       clearTimeout(candidate.timer);
       candidate.socket.destroy();

@@ -354,6 +354,8 @@ let rlcd42SpeechStream = null;
 const rlcd42PortraitCache = new Map();
 let atomEchoCapture = null;
 let atomEchoTurnGeneration = 0;
+let atomEchoReplyGeneration = 0;
+let atomEchoRecognizingCapture = null;
 let activeEsp32VoiceDevice = "";
 let atomEchoLiveWindow = null;
 let atomEchoLiveReady = false;
@@ -2515,8 +2517,7 @@ async function closeAtomEchoLiveAfterIdle() {
   if (!isEsp32VoiceTarget(activeRealtimeTarget)) return false;
   const target = activeRealtimeTarget;
   const gateway = esp32VoiceGateway(target);
-  atomEchoTurnGeneration += 1;
-  atomEchoCapture = null;
+  invalidateEsp32SpeechInput();
   esp32LiveAudioRoute(target)?.interrupt().catch(() => {});
   sendAtomEchoLiveCommand({ type: "stop", stopServer: false });
   let stopped = false;
@@ -2538,8 +2539,7 @@ async function closeUnsolicitedRealtimeSession(realtimeClient, target, detail = 
   // owner. Match both the client and target before touching shared state.
   if (activeRealtimeClient !== realtimeClient || activeRealtimeTarget !== target || !realtimeClient?.hasActiveRealtime?.()) return false;
   if (isEsp32VoiceTarget(target)) {
-    atomEchoTurnGeneration += 1;
-    atomEchoCapture = null;
+    invalidateEsp32SpeechInput();
     atomEchoLiveIdleTimer?.cancel();
     esp32LiveAudioRoute(target)?.interrupt().catch(() => {});
     sendAtomEchoLiveCommand({ type: "stop", stopServer: false });
@@ -2675,8 +2675,10 @@ function rlcd42SceneSnapshot() {
     listening: { status: "listening", activity: mainText("聞いています…", "Listening…") },
     recognizing: { status: "thinking", activity: mainText("音声を認識しています…", "Recognizing speech…") },
     waiting: { status: "thinking", activity: mainText("返事を待っています…", "Waiting for a reply…") },
+    playing: { status: "speaking", activity: mainText("返事を再生しています…", "Playing the reply…") },
     "recognition-error": { status: "error", activity: mainText("声を認識できませんでした", "Speech was not recognized") },
     "send-error": { status: "error", activity: mainText("送信に失敗しました", "Could not send the message") },
+    "playback-error": { status: "error", activity: mainText("返事の音声を再生できませんでした", "Could not play the reply") },
   }[rlcd42VoiceStage];
   return buildRlcd42Scene({
     characterName: activeCharacter().name,
@@ -3016,9 +3018,9 @@ async function esp32PttStart(deviceKind = "atom-echo") {
   const gateway = esp32VoiceGateway(deviceKind);
   const label = esp32VoiceLabel(deviceKind);
   if (!gateway?.status().connected) throw new Error(`${label}が接続されていません。`);
-  if (atomEchoCapture && atomEchoCapture.deviceKind !== deviceKind) throw new Error(mainText(
-    "別のESP32デバイスで音声入力中です。発話が終わってからもう一度押してください。",
-    "Another ESP32 device is recording. Try again after that utterance ends.",
+  if (atomEchoCapture || atomEchoRecognizingCapture) throw new Error(mainText(
+    "音声を入力・認識中です。認識が終わってからもう一度押してください。",
+    "Speech input is still being captured or recognized. Please wait before recording again.",
   ));
   // A new utterance must not inherit the previous answer's caption.  Besides
   // being misleading, an empty/stale conversation card looks like a solid
@@ -3040,7 +3042,20 @@ async function esp32PttStart(deviceKind = "atom-echo") {
       rlcd42LastSceneSignature = "";
       scheduleRlcd42SceneSync(0, { force: true });
     }
-    await gateway.setDeviceState("listening");
+    try {
+      await gateway.setDeviceState("listening");
+    } catch (error) {
+      if (generation !== atomEchoTurnGeneration) return;
+      atomEchoCapture = null;
+      sendAtomEchoLiveCommand({ type: "interrupt" });
+      atomEchoLiveIdleTimer?.touch();
+      if (deviceKind === "rlcd42") {
+        rlcd42VoiceStage = "recognition-error";
+        rlcd42LastSceneSignature = "";
+        scheduleRlcd42SceneSync(0, { force: true });
+      }
+      throw error;
+    }
     diagnosticLog?.write("info", "esp32-live-ptt-start", {
       deviceKind,
       transport: gateway.status().transport,
@@ -3056,6 +3071,7 @@ async function esp32PttStart(deviceKind = "atom-echo") {
   // to use the normal follow-up route and an active Live session stays blocked.
   if (!captureRoute.allowed && captureRoute.route === "busy"
       && !activeCodexInteractionClient() && !activeWorkRunId
+      && !openAIClient?.hasActiveTurn?.()
       && !activeRealtimeStarting && !activeRealtimeTarget
       && !currentRealtimeClient() && !remoteRealtimeStartReservation) {
     if (deviceKind === "rlcd42") await stopRlcd42Speech().catch(() => {});
@@ -3074,25 +3090,45 @@ async function esp32PttStart(deviceKind = "atom-echo") {
     "Download a streaming speech recognition model in Voice settings.",
   ));
   const generation = ++atomEchoTurnGeneration;
+  if (captureRoute.route === "new-turn") atomEchoReplyGeneration += 1;
   const sessionId = `${deviceKind}:${Date.now().toString(36)}:${generation.toString(36)}`;
-  atomEchoCapture = {
+  const capture = atomEchoCapture = {
     generation, mode: "standard", sessionId, samples: 0,
+    replyGeneration: atomEchoReplyGeneration,
     submitRoute: captureRoute.route, interactionMode, deviceKind, gateway,
   };
-  await startStreamingSpeechSession(sessionId, preferences.data.streamingSpeechModelId);
-  if (deviceKind === "rlcd42") {
-    rlcd42VoiceStage = "listening";
-    rlcd42LastSceneSignature = "";
-    scheduleRlcd42SceneSync(0, { force: true });
+  try {
+    if (deviceKind === "rlcd42") await stopRlcd42Speech();
+    if (capture !== atomEchoCapture || generation !== atomEchoTurnGeneration) return;
+    await startStreamingSpeechSession(sessionId, preferences.data.streamingSpeechModelId);
+    if (capture !== atomEchoCapture || generation !== atomEchoTurnGeneration) {
+      streamingSpeechRecognition.cancel(sessionId);
+      return;
+    }
+    if (deviceKind === "rlcd42") {
+      rlcd42VoiceStage = "listening";
+      rlcd42LastSceneSignature = "";
+      scheduleRlcd42SceneSync(0, { force: true });
+    }
+    await gateway.setDeviceState("listening");
+    diagnosticLog?.write("info", "esp32-ptt-start", {
+      deviceKind,
+      transport: gateway.status().transport,
+      modelId: status.modelId,
+      interactionMode,
+      submitRoute: captureRoute.route,
+    });
+  } catch (error) {
+    streamingSpeechRecognition.cancel(sessionId);
+    if (generation !== atomEchoTurnGeneration) return;
+    if (atomEchoCapture === capture) atomEchoCapture = null;
+    if (deviceKind === "rlcd42") {
+      rlcd42VoiceStage = "recognition-error";
+      rlcd42LastSceneSignature = "";
+      scheduleRlcd42SceneSync(0, { force: true });
+    }
+    throw error;
   }
-  await gateway.setDeviceState("listening");
-  diagnosticLog?.write("info", "esp32-ptt-start", {
-    deviceKind,
-    transport: gateway.status().transport,
-    modelId: status.modelId,
-    interactionMode,
-    submitRoute: captureRoute.route,
-  });
 }
 
 async function esp32PcmChunk(bytes) {
@@ -3120,10 +3156,32 @@ async function esp32PcmChunk(bytes) {
     atomEchoCapture = null;
     throw new Error(mainText("1回の発話は30秒以内にしてください。", "Keep one utterance under 30 seconds."));
   }
-  await appendStreamingSpeechSession(capture.sessionId, { samples, sampleRate: 16_000 });
+  try {
+    await appendStreamingSpeechSession(capture.sessionId, { samples, sampleRate: 16_000 });
+  } catch (error) {
+    streamingSpeechRecognition.cancel(capture.sessionId);
+    if (capture.generation !== atomEchoTurnGeneration) return;
+    if (atomEchoCapture === capture) atomEchoCapture = null;
+    if (capture.deviceKind === "rlcd42") {
+      rlcd42VoiceStage = "recognition-error";
+      rlcd42LastSceneSignature = "";
+      scheduleRlcd42SceneSync(0, { force: true });
+    }
+    throw error;
+  }
+}
+
+async function waitForEsp32PlaybackSlot(isCurrent, timeoutMs = 45_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (atomEchoCapture || atomEchoRecognizingCapture) {
+    if (!isCurrent() || Date.now() >= deadline) return false;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  return isCurrent();
 }
 
 async function playAtomEchoSpeech(text) {
+  const replyGeneration = atomEchoReplyGeneration;
   const spokenText = configuredSpeechText(String(text || "").slice(0, 4_000));
   if (!spokenText) return { spoken: false };
   const provider = characterTtsSettings().provider;
@@ -3134,6 +3192,10 @@ async function playAtomEchoSpeech(text) {
   const result = await synthesizeConfiguredTts(spokenText, ATOM_ECHO_TTS_OWNER_ID, { enabled: true });
   let sources = Array.isArray(result?.audioDataUrls) ? result.audioDataUrls : [];
   let streamId = String(result?.streamId || "");
+  if (!await waitForEsp32PlaybackSlot(() => replyGeneration === atomEchoReplyGeneration)) {
+    if (streamId) cancelIrodoriTtsStream(streamId, ATOM_ECHO_TTS_OWNER_ID);
+    return { spoken: false, interrupted: true };
+  }
   if (!sources.length) throw new Error(mainText(
     "選択中の音声からPCM WAVを生成できませんでした。",
     "The selected voice did not produce PCM WAV audio.",
@@ -3151,6 +3213,9 @@ async function playAtomEchoSpeech(text) {
     while (sources.length) {
       const nextPromise = streamId ? nextIrodoriTtsChunk(streamId, ATOM_ECHO_TTS_OWNER_ID) : null;
       for (const source of sources) {
+        if (!await waitForEsp32PlaybackSlot(() => replyGeneration === atomEchoReplyGeneration)) {
+          return { spoken: false, interrupted: true };
+        }
         const decoded = decodePcmWaveDataUrl(source);
         if (!playbackRoute.push(decoded.samples, decoded.sampleRate)) {
           throw playbackError || new Error(mainText(
@@ -3214,6 +3279,8 @@ async function playRlcd42Speech(text, ownerId = RLCD42_TTS_OWNER_ID) {
 
   await stopRlcd42Speech();
   const generation = ++rlcd42SpeechGeneration;
+  const replyGeneration = atomEchoReplyGeneration;
+  const isCurrent = () => generation === rlcd42SpeechGeneration && replyGeneration === atomEchoReplyGeneration;
   rlcd42SpeechActive = true;
   let streamId = "";
   let played = false;
@@ -3221,11 +3288,11 @@ async function playRlcd42Speech(text, ownerId = RLCD42_TTS_OWNER_ID) {
     const result = await synthesizeConfiguredTts(spokenText, ownerId, { enabled: true });
     let sources = Array.isArray(result?.audioDataUrls) ? result.audioDataUrls : [];
     streamId = String(result?.streamId || "");
-    if (streamId) rlcd42SpeechStream = { id: streamId, ownerId };
-    if (generation !== rlcd42SpeechGeneration) {
+    if (!isCurrent()) {
       if (streamId) cancelIrodoriTtsStream(streamId, ownerId);
       return { externalPlayback: "rlcd42", spoken: false, interrupted: true };
     }
+    if (streamId) rlcd42SpeechStream = { id: streamId, ownerId };
     if (!sources.length) throw new Error(mainText(
       "選択中の音声からPCM WAVを生成できませんでした。",
       "The selected voice did not produce PCM WAV audio.",
@@ -3233,7 +3300,9 @@ async function playRlcd42Speech(text, ownerId = RLCD42_TTS_OWNER_ID) {
 
     while (sources.length) {
       for (const source of sources) {
-        if (generation !== rlcd42SpeechGeneration) {
+        // Synthesis can finish while a spoken follow-up is recording. Do not
+        // overwrite its listening state or feed our speaker back into STT.
+        if (!await waitForEsp32PlaybackSlot(isCurrent)) {
           return { externalPlayback: "rlcd42", spoken: false, interrupted: true };
         }
         const decoded = decodePcmWaveDataUrl(source);
@@ -3241,13 +3310,16 @@ async function playRlcd42Speech(text, ownerId = RLCD42_TTS_OWNER_ID) {
         const pcm = processAtomEchoPcm16(resampled, { sampleRate: 16_000, ...rlcd42OutputProfile() });
         if (!pcm.length) continue;
         const playback = await rlcd42Gateway.playPcm16(pcm, 16_000);
-        if (playback?.interrupted || generation !== rlcd42SpeechGeneration) {
+        if (playback?.interrupted || !isCurrent()) {
           return { externalPlayback: "rlcd42", spoken: false, interrupted: true };
         }
         played = true;
       }
       if (!streamId) break;
       const next = await nextIrodoriTtsChunk(streamId, ownerId);
+      if (!isCurrent()) {
+        return { externalPlayback: "rlcd42", spoken: false, interrupted: true };
+      }
       sources = next?.audioDataUrl ? [next.audioDataUrl] : [];
       if (next?.done) {
         streamId = "";
@@ -3286,10 +3358,13 @@ async function esp32PttEnd(deviceKind = "atom-echo") {
     rlcd42LastSceneSignature = "";
     scheduleRlcd42SceneSync(0, { force: true });
   }
-  await gateway?.setDeviceState("thinking");
   let speechRecognized = false;
+  let replyReceived = false;
+  atomEchoRecognizingCapture = capture;
   try {
+    await gateway?.setDeviceState("thinking");
     const transcription = await finishStreamingSpeechSession(capture.sessionId);
+    if (atomEchoRecognizingCapture === capture) atomEchoRecognizingCapture = null;
     if (capture.generation !== atomEchoTurnGeneration) return;
     const message = String(transcription?.text || "").trim().slice(0, 12_000);
     if (!message) throw new Error(mainText(
@@ -3309,11 +3384,19 @@ async function esp32PttEnd(deviceKind = "atom-echo") {
       rlcd42LastSceneSignature = "";
       scheduleRlcd42SceneSync(0, { force: true });
     }
+    // The original answer may finish while a follow-up is being recorded.
+    // A new actual turn must supersede any deferred audio from that answer.
+    if (capture.submitRoute === "follow-up"
+        && normalConversationSubmitRouteForMode(capture.interactionMode, { capturedSubmitRoute: capture.submitRoute }) === "new-turn") {
+      capture.submitRoute = "new-turn";
+      capture.replyGeneration = ++atomEchoReplyGeneration;
+    }
     const result = await handleMascotConversation(
       message,
       atomEchoStandardDeliveryOptions(capture.submitRoute),
     );
-    if (capture.generation !== atomEchoTurnGeneration) return;
+    replyReceived = true;
+    if (capture.replyGeneration !== atomEchoReplyGeneration) return;
     if (result?.followUp) {
       // The active Work/Chat turn remains the only answer owner. Keep the LED in
       // its working state; the original ATOM turn will play the final response.
@@ -3324,8 +3407,22 @@ async function esp32PttEnd(deviceKind = "atom-echo") {
       return;
     }
     const speech = String(result?.displayText || result?.text || "").trim();
+    if (deviceKind === "rlcd42") {
+      if (!atomEchoCapture && !atomEchoRecognizingCapture) rlcd42VoiceStage = "";
+      if (speech) rlcd42LastDisplayText = speech;
+      rlcd42LastSceneSignature = "";
+      scheduleRlcd42SceneSync(0, { force: true });
+    }
     if (speech) {
-      if (deviceKind === "rlcd42") await playRlcd42Speech(speech);
+      if (deviceKind === "rlcd42") {
+        if (!atomEchoCapture && !atomEchoRecognizingCapture) rlcd42VoiceStage = "playing";
+        scheduleRlcd42SceneSync(0, { force: true });
+        await playRlcd42Speech(speech);
+        if (capture.replyGeneration === atomEchoReplyGeneration && !atomEchoCapture && !atomEchoRecognizingCapture) {
+          rlcd42VoiceStage = "";
+          scheduleRlcd42SceneSync(0, { force: true });
+        }
+      }
       else await playAtomEchoSpeech(speech);
     } else {
       if (deviceKind === "rlcd42") rlcd42VoiceStage = "";
@@ -3334,21 +3431,35 @@ async function esp32PttEnd(deviceKind = "atom-echo") {
     }
   } catch (error) {
     streamingSpeechRecognition.cancel(capture.sessionId);
+    // Cancelled or replaced recognition must not overwrite a newer capture's
+    // state (nor bubble up through the transport's global error callback).
+    if (capture.replyGeneration !== atomEchoReplyGeneration
+        || (!speechRecognized && capture.generation !== atomEchoTurnGeneration)) return;
+    if (capture.generation !== atomEchoTurnGeneration && (atomEchoCapture || atomEchoRecognizingCapture)) return;
     if (deviceKind === "rlcd42") {
-      rlcd42VoiceStage = speechRecognized ? "send-error" : "recognition-error";
+      rlcd42VoiceStage = replyReceived ? "playback-error" : speechRecognized ? "send-error" : "recognition-error";
       rlcd42LastSceneSignature = "";
       await gateway?.setDeviceState("error").catch(() => {});
       scheduleRlcd42SceneSync(0, { force: true });
     }
     throw error;
+  } finally {
+    if (atomEchoRecognizingCapture === capture) atomEchoRecognizingCapture = null;
   }
 }
 
-async function esp32Interrupt(deviceKind = "atom-echo") {
+function invalidateEsp32SpeechInput() {
   atomEchoTurnGeneration += 1;
-  const capture = atomEchoCapture;
+  atomEchoReplyGeneration += 1;
+  for (const capture of [atomEchoCapture, atomEchoRecognizingCapture]) {
+    if (capture?.mode === "standard") streamingSpeechRecognition.cancel(capture.sessionId);
+  }
   atomEchoCapture = null;
-  if (capture?.mode === "standard") streamingSpeechRecognition.cancel(capture.sessionId);
+  atomEchoRecognizingCapture = null;
+}
+
+async function esp32Interrupt(deviceKind = "atom-echo") {
+  invalidateEsp32SpeechInput();
   esp32LiveAudioRoute(activeRealtimeTarget || deviceKind)?.interrupt().catch(() => {});
   sendAtomEchoLiveCommand({ type: "interrupt" });
   if (deviceKind === "rlcd42") await stopRlcd42Speech().catch(() => {});
@@ -4108,7 +4219,8 @@ function scheduleMcpPrewarm(delayMs = 500) {
   if (!preferences || preferences.data.backend !== "codex" || !codexCommand) return;
   if (!effectiveMcpServerIds().length) return;
   mcpPrewarmTimer = setTimeout(async () => {
-    if (quitting || activeWorkRunId || activeRealtimeStarting || currentRealtimeClient()) return;
+    if (quitting || activeWorkRunId || activeCodexInteractionClient()
+        || activeRealtimeStarting || currentRealtimeClient()) return;
     const startedAt = Date.now();
     try {
       const client = preferences.data.interactionMode === "work" && validWorkDirectory()
@@ -4865,9 +4977,7 @@ async function interruptActiveInteraction() {
     await interruptActiveWork();
     return { interrupted: true, mode: "work" };
   }
-  const client = macComputerSkillClient
-    || computerCodexClient
-    || browserCodexClient
+  const client = activeCodexInteractionClient()
     || (preferences.data.backend === "openai" ? openAIClient : codexClient);
   const interrupted = await client?.interruptActiveTurn?.();
   if (!interrupted) throw new Error("中断できる応答がありません。");
@@ -4904,7 +5014,9 @@ function codexInteractionStateSummary() {
 }
 
 function activeNormalInteractionMode(activeClient = activeCodexInteractionClient()) {
-  if (activeWorkRunId || activeClient === workCodexClient) return "work";
+  // resetWorkClient() sets its reference to null; null === null must never
+  // turn an idle application into an apparent Work owner.
+  if (activeWorkRunId || (activeClient && activeClient === workCodexClient)) return "work";
   return activeClient ? "chat" : "";
 }
 
@@ -4920,7 +5032,9 @@ function normalConversationSubmitRouteForMode(mode, {
     realtimeOutput,
     activeWork: matchingMode && Boolean(activeWorkRunId),
     activeInteraction: matchingMode && Boolean(activeClient),
-    conflictingInteraction: Boolean(activeMode && !matchingMode),
+    // OpenAI has no turn/steer API. Treat its real request owner as busy even
+    // if a captured input bypasses a stale presentation-only busy status.
+    conflictingInteraction: Boolean((activeMode && !matchingMode) || openAIClient?.hasActiveTurn?.()),
     activeRealtime: Boolean(activeRealtimeStarting || activeRealtimeTarget || currentRealtimeClient() || remoteRealtimeStartReservation),
     turnStatus: turnCoordinator.snapshot().status,
   }, capturedSubmitRoute);
@@ -5666,10 +5780,7 @@ function createAtomEchoLiveWindow() {
 
 async function resetAtomEchoLiveBridge({ reason, from, to }) {
   if (from === to || (!preferences?.data?.atomEchoEnabled && !rlcd42Profile().enabled)) return;
-  atomEchoTurnGeneration += 1;
-  const capture = atomEchoCapture;
-  atomEchoCapture = null;
-  if (capture?.mode === "standard") streamingSpeechRecognition.cancel(capture.sessionId);
+  invalidateEsp32SpeechInput();
   atomEchoLiveIdleTimer?.cancel();
   sendAtomEchoLiveCommand({ type: "stop", stopServer: false });
   await atomEchoLiveAudioRoute?.interrupt().catch(() => {});
@@ -7983,7 +8094,8 @@ function clearCurrentConversationHistory() {
 
 function publishChatStream(payload = {}) {
   const coordinated = turnCoordinator.apply(payload);
-  if (rlcd42VoiceStage && ["announcement", "activity", "delta", "realtime-caption", "done", "error"].includes(coordinated.phase)) {
+  if (rlcd42VoiceStage && !atomEchoCapture && !atomEchoRecognizingCapture && rlcd42VoiceStage !== "playing"
+      && ["announcement", "activity", "delta", "realtime-caption", "done", "error"].includes(coordinated.phase)) {
     rlcd42VoiceStage = "";
     rlcd42LastSceneSignature = "";
   }
@@ -9302,7 +9414,8 @@ async function setCharacter(characterId) {
       "Characters cannot be switched while Work is running. Wait for completion or stop it from history.",
     ));
   }
-  if (activeCodexInteractionClient() || remoteBusy || ["listening", "thinking", "working", "speaking"].includes(turnCoordinator.snapshot().status)) {
+  if (activeCodexInteractionClient() || openAIClient?.hasActiveTurn?.() || atomEchoCapture || atomEchoRecognizingCapture
+      || remoteBusy || ["listening", "thinking", "working", "speaking"].includes(turnCoordinator.snapshot().status)) {
     throw new Error(mainText(
       "応答中はキャラクターを切り替えられません。完了を待つか、先に中断してください。",
       "Characters cannot be switched during a response. Wait for it to finish or stop it first.",

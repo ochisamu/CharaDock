@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+const { handleCaptureFrame, resetCaptureQueue } = require("./device-capture-queue.cjs");
 const {
   DeviceProtocolV2Decoder,
   FRAME_TYPES,
@@ -219,6 +220,7 @@ class Rlcd42SerialGateway {
   async connect(generation = this.connectGeneration) {
     if (!this.enabled || generation !== this.connectGeneration) return;
     await this.disconnect();
+    if (!this.enabled || generation !== this.connectGeneration) return;
     this.externallyManaged = false;
     this.transport = "usb";
     this.connectionState = "connecting";
@@ -231,11 +233,13 @@ class Rlcd42SerialGateway {
       const selected = await this.selectPort();
       if (!this.enabled || generation !== this.connectGeneration) return;
       const { SerialPort } = await this.serialApi();
+      if (!this.enabled || generation !== this.connectGeneration) return;
       const port = new SerialPort({ path: selected.path, baudRate: DEFAULT_BAUD_RATE, autoOpen: false });
       this.bindPort(port, { path: selected.path, transport: "usb", externallyManaged: false });
       await new Promise((resolve, reject) => port.open((error) => error ? reject(error) : resolve()));
       if (!this.enabled || generation !== this.connectGeneration) {
-        await this.disconnect();
+        this.intentionalCloses.add(port);
+        await new Promise((resolve) => port.close(() => resolve()));
         return;
       }
       await this.initializeOpenedPort(port, generation);
@@ -251,13 +255,17 @@ class Rlcd42SerialGateway {
   }
 
   bindPort(port, { path = "", transport = "usb", externallyManaged = false } = {}) {
+    const epoch = this.portEpoch = (this.portEpoch || 0) + 1;
+    const current = () => this.port === port && this.portEpoch === epoch;
+    this.decoder.reset();
     this.port = port;
     this.portPath = String(path || "").slice(0, 120);
     this.transport = transport === "wifi" ? "wifi" : "usb";
     this.externallyManaged = externallyManaged === true;
-    port.on("data", (chunk) => this.receive(chunk));
-    port.on("error", (error) => this.handlePortFailure(error));
-    port.on("close", () => this.handlePortClose(port));
+    port.on("data", (chunk) => { if (current()) this.receive(chunk); });
+    port.on("error", (error) => { if (current()) this.handlePortFailure(error); });
+    port.on("close", () => { if (current()) this.handlePortClose(port); });
+    port.resumeInput?.();
   }
 
   async initializeOpenedPort(port, generation, hostHelloPayload = null) {
@@ -324,6 +332,7 @@ class Rlcd42SerialGateway {
     this.connectGeneration += 1;
     const generation = this.connectGeneration;
     await this.disconnect();
+    if (!this.enabled || generation !== this.connectGeneration || !port.isOpen) return this.status();
     this.connectionState = "connecting";
     this.lastError = "";
     this.device = null;
@@ -403,7 +412,7 @@ class Rlcd42SerialGateway {
     this.device = null;
     this.capabilities = null;
     this.sensors = null;
-    this.captureQueue = Promise.resolve();
+    resetCaptureQueue(this);
     this.playbackGeneration += 1;
     this.activePlayback = null;
     if (port?.isOpen) {
@@ -414,6 +423,7 @@ class Rlcd42SerialGateway {
   }
 
   closeCurrentPort() {
+    resetCaptureQueue(this);
     this.stopHeartbeat();
     const port = this.port;
     this.port = null;
@@ -441,7 +451,9 @@ class Rlcd42SerialGateway {
       this.intentionalCloses.delete(port);
       return;
     }
-    if (this.port && this.port !== port) return;
+    if (this.port !== port) return;
+    resetCaptureQueue(this);
+    this.decoder.reset();
     if (this.port === port) this.port = null;
     if (!this.enabled) return;
     const reconnect = !this.externallyManaged;
@@ -516,7 +528,9 @@ class Rlcd42SerialGateway {
   }
 
   receive(chunk) {
+    const epoch = this.portEpoch;
     for (const frame of this.decoder.push(chunk)) {
+      if (epoch !== this.portEpoch || (this.portEpoch && !this.port)) break;
       this.lastFrameAt = Date.now();
       this.handleFrame(frame);
     }
@@ -576,14 +590,9 @@ class Rlcd42SerialGateway {
       if (event) Promise.resolve(this.callbacks.onInput(event)).catch((error) => this.reportCallbackError(error));
       return;
     }
-    if (frame.type === FRAME_TYPES.PTT_START) {
-      this.captureQueue = Promise.resolve(this.callbacks.onPttStart()).catch((error) => this.reportCallbackError(error));
-    } else if (frame.type === FRAME_TYPES.PCM_CHUNK) {
-      const payload = Buffer.from(frame.payload);
-      this.captureQueue = this.captureQueue.then(() => this.callbacks.onPcmChunk(payload)).catch((error) => this.reportCallbackError(error));
-    } else if (frame.type === FRAME_TYPES.PTT_END) {
-      this.captureQueue = this.captureQueue.then(() => this.callbacks.onPttEnd()).catch((error) => this.reportCallbackError(error));
-    } else if (frame.type === FRAME_TYPES.INTERRUPT) {
+    if (handleCaptureFrame(this, frame, FRAME_TYPES)) return;
+    if (frame.type === FRAME_TYPES.INTERRUPT) {
+      resetCaptureQueue(this);
       this.playbackGeneration += 1;
       Promise.resolve(this.callbacks.onInterrupt()).catch((error) => this.reportCallbackError(error));
     }

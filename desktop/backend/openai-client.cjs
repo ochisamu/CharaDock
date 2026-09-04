@@ -34,26 +34,40 @@ async function parseError(response) {
   return error;
 }
 
+function responseFailure(payload) {
+  const detail = payload?.incomplete_details?.reason || payload?.status;
+  return new Error(payload?.error?.message || payload?.message
+    || `OpenAI APIの応答が完了しませんでした。${detail ? ` (${detail})` : ""}`);
+}
+
 class OpenAIClient {
   constructor() {
     this.previousResponseId = null;
     this.activeAbortController = null;
   }
 
+  hasActiveTurn() {
+    return this.activeAbortController !== null;
+  }
+
   reset() {
-    this.activeAbortController?.abort(new Error("応答を中断しました。"));
+    const controller = this.activeAbortController;
     this.activeAbortController = null;
     this.previousResponseId = null;
+    controller?.abort(new Error("応答を中断しました。"));
   }
 
   async interruptActiveTurn() {
-    if (!this.activeAbortController) return false;
-    this.activeAbortController.abort(new Error("応答を中断しました。"));
+    const controller = this.activeAbortController;
+    if (!controller || controller.signal.aborted) return false;
+    // Keep ownership until sendMessage settles; reset explicitly invalidates it.
+    controller.abort(new Error("応答を中断しました。"));
     return true;
   }
 
   async sendMessage({ apiKey, model, message, instructions = "", onDelta } = {}) {
     if (!apiKey) throw new Error("OpenAI APIキーを設定してください。");
+    if (this.hasActiveTurn()) throw new Error("OpenAI APIの応答が進行中です。");
     const body = {
       model: String(model || "gpt-5.6-luna"),
       instructions: [MASCOT_INSTRUCTIONS, String(instructions || "").trim()].filter(Boolean).join("\n\n"),
@@ -75,58 +89,91 @@ class OpenAIClient {
         body: JSON.stringify(body),
         signal: controller.signal,
       });
+      controller.signal.throwIfAborted();
       if (!response.ok) throw await parseError(response);
-      if (onDelta) return await this.parseStream(response, onDelta);
-      const payload = await response.json();
-      const text = responseOutputText(payload);
-      if (!text) throw new Error("OpenAI APIからテキスト応答を取得できませんでした。");
-      this.previousResponseId = payload.id || null;
-      return { text, provider: "openai", responseId: payload.id || null };
+      let result;
+      if (onDelta) {
+        result = await this.parseStream(response, onDelta, controller.signal);
+      } else {
+        const payload = await response.json();
+        controller.signal.throwIfAborted();
+        if (payload.status && payload.status !== "completed") throw responseFailure(payload);
+        const text = responseOutputText(payload);
+        if (!text) throw new Error("OpenAI APIからテキスト応答を取得できませんでした。");
+        result = { text, provider: "openai", responseId: payload.id || null };
+      }
+      // Only the still-active turn may advance conversation history.
+      controller.signal.throwIfAborted();
+      if (this.activeAbortController !== controller) throw new Error("応答を中断しました。");
+      this.previousResponseId = result.responseId;
+      return result;
     } finally {
       clearTimeout(timeout);
       if (this.activeAbortController === controller) this.activeAbortController = null;
     }
   }
 
-  async parseStream(response, onDelta) {
+  async parseStream(response, onDelta, signal) {
     if (!response.body) throw new Error("OpenAI APIのストリームを開始できませんでした。");
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
     let text = "";
     let responseId = null;
-    let streamError = null;
+    let completed = false;
+    // Cancel the reader as well as fetch so pending reads unblock on interruption.
+    const cancelReader = () => { void reader.cancel().catch(() => {}); };
+    signal?.addEventListener("abort", cancelReader, { once: true });
     const consumeEvent = (block) => {
+      signal?.throwIfAborted();
       const data = block.split(/\r?\n/)
         .filter((line) => line.startsWith("data:"))
         .map((line) => line.slice(5).trim())
         .join("\n");
-      if (!data || data === "[DONE]") return;
+      if (!data) return;
+      if (data === "[DONE]") throw new Error("OpenAI APIのストリームが完了前に終了しました。");
       let event;
-      try { event = JSON.parse(data); } catch { return; }
+      try { event = JSON.parse(data); } catch {
+        throw new Error("OpenAI APIのストリームを解析できませんでした。");
+      }
       if (event.type === "response.output_text.delta") {
         const delta = String(event.delta || "");
         text += delta;
         if (delta) onDelta(delta, text);
       } else if (event.type === "response.completed") {
+        if (event.response?.status && event.response.status !== "completed") throw responseFailure(event.response);
         responseId = event.response?.id || responseId;
-      } else if (event.type === "response.failed" || event.type === "error") {
-        streamError = new Error(event.response?.error?.message || event.error?.message || event.message || "OpenAI APIの応答に失敗しました。");
+        completed = true;
+      } else if (event.type === "response.failed" || event.type === "response.incomplete" || event.type === "error") {
+        throw responseFailure(event.response || event);
       }
     };
-    while (true) {
-      const { value, done } = await reader.read();
-      buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
-      const blocks = buffer.split(/\r?\n\r?\n/);
-      buffer = blocks.pop() || "";
-      for (const block of blocks) consumeEvent(block);
-      if (done) break;
+    try {
+      while (!completed) {
+        signal?.throwIfAborted();
+        const { value, done } = await reader.read();
+        signal?.throwIfAborted();
+        buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+        const blocks = buffer.split(/\r?\n\r?\n/);
+        buffer = blocks.pop() || "";
+        for (const block of blocks) {
+          consumeEvent(block);
+          if (completed) break;
+        }
+        if (done) {
+          if (!completed && buffer.trim()) consumeEvent(buffer);
+          break;
+        }
+      }
+      signal?.throwIfAborted();
+      if (!completed) throw new Error("OpenAI APIのストリームが完了前に終了しました。");
+      if (!text.trim()) throw new Error("OpenAI APIからテキスト応答を取得できませんでした。");
+      return { text: text.trim(), provider: "openai", responseId };
+    } finally {
+      signal?.removeEventListener("abort", cancelReader);
+      cancelReader();
+      reader.releaseLock();
     }
-    if (buffer.trim()) consumeEvent(buffer);
-    if (streamError) throw streamError;
-    if (!text.trim()) throw new Error("OpenAI APIからテキスト応答を取得できませんでした。");
-    this.previousResponseId = responseId;
-    return { text: text.trim(), provider: "openai", responseId };
   }
 
   async transcribe({ apiKey, model, bytes, mimeType = "audio/webm" }) {

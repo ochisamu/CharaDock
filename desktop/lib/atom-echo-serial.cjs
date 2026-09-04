@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+const { handleCaptureFrame, resetCaptureQueue } = require("./device-capture-queue.cjs");
 const {
   AtomEchoFrameDecoder,
   DEVICE_STATES,
@@ -138,6 +139,7 @@ class AtomEchoSerialGateway {
   async connect(generation = this.connectGeneration) {
     if (!this.enabled || generation !== this.connectGeneration) return;
     await this.disconnect();
+    if (!this.enabled || generation !== this.connectGeneration) return;
     this.connectionState = "connecting";
     this.lastError = "";
     this.deviceInfo = null;
@@ -146,15 +148,19 @@ class AtomEchoSerialGateway {
       const selected = await this.selectPort();
       if (!this.enabled || generation !== this.connectGeneration) return;
       const { SerialPort } = await this.serialApi();
+      if (!this.enabled || generation !== this.connectGeneration) return;
       const port = new SerialPort({ path: selected.path, baudRate: DEFAULT_BAUD_RATE, autoOpen: false });
       this.port = port;
+      const epoch = this.portEpoch = (this.portEpoch || 0) + 1;
+      const current = () => this.port === port && this.portEpoch === epoch;
       this.portPath = selected.path;
-      port.on("data", (chunk) => this.receive(chunk));
-      port.on("error", (error) => this.handlePortFailure(error));
-      port.on("close", () => this.handlePortClose(port));
+      port.on("data", (chunk) => { if (current()) this.receive(chunk); });
+      port.on("error", (error) => { if (current()) this.handlePortFailure(error); });
+      port.on("close", () => { if (current()) this.handlePortClose(port); });
       await new Promise((resolve, reject) => port.open((error) => error ? reject(error) : resolve()));
       if (!this.enabled || generation !== this.connectGeneration) {
-        await this.disconnect();
+        this.intentionalCloses.add(port);
+        await new Promise((resolve) => port.close(() => resolve()));
         return;
       }
       await this.writeFrame(FRAME_TYPES.HOST_HELLO, Buffer.from(JSON.stringify({ protocol: 1, host: "CharaDock" }), "utf8"));
@@ -168,6 +174,7 @@ class AtomEchoSerialGateway {
       }, 3_000);
       helloTimer.unref?.();
     } catch (error) {
+      if (!this.enabled || generation !== this.connectGeneration) return;
       this.connectionState = "error";
       this.lastError = String(error?.message || error);
       this.log("warn", "atom-echo-connect-failed", { port: this.requestedPort, error: this.lastError });
@@ -186,6 +193,7 @@ class AtomEchoSerialGateway {
   }
 
   async disconnect() {
+    resetCaptureQueue(this);
     clearTimeout(this.reconnectTimer);
     this.reconnectTimer = null;
     this.playbackGeneration += 1;
@@ -207,6 +215,8 @@ class AtomEchoSerialGateway {
 
   handlePortFailure(error) {
     if (!this.enabled) return;
+    resetCaptureQueue(this);
+    this.decoder.reset();
     this.lastError = String(error?.message || error);
     this.connectionState = "error";
     this.notify();
@@ -226,7 +236,9 @@ class AtomEchoSerialGateway {
       this.intentionalCloses.delete(port);
       return;
     }
-    if (this.port && this.port !== port) return;
+    if (this.port !== port) return;
+    resetCaptureQueue(this);
+    this.decoder.reset();
     if (this.port === port) this.port = null;
     if (!this.enabled) return;
     this.connectionState = "error";
@@ -261,7 +273,11 @@ class AtomEchoSerialGateway {
   }
 
   receive(chunk) {
-    for (const frame of this.decoder.push(chunk)) this.handleFrame(frame);
+    const epoch = this.portEpoch;
+    for (const frame of this.decoder.push(chunk)) {
+      if (epoch !== this.portEpoch || (this.portEpoch && !this.port)) break;
+      this.handleFrame(frame);
+    }
   }
 
   handleFrame(frame) {
@@ -286,20 +302,9 @@ class AtomEchoSerialGateway {
       this.setCaptureMode(this.captureMode, this.vadThreshold).catch((error) => this.reportCallbackError(error));
       return;
     }
-    if (frame.type === FRAME_TYPES.PTT_START) {
-      this.captureQueue = Promise.resolve(this.callbacks.onPttStart()).catch((error) => this.reportCallbackError(error));
-      return;
-    }
-    if (frame.type === FRAME_TYPES.PCM_CHUNK) {
-      const payload = Buffer.from(frame.payload);
-      this.captureQueue = this.captureQueue.then(() => this.callbacks.onPcmChunk(payload)).catch((error) => this.reportCallbackError(error));
-      return;
-    }
-    if (frame.type === FRAME_TYPES.PTT_END) {
-      this.captureQueue = this.captureQueue.then(() => this.callbacks.onPttEnd()).catch((error) => this.reportCallbackError(error));
-      return;
-    }
+    if (handleCaptureFrame(this, frame, FRAME_TYPES)) return;
     if (frame.type === FRAME_TYPES.INTERRUPT) {
+      resetCaptureQueue(this);
       this.playbackGeneration += 1;
       Promise.resolve(this.callbacks.onInterrupt()).catch((error) => this.reportCallbackError(error));
       return;

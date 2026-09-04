@@ -18,8 +18,6 @@
   let lastVoiceSentAt = 0;
   let speechRecognition = null;
   let mediaRecorder = null;
-  let recordedChunks = [];
-  let recordingProvider = "openai";
   let streamingSpeechSessionId = "";
   let streamingSpeechContext = null;
   let streamingSpeechSource = null;
@@ -4548,31 +4546,32 @@
       return;
     }
     const stream = await ensureAudioStream();
-    recordedChunks = [];
-    recordingProvider = provider;
-    mediaRecorder = new MediaRecorder(stream);
-    mediaRecorder.ondataavailable = (event) => { if (event.data.size) recordedChunks.push(event.data); };
-    mediaRecorder.onstop = async () => {
+    const chunks = [];
+    const recorder = new MediaRecorder(stream);
+    mediaRecorder = recorder;
+    recorder.ondataavailable = (event) => { if (event.data.size) chunks.push(event.data); };
+    recorder.onstop = async () => {
+      if (mediaRecorder !== recorder) return;
       $("#speechInputButton")?.setAttribute("aria-pressed", "false");
       try {
-        const blob = new Blob(recordedChunks, { type: mediaRecorder.mimeType || "audio/webm" });
-        if (recordingProvider === "sherpa-onnx") {
+        const blob = new Blob(chunks, { type: recorder.mimeType || "audio/webm" });
+        let transcript;
+        if (provider === "sherpa-onnx") {
           setStatus($("#chatStatus"), "sherpa-onnxで音声を文字にしています…");
-          $("#chatInput").value = await transcribeWithSherpaOnnx(blob);
+          transcript = await transcribeWithSherpaOnnx(blob);
         } else {
           setStatus($("#chatStatus"), "OpenAIで音声を文字にしています…");
           const bytes = new Uint8Array(await blob.arrayBuffer());
-          $("#chatInput").value = await api.transcribe({ bytes, mimeType: blob.type });
+          transcript = await api.transcribe({ bytes, mimeType: blob.type });
         }
+        if (mediaRecorder !== recorder) return;
+        $("#chatInput").value = transcript;
         setStatus($("#chatStatus"), "音声を入力欄へ追加しました。");
       } catch (error) {
-        setStatus($("#chatStatus"), error.message, true);
-      } finally {
-        setChatBusy(false);
-        streamingMessage = null;
+        if (mediaRecorder === recorder) setStatus($("#chatStatus"), error.message, true);
       }
     };
-    mediaRecorder.start();
+    recorder.start();
     $("#speechInputButton")?.setAttribute("aria-pressed", "true");
     setStatus($("#chatStatus"), `${provider === "sherpa-onnx" ? "sherpa-onnx用に" : ""}録音中…もう一度押すと文字に変換します。`);
   }
@@ -4883,15 +4882,44 @@
     syncCharacterSwitchAvailability();
   }
 
-  async function sendChat() {
+  function restoreChatFollowUp(followUp) {
     const input = $("#chatInput");
-    const attachments = chatAttachments.map((item) => ({ ...item }));
-    const selectedSkillIds = [...chatSelectedSkillIds];
-    const selectedMcpServerIds = [...chatSelectedMcpServerIds];
-    const message = input.value.trim() || (attachments.length ? localized("添付したファイルを確認してください。", "Please review the attached files.") : "");
+    const draft = input.value.trim();
+    input.value = draft && draft !== followUp.message ? `${followUp.message}\n\n${draft}` : followUp.message;
+    chatAttachments = [...new Map([...followUp.attachments, ...chatAttachments].map((item) => [item.path, item])).values()];
+    chatSelectedSkillIds = [...new Set([...(followUp.selectedSkillIds || []), ...chatSelectedSkillIds])];
+    chatSelectedMcpServerIds = [...new Set([...(followUp.selectedMcpServerIds || []), ...chatSelectedMcpServerIds])];
+    renderChatAttachments();
+    renderChatSelectedSkills();
+  }
+
+  function drainPendingChatFollowUp() {
+    if (!pendingChatFollowUp || pendingChatFollowUp.interrupting || chatBusy || localChatSendPending) return;
+    queueMicrotask(() => {
+      const followUp = pendingChatFollowUp;
+      if (!followUp || followUp.interrupting || chatBusy || localChatSendPending) return;
+      // Claim once, after both stream termination and local IPC cleanup. The
+      // saved payload must not consume text the user has since begun drafting.
+      pendingChatFollowUp = null;
+      sendChatPayload(followUp);
+    });
+  }
+
+  function sendChat() {
+    // DOM event arguments never represent a saved follow-up payload.
+    return sendChatPayload();
+  }
+
+  async function sendChatPayload(queuedFollowUp = null) {
+    const input = $("#chatInput");
+    const attachments = (queuedFollowUp?.attachments || chatAttachments).map((item) => ({ ...item }));
+    const selectedSkillIds = [...(queuedFollowUp?.selectedSkillIds || chatSelectedSkillIds)];
+    const selectedMcpServerIds = [...(queuedFollowUp?.selectedMcpServerIds || chatSelectedMcpServerIds)];
+    const message = queuedFollowUp?.message || input.value.trim() || (attachments.length ? localized("添付したファイルを確認してください。", "Please review the attached files.") : "");
     if (!message) return;
     if (realtimeStarting) {
       setStatus($("#chatStatus"), localized("Liveへの接続が完了してから送信してください。", "Wait for Live to finish connecting before sending."), true);
+      if (queuedFollowUp) restoreChatFollowUp(queuedFollowUp);
       return;
     }
     const shouldAutoStartLive = !realtimePeerConnection
@@ -4901,14 +4929,17 @@
     if (shouldAutoStartLive) {
       if (attachments.length) {
         setStatus($("#chatStatus"), localized("ファイル添付を外すか、Liveの「テキスト送信で開始」をOFFにしてください。", "Remove the attachment or turn off “Start when sending text” for Live."), true);
+        if (queuedFollowUp) restoreChatFollowUp(queuedFollowUp);
         return;
       }
       if (selectedSkillIds.length && state?.interactionMode !== "work") {
         setStatus($("#chatStatus"), localized("Skillを指定したLive送信はWorkで利用してください。", "Use Work to send selected Skills through Live."), true);
+        if (queuedFollowUp) restoreChatFollowUp(queuedFollowUp);
         return;
       }
       if (realtimeUnavailable) {
         setStatus($("#chatStatus"), localized("Liveを開始できません。設定を確認するか通常の音声入力へ変更してください。", "Live cannot start. Check the settings or choose another voice input method."), true);
+        if (queuedFollowUp) restoreChatFollowUp(queuedFollowUp);
         return;
       }
       setStatus($("#chatStatus"), localized("マイクを有効にしてLiveへ接続しています…", "Enabling the microphone and connecting to Live…"));
@@ -4919,21 +4950,26 @@
         closeRealtimeAudio();
         realtimeUnavailable ||= /まだ提供されていません/.test(error.message);
         setStatus($("#chatStatus"), friendlyConversationErrorMessage(error), true);
+        if (queuedFollowUp) restoreChatFollowUp(queuedFollowUp);
         return;
       }
     }
     if (attachments.length && realtimePeerConnection) {
       setStatus($("#chatStatus"), localized("Live音声を停止してからファイルを送信してください。", "Stop Live voice before sending files."), true);
+      if (queuedFollowUp) restoreChatFollowUp(queuedFollowUp);
       return;
     }
     if (selectedSkillIds.length && realtimePeerConnection && state?.interactionMode !== "work") {
       setStatus($("#chatStatus"), localized("Skillを指定できるのはLive Workだけです。Workへ切り替えるかLiveを停止してください。", "Selected Skills are available in Live Work only. Switch to Work or stop Live."), true);
+      if (queuedFollowUp) restoreChatFollowUp(queuedFollowUp);
       return;
     }
-    input.value = "";
-    chatAttachments = [];
-    chatSelectedSkillIds = [];
-    chatSelectedMcpServerIds = [];
+    if (!queuedFollowUp) {
+      input.value = "";
+      chatAttachments = [];
+      chatSelectedSkillIds = [];
+      chatSelectedMcpServerIds = [];
+    }
     renderChatAttachments();
     renderChatSelectedSkills();
     closeChatAddPopover();
@@ -4949,18 +4985,14 @@
         realtimePendingTypedText = "";
       } catch (error) {
         realtimePendingTypedText = "";
-        input.value = message;
-        chatAttachments = attachments;
-        chatSelectedSkillIds = selectedSkillIds;
-        chatSelectedMcpServerIds = selectedMcpServerIds;
-        renderChatAttachments();
-        renderChatSelectedSkills();
+        restoreChatFollowUp({ message, attachments, selectedSkillIds, selectedMcpServerIds });
         setStatus($("#chatStatus"), friendlyConversationErrorMessage(error), true);
       }
       input.focus();
       return;
     }
     if (chatBusy) {
+      let followUp = null;
       try {
         const route = await api.followUpChat({
           message,
@@ -4984,18 +5016,18 @@
           return;
         }
         if (!route?.retryAsNewTurn) throw new Error(localized("追加入力を反映できませんでした。", "The follow-up could not be applied."));
-        pendingChatFollowUp = { message, attachments, selectedSkillIds, selectedMcpServerIds };
+        followUp = { message, attachments, selectedSkillIds, selectedMcpServerIds, interrupting: true };
+        pendingChatFollowUp = followUp;
         setStatus($("#chatStatus"), localized("この接続では差し込みに対応していないため、現在の応答を止めています…", "This connection cannot steer an active response, so the current response is being stopped…"));
         $("#stopButton").disabled = true;
-        await api.interruptChat();
+        if (chatBusy) await api.interruptChat();
+        followUp.interrupting = false;
+        drainPendingChatFollowUp();
       } catch (error) {
-        pendingChatFollowUp = null;
-        input.value = message;
-        chatAttachments = attachments;
-        chatSelectedSkillIds = selectedSkillIds;
-        chatSelectedMcpServerIds = selectedMcpServerIds;
-        renderChatAttachments();
-        renderChatSelectedSkills();
+        if (!followUp || pendingChatFollowUp === followUp) {
+          pendingChatFollowUp = null;
+          restoreChatFollowUp({ message, attachments, selectedSkillIds, selectedMcpServerIds });
+        }
         setStatus($("#chatStatus"), friendlyConversationErrorMessage(error), true);
         $("#stopButton").disabled = false;
       }
@@ -5025,12 +5057,7 @@
       } catch (error) {
         realtimePendingTypedText = "";
         realtimeTypedChatTurnActive = false;
-        input.value = message;
-        chatAttachments = attachments;
-        chatSelectedSkillIds = selectedSkillIds;
-        chatSelectedMcpServerIds = selectedMcpServerIds;
-        renderChatAttachments();
-        renderChatSelectedSkills();
+        restoreChatFollowUp({ message, attachments, selectedSkillIds, selectedMcpServerIds });
         setChatBusy(false);
         setStatus($("#chatStatus"), friendlyConversationErrorMessage(error), true);
       } finally {
@@ -5066,12 +5093,7 @@
     } catch (error) {
       const interrupted = /interrupt|cancel|abort|中断/i.test(String(error.message || ""));
       if (!interrupted) {
-        input.value = message;
-        chatAttachments = attachments;
-        chatSelectedSkillIds = selectedSkillIds;
-        chatSelectedMcpServerIds = selectedMcpServerIds;
-        renderChatAttachments();
-        renderChatSelectedSkills();
+        restoreChatFollowUp({ message, attachments, selectedSkillIds, selectedMcpServerIds });
       }
       setStatus($("#chatStatus"), interrupted ? localized("応答を中断しました。続けて修正を送れます。", "Response stopped. You can send a revision now.") : friendlyConversationErrorMessage(error), !interrupted);
     } finally {
@@ -5082,17 +5104,7 @@
         streamingMessageMode = "";
       }
       input.focus();
-      const followUp = pendingChatFollowUp;
-      pendingChatFollowUp = null;
-      if (followUp && !autoFollowUpAccepted) {
-        input.value = followUp.message;
-        chatAttachments = followUp.attachments;
-        chatSelectedSkillIds = followUp.selectedSkillIds || [];
-        chatSelectedMcpServerIds = followUp.selectedMcpServerIds || [];
-        renderChatAttachments();
-        renderChatSelectedSkills();
-        queueMicrotask(() => sendChat());
-      }
+      drainPendingChatFollowUp();
     }
   }
 
@@ -5107,17 +5119,7 @@
     activeStreamTurnId = "";
     activeStreamWorkRunId = "";
     $("#chatInput").focus();
-    const followUp = pendingChatFollowUp;
-    pendingChatFollowUp = null;
-    if (followUp) {
-      $("#chatInput").value = followUp.message;
-      chatAttachments = followUp.attachments;
-      chatSelectedSkillIds = followUp.selectedSkillIds || [];
-      chatSelectedMcpServerIds = followUp.selectedMcpServerIds || [];
-      renderChatAttachments();
-      renderChatSelectedSkills();
-      queueMicrotask(() => sendChat());
-    }
+    drainPendingChatFollowUp();
   }
 
   function bindEvents() {
@@ -5189,6 +5191,7 @@
           setChatBusy(false);
           activeStreamMode = "";
           activeStreamTurnId = "";
+          drainPendingChatFollowUp();
         }
         return;
       }
@@ -5226,6 +5229,7 @@
         streamingMessageMode = "";
         activeStreamMode = "";
         activeStreamTurnId = "";
+        drainPendingChatFollowUp();
       }
     });
     api.onChatHistory?.((entries) => {
@@ -5687,6 +5691,7 @@
     });
     $("#stopButton").addEventListener("click", async () => {
       const button = $("#stopButton");
+      if (pendingChatFollowUp) restoreChatFollowUp(pendingChatFollowUp);
       pendingChatFollowUp = null;
       button.disabled = true;
       setStatus($("#chatStatus"), "中断しています…");

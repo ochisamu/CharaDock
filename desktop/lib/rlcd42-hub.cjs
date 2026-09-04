@@ -21,41 +21,57 @@ class Rlcd42Hub {
     this.vadThreshold = 120;
     this.microphoneEnabled = true;
     this.inputSource = "";
+    this.inputCapture = null;
     this.wifiSetupStatus = {};
     this.lastError = "";
     this.onStatus = onStatus;
+    this.onInterrupt = onInterrupt;
 
     const active = (source) => this.inputSource === source || (!this.inputSource && this.activeSource() === source);
     const callbacks = (source) => ({
       onInput: async (event) => this.activeSource() === source ? onInput?.(event) : undefined,
       onPttStart: async () => {
-        if (this.activeSource() !== source) return;
+        if (!this.enabled || !this.microphoneEnabled || this.activeSource() !== source) return;
+        const previous = this.inputCapture;
+        if (previous && !previous.endPending) throw new Error("RLCD 4.2 is already capturing audio.");
+        const capture = { source, endPending: false, finished: false };
+        this.inputCapture = capture;
         this.inputSource = source;
         try {
           return await onPttStart?.();
         } catch (error) {
-          this.inputSource = "";
+          // Main may reject a follow-up while the previous STT is finishing.
+          // Preserve that response's interrupt owner unless it completed or
+          // this attempted start was itself interrupted/replaced.
+          if (this.releaseInput(capture) && previous && !previous.finished) {
+            this.inputCapture = previous;
+            this.inputSource = previous.source;
+          }
           throw error;
         }
       },
-      onPcmChunk: async (chunk) => active(source) ? onPcmChunk?.(chunk) : undefined,
+      onPcmChunk: async (chunk) => this.inputCapture?.source === source && !this.inputCapture.endPending
+        ? onPcmChunk?.(chunk) : undefined,
       onPttEnd: async () => {
-        if (!active(source)) return;
+        const capture = this.inputCapture;
+        if (!capture || capture.source !== source || capture.endPending) return;
+        capture.endPending = true;
         try { return await onPttEnd?.(); }
-        finally { this.inputSource = ""; }
+        finally { this.releaseInput(capture); }
       },
       onInterrupt: async () => {
-        if (!active(source)) return;
-        this.inputSource = "";
+        // A pending response can outlive a transport preference change. The
+        // currently preferred device must still be able to interrupt it.
+        if (!active(source) && !(this.inputCapture?.endPending && this.activeSource() === source)) return;
+        this.releaseInput(this.inputCapture);
         return onInterrupt?.();
       },
       onCaptureStatus: async (status) => active(source) ? onCaptureStatus?.({ ...status, source }) : undefined,
       onReady: async (status) => this.activeSource() === source ? onReady?.({ ...status, source }) : undefined,
       onStatus: () => {
         const sourceStatus = source === "wifi" ? this.wifi?.status() : this.serial?.status();
-        if (this.inputSource === source && sourceStatus && !sourceStatus.connected) {
-          this.inputSource = "";
-          Promise.resolve(onInterrupt?.()).catch((error) => {
+        if (this.inputCapture?.source === source && sourceStatus && !sourceStatus.connected) {
+          this.interruptInput().catch((error) => {
             logger?.("warn", `RLCD ${source} capture disconnect cleanup failed: ${error.message}`);
           });
         }
@@ -73,6 +89,22 @@ class Rlcd42Hub {
       },
     });
     this.wifi = new Rlcd42WifiGateway(callbacks("wifi"));
+  }
+
+  releaseInput(capture) {
+    // Completion of an older utterance must not release a newer owner, even
+    // when both utterances used the same transport.
+    if (!capture) return false;
+    capture.finished = true;
+    if (this.inputCapture !== capture) return false;
+    this.inputCapture = null;
+    this.inputSource = "";
+    return true;
+  }
+
+  async interruptInput() {
+    if (!this.releaseInput(this.inputCapture)) return;
+    await this.onInterrupt?.();
   }
 
   activeSource() {
@@ -139,11 +171,7 @@ class Rlcd42Hub {
     this.vadThreshold = Math.max(80, Math.min(800, Math.round(Number(vadThreshold) || 120)));
     this.microphoneEnabled = microphoneEnabled !== false;
     if (!this.enabled) {
-      await Promise.all([
-        this.serial.configure({ enabled: false }),
-        this.wifi.configure({ enabled: false }),
-      ]);
-      this.inputSource = "";
+      await this.disconnect();
       this.onStatus(this.status());
       return this.status();
     }
@@ -248,8 +276,8 @@ class Rlcd42Hub {
 
   async disconnect() {
     this.enabled = false;
-    this.inputSource = "";
     await Promise.all([
+      this.interruptInput(),
       this.serial.configure({ enabled: false }),
       this.wifi.configure({ enabled: false }),
     ]);

@@ -250,6 +250,7 @@ window.addEventListener("DOMContentLoaded", () => {
   let temporaryInteractionHold = false;
   let sending = false;
   let pendingFollowUp = null;
+  let localMascotSendPending = 0;
   let mascotAttachments = [];
   let mascotSelectedSkillIds = [];
   let mascotSelectedMcpServerIds = [];
@@ -292,8 +293,6 @@ window.addEventListener("DOMContentLoaded", () => {
   let realtimeStream;
   let recordedSpeechStream;
   let recordedSpeechRecorder;
-  let recordedSpeechChunks = [];
-  let recordedSpeechProvider = "openai";
   let manualStreamingSpeechStream = null;
   let manualStreamingSpeechContext = null;
   let manualStreamingSpeechSource = null;
@@ -301,6 +300,7 @@ window.addEventListener("DOMContentLoaded", () => {
   let manualStreamingSpeechSessionId = "";
   let manualStreamingSpeechQueue = Promise.resolve();
   let vadActive = false;
+  let vadGeneration = 0;
   let vadStream = null;
   let vadContext = null;
   let vadAnalyser = null;
@@ -1794,7 +1794,26 @@ window.addEventListener("DOMContentLoaded", () => {
       setStatus("自動送信を取り消しました。内容を編集できます", 4200);
     }
   });
+  const restoreMascotFollowUp = (followUp) => {
+    const draft = input.value.trim();
+    input.value = draft && draft !== followUp.message ? `${followUp.message}\n\n${draft}` : followUp.message;
+    mergeMascotAttachments(followUp.attachments);
+    mascotSelectedSkillIds = [...new Set([...mascotSelectedSkillIds, ...(followUp.selectedSkillIds || [])])];
+    mascotSelectedMcpServerIds = [...new Set([...mascotSelectedMcpServerIds, ...(followUp.selectedMcpServerIds || [])])];
+    renderMascotSelectedSkills();
+    resizeInput();
+  };
+  const drainPendingMascotFollowUp = () => {
+    if (!pendingFollowUp || pendingFollowUp.interrupting || sending || localMascotSendPending) return;
+    queueMicrotask(() => {
+      const followUp = pendingFollowUp;
+      if (!followUp || followUp.interrupting || sending || localMascotSendPending) return;
+      pendingFollowUp = null;
+      sendMascotMessage(followUp.message, followUp.attachments, followUp.selectedSkillIds, followUp.selectedMcpServerIds);
+    });
+  };
   const sendMascotMessage = async (message, attachments = [], selectedSkillIds = [], selectedMcpServerIds = [], deliveryOptions = {}) => {
+    localMascotSendPending += 1;
     setSendingControls(true);
     const useActiveRealtime = hasRealtimeTransport();
     let streamOwnsBusyState = false;
@@ -1848,8 +1867,7 @@ window.addEventListener("DOMContentLoaded", () => {
     } catch (error) {
       const interrupted = /interrupt|cancel|abort|中断/i.test(String(error.message || ""));
       if (!interrupted) {
-        input.value = message;
-        resizeInput();
+        restoreMascotFollowUp({ message, attachments, selectedSkillIds, selectedMcpServerIds });
       }
       if (attachments.length) mergeMascotAttachments(attachments);
       if (selectedSkillIds.length) {
@@ -1861,13 +1879,12 @@ window.addEventListener("DOMContentLoaded", () => {
         ? appState?.interactionMode === "work" ? "作業を中断しました。履歴から内容を確認できます" : "応答を中断しました。続けて修正を送れます"
         : friendlyInteractionErrorMessage(error), 9000);
     } finally {
+      localMascotSendPending -= 1;
       if (!streamOwnsBusyState) {
         setSendingControls(false);
         input.focus();
-        const followUp = pendingFollowUp;
-        pendingFollowUp = null;
-        if (followUp) queueMicrotask(() => sendMascotMessage(followUp.message, followUp.attachments, followUp.selectedSkillIds, followUp.selectedMcpServerIds));
       }
+      drainPendingMascotFollowUp();
     }
   };
   const finishDetachedRealtimeWork = (workRunId = "") => {
@@ -1878,9 +1895,7 @@ window.addEventListener("DOMContentLoaded", () => {
     detachedRealtimeWorkRunId = "";
     setSendingControls(false);
     input.focus();
-    const followUp = pendingFollowUp;
-    pendingFollowUp = null;
-    if (followUp) queueMicrotask(() => sendMascotMessage(followUp.message, followUp.attachments, followUp.selectedSkillIds, followUp.selectedMcpServerIds));
+    drainPendingMascotFollowUp();
   };
 
   form.addEventListener("submit", async (event) => {
@@ -1963,6 +1978,7 @@ window.addEventListener("DOMContentLoaded", () => {
       return;
     }
     if (sending) {
+      let followUp = null;
       try {
         const route = await ipcRenderer.invoke("mascotInline:followUp", {
           message,
@@ -1978,19 +1994,19 @@ window.addEventListener("DOMContentLoaded", () => {
           return;
         }
         if (!route?.retryAsNewTurn) throw new Error(uiText("追加入力を反映できませんでした。", "The follow-up could not be applied."));
-        pendingFollowUp = { message, attachments, selectedSkillIds, selectedMcpServerIds };
+        followUp = { message, attachments, selectedSkillIds, selectedMcpServerIds, interrupting: true };
+        pendingFollowUp = followUp;
         stopTtsPlayback();
         stopButton.disabled = true;
         setStatus(uiText("この接続では差し込みに対応していないため、現在の応答を止めています…", "This connection cannot steer an active response, so the current response is being stopped…"), 30_000);
-        await ipcRenderer.invoke("mascotInline:interruptActive");
+        if (sending) await ipcRenderer.invoke("mascotInline:interruptActive");
+        followUp.interrupting = false;
+        drainPendingMascotFollowUp();
       } catch (error) {
-        pendingFollowUp = null;
-        input.value = message;
-        mergeMascotAttachments(attachments);
-        mascotSelectedSkillIds = [...new Set([...mascotSelectedSkillIds, ...selectedSkillIds])];
-        mascotSelectedMcpServerIds = [...new Set([...mascotSelectedMcpServerIds, ...selectedMcpServerIds])];
-        renderMascotSelectedSkills();
-        resizeInput();
+        if (!followUp || pendingFollowUp === followUp) {
+          pendingFollowUp = null;
+          restoreMascotFollowUp({ message, attachments, selectedSkillIds, selectedMcpServerIds });
+        }
         stopButton.disabled = false;
         setStatus(error.message, 5000);
       }
@@ -2001,6 +2017,7 @@ window.addEventListener("DOMContentLoaded", () => {
 
   stopButton.addEventListener("click", async () => {
     if (!sending || stopButton.disabled) return;
+    if (pendingFollowUp) restoreMascotFollowUp(pendingFollowUp);
     pendingFollowUp = null;
     stopTtsPlayback();
     stopButton.disabled = true;
@@ -2271,6 +2288,7 @@ window.addEventListener("DOMContentLoaded", () => {
   const waitingVoiceStatus = () => "音声待機中…そのまま話してください";
 
   const processVadTranscript = async (blob, provider) => {
+    const generation = vadGeneration;
     vadProcessing = true;
     setVadUi("processing");
     try {
@@ -2278,6 +2296,7 @@ window.addEventListener("DOMContentLoaded", () => {
         ? `${appState?.streamingSpeechModel?.label || "ReazonSpeech"}で確定中…`
         : provider === "sherpa-onnx" ? "sherpa-onnxで認識中…" : "OpenAIで文字起こし中…", 30_000);
       const transcript = String(await transcribeRecordedBlob(blob, provider) || "").trim();
+      if (!vadActive || generation !== vadGeneration) return;
       if (!transcript) {
         setStatus(waitingVoiceStatus(), 30_000);
         return;
@@ -2289,8 +2308,9 @@ window.addEventListener("DOMContentLoaded", () => {
       setStatus(`認識: ${command}`, 5000);
       beginAutoSendCountdown(command);
     } catch (error) {
-      setStatus(error.message, 5000);
+      if (generation === vadGeneration) setStatus(error.message, 5000);
     } finally {
+      if (generation !== vadGeneration) return;
       vadProcessing = false;
       if (vadActive) {
         vadResumeAt = performance.now() + Math.max(700, autoSendCountdownEndsAt ? autoSendCountdownEndsAt - performance.now() + 250 : 0);
@@ -2392,6 +2412,7 @@ window.addEventListener("DOMContentLoaded", () => {
 
   const finishVadUtterance = (sileroSegmentSamples = null) => {
     if (!vadSpeaking) return;
+    const generation = vadGeneration;
     vadSpeaking = false;
     setVadUi("processing");
     const chunks = vadChunks;
@@ -2407,6 +2428,7 @@ window.addEventListener("DOMContentLoaded", () => {
       // regular sherpa-onnx input.
       vadStreamingQueue.catch(() => {}).then(async () => {
         await ipcRenderer.invoke("mascotInline:streamingSpeechCancel", { sessionId }).catch(() => {});
+        if (!vadActive || generation !== vadGeneration) return "";
         if (vadStreamingSessionId === sessionId) vadStreamingSessionId = "";
         const exactSegment = sileroSegmentSamples instanceof Float32Array
           ? sileroSegmentSamples
@@ -2423,10 +2445,12 @@ window.addEventListener("DOMContentLoaded", () => {
         return transcribeRecordedBlob(blob, "streaming-local");
       })
         .then((result) => {
+          if (!vadActive || generation !== vadGeneration) return;
           const text = typeof result === "string" ? result : result?.text;
           return processVadRecognizedText(text);
         })
         .catch((error) => {
+          if (generation !== vadGeneration) return;
           if (vadStreamingSessionId === sessionId) vadStreamingSessionId = "";
           ipcRenderer.invoke("mascotInline:streamingSpeechCancel", { sessionId }).catch(() => {});
           setStatus(`音声認識: ${error.message}`, 5000);
@@ -2496,7 +2520,9 @@ window.addEventListener("DOMContentLoaded", () => {
   };
 
   const stopVadListening = () => {
+    clearAutoSendCountdown();
     if (!vadActive && !vadStream) return;
+    vadGeneration += 1;
     vadActive = false;
     cancelAnimationFrame(vadFrame);
     vadFrame = 0;
@@ -2509,7 +2535,8 @@ window.addEventListener("DOMContentLoaded", () => {
       ipcRenderer.invoke("mascotInline:streamingSpeechCancel", { sessionId: vadStreamingSessionId }).catch(() => {});
       vadStreamingSessionId = "";
     }
-    if (!vadProcessing) cleanupVadMedia();
+    vadProcessing = false;
+    cleanupVadMedia();
     setVadUi("off");
   };
 
@@ -2616,28 +2643,31 @@ window.addEventListener("DOMContentLoaded", () => {
       await stopManualStreamingSpeech();
       return;
     }
-    recordedSpeechProvider = provider;
-    recordedSpeechChunks = [];
-    recordedSpeechStream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true }, video: false });
-    recordedSpeechRecorder = new MediaRecorder(recordedSpeechStream);
-    recordedSpeechRecorder.ondataavailable = (event) => { if (event.data.size) recordedSpeechChunks.push(event.data); };
-    recordedSpeechRecorder.onstop = async () => {
+    const chunks = [];
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true }, video: false });
+    const recorder = new MediaRecorder(stream);
+    recordedSpeechStream = stream;
+    recordedSpeechRecorder = recorder;
+    recorder.ondataavailable = (event) => { if (event.data.size) chunks.push(event.data); };
+    recorder.onstop = async () => {
+      for (const track of stream.getTracks()) track.stop();
+      if (recordedSpeechStream === stream) recordedSpeechStream = null;
+      if (recordedSpeechRecorder !== recorder) return;
       micButton.setAttribute("aria-pressed", "false");
       try {
         setStatus(provider === "sherpa-onnx" ? "sherpa-onnxで認識中…" : "OpenAIで文字起こし中…", 30_000);
-        const blob = new Blob(recordedSpeechChunks, { type: recordedSpeechRecorder.mimeType || "audio/webm" });
-        input.value = await transcribeRecordedBlob(blob, recordedSpeechProvider);
+        const blob = new Blob(chunks, { type: recorder.mimeType || "audio/webm" });
+        const transcript = await transcribeRecordedBlob(blob, provider);
+        if (recordedSpeechRecorder !== recorder) return;
+        input.value = transcript;
         resizeInput();
         input.focus();
         setStatus("音声を入力しました");
       } catch (error) {
-        setStatus(error.message, 5000);
-      } finally {
-        for (const track of recordedSpeechStream?.getTracks?.() || []) track.stop();
-        recordedSpeechStream = null;
+        if (recordedSpeechRecorder === recorder) setStatus(error.message, 5000);
       }
     };
-    recordedSpeechRecorder.start();
+    recorder.start();
     micButton.setAttribute("aria-pressed", "true");
     setStatus("録音中…もう一度押すと認識", 30_000);
   };
@@ -3337,7 +3367,7 @@ window.addEventListener("DOMContentLoaded", () => {
       else setWorkActivity("");
       streamWorkMode = false;
       streamHasActivity = false;
-    } else if (payload?.phase === "error") {
+    } else if (["error", "interrupted"].includes(payload?.phase)) {
       stopTtsPlayback();
       streamCurrentSpeechText = "";
       if (!bubble.classList.contains("is-expanded") && streamFullText) bubbleText.textContent = normalizeDisplayText(streamFullText);
@@ -3349,6 +3379,7 @@ window.addEventListener("DOMContentLoaded", () => {
       streamWorkMode = false;
       streamHasActivity = false;
     }
+    if (["done", "error", "interrupted"].includes(payload?.phase)) drainPendingMascotFollowUp();
     if (!ttsBusy) ipcRenderer.invoke("mascotInline:voice", 0).catch(() => {});
   });
   ipcRenderer.on("mascot:realtimeEvent", async (_event, message) => {

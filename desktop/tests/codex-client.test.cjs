@@ -477,8 +477,12 @@ test("Codex client releases an orphaned active turn even after its collector is 
   assert.equal(client.hasActiveTurn(), false);
 });
 
-test("Codex client recovers only orphaned normal-message ownership", () => {
+test("Codex client recovers orphaned ownership only with terminal evidence", () => {
   const client = new CodexAppServerClient();
+  client.handleLine(JSON.stringify({
+    method: "turn/completed",
+    params: { turn: { id: "turn-message-orphan", status: "completed" } },
+  }));
   client.activeTurnId = "turn-message-orphan";
   client.activeTurnSource = "message";
   assert.equal(client.recoverOrphanedActiveTurn(), true);

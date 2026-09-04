@@ -6,30 +6,58 @@ class AtomEchoHub {
   constructor({ onPttStart, onPcmChunk, onPttEnd, onInterrupt, onWifiStatus, onCaptureStatus, onStatus = () => {}, logger = null } = {}) {
     this.enabled = false;
     this.onStatus = onStatus;
+    this.onInterrupt = onInterrupt;
     this.inputSource = "";
+    this.inputCapture = null;
     this.captureMode = "push-to-talk";
     this.vadThreshold = 120;
     this.wifiSetupStatus = {};
     const active = (source) => this.inputSource === source || (!this.inputSource && this.activeSource() === source);
     const callbacks = (source) => ({
       onPttStart: async () => {
-        if (this.activeSource() !== source) return;
+        if (!this.enabled || this.activeSource() !== source) return;
+        const previous = this.inputCapture;
+        if (previous && !previous.endPending) throw new Error("ATOM Echo is already capturing audio.");
+        const capture = { source, endPending: false, finished: false };
+        this.inputCapture = capture;
         this.inputSource = source;
-        return onPttStart?.();
+        try {
+          return await onPttStart?.();
+        } catch (error) {
+          // Recognition may still own the previous response. Restore it only
+          // if it has not completed and this start was not interrupted.
+          if (this.releaseInput(capture) && previous && !previous.finished) {
+            this.inputCapture = previous;
+            this.inputSource = previous.source;
+          }
+          throw error;
+        }
       },
-      onPcmChunk: async (chunk) => active(source) ? onPcmChunk?.(chunk) : undefined,
+      onPcmChunk: async (chunk) => this.inputCapture?.source === source && !this.inputCapture.endPending
+        ? onPcmChunk?.(chunk) : undefined,
       onPttEnd: async () => {
-        if (!active(source)) return;
+        const capture = this.inputCapture;
+        if (!capture || capture.source !== source || capture.endPending) return;
+        capture.endPending = true;
         try { return await onPttEnd?.(); }
-        finally { this.inputSource = ""; }
+        finally { this.releaseInput(capture); }
       },
       onInterrupt: async () => {
-        if (!active(source)) return;
-        this.inputSource = "";
+        // A response may still belong to USB after Wi-Fi becomes preferred.
+        if (!active(source) && !(this.inputCapture?.endPending && this.activeSource() === source)) return;
+        this.releaseInput(this.inputCapture);
         return onInterrupt?.();
       },
       onCaptureStatus: async (status) => active(source) ? onCaptureStatus?.({ ...status, source }) : undefined,
-      onStatus: () => this.onStatus(this.status()),
+      onStatus: () => {
+        const sourceStatus = source === "wifi" ? this.wifi?.status() : this.serial?.status();
+        if (this.inputCapture?.source === source && sourceStatus && !sourceStatus.connected) {
+          this.interruptInput().catch((error) => {
+            logger?.("warn", `ATOM Echo ${source} capture disconnect cleanup failed: ${error.message}`);
+          });
+        }
+        this.onStatus(this.status());
+      },
       logger,
     });
     this.serial = new AtomEchoSerialGateway({
@@ -41,6 +69,21 @@ class AtomEchoHub {
       },
     });
     this.wifi = new AtomEchoWifiGateway(callbacks("wifi"));
+  }
+
+  releaseInput(capture) {
+    // Object identity distinguishes successive utterances on one transport.
+    if (!capture) return false;
+    capture.finished = true;
+    if (this.inputCapture !== capture) return false;
+    this.inputCapture = null;
+    this.inputSource = "";
+    return true;
+  }
+
+  async interruptInput() {
+    if (!this.releaseInput(this.inputCapture)) return;
+    await this.onInterrupt?.();
   }
 
   activeSource() {
@@ -83,7 +126,7 @@ class AtomEchoHub {
     this.captureMode = captureMode === "hands-free" ? "hands-free" : "push-to-talk";
     this.vadThreshold = Math.max(80, Math.min(800, Math.round(Number(vadThreshold) || 120)));
     if (!this.enabled) {
-      await Promise.all([this.serial.configure({ enabled: false }), this.wifi.configure({ enabled: false })]);
+      await this.disconnect();
       this.onStatus(this.status());
       return this.status();
     }
@@ -155,8 +198,11 @@ class AtomEchoHub {
 
   async disconnect() {
     this.enabled = false;
-    this.inputSource = "";
-    await Promise.all([this.serial.configure({ enabled: false }), this.wifi.configure({ enabled: false })]);
+    await Promise.all([
+      this.interruptInput(),
+      this.serial.configure({ enabled: false }),
+      this.wifi.configure({ enabled: false }),
+    ]);
   }
 }
 
