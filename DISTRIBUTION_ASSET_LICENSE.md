@@ -10,6 +10,9 @@ The source illustrations and derived expression, mouth, eye, and hair-layer
 variations for Kohaku, Sepia, Towa, and Sage were created for this project with
 OpenAI `gpt-image-2` under the project author's direction. They are not the
 legacy demo characters from the upstream PuruPuru PNGTuber repository.
+The RLCD 4.2 monochrome manga-ink and expression sets were likewise generated
+from the applicable character references. AI Nike-chan's RLCD derivatives
+remain covered only by its separate permission and asset notice below.
 
 The CharaDock application icon was also created for this project with OpenAI
 image generation under the project author's direction, then resized and
@@ -48,7 +51,7 @@ use every image they add to the application.
 
 ## AI Nike-chan
 
-AIニケちゃん / AI Nike-chan and its derived eye and mouth variants are bundled
+AIニケちゃん / AI Nike-chan and its derived desktop and RLCD expression variants are bundled
 with permission. They are not licensed under Apache License 2.0 and are not
 covered by the project-original asset grant above.
 

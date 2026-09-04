@@ -2,7 +2,11 @@
 const assert = require("node:assert/strict");
 const test = require("node:test");
 
-const { isMissingActiveTurnError, normalConversationSubmitRoute } = require("../lib/conversation-submit.cjs");
+const {
+  isMissingActiveTurnError,
+  normalConversationSubmitRoute,
+  normalConversationSubmitRouteForCapturedInput,
+} = require("../lib/conversation-submit.cjs");
 
 test("normal submit follows a delegated turn after Live has closed", () => {
   assert.equal(normalConversationSubmitRoute({
@@ -49,4 +53,22 @@ test("a follow-up that races turn completion can retry as a new turn", () => {
   assert.equal(isMissingActiveTurnError(new Error("no active turn to steer")), true);
   assert.equal(isMissingActiveTurnError(new Error("no active turn to interrupt")), true);
   assert.equal(isMissingActiveTurnError(new Error("network unavailable")), false);
+});
+
+test("captured ESP32 new-turn input ignores only ownerless stale presentation state", () => {
+  assert.equal(normalConversationSubmitRouteForCapturedInput({
+    turnStatus: "speaking",
+  }, "new-turn"), "new-turn");
+  assert.equal(normalConversationSubmitRouteForCapturedInput({
+    activeInteraction: true,
+    turnStatus: "speaking",
+  }, "new-turn"), "follow-up");
+  assert.equal(normalConversationSubmitRouteForCapturedInput({
+    activeRealtime: true,
+    turnStatus: "speaking",
+  }, "new-turn"), "active-live");
+  assert.equal(normalConversationSubmitRouteForCapturedInput({
+    conflictingInteraction: true,
+    turnStatus: "speaking",
+  }, "new-turn"), "busy");
 });

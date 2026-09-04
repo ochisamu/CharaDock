@@ -21,6 +21,12 @@ const AVATAR_FILES = Object.freeze({
   eyesClosedMouthHalf: "eyes-closed-mouth-half.png",
   eyesClosedMouthOpen: "eyes-closed-mouth-open.png",
 });
+const RLCD42_FILES = Object.freeze({
+  neutral: "rlcd42-portrait.png",
+  blink: "rlcd42-portrait-blink.png",
+  mouthHalf: "rlcd42-portrait-mouth-half.png",
+  mouthOpen: "rlcd42-portrait-mouth-open.png",
+});
 
 let crc32Table;
 
@@ -128,6 +134,69 @@ function validatePng(bytes, label, expectedSize = null) {
   return { width, height };
 }
 
+function validateRlcd42PortraitSet(images, { required = false } = {}) {
+  const present = Object.entries(RLCD42_FILES).filter(([key]) => Buffer.isBuffer(images?.[key]));
+  if (!present.length && !required) return null;
+  const missing = Object.entries(RLCD42_FILES).filter(([key]) => !Buffer.isBuffer(images?.[key])).map(([, name]) => name);
+  if (missing.length) throw new Error(`RLCD 4.2表情画像が不足しています: ${missing.join(", ")}`);
+  let imageSize = null;
+  const hashes = new Set();
+  for (const [key, outputName] of Object.entries(RLCD42_FILES)) {
+    const bytes = images[key];
+    imageSize = validatePng(bytes, outputName, imageSize);
+    const aspect = imageSize.width / imageSize.height;
+    if (imageSize.width < 400 || imageSize.height < 300 || Math.abs(aspect - (4 / 3)) > 0.01) {
+      throw new Error(`${outputName}は400x300以上の4:3画像にしてください。`);
+    }
+    const png = PNG.sync.read(bytes, { checkCRC: true });
+    let dark = 0;
+    let light = 0;
+    let opaque = 0;
+    for (let index = 0; index < png.data.length; index += 4) {
+      const luminance = png.data[index] * .2126 + png.data[index + 1] * .7152 + png.data[index + 2] * .0722;
+      if (luminance < 96) dark += 1;
+      if (luminance > 224) light += 1;
+      if (png.data[index + 3] > 240) opaque += 1;
+    }
+    const pixels = png.width * png.height;
+    if (dark / pixels < .005 || dark / pixels > .4 || light / pixels < .65 || opaque / pixels < .9) {
+      throw new Error(`${outputName}は不透明な白地に、読みやすい黒輪郭と選択的な漫画インクで描いてください。`);
+    }
+    hashes.add(crypto.createHash("sha256").update(bytes).digest("hex"));
+  }
+  if (hashes.size !== Object.keys(RLCD42_FILES).length) {
+    throw new Error("RLCD 4.2の通常・瞬き・口差分は、それぞれ異なる画像にしてください。");
+  }
+  return { imageSize };
+}
+
+function rlcd42PackageImages(entries, manifest) {
+  const configured = manifest.rlcd42 && typeof manifest.rlcd42 === "object" ? manifest.rlcd42 : null;
+  if (configured) {
+    const result = {};
+    for (const [key, outputName] of Object.entries(RLCD42_FILES)) {
+      const configuredPath = configured?.[key];
+      if (configuredPath) result[key] = entries.get(assertSafePackagePath(configuredPath));
+    }
+    validateRlcd42PortraitSet(result, { required: true });
+    return result;
+  }
+  for (const prefix of ["rlcd42/", ""]) {
+    const result = {};
+    let found = 0;
+    for (const [key, outputName] of Object.entries(RLCD42_FILES)) {
+      const bytes = entries.get(`${prefix}${outputName}`);
+      if (!bytes) continue;
+      result[key] = bytes;
+      found += 1;
+    }
+    if (!found) continue;
+    validateRlcd42PortraitSet(result, { required: true });
+    return result;
+  }
+  return null;
+}
+
 function parsePuruPuruPackage(input) {
   const entries = readStoredZip(input);
   const manifest = parseJsonEntry(entries, "manifest.json", 128 * 1024);
@@ -152,6 +221,7 @@ function parsePuruPuruPackage(input) {
       thumbnail = candidate;
     }
   }
+  const rlcd42 = rlcd42PackageImages(entries, manifest);
   const hydratedSettings = structuredClone(settings);
   hydratedSettings.avatarImageSize = imageSize;
   if (Array.isArray(hydratedSettings.itemLayers)) {
@@ -164,7 +234,7 @@ function parsePuruPuruPackage(input) {
       return { ...layer, src: `data:image/png;base64,${item.toString("base64")}` };
     });
   }
-  return { manifest, settings: hydratedSettings, avatar, thumbnail, imageSize };
+  return { manifest, settings: hydratedSettings, avatar, thumbnail, imageSize, rlcd42 };
 }
 
 function clampNumber(value, fallback, minimum, maximum) {
@@ -184,6 +254,9 @@ function installPuruPuruCharacter({ bytes, fileName, userDataDirectory }) {
   fs.mkdirSync(staging, { recursive: true });
   try {
     for (const [key, outputName] of Object.entries(AVATAR_FILES)) fs.writeFileSync(path.join(staging, outputName), parsed.avatar[key]);
+    if (parsed.rlcd42) {
+      for (const [key, outputName] of Object.entries(RLCD42_FILES)) fs.writeFileSync(path.join(staging, outputName), parsed.rlcd42[key]);
+    }
     fs.writeFileSync(path.join(staging, "thumbnail.png"), parsed.thumbnail);
     fs.writeFileSync(path.join(staging, "default-settings.json"), `${JSON.stringify(parsed.settings, null, 2)}\n`);
     fs.writeFileSync(path.join(staging, "character.json"), `${JSON.stringify({ schemaVersion: 1, name: packageName, personality, source: "purupuru-import" }, null, 2)}\n`);
@@ -270,10 +343,12 @@ function removeGeneratedCharacterDirectory(userDataDirectory, directory) {
 }
 
 module.exports = {
+  RLCD42_FILES,
   createGeneratedCharacterRemovalPlan,
   generatedCharactersRoot,
   installPuruPuruCharacter,
   parsePuruPuruPackage,
   removeGeneratedCharacterDirectory,
   resolveGeneratedCharacterDirectory,
+  validateRlcd42PortraitSet,
 };

@@ -126,7 +126,8 @@ const DEFAULTS = Object.freeze({
   atomEchoOutputGain: 100,
   atomEchoCaptureMode: "push-to-talk",
   atomEchoVadThreshold: 120,
-  atomEchoLiveIdleTimeoutEnabled: false,
+  atomEchoLiveIdleTimeoutEnabled: true,
+  deviceProfiles: {},
   onboardingComplete: false,
   positionLocked: false,
   edgeSnap: true,
@@ -158,6 +159,38 @@ const LEGACY_NIKE_CHARACTER_ID = "user-avatar-ai-nike-smooth-v2";
 const BUILT_IN_NIKE_CHARACTER_ID = "nike-avatar";
 const LEGACY_KOHAKU_DISPLAY_NAME = "琥珀";
 const BUILT_IN_KOHAKU_DISPLAY_NAME = "コハク";
+
+function normalizeDeviceProfiles(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  return Object.fromEntries(Object.entries(value).slice(0, 16).flatMap(([profileId, profile]) => {
+    const id = String(profileId || "").trim().slice(0, 80);
+    if (!/^[A-Za-z0-9._:-]+$/.test(id) || !profile || typeof profile !== "object" || Array.isArray(profile)) return [];
+    const type = String(profile.type || "").trim().slice(0, 80);
+    if (type !== "waveshare-rlcd-4.2") return [];
+    const requestedPort = String(profile.port || "");
+    const port = /^(?:COM\d{1,3}|\/dev\/[A-Za-z0-9._/-]{1,100})$/i.test(requestedPort)
+      ? requestedPort.slice(0, 120)
+      : "";
+    return [[id, {
+      type,
+      name: String(profile.name || "RLCD 4.2").replace(/[\u0000-\u001f\u007f]/g, " ").trim().slice(0, 60) || "RLCD 4.2",
+      enabled: profile.enabled === true,
+      transport: ["auto", "usb", "wifi"].includes(profile.transport) ? profile.transport : "auto",
+      port,
+      artStyle: profile.artStyle === "illustration" ? "illustration" : "manga",
+      captionMode: profile.captionMode === "off" ? "off" : "auto",
+      speakerEnabled: typeof profile.speakerEnabled === "boolean" ? profile.speakerEnabled : true,
+      outputGain: Math.max(50, Math.min(150, Math.round(Number(profile.outputGain) || 100))),
+      microphoneEnabled: typeof profile.microphoneEnabled === "boolean" ? profile.microphoneEnabled : true,
+      captureMode: profile.captureMode === "hands-free" ? "hands-free" : "push-to-talk",
+      vadThreshold: Math.max(80, Math.min(800, Math.round(Number(profile.vadThreshold) || 120))),
+      deviceId: /^cd-rlcd-[a-f0-9]{12}$/.test(String(profile.deviceId || "").toLowerCase())
+        ? String(profile.deviceId).toLowerCase()
+        : "",
+      wifiSsid: String(profile.wifiSsid || "").replace(/[\u0000-\u001f\u007f]/g, "").slice(0, 32),
+    }]];
+  }));
+}
 
 function normalizeConversationHistories(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
@@ -329,6 +362,7 @@ class Preferences {
     };
     this.sessionApiKey = "";
     this.sessionAtomEchoPairingToken = "";
+    this.sessionDevicePairingTokens = new Map();
     this.sessionMcpApiKeys = new Map();
     this.load();
   }
@@ -401,9 +435,10 @@ class Preferences {
       this.data.atomEchoOutputGain = Math.max(50, Math.min(150, Math.round(Number(this.data.atomEchoOutputGain) || 100)));
       this.data.atomEchoCaptureMode = this.data.atomEchoCaptureMode === "hands-free" ? "hands-free" : "push-to-talk";
       this.data.atomEchoVadThreshold = Math.max(80, Math.min(800, Math.round(Number(this.data.atomEchoVadThreshold) || 120)));
-      if (typeof this.data.atomEchoLiveIdleTimeoutEnabled !== "boolean") this.data.atomEchoLiveIdleTimeoutEnabled = false;
+      if (typeof this.data.atomEchoLiveIdleTimeoutEnabled !== "boolean") this.data.atomEchoLiveIdleTimeoutEnabled = true;
       delete this.data.atomEchoAudioOutput;
       delete this.data.atomEchoBluetoothSpeakerName;
+      this.data.deviceProfiles = normalizeDeviceProfiles(this.data.deviceProfiles);
       if (typeof this.data.englishPronunciationEnabled !== "boolean") this.data.englishPronunciationEnabled = true;
       if (typeof this.data.englishPronunciationDictionary !== "string") this.data.englishPronunciationDictionary = "";
       this.data.englishPronunciationDictionary = this.data.englishPronunciationDictionary.slice(0, 12_000);
@@ -594,6 +629,13 @@ class Preferences {
       if (typeof parsed.encryptedAtomEchoPairingToken === "string" && parsed.encryptedAtomEchoPairingToken.length <= 8_192) {
         this.data.encryptedAtomEchoPairingToken = parsed.encryptedAtomEchoPairingToken;
       }
+      this.data.encryptedDevicePairingTokens = parsed.encryptedDevicePairingTokens
+        && typeof parsed.encryptedDevicePairingTokens === "object"
+        && !Array.isArray(parsed.encryptedDevicePairingTokens)
+        ? Object.fromEntries(Object.entries(parsed.encryptedDevicePairingTokens).slice(0, 16).flatMap(([profileId, encrypted]) =>
+          /^[A-Za-z0-9._:-]{1,80}$/.test(profileId) && typeof encrypted === "string" && encrypted.length <= 8_192
+            ? [[profileId, encrypted]] : []))
+        : {};
       this.data.encryptedMcpApiKeys = parsed.encryptedMcpApiKeys && typeof parsed.encryptedMcpApiKeys === "object" && !Array.isArray(parsed.encryptedMcpApiKeys)
         ? Object.fromEntries(Object.entries(parsed.encryptedMcpApiKeys).flatMap(([serverId, encrypted]) =>
           normalizeMcpServerId(serverId) && typeof encrypted === "string" && encrypted.length <= 8_192
@@ -629,13 +671,16 @@ class Preferences {
     state.mcpApiKeyPersistence = this.canEncrypt() ? "encrypted" : "session";
     state.atomEchoPaired = Boolean(this.data.atomEchoDeviceId && this.getAtomEchoPairingToken());
     state.atomEchoPairingPersistence = this.canEncrypt() ? "encrypted" : "session";
+    state.deviceProfilePairingPersistence = this.canEncrypt() ? "encrypted" : "session";
     return state;
   }
 
   patch(values = {}) {
     for (const key of PUBLIC_KEYS) {
       if (key === "mcpServers" || key === "mcpAssignments") continue;
-      if (Object.prototype.hasOwnProperty.call(values, key)) this.data[key] = values[key];
+      if (Object.prototype.hasOwnProperty.call(values, key)) {
+        this.data[key] = key === "deviceProfiles" ? normalizeDeviceProfiles(values[key]) : values[key];
+      }
     }
     this.save();
     return this.publicState();
@@ -693,6 +738,38 @@ class Preferences {
       return /^[a-f0-9]{64}$/.test(value) ? value : "";
     } catch (error) {
       console.warn("ATOM Echo pairing token decrypt failed:", error);
+      return "";
+    }
+  }
+
+  setDevicePairingToken(profileId, token) {
+    const id = String(profileId || "");
+    const normalized = String(token || "").toLowerCase();
+    if (!/^[A-Za-z0-9._:-]{1,80}$/.test(id)) throw new Error("ESP32デバイスのプロファイルが正しくありません。");
+    if (normalized && !/^[a-f0-9]{64}$/.test(normalized)) throw new Error("ESP32デバイスのペアリング情報が正しくありません。");
+    this.data.encryptedDevicePairingTokens ||= {};
+    delete this.data.encryptedDevicePairingTokens[id];
+    if (normalized) this.sessionDevicePairingTokens.set(id, normalized);
+    else this.sessionDevicePairingTokens.delete(id);
+    if (normalized && this.canEncrypt()) {
+      this.data.encryptedDevicePairingTokens[id] = this.safeStorage.encryptString(normalized).toString("base64");
+      this.sessionDevicePairingTokens.delete(id);
+    }
+    this.save();
+    return this.publicState();
+  }
+
+  getDevicePairingToken(profileId) {
+    const id = String(profileId || "");
+    if (!/^[A-Za-z0-9._:-]{1,80}$/.test(id)) return "";
+    if (this.sessionDevicePairingTokens.has(id)) return this.sessionDevicePairingTokens.get(id) || "";
+    const encrypted = this.data.encryptedDevicePairingTokens?.[id];
+    if (!encrypted || !this.canEncrypt()) return "";
+    try {
+      const value = this.safeStorage.decryptString(Buffer.from(encrypted, "base64"));
+      return /^[a-f0-9]{64}$/.test(value) ? value : "";
+    } catch (error) {
+      console.warn("ESP32 device pairing token decrypt failed:", error);
       return "";
     }
   }
@@ -840,4 +917,4 @@ class Preferences {
   }
 }
 
-module.exports = { DEFAULTS, Preferences, migrateBundledTowaPreferenceData, migrateBundledNikePreferenceData, normalizeConversationHistories, normalizeWorkHistory };
+module.exports = { DEFAULTS, Preferences, migrateBundledTowaPreferenceData, migrateBundledNikePreferenceData, normalizeConversationHistories, normalizeDeviceProfiles, normalizeWorkHistory };

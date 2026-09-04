@@ -67,7 +67,7 @@ function storedZip(files) {
   return Buffer.concat([...localParts, central, end]);
 }
 
-function testPuruPuruPackage() {
+function testPuruPuruPackage({ rlcd42 = false, partialRlcd42 = false } = {}) {
   const image = new PNG({ width: 4, height: 6 });
   image.data.fill(255);
   const png = PNG.sync.write(image);
@@ -85,6 +85,27 @@ function testPuruPuruPackage() {
   files["thumbnail.png"] = png;
   files["manifest.json"] = JSON.stringify({ format: "purupuru-avatar-package", formatVersion: 1, characterName: "テスト", settings: "settings.json", thumbnail: "thumbnail.png", avatar });
   files["settings.json"] = JSON.stringify({ type: "purupuru-pngtuber-settings", version: 2, state: { avatarSize: 125, hairSpring: 60 } });
+  if (rlcd42 || partialRlcd42) {
+    const rlcdNames = [
+      "rlcd42-portrait.png",
+      "rlcd42-portrait-blink.png",
+      "rlcd42-portrait-mouth-half.png",
+      "rlcd42-portrait-mouth-open.png",
+    ];
+    for (let imageIndex = 0; imageIndex < (partialRlcd42 ? 1 : rlcdNames.length); imageIndex += 1) {
+      const portrait = new PNG({ width: 400, height: 300 });
+      portrait.data.fill(255);
+      for (let y = 40; y < 260; y += 1) {
+        for (let x = 56 + imageIndex * 3; x < 64 + imageIndex * 3; x += 1) {
+          const pixel = (y * 400 + x) * 4;
+          portrait.data[pixel] = 0;
+          portrait.data[pixel + 1] = 0;
+          portrait.data[pixel + 2] = 0;
+        }
+      }
+      files[`rlcd42/${rlcdNames[imageIndex]}`] = PNG.sync.write(portrait);
+    }
+  }
   return storedZip(files);
 }
 
@@ -143,6 +164,25 @@ test(".purupuru import validates and installs app-owned avatar files", () => {
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
+});
+
+test(".purupuru import preserves a complete dedicated RLCD 4.2 animation set", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "charadock-import-rlcd42-"));
+  try {
+    const packageBytes = testPuruPuruPackage({ rlcd42: true });
+    const parsed = parsePuruPuruPackage(packageBytes);
+    assert.deepEqual(Object.keys(parsed.rlcd42), ["neutral", "blink", "mouthHalf", "mouthOpen"]);
+    const character = installPuruPuruCharacter({ bytes: packageBytes, fileName: "rlcd.purupuru", userDataDirectory: root });
+    for (const name of ["rlcd42-portrait.png", "rlcd42-portrait-blink.png", "rlcd42-portrait-mouth-half.png", "rlcd42-portrait-mouth-open.png"]) {
+      assert.equal(fs.existsSync(path.join(character.assetDir, name)), true, `${name} should be installed`);
+    }
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test(".purupuru import rejects a partial RLCD 4.2 animation set", () => {
+  assert.throws(() => parsePuruPuruPackage(testPuruPuruPackage({ partialRlcd42: true })), /表情画像が不足/);
 });
 
 test(".purupuru import rejects traversal paths before writing", () => {

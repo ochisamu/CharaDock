@@ -26,6 +26,17 @@ function normalConversationSubmitRoute({
   return "new-turn";
 }
 
+function normalConversationSubmitRouteForCapturedInput(options = {}, capturedSubmitRoute = "") {
+  // A physical PTT press resolves its route before local transcription. If no
+  // actual owner appears while that audio is decoded, do not let a stale
+  // presentation-only thinking/speaking status reject the recognized text.
+  // Active turns, mode conflicts, and Live retain their normal precedence.
+  return normalConversationSubmitRoute({
+    ...options,
+    turnStatus: capturedSubmitRoute === "new-turn" ? "idle" : options.turnStatus,
+  });
+}
+
 function isMissingActiveTurnError(error) {
   return /no active turn to (?:steer|interrupt)/i.test(String(error?.message || error || ""));
 }
@@ -34,4 +45,5 @@ module.exports = {
   ACTIVE_TURN_STATUSES,
   isMissingActiveTurnError,
   normalConversationSubmitRoute,
+  normalConversationSubmitRouteForCapturedInput,
 };

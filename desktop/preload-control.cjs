@@ -12,6 +12,12 @@ contextBridge.exposeInMainWorld("mascotDesktop", {
   setAtomEchoConfig: (settings) => ipcRenderer.invoke("atomEcho:setConfig", settings),
   provisionAtomEchoWifi: (settings) => ipcRenderer.invoke("atomEcho:provisionWifi", settings),
   testAtomEchoSpeaker: () => ipcRenderer.invoke("atomEcho:testSpeaker"),
+  listRlcd42Ports: () => ipcRenderer.invoke("rlcd42:listPorts"),
+  setRlcd42Config: (settings) => ipcRenderer.invoke("rlcd42:setConfig", settings),
+  provisionRlcd42Wifi: (settings) => ipcRenderer.invoke("rlcd42:provisionWifi", settings),
+  syncRlcd42Display: () => ipcRenderer.invoke("rlcd42:syncDisplay"),
+  testRlcd42Speaker: () => ipcRenderer.invoke("rlcd42:testSpeaker"),
+  stopRlcd42Speaker: () => ipcRenderer.invoke("rlcd42:stopSpeaker"),
   regenerateRemotePairing: () => ipcRenderer.invoke("remote:regeneratePairing"),
   revokeRemoteSessions: () => ipcRenderer.invoke("remote:revokeAll"),
   revokeRemoteSession: (sessionId) => ipcRenderer.invoke("remote:revokeSession", sessionId),
@@ -150,6 +156,11 @@ contextBridge.exposeInMainWorld("mascotDesktop", {
     const listener = (_event, payload) => callback(payload);
     ipcRenderer.on("atomEcho:captureStatus", listener);
     return () => ipcRenderer.removeListener("atomEcho:captureStatus", listener);
+  },
+  onRlcd42CaptureStatus: (callback) => {
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on("rlcd42:captureStatus", listener);
+    return () => ipcRenderer.removeListener("rlcd42:captureStatus", listener);
   },
   onNavigateSettings: (callback) => {
     const listener = (_event, payload) => callback(payload);

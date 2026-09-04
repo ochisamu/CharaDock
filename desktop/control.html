@@ -193,7 +193,7 @@
       <section class="page" data-page-panel="esp32">
         <header class="page-header"><div><p class="eyebrow">CharaDock Devices</p><h1>ESP32デバイス</h1></div></header>
         <p class="page-lead">キャラクターをPCの外へ連れ出す専用デバイスを管理します。会話・Work・声・キャラクターはPC版の設定を引き継ぎます。</p>
-        <section id="atomEchoCard" class="card settings-card atom-echo-card" aria-labelledby="atomEchoTitle">
+        <section id="atomEchoCard" class="card settings-card esp32-device-card atom-echo-card" aria-labelledby="atomEchoTitle">
           <div class="section-row">
             <div><p class="eyebrow">Voice Satellite</p><strong id="atomEchoTitle">ATOM Echo</strong><small>Wi-Fiで話しかけ、選択中のキャラクターの声を再生します</small></div>
             <span id="atomEchoStatusBadge" class="setup-state-badge">停止中</span>
@@ -217,7 +217,7 @@
               <label id="atomEchoVadThresholdSettings" class="parameter-slider"><span><strong>開始しきい値</strong><output id="atomEchoVadThresholdOutput">120 · 高感度</output></span><input id="atomEchoVadThresholdInput" type="range" min="80" max="800" step="20" value="120" /></label>
               <p id="atomEchoVadStatus" class="inline-status" role="status">小さい値ほど離れた声を拾いやすくなります。周囲の音には自動で追従します。</p>
               <p class="inline-status">ハンズフリーでは、応答再生中を除いてマイクが待受します。青いLEDが待受、シアンが発話開始の目印です。</p>
-              <label class="switch-row atom-echo-live-cost-switch"><span><strong>5分使わなければLiveを終了</strong><small>GPT-Liveの接続だけを閉じます。次に話すと自動で再接続します（初期状態はOFF）</small></span><input id="atomEchoLiveIdleTimeoutToggle" type="checkbox" /><i></i></label>
+              <label class="switch-row atom-echo-live-cost-switch"><span><strong>5分使わなければLiveを終了</strong><small>GPT-Liveの接続だけを閉じます。次に話すと自動で再接続します（初期状態はON）</small></span><input id="atomEchoLiveIdleTimeoutToggle" type="checkbox" /><i></i></label>
             </section>
             <section class="remote-tailscale-card" aria-labelledby="atomEchoAudioOutputTitle">
               <div class="section-row"><div><strong id="atomEchoAudioOutputTitle">内蔵スピーカー</strong><small>キャラクターの声に合わせて、PC側で音割れと不要な低音を抑えてから再生します</small></div><span class="setup-state-badge is-ready">音声向け</span></div>
@@ -232,6 +232,59 @@
             <details class="device-help-disclosure">
               <summary><span><strong>接続の仕組みと注意</strong><small>音声経路、Work、ネットワークについて</small></span></summary>
               <p>PCとATOM Echoを同じ信頼できるLANへ接続してください。GPT-LiveではLive音声とBeatrice 2変換を、通常音声入力ではキャラクターTTSを使います。Workの進行・成果物・許可確認はPCにも表示されます。</p>
+            </details>
+          </div>
+        </section>
+        <section id="rlcd42Card" class="card settings-card esp32-device-card rlcd42-card" aria-labelledby="rlcd42Title">
+          <div class="section-row">
+            <div><p class="eyebrow">Character Device</p><strong id="rlcd42Title">RLCD 4.2</strong><small>選択中のキャラクター、Chat・Live・Workの状態、キャラクター音声を本体へ同期します</small></div>
+            <span id="rlcd42StatusBadge" class="setup-state-badge">停止中</span>
+          </div>
+          <label class="switch-row esp32-device-switch"><span><strong>このデバイスを使う</strong><small>初回はUSBで設定し、普段はWi-FiまたはUSBで画像・会話・音声を同期します</small></span><input id="rlcd42EnabledToggle" type="checkbox" /><i></i></label>
+          <div id="rlcd42EnabledSettings" class="esp32-device-settings" hidden>
+            <section class="remote-tailscale-card esp32-setup-card" aria-labelledby="rlcd42ConnectionTitle">
+              <div class="section-row"><div><strong id="rlcd42ConnectionTitle">接続</strong><small>Wi-Fi情報はUSB経由で本体へ直接保存し、パスワードはCharaDockに残しません</small></div></div>
+              <label>普段の接続<select id="rlcd42TransportSelect"><option value="auto">自動（Wi-Fi優先）</option><option value="wifi">Wi-Fiのみ</option><option value="usb">USBのみ</option></select></label>
+              <label>Wi-Fi名（SSID）<input id="rlcd42WifiSsidInput" type="text" maxlength="32" autocomplete="off" placeholder="自宅のWi-Fi名" /></label>
+              <label>Wi-Fiパスワード<input id="rlcd42WifiPasswordInput" type="password" maxlength="64" autocomplete="new-password" placeholder="設定時だけ入力" /></label>
+              <label>初期設定用USBポート<select id="rlcd42PortSelect"><option value="">自動検出（ESP32-S3）</option></select></label>
+              <div class="remote-actions"><button id="refreshRlcd42PortsButton" class="button button-secondary" type="button">USBを再確認</button><button id="provisionRlcd42WifiButton" class="button button-primary" type="button">Wi-Fiへ接続</button></div>
+              <p id="rlcd42WifiSetupStatus" class="inline-status" role="status"></p>
+            </section>
+            <section class="remote-tailscale-card" aria-labelledby="rlcd42AppearanceTitle">
+              <div class="section-row"><div><strong id="rlcd42AppearanceTitle">表示スタイル</strong><small>1bit画面に合わせてPC側で画像を整えます</small></div><span class="setup-state-badge is-ready">1bit</span></div>
+              <label>キャラクター画像<select id="rlcd42ArtStyleSelect"><option value="manga">漫画インク（推奨）</option><option value="illustration">イラスト調（網点で階調を保持）</option></select></label>
+              <label>会話テキスト<select id="rlcd42CaptionModeSelect"><option value="auto">状態に応じて表示</option><option value="off">表示しない</option></select></label>
+            </section>
+            <section class="remote-tailscale-card" aria-labelledby="rlcd42CaptureTitle">
+              <div class="section-row"><div><strong id="rlcd42CaptureTitle">内蔵マイク</strong><small>本体で録った声をPCへ送り、Chat・Live・Workへ入力します</small></div><span class="setup-state-badge is-ready">16 kHz</span></div>
+              <label class="switch-row"><span><strong>RLCDから話しかける</strong><small>応答再生中は自動でマイクを止め、回り込みを防ぎます</small></span><input id="rlcd42MicrophoneToggle" type="checkbox" /><i></i></label>
+              <label>会話の開始<select id="rlcd42CaptureModeSelect"><option value="push-to-talk">KEYを押して話す</option><option value="hands-free">ハンズフリーで話す</option></select></label>
+              <label id="rlcd42VadThresholdSettings" class="parameter-slider"><span><strong>開始しきい値</strong><output id="rlcd42VadThresholdOutput">120 · 高感度</output></span><input id="rlcd42VadThresholdInput" type="range" min="80" max="800" step="20" value="120" /></label>
+              <p id="rlcd42VadStatus" class="inline-status" role="status">小さい値ほど離れた声を拾いやすくなります。</p>
+              <label class="switch-row atom-echo-live-cost-switch"><span><strong>5分使わなければLiveを終了</strong><small>GPT-Liveだけを閉じます。USB・Wi-Fi接続は保ち、次の長押しで自動再接続します</small></span><input id="rlcd42LiveIdleTimeoutToggle" type="checkbox" /><i></i></label>
+            </section>
+            <section class="remote-tailscale-card" aria-labelledby="rlcd42AudioTitle">
+              <div class="section-row"><div><strong id="rlcd42AudioTitle">内蔵スピーカー</strong><small>PC版で生成したキャラクター音声を16 kHz PCMで再生します</small></div><span class="setup-state-badge is-ready">音声向け</span></div>
+              <label class="switch-row"><span><strong>キャラクター音声をRLCDで再生</strong><small>通常TTS・GPT-Live・Beatrice 2・Workの音声を本体から流します</small></span><input id="rlcd42SpeakerToggle" type="checkbox" /><i></i></label>
+              <label class="parameter-slider"><span><strong>本体の音量</strong><output id="rlcd42OutputGainOutput">100%</output></span><input id="rlcd42OutputGainInput" type="range" min="50" max="150" step="5" value="100" /></label>
+              <small>100%が標準です。100%を超える設定はPC側で増幅するため、声によっては歪むことがあります。</small>
+              <div class="remote-actions"><button id="testRlcd42SpeakerButton" class="button button-secondary" type="button">キャラクター音声を試す</button></div>
+              <p id="rlcd42AudioStatus" class="inline-status" role="status">スピーカー対応ファームウェアを確認しています。</p>
+            </section>
+            <div id="rlcd42SensorStrip" class="rlcd42-sensor-strip" aria-label="RLCD 4.2本体センサー">
+              <span><small>温度</small><strong id="rlcd42Temperature">--</strong></span>
+              <span><small>湿度</small><strong id="rlcd42Humidity">--</strong></span>
+              <span><small>バッテリー</small><strong id="rlcd42Battery">--</strong></span>
+              <span><small>ファーム</small><strong id="rlcd42Firmware">--</strong></span>
+            </div>
+            <div class="remote-actions esp32-device-actions">
+              <button id="syncRlcd42DisplayButton" class="button button-primary" type="button">選択中のキャラクターを同期</button>
+            </div>
+            <p id="rlcd42Status" class="inline-status esp32-device-status" role="status">RLCD 4.2は停止しています。</p>
+            <details class="device-help-disclosure">
+              <summary><span><strong>本体キーと表示の仕組み</strong><small>Chat・Live・Work、キャラクター画像、センサーについて</small></span></summary>
+              <p>同梱キャラクターとアプリ内で新規生成したキャラクターは、白い顔・強い輪郭・控えめな黒ベタを基準にしたRLCD専用の通常・瞬き・口2段階漫画絵を同期します。専用4枚のない.purupuruだけは共通の白黒変換へ自動フォールバックします。会話中は聞き取り・思考・発話・Workの状態を切り替えます。KEYを押している間に話し、離すとPCが認識と応答を開始します。短押しは再生や応答の割り込みに使えます。</p>
             </details>
           </div>
         </section>
@@ -257,7 +310,7 @@
         </section>
         <section id="avatarGeneratorCard" class="card avatar-generator">
           <header>
-            <div><p class="eyebrow">Codex Avatar Studio</p><h2>一枚絵からキャラクターを追加</h2><p>目の開閉×口3段階の6差分と、独立して揺れる前髪を生成し、画素単位の品質検査後に追加します。</p></div>
+            <div><p class="eyebrow">Codex Avatar Studio</p><h2>一枚絵からキャラクターを追加</h2><p>デスクトップ用の目の開閉×口3段階と前髪に加え、RLCD用の白黒4表情も生成し、画素単位の品質検査後に追加します。</p></div>
             <span class="codex-only-badge">Codexのみ</span>
           </header>
           <div class="generator-content">

@@ -85,7 +85,7 @@ test("Realtime sessions start only from voice input, accept typed turns, and kee
   assert.match(main, /await stopActiveRealtime\(\)\.catch/);
   assert.match(main, /settleStoppedRealtimeTurn\(client\)/);
   assert.match(main, /conversation-submit-auto-follow-up/);
-  assert.match(main, /normalConversationSubmitRoute\(\{/);
+  assert.match(main, /normalConversationSubmitRouteForCapturedInput\(\{/);
   assert.match(control, /autoFollowUpAccepted[\s\S]*if \(!autoFollowUpAccepted\)[\s\S]*setChatBusy\(false\)/);
   assert.match(mascot, /result\?\.followUp[\s\S]*streamOwnsBusyState = true/);
   assert.match(remote, /payload\.phase === "follow-up"[\s\S]*setBusy\(true\)/);
@@ -102,6 +102,8 @@ test("Realtime sessions start only from voice input, accept typed turns, and kee
   assert.match(main, /realtimeTurnBuffer\.hasPendingInput\(\)[\s\S]*realtime-unsolicited-assistant-suppressed/);
   assert.match(main, /realtimeReplyAuthorized\(\{[\s\S]*activeNativeHandoff[\s\S]*lastNativeHandoffCompletedAt/);
   assert.match(main, /params: \{ \.\.\.forwarded\.params, suppressed: true \}/);
+  assert.match(main, /unsolicitedRealtimeGuard\.observe\(\{[\s\S]*authorized: false/);
+  assert.match(main, /closeUnsolicitedRealtimeSession\(realtimeClient, target, detail\)/);
   assert.match(main, /await appendRealtimeReactionSpeech\(spokenText\)/);
   assert.match(main, /phase: "realtime-caption"/);
   assert.match(main, /deferDisplayToRealtime: true,[\s\S]*realtimeSpeechPending: true/);

@@ -441,6 +441,63 @@ test("Codex client sends per-turn model and reasoning effort overrides", async (
   await pending;
 });
 
+test("Codex client replays a turn that completes before turn/start returns without leaving ghost ownership", async () => {
+  const client = new CodexAppServerClient();
+  client.ensureStarted = async () => {};
+  client.ensureThread = async () => "thread-early";
+  client.request = async (method) => {
+    if (method !== "turn/start") return {};
+    client.handleLine(JSON.stringify({
+      method: "item/completed",
+      params: {
+        turnId: "turn-early",
+        item: { id: "answer-early", type: "agentMessage", phase: "final_answer", text: "すぐ返したよ。" },
+      },
+    }));
+    client.handleLine(JSON.stringify({
+      method: "turn/completed",
+      params: { turn: { id: "turn-early", status: "completed" } },
+    }));
+    return { turn: { id: "turn-early" } };
+  };
+
+  const result = await client.sendMessage("短い応答");
+  assert.equal(result.text, "すぐ返したよ。");
+  assert.equal(client.hasActiveTurn(), false);
+  assert.equal(client.earlyTurnMessages.size, 0);
+});
+
+test("Codex client releases an orphaned active turn even after its collector is gone", () => {
+  const client = new CodexAppServerClient();
+  client.activeTurnId = "turn-orphaned";
+  client.handleLine(JSON.stringify({
+    method: "turn/completed",
+    params: { turn: { id: "turn-orphaned", status: "completed" } },
+  }));
+  assert.equal(client.hasActiveTurn(), false);
+});
+
+test("Codex client recovers only orphaned normal-message ownership", () => {
+  const client = new CodexAppServerClient();
+  client.activeTurnId = "turn-message-orphan";
+  client.activeTurnSource = "message";
+  assert.equal(client.recoverOrphanedActiveTurn(), true);
+  assert.equal(client.hasActiveTurn(), false);
+
+  client.activeTurnId = "turn-message-live";
+  client.activeTurnSource = "message";
+  client.threadId = "thread-live";
+  client.realtimeHandlers.set("thread-live", () => {});
+  assert.equal(client.recoverOrphanedActiveTurn(), false);
+  assert.equal(client.hasActiveTurn(), true);
+
+  client.realtimeHandlers.clear();
+  client.activeTurnId = "turn-realtime";
+  client.activeTurnSource = "realtime";
+  assert.equal(client.recoverOrphanedActiveTurn(), false);
+  assert.equal(client.hasActiveTurn(), true);
+});
+
 test("Codex Work sends the explicit outbound-network policy only when enabled", async () => {
   const client = new CodexAppServerClient({
     cwd: "/workspace/project",

@@ -1324,6 +1324,7 @@ window.addEventListener("DOMContentLoaded", () => {
   };
   const stopTtsPlayback = () => {
     ttsPlaybackToken += 1;
+    ipcRenderer.invoke("rlcd42:stopSpeaker").catch(() => {});
     for (const streamId of activeTtsStreamIds) ipcRenderer.invoke("mascotInline:cancelTtsStream", streamId).catch(() => {});
     activeTtsStreamIds.clear();
     thinkingFillerActive = false;
@@ -1504,6 +1505,11 @@ window.addEventListener("DOMContentLoaded", () => {
       reportGeneratedTtsFailure(provider, result.error);
       return null;
     }
+    if (result?.externalPlayback === "rlcd42") {
+      clearGeneratedTtsFailure(provider);
+      if (token !== ttsPlaybackToken) return null;
+      return { segment, text, spokenText, sources: [], externalPlayback: "rlcd42", playbackRate: 1 };
+    }
     const sources = result?.audioDataUrls || [];
     if (!sources.length) {
       reportGeneratedTtsFailure(provider, new Error("音声合成から音声データが返されませんでした。"));
@@ -1522,7 +1528,7 @@ window.addEventListener("DOMContentLoaded", () => {
     .then((prepared) => ({ prepared }), (error) => ({ error }));
   const playPreparedSpeechSegment = async (prepared, provider, language, token) => {
     if (!prepared || token !== ttsPlaybackToken) return;
-    const { segment, text, spokenText, sources, playbackRate } = prepared;
+    const { segment, text, spokenText, sources, playbackRate, externalPlayback } = prepared;
     let streamId = String(prepared.streamId || "");
     let activated = false;
     const activate = () => {
@@ -1533,6 +1539,10 @@ window.addEventListener("DOMContentLoaded", () => {
       syncBubbleOverflow();
       if (segment?.expression) ipcRenderer.invoke("mascotInline:expression", segment.expression).catch(() => {});
     };
+    if (externalPlayback === "rlcd42") {
+      activate();
+      return;
+    }
     if (isGeneratedTtsProvider(provider)) {
       let chunkSources = sources;
       try {
@@ -1602,7 +1612,7 @@ window.addEventListener("DOMContentLoaded", () => {
         // Keep at most one synthesis ahead. This overlaps GPU inference with
         // playback without launching concurrent Irodori sessions or retaining
         // a long answer's worth of WAV data in memory.
-        while (token === ttsPlaybackToken && !playbackDone && !preparedPromise && !prepared.streamId) {
+        while (token === ttsPlaybackToken && !playbackDone && !preparedPromise && !prepared.streamId && !prepared.externalPlayback) {
           if (streamTtsQueue.length) {
             preparedPromise = prepareQueuedSpeechSegment(streamTtsQueue.shift(), streamTtsConfig.provider, token);
             break;

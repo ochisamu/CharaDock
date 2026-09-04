@@ -35,6 +35,11 @@ test("desktop distribution contains only approved character, voice, and interfac
   assert.match(nikeNotice, /https:\/\/x\.com\/tegnike/);
   assert.match(nikeNotice, /https:\/\/nikechan\.com\//);
   assert.match(fs.readFileSync(path.join(projectRoot, "THIRD_PARTY_NOTICES.md"), "utf8"), /### AIニケちゃん \/ AI Nike-chan/);
+  for (const characterId of ["amber-avatar", "bronze-avatar", "nike-avatar", "sage-avatar", "towa-avatar"]) {
+    for (const fileName of ["rlcd42-portrait.png", "rlcd42-portrait-blink.png", "rlcd42-portrait-mouth-half.png", "rlcd42-portrait-mouth-open.png"]) {
+      assert.equal(fs.existsSync(path.join(projectRoot, "assets", characterId, fileName)), true, `${characterId}/${fileName} must be packaged`);
+    }
+  }
 });
 
 test("interface symbols use individually licensed SVG assets", () => {
@@ -402,7 +407,7 @@ test("conversation and work surfaces expose history, folder access, interruption
   assert.match(control, /api\.followUpChat\([\s\S]*route\?\.accepted/);
   assert.match(main, /async function steerActiveInteraction\([\s\S]*client\.steerActiveTurn/);
   assert.match(main, /phase === "start"\) remoteBusy = true/);
-  assert.match(main, /normalConversationSubmitRoute\(\{[\s\S]*turnStatus: turnCoordinator\.snapshot\(\)\.status/);
+  assert.match(main, /normalConversationSubmitRouteForCapturedInput\(\{[\s\S]*turnStatus: turnCoordinator\.snapshot\(\)\.status[\s\S]*capturedSubmitRoute/);
   assert.match(main, /submitRoute === "follow-up"[\s\S]*steerActiveInteraction\(requestText/);
   assert.match(main, /A second response cannot start at the same time/);
   assert.match(main, /ipcMain\.handle\("chat:followUp"/);
@@ -698,9 +703,24 @@ test("ESP32 devices have a scalable settings page independent of CharaDock Link"
   assert.match(atomSettings, /id="atomEchoCaptureModeSelect"[\s\S]*ハンズフリーで話す/);
   assert.match(atomSettings, /id="atomEchoVadThresholdInput"[\s\S]*min="80"[\s\S]*max="800"/);
   assert.match(atomSettings, /id="atomEchoOutputGainInput"[\s\S]*min="50"[\s\S]*max="150"/);
-  assert.match(atomSettings, /5分使わなければLiveを終了[\s\S]*初期状態はOFF[\s\S]*id="atomEchoLiveIdleTimeoutToggle"/);
-  assert.doesNotMatch(atomSettings, /StackChan|RLCD 4\.2|検討中/);
+  assert.match(atomSettings, /5分使わなければLiveを終了[\s\S]*初期状態はON[\s\S]*id="atomEchoLiveIdleTimeoutToggle"/);
+  assert.match(atomSettings, /id="rlcd42Card"[\s\S]*RLCD 4\.2/);
+  assert.match(atomSettings, /id="rlcd42TransportSelect"[\s\S]*id="rlcd42WifiSsidInput"[\s\S]*id="rlcd42PortSelect"[\s\S]*id="provisionRlcd42WifiButton"/);
+  assert.match(atomSettings, /id="rlcd42ArtStyleSelect"[\s\S]*漫画インク（推奨）[\s\S]*id="rlcd42CaptionModeSelect"/);
+  assert.match(atomSettings, /id="rlcd42AudioTitle"[\s\S]*id="rlcd42SpeakerToggle"[\s\S]*id="testRlcd42SpeakerButton"/);
+  assert.match(atomSettings, /id="rlcd42MicrophoneToggle"[\s\S]*id="rlcd42CaptureModeSelect"[\s\S]*ハンズフリー[\s\S]*id="rlcd42VadThresholdInput"[\s\S]*id="rlcd42LiveIdleTimeoutToggle"/);
+  assert.match(atomSettings, /id="rlcd42SensorStrip"[\s\S]*id="syncRlcd42DisplayButton"/);
+  assert.doesNotMatch(atomSettings, /StackChan|検討中/);
   assert.doesNotMatch(atomSettings, /Bluetooth|atomEchoAudioOutputSelect/);
+  assert.match(main, /deviceProfiles[\s\S]*RLCD42_PROFILE_ID/);
+  assert.match(main, /syncRlcd42Presentation/);
+  assert.match(main, /playRlcd42Speech[\s\S]*resamplePcm16[\s\S]*playPcm16/);
+  assert.match(main, /onPttStart: async \(\) => esp32PttStart\("rlcd42"\)[\s\S]*onPcmChunk: async \(chunk\) => esp32PcmChunk\(chunk\)/);
+  assert.match(main, /rlcd42LiveAudioRoute = new AtomEchoLiveAudioRoute\(\{[\s\S]*processorOptions: rlcd42OutputProfile/);
+  assert.match(main, /rlcd42:testSpeaker/);
+  assert.match(main, /ipcMain\.handle\("rlcd42:stopSpeaker"[\s\S]*?assertTrustedAppSender\(event\)/);
+  assert.match(main, /onReady:[\s\S]*scheduleRlcd42PresentationSync\(\)/);
+  assert.match(main, /event\.event === 1[\s\S]*force: true/);
   assert.match(main, /resetAtomEchoLiveBridgeForProviderChange\(previousSpeechInputProvider, allowed\.speechInputProvider\)/);
   assert.match(main, /atom-echo-audio-mode-reset/);
   assert.match(liveBridge, /peerConnected = peer\?\.connectionState === "connected";[\s\S]*if \(peerConnected\) flushInput\(\)/);
@@ -712,6 +732,7 @@ test("WSL can launch Windows Electron from a persistent isolated development mir
   const main = fs.readFileSync(path.join(projectRoot, "desktop", "main.cjs"), "utf8");
   assert.equal(packageJson.scripts["desktop:win:dev"], "bash scripts/windows-dev.sh");
   assert.equal(packageJson.scripts["desktop:win:dev:profile"], "bash scripts/windows-dev.sh --shared-profile");
+  assert.equal(packageJson.scripts["desktop:win:verify-rlcd42-audio"], "bash scripts/windows-dev.sh --shared-profile --verify-rlcd42-audio");
   assert.match(shell, /LOCALAPPDATA/);
   assert.match(shell, /CharaDockDev\\\\source/);
   assert.match(shell, /rsync -a --delete/);
@@ -719,9 +740,12 @@ test("WSL can launch Windows Electron from a persistent isolated development mir
   assert.match(shell, /dependency_hash/);
   assert.match(batch, /CharaDockDev\\profile/);
   assert.match(batch, /--shared-profile/);
+  assert.match(shell, /--verify-rlcd42-audio/);
+  assert.match(batch, /--verify-rlcd42-audio --hidden/);
   assert.match(batch, /node_modules\\electron\\cli\.js/);
   assert.match(main, /--charadock-user-data/);
   assert.match(main, /app\.setPath\("userData", developmentUserDataPath\)/);
+  assert.match(main, /CHARADOCK_RLCD42_AUDIO_VERIFICATION_OK/);
 });
 
 test("Codex memory tools proactively create and update character memories", () => {

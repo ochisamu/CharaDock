@@ -17,6 +17,10 @@ const IMAGE_NAMES = [
   "eyes-open-mouth-closed.png", "eyes-open-mouth-half.png", "eyes-open-mouth-open.png",
   "eyes-closed-mouth-closed.png", "eyes-closed-mouth-half.png", "eyes-closed-mouth-open.png", "front-hair.png",
 ];
+const RLCD42_IMAGE_NAMES = [
+  "rlcd42-portrait.png", "rlcd42-portrait-blink.png",
+  "rlcd42-portrait-mouth-half.png", "rlcd42-portrait-mouth-open.png",
+];
 
 function metadata() {
   return {
@@ -61,14 +65,19 @@ test("bundled avatar skill validates a complete PuruPuru output", (t) => {
   assert.match(skillText, /long straight\/rectangular cut boundaries/);
   assert.match(skillText, /"director"/);
   assert.match(skillText, /infer a concise personality and the complete `director`/);
+  assert.match(skillText, /qa-rlcd42-preview\.png/);
+  assert.match(skillText, /selective separated solid-black masses/);
+  assert.match(skillText, /broad coarse diagonal hatch groups/);
   const directory = temporaryDirectory(t);
   const source = path.join(ROOT, "assets", "amber-avatar");
   for (const name of IMAGE_NAMES) fs.copyFileSync(path.join(source, name), path.join(directory, name));
+  for (const name of RLCD42_IMAGE_NAMES) fs.copyFileSync(path.join(source, name), path.join(directory, name));
   fs.writeFileSync(path.join(directory, "character.json"), JSON.stringify(metadata()));
-  const result = spawnSync(process.execPath, [VALIDATOR, directory], { encoding: "utf8" });
+  const result = spawnSync(process.execPath, [VALIDATOR, directory, "--require-rlcd42"], { encoding: "utf8" });
   assert.equal(result.status, 0, result.stderr);
   assert.equal(JSON.parse(result.stdout).ok, true);
   assert.equal(fs.existsSync(path.join(directory, "qa-preview.png")), true);
+  assert.equal(fs.existsSync(path.join(directory, "qa-rlcd42-preview.png")), true);
 });
 
 test("avatar validator requires a complete inferred character identity", (t) => {

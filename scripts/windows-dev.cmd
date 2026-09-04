@@ -25,16 +25,19 @@ if not exist "node_modules\electron\cli.js" (
 
 set "CHARADOCK_SHARED_PROFILE=0"
 set "CHARADOCK_SMOKE_TEST=0"
+set "CHARADOCK_VERIFY_RLCD42_AUDIO=0"
 :parse
 if "%~1"=="" goto run
 if /i "%~1"=="--shared-profile" set "CHARADOCK_SHARED_PROFILE=1"
 if /i "%~1"=="--smoke-test" set "CHARADOCK_SMOKE_TEST=1"
+if /i "%~1"=="--verify-rlcd42-audio" set "CHARADOCK_VERIFY_RLCD42_AUDIO=1"
 shift
 goto parse
 
 :run
 set "CHARADOCK_EXTRA_ARGS="
-if "%CHARADOCK_SMOKE_TEST%"=="1" set "CHARADOCK_EXTRA_ARGS=--smoke-test"
+if "%CHARADOCK_SMOKE_TEST%"=="1" set "CHARADOCK_EXTRA_ARGS=%CHARADOCK_EXTRA_ARGS% --smoke-test"
+if "%CHARADOCK_VERIFY_RLCD42_AUDIO%"=="1" set "CHARADOCK_EXTRA_ARGS=%CHARADOCK_EXTRA_ARGS% --verify-rlcd42-audio --hidden"
 if "%CHARADOCK_SHARED_PROFILE%"=="1" goto run_shared
 set "CHARADOCK_DEV_PROFILE=%LOCALAPPDATA%\CharaDockDev\profile"
 if not exist "%CHARADOCK_DEV_PROFILE%" mkdir "%CHARADOCK_DEV_PROFILE%"

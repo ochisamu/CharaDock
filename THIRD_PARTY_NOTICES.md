@@ -24,7 +24,7 @@ remain governed by their separate asset terms in ASSET_LICENSE.md.
 - Official site: https://nikechan.com/
 - Terms: included as a bundled CharaDock character with permission; not licensed under Apache License 2.0
 
-The eye and mouth variants under `assets/nike-avatar` are included with
+The desktop and RLCD eye and mouth variants under `assets/nike-avatar` are included with
 permission for use as part of CharaDock. This permission does not grant a
 standalone extraction, redistribution, resale, model-training, or reuse
 license. See `assets/nike-avatar/ASSET_NOTICE.md` and

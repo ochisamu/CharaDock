@@ -68,7 +68,66 @@ test("preferences discard retired ATOM Echo Bluetooth output settings", () => {
   assert.equal("atomEchoBluetoothSpeakerName" in preferences.data, false);
 });
 
-test("preferences bound ATOM Echo controls and keep Live idle auto-close opt-in", () => {
+test("preferences keep extensible ESP32 display settings in bounded device profiles", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "charadock-device-profiles-"));
+  const file = path.join(directory, "preferences.json");
+  fs.writeFileSync(file, JSON.stringify({
+    deviceProfiles: {
+      "rlcd42-default": {
+        type: "waveshare-rlcd-4.2",
+        name: "Desk Display\u0000",
+        enabled: true,
+        transport: "wifi",
+        port: "COM7777",
+        artStyle: "manga",
+        captionMode: "off",
+        password: "must-not-survive",
+      },
+      unsafe: { type: "unknown-device", enabled: true },
+    },
+  }));
+  const preferences = new Preferences(file);
+  assert.deepEqual(preferences.publicState().deviceProfiles, {
+    "rlcd42-default": {
+      type: "waveshare-rlcd-4.2",
+      name: "Desk Display",
+      enabled: true,
+      transport: "wifi",
+      port: "",
+      artStyle: "manga",
+      captionMode: "off",
+      speakerEnabled: true,
+      outputGain: 100,
+      microphoneEnabled: true,
+      captureMode: "push-to-talk",
+      vadThreshold: 120,
+      deviceId: "",
+      wifiSsid: "",
+    },
+  });
+  assert.equal(JSON.stringify(preferences.data.deviceProfiles).includes("must-not-survive"), false);
+});
+
+test("preferences encrypts profile-scoped ESP32 pairing tokens", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "charadock-device-token-"));
+  const file = path.join(directory, "preferences.json");
+  const safeStorage = {
+    isEncryptionAvailable: () => true,
+    encryptString: (value) => Buffer.from(`encrypted:${value}`),
+    decryptString: (value) => value.toString().replace(/^encrypted:/, ""),
+  };
+  const preferences = new Preferences(file, safeStorage);
+  const token = "cd".repeat(32);
+  preferences.setDevicePairingToken("rlcd42-default", token);
+  assert.equal(preferences.getDevicePairingToken("rlcd42-default"), token);
+  assert.equal(fs.readFileSync(file, "utf8").includes(token), false);
+  assert.equal(preferences.publicState().deviceProfilePairingPersistence, "encrypted");
+  assert.equal(Object.prototype.hasOwnProperty.call(preferences.publicState(), "encryptedDevicePairingTokens"), false);
+  const reloaded = new Preferences(file, safeStorage);
+  assert.equal(reloaded.getDevicePairingToken("rlcd42-default"), token);
+});
+
+test("preferences bound ATOM Echo controls and default Live idle auto-close on", () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "charadock-atom-controls-"));
   const file = path.join(directory, "preferences.json");
   fs.writeFileSync(file, JSON.stringify({ atomEchoOutputGain: 900, atomEchoCaptureMode: "hands-free", atomEchoVadThreshold: 5_000 }));
@@ -76,13 +135,13 @@ test("preferences bound ATOM Echo controls and keep Live idle auto-close opt-in"
   assert.equal(state.atomEchoOutputGain, 150);
   assert.equal(state.atomEchoCaptureMode, "hands-free");
   assert.equal(state.atomEchoVadThreshold, 800);
-  assert.equal(state.atomEchoLiveIdleTimeoutEnabled, false);
-  fs.writeFileSync(file, JSON.stringify({ atomEchoOutputGain: 10, atomEchoCaptureMode: "always-on", atomEchoVadThreshold: 2, atomEchoLiveIdleTimeoutEnabled: true }));
+  assert.equal(state.atomEchoLiveIdleTimeoutEnabled, true);
+  fs.writeFileSync(file, JSON.stringify({ atomEchoOutputGain: 10, atomEchoCaptureMode: "always-on", atomEchoVadThreshold: 2, atomEchoLiveIdleTimeoutEnabled: false }));
   state = new Preferences(file).publicState();
   assert.equal(state.atomEchoOutputGain, 50);
   assert.equal(state.atomEchoCaptureMode, "push-to-talk");
   assert.equal(state.atomEchoVadThreshold, 80);
-  assert.equal(state.atomEchoLiveIdleTimeoutEnabled, true);
+  assert.equal(state.atomEchoLiveIdleTimeoutEnabled, false);
 });
 
 test("preferences encrypts MCP API keys and exposes only connection metadata", () => {

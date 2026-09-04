@@ -934,9 +934,10 @@ input[type="range"]:active::-webkit-slider-thumb { transform: scale(1.16); box-s
 .remote-security-note > .ui-symbol { width: 23px; height: 23px; color: var(--accent); }
 .remote-security-note strong { color: var(--text-secondary); font-size: 11px; }
 .remote-security-note p { margin: 4px 0 0; font-size: 9px; line-height: 1.65; }
-.atom-echo-card { gap: 0; overflow: hidden; padding: 0; }
-.atom-echo-card > .section-row { min-height: 76px; padding: 17px 20px; }
-.atom-echo-card > .section-row small { display: block; margin-top: 4px; color: var(--muted); font-size: 10px; }
+.esp32-device-card { gap: 0; overflow: hidden; padding: 0; }
+.esp32-device-card > .section-row { min-height: 76px; padding: 17px 20px; }
+.esp32-device-card > .section-row small { display: block; margin-top: 4px; color: var(--muted); font-size: 10px; }
+.rlcd42-card { margin-top: 16px; }
 .esp32-device-switch { min-height: 70px; padding: 15px 20px; border-top: 1px solid var(--line); background: color-mix(in srgb, var(--accent) 4%, transparent); }
 .esp32-device-settings { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; padding: 18px 20px 20px; border-top: 1px solid var(--line); }
 .esp32-device-settings[hidden] { display: none; }
@@ -945,6 +946,12 @@ input[type="range"]:active::-webkit-slider-thumb { transform: scale(1.16); box-s
 .atom-echo-live-cost-switch { min-height: 61px; margin-top: 4px; padding-top: 13px; border-top: 1px solid var(--line); }
 .esp32-device-actions { align-self: center; justify-content: flex-start; }
 .esp32-device-status { align-self: center; min-height: 40px; margin: 0; padding: 10px 12px; color: var(--text-secondary); background: var(--field); border: 1px solid var(--line); border-radius: 11px; }
+.rlcd42-sensor-strip { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); overflow: hidden; border: 1px solid var(--line); border-radius: 13px; background: var(--field); }
+.rlcd42-sensor-strip > span { min-width: 0; padding: 11px 13px; border-left: 1px solid var(--line); }
+.rlcd42-sensor-strip > span:first-child { border-left: 0; }
+.rlcd42-sensor-strip small, .rlcd42-sensor-strip strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rlcd42-sensor-strip small { color: var(--muted); font-size: 8px; letter-spacing: .02em; }
+.rlcd42-sensor-strip strong { margin-top: 4px; color: var(--text-secondary); font-size: 11px; font-variant-numeric: tabular-nums; }
 .device-help-disclosure { grid-column: 1 / -1; }
 .device-help-disclosure > p { margin: 0; padding: 13px 16px 16px; color: var(--muted); border-top: 1px solid var(--line); font-size: 9px; line-height: 1.65; }
 .tts-settings, .tts-provider-settings { display: grid; gap: 11px; }
@@ -1289,6 +1296,9 @@ input[type="range"]:active::-webkit-slider-thumb { transform: scale(1.16); box-s
   .remote-pairing-layout { grid-template-columns: 1fr; }
   .remote-qr-panel { width: min(210px, 100%); justify-self: center; }
   .remote-experience-card, .remote-network-grid, .esp32-device-settings { grid-template-columns: 1fr; }
+  .rlcd42-sensor-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .rlcd42-sensor-strip > span:nth-child(3) { border-left: 0; }
+  .rlcd42-sensor-strip > span:nth-child(n + 3) { border-top: 1px solid var(--line); }
   .remote-experience-card .switch-row:nth-of-type(even) { border-left: 0; padding-left: 0; }
   .remote-network-grid > label:last-child, .esp32-device-settings > .esp32-setup-card { grid-column: 1; }
 }

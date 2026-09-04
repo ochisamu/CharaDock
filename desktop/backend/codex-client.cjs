@@ -213,8 +213,10 @@ class CodexAppServerClient {
     this.threadId = null;
     this.usesPermissionProfile = false;
     this.turnCollectors = new Map();
+    this.earlyTurnMessages = new Map();
     this.realtimeHandlers = new Map();
     this.activeTurnId = null;
+    this.activeTurnSource = "";
     this.turnStarting = false;
     this.interruptRequested = false;
     this.startPromise = null;
@@ -343,11 +345,13 @@ class CodexAppServerClient {
       collector.reject(error);
     }
     this.turnCollectors.clear();
+    this.earlyTurnMessages.clear();
     for (const [threadId, handler] of this.realtimeHandlers) {
       handler?.({ method: "thread/realtime/error", params: { threadId, message: error.message } });
     }
     this.realtimeHandlers.clear();
     this.activeTurnId = null;
+    this.activeTurnSource = "";
     this.turnStarting = false;
     this.interruptRequested = false;
     this.threadId = null;
@@ -371,7 +375,10 @@ class CodexAppServerClient {
       if (collector) {
         clearTimeout(collector.timer);
         this.turnCollectors.delete(turnId);
-        if (this.activeTurnId === turnId) this.activeTurnId = null;
+        if (this.activeTurnId === turnId) {
+          this.activeTurnId = null;
+          this.activeTurnSource = "";
+        }
         collector.reject(error);
       }
       if (message.id !== undefined && this.proc?.stdin?.writable) {
@@ -395,8 +402,14 @@ class CodexAppServerClient {
     const realtimeThreadId = String(message.params?.threadId || "");
     const realtimeHandler = this.realtimeHandlers.get(realtimeThreadId);
     if (realtimeHandler && !String(message.method || "").startsWith("thread/realtime/")) {
-      if (message.method === "turn/started" && message.params?.turn?.id) this.activeTurnId = message.params.turn.id;
-      if (message.method === "turn/completed" && this.activeTurnId === message.params?.turn?.id) this.activeTurnId = null;
+      if (message.method === "turn/started" && message.params?.turn?.id) {
+        this.activeTurnId = message.params.turn.id;
+        this.activeTurnSource = "realtime";
+      }
+      if (message.method === "turn/completed" && this.activeTurnId === message.params?.turn?.id) {
+        this.activeTurnId = null;
+        this.activeTurnSource = "";
+      }
       realtimeHandler(message);
     }
     const item = message.params?.item;
@@ -447,15 +460,33 @@ class CodexAppServerClient {
       handler?.(message);
       return;
     }
+    const messageTurnId = String(message.params?.turnId || message.params?.turn?.id || "");
+    if (this.turnStarting && messageTurnId && !this.turnCollectors.has(messageTurnId)
+        && (message.method === "turn/started" || message.method === "turn/completed" || String(message.method || "").startsWith("item/"))) {
+      // app-server may emit a complete, very short turn before the turn/start
+      // response gives us its id. Keep those notifications until the
+      // collector is installed; dropping turn/completed here leaves a ghost
+      // activeTurnId that blocks every later microphone submission.
+      if (!this.earlyTurnMessages.has(messageTurnId) && this.earlyTurnMessages.size >= 4) {
+        this.earlyTurnMessages.delete(this.earlyTurnMessages.keys().next().value);
+      }
+      const buffered = this.earlyTurnMessages.get(messageTurnId) || [];
+      if (buffered.length < 256) buffered.push(message);
+      this.earlyTurnMessages.set(messageTurnId, buffered);
+      return;
+    }
     const eventCollector = this.turnCollectors.get(message.params?.turnId);
     eventCollector?.onEvent?.(message);
     if (message.method === "turn/completed") {
       const turn = message.params?.turn;
+      if (this.activeTurnId === turn?.id) {
+        this.activeTurnId = null;
+        this.activeTurnSource = "";
+      }
       const collector = this.turnCollectors.get(turn?.id);
       if (!collector) return;
       this.turnCollectors.delete(turn.id);
       clearTimeout(collector.timer);
-      if (this.activeTurnId === turn.id) this.activeTurnId = null;
       if (turn.status === "completed") {
         const text = String(collector.finalText || collector.text || "").trim();
         if (text) collector.resolve({ text, transcriptText: collector.text.trim(), provider: "codex", threadId: this.threadId });
@@ -800,6 +831,32 @@ class CodexAppServerClient {
     return Boolean(this.turnStarting || this.activeTurnId);
   }
 
+  activeTurnState() {
+    const turnId = String(this.activeTurnId || "");
+    return {
+      active: Boolean(this.turnStarting || turnId),
+      turnStarting: Boolean(this.turnStarting),
+      hasTurnId: Boolean(turnId),
+      source: String(this.activeTurnSource || ""),
+      hasCollector: Boolean(turnId && this.turnCollectors.has(turnId)),
+      hasRealtime: Boolean(this.threadId && this.realtimeHandlers.has(this.threadId)),
+    };
+  }
+
+  recoverOrphanedActiveTurn() {
+    const state = this.activeTurnState();
+    // A normal send owns a collector until its terminal notification resolves
+    // or rejects the caller. If that collector is gone while the same turn id
+    // remains, only the local ownership flag is stale. Realtime-delegated turns
+    // intentionally have no collector, so never recover those here.
+    if (state.turnStarting || !state.hasTurnId || state.hasCollector || state.hasRealtime
+        || state.source === "realtime") return false;
+    this.activeTurnId = null;
+    this.activeTurnSource = "";
+    this.interruptRequested = false;
+    return true;
+  }
+
   async appendRealtimeSpeech(text) {
     const threadId = this.threadId;
     const normalized = String(text || "").trim().slice(0, 1000);
@@ -880,6 +937,7 @@ class CodexAppServerClient {
       const turnId = result?.turn?.id;
       if (!turnId) throw new Error("Codexターンを開始できませんでした。");
       this.activeTurnId = turnId;
+      this.activeTurnSource = "message";
       this.turnStarting = false;
       if (this.interruptRequested) {
         await this.request("turn/interrupt", { threadId, turnId }, 30_000);
@@ -887,7 +945,10 @@ class CodexAppServerClient {
       return new Promise((resolve, reject) => {
         const timer = setTimeout(() => {
           this.turnCollectors.delete(turnId);
-          if (this.activeTurnId === turnId) this.activeTurnId = null;
+          if (this.activeTurnId === turnId) {
+            this.activeTurnId = null;
+            this.activeTurnSource = "";
+          }
           reject(new Error("Codexの応答がタイムアウトしました。"));
         }, Math.max(30_000, Number(timeoutMs) || 180_000));
         this.turnCollectors.set(turnId, {
@@ -901,6 +962,9 @@ class CodexAppServerClient {
           onDelta,
           onEvent,
         });
+        const buffered = this.earlyTurnMessages.get(turnId) || [];
+        this.earlyTurnMessages.clear();
+        for (const message of buffered) this.handleLine(JSON.stringify(message));
       });
     };
     const result = this.queue.then(run, run);
@@ -930,8 +994,10 @@ class CodexAppServerClient {
     this.threadId = null;
     this.usesPermissionProfile = false;
     this.activeTurnId = null;
+    this.activeTurnSource = "";
     this.turnStarting = false;
     this.interruptRequested = false;
+    this.earlyTurnMessages.clear();
   }
 
   stop() {

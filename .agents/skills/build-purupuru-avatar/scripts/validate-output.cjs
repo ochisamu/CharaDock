@@ -16,6 +16,12 @@ const EXPRESSION_NAMES = Object.freeze([
 const HAIR_NAME = "front-hair.png";
 const HAIR_REFERENCE_NAME = "hair-reference.png";
 const ALL_IMAGE_NAMES = Object.freeze([...EXPRESSION_NAMES, HAIR_NAME]);
+const RLCD42_IMAGE_NAMES = Object.freeze([
+  "rlcd42-portrait.png",
+  "rlcd42-portrait-blink.png",
+  "rlcd42-portrait-mouth-half.png",
+  "rlcd42-portrait-mouth-open.png",
+]);
 
 function isChromaGreen(red, green, blue) {
   return green >= 150 && green > red * 1.38 && green > blue * 1.38 && green - Math.max(red, blue) >= 55;
@@ -232,7 +238,27 @@ function writeQaPreview(directory, images) {
   return previewPath;
 }
 
-function validateAvatarOutput(directory, { writePreview = false, requireHairReference = false } = {}) {
+function writeRlcd42Preview(directory, images) {
+  if (!RLCD42_IMAGE_NAMES.every((name) => images.has(name))) return "";
+  const first = images.get(RLCD42_IMAGE_NAMES[0]).png;
+  const preview = new PNG({ width: first.width * 2, height: first.height * 2 });
+  preview.data.fill(255);
+  RLCD42_IMAGE_NAMES.forEach((name, imageIndex) => {
+    const source = images.get(name).png;
+    const offsetX = (imageIndex % 2) * first.width;
+    const offsetY = Math.floor(imageIndex / 2) * first.height;
+    for (let y = 0; y < first.height; y += 1) {
+      const sourceStart = y * first.width * 4;
+      const targetStart = ((offsetY + y) * preview.width + offsetX) * 4;
+      source.data.copy(preview.data, targetStart, sourceStart, sourceStart + first.width * 4);
+    }
+  });
+  const previewPath = path.join(directory, "qa-rlcd42-preview.png");
+  fs.writeFileSync(previewPath, PNG.sync.write(preview));
+  return previewPath;
+}
+
+function validateAvatarOutput(directory, { writePreview = false, requireHairReference = false, requireRlcd42 = false } = {}) {
   const root = path.resolve(directory || "output");
   const errors = [];
   const qualityMetrics = {};
@@ -268,6 +294,71 @@ function validateAvatarOutput(directory, { writePreview = false, requireHairRefe
     }
   } else if (requireHairReference) {
     errors.push(`missing ${HAIR_REFERENCE_NAME}; generated avatars must prove that the extracted hair reconstructs the intact canonical reference`);
+  }
+
+  const rlcd42Images = new Map();
+  let rlcd42Size = null;
+  const foundRlcd42 = RLCD42_IMAGE_NAMES.filter((name) => fs.existsSync(path.join(root, name)));
+  if (requireRlcd42 || foundRlcd42.length) {
+    for (const name of RLCD42_IMAGE_NAMES) {
+      const filePath = path.join(root, name);
+      if (!fs.existsSync(filePath)) {
+        errors.push(`missing ${name}; RLCD 4.2 portraits are an all-or-none four-frame set`);
+        continue;
+      }
+      try {
+        const image = readPng(filePath);
+        const { width, height } = image.png;
+        if (width < 400 || height < 300 || width > 4096 || height > 4096 || Math.abs((width / height) - (4 / 3)) > .01) {
+          errors.push(`${name} must be a 4:3 PNG at least 400x300 and at most 4096x4096`);
+        }
+        if (rlcd42Size && (width !== rlcd42Size.width || height !== rlcd42Size.height)) errors.push(`${name} size differs from other RLCD 4.2 frames`);
+        rlcd42Size ||= { width, height };
+        let dark = 0;
+        let light = 0;
+        let opaque = 0;
+        for (let index = 0; index < image.png.data.length; index += 4) {
+          const luminance = image.png.data[index] * .2126 + image.png.data[index + 1] * .7152 + image.png.data[index + 2] * .0722;
+          if (luminance < 96) dark += 1;
+          if (luminance > 224) light += 1;
+          if (image.png.data[index + 3] > 240) opaque += 1;
+        }
+        const pixels = width * height;
+        const stats = { darkRatio: dark / pixels, lightRatio: light / pixels, opaqueRatio: opaque / pixels };
+        if (stats.darkRatio < .05 || stats.darkRatio > .24 || stats.lightRatio < .72 || stats.opaqueRatio < .95) {
+          errors.push(`${name} must use readable selective manga ink on a flat opaque white background`);
+        }
+        image.rlcd42Stats = stats;
+        rlcd42Images.set(name, image);
+      } catch (error) {
+        errors.push(`${name} is not a readable PNG: ${error.message}`);
+      }
+    }
+    if (RLCD42_IMAGE_NAMES.every((name) => rlcd42Images.has(name))) {
+      const hashes = RLCD42_IMAGE_NAMES.map((name) => rlcd42Images.get(name).hash);
+      if (new Set(hashes).size !== hashes.length) errors.push("the four RLCD 4.2 portraits must be distinct; blink and mouth animation cannot reuse the neutral frame");
+      const neutral = rlcd42Images.get(RLCD42_IMAGE_NAMES[0]).png;
+      const changedFractions = {};
+      for (const name of RLCD42_IMAGE_NAMES.slice(1)) {
+        const variant = rlcd42Images.get(name).png;
+        let changed = 0;
+        for (let index = 0; index < neutral.data.length; index += 4) {
+          const delta = Math.abs(neutral.data[index] - variant.data[index])
+            + Math.abs(neutral.data[index + 1] - variant.data[index + 1])
+            + Math.abs(neutral.data[index + 2] - variant.data[index + 2]);
+          if (delta > 48) changed += 1;
+        }
+        const fraction = changed / (neutral.width * neutral.height);
+        changedFractions[name] = fraction;
+        if (fraction < .0002) errors.push(`${name} is visually unchanged from the neutral RLCD 4.2 portrait`);
+        if (fraction > .12) errors.push(`${name} changes too much of the RLCD 4.2 portrait; keep the composition pixel-registered`);
+      }
+      qualityMetrics.rlcd42 = {
+        size: [rlcd42Size.width, rlcd42Size.height],
+        neutral: rlcd42Images.get(RLCD42_IMAGE_NAMES[0]).rlcd42Stats,
+        changedFractions,
+      };
+    }
   }
 
   let character = null;
@@ -389,15 +480,18 @@ function validateAvatarOutput(directory, { writePreview = false, requireHairRefe
   }
 
   let previewPath = "";
+  let rlcd42PreviewPath = "";
   if (writePreview) {
     try { previewPath = writeQaPreview(root, images); } catch (error) { errors.push(`could not create QA preview: ${error.message}`); }
+    try { rlcd42PreviewPath = writeRlcd42Preview(root, rlcd42Images); } catch (error) { errors.push(`could not create RLCD 4.2 QA preview: ${error.message}`); }
   }
   const report = {
     ok: errors.length === 0,
     directory: root,
     size: expectedSize ? [expectedSize.width, expectedSize.height] : null,
-    files: images.size + (character ? 1 : 0),
+    files: images.size + rlcd42Images.size + (character ? 1 : 0),
     previewPath,
+    rlcd42PreviewPath,
     errors,
     qualityMetrics,
   };
@@ -410,13 +504,14 @@ function validateAvatarOutput(directory, { writePreview = false, requireHairRefe
   return report;
 }
 
-module.exports = { ALL_IMAGE_NAMES, EXPRESSION_NAMES, axisAlignedBoundaryStats, isChromaGreen, validateAvatarOutput, writeQaPreview };
+module.exports = { ALL_IMAGE_NAMES, EXPRESSION_NAMES, RLCD42_IMAGE_NAMES, axisAlignedBoundaryStats, isChromaGreen, validateAvatarOutput, writeQaPreview, writeRlcd42Preview };
 
 if (require.main === module) {
   try {
     const report = validateAvatarOutput(process.argv[2] || "output", {
       writePreview: true,
       requireHairReference: process.argv.includes("--require-hair-reference"),
+      requireRlcd42: process.argv.includes("--require-rlcd42"),
     });
     process.stdout.write(`${JSON.stringify(report)}\n`);
   } catch (error) {

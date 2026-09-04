@@ -1,7 +1,7 @@
 # AIニケちゃん Asset Notice
 
 AIニケちゃん is included as a bundled CharaDock character with permission.
-The character artwork and the derived eye and mouth variants are not licensed
+The character artwork and the derived desktop and RLCD eye and mouth variants are not licensed
 under CharaDock's Apache License 2.0.
 
 Required credit:

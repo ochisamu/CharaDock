@@ -62,3 +62,25 @@ test("disabling Live idle auto-close cancels a pending close", () => {
   assert.equal(timer.active, false);
   assert.equal(clock.scheduled.size, 0);
 });
+
+test("Live idle timer never closes while capture or playback is busy", async () => {
+  const clock = fakeClock();
+  let busy = true;
+  let timeouts = 0;
+  const timer = new LiveIdleTimer({
+    onTimeout() { timeouts += 1; },
+    isBusy: () => busy,
+    setTimer: clock.setTimer,
+    clearTimer: clock.clearTimer,
+  });
+  timer.setEnabled(true, { arm: true });
+  clock.fire([...clock.scheduled.keys()][0]);
+  await Promise.resolve();
+  assert.equal(timeouts, 0);
+  assert.equal(timer.active, true);
+  busy = false;
+  clock.fire([...clock.scheduled.keys()][0]);
+  await Promise.resolve();
+  assert.equal(timeouts, 1);
+  assert.equal(timer.active, false);
+});

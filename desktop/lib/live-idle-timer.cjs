@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 
 class LiveIdleTimer {
-  constructor({ timeoutMs = 5 * 60 * 1000, onTimeout, setTimer = setTimeout, clearTimer = clearTimeout } = {}) {
+  constructor({ timeoutMs = 5 * 60 * 1000, onTimeout, isBusy = () => false, setTimer = setTimeout, clearTimer = clearTimeout } = {}) {
     if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new TypeError("timeoutMs must be positive");
     if (typeof onTimeout !== "function") throw new TypeError("onTimeout is required");
+    if (typeof isBusy !== "function") throw new TypeError("isBusy must be a function");
     this.timeoutMs = timeoutMs;
     this.onTimeout = onTimeout;
+    this.isBusy = isBusy;
     this.setTimer = setTimer;
     this.clearTimer = clearTimer;
     this.enabled = false;
@@ -24,6 +26,10 @@ class LiveIdleTimer {
     if (!this.enabled) return false;
     this.handle = this.setTimer(() => {
       this.handle = null;
+      if (this.isBusy()) {
+        this.touch();
+        return;
+      }
       Promise.resolve(this.onTimeout()).catch(() => {});
     }, this.timeoutMs);
     return true;

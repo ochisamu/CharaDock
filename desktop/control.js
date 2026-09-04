@@ -9,6 +9,7 @@
   const localized = (japanese, english) => state?.language === "en" ? english : japanese;
   let state = null;
   let atomEchoPorts = [];
+  let rlcd42Ports = [];
   let audioStream = null;
   let audioContext = null;
   let analyser = null;
@@ -3631,6 +3632,216 @@
     }
   }
 
+  function renderRlcd42Ports() {
+    const select = $("#rlcd42PortSelect");
+    const selected = String(state?.rlcd42?.requestedPort || "");
+    select.replaceChildren(new Option(localized("自動検出（ESP32-S3）", "Auto-detect (ESP32-S3)"), ""));
+    for (const port of rlcd42Ports) {
+      const detail = [port.path, port.manufacturer || port.friendlyName, port.vendorId && port.productId ? `${port.vendorId}:${port.productId}` : ""].filter(Boolean).join(" · ");
+      select.appendChild(new Option(detail, port.path));
+    }
+    if (selected && ![...select.options].some((option) => option.value === selected)) {
+      select.appendChild(new Option(localized(`${selected}（現在見つかりません）`, `${selected} (not currently found)`), selected));
+    }
+    select.value = selected;
+  }
+
+  function renderRlcd42VadStatus() {
+    const rlcd = state?.rlcd42 || {};
+    const enabled = rlcd.microphoneEnabled !== false;
+    const handsFree = enabled && rlcd.captureMode === "hands-free";
+    const settings = $("#rlcd42VadThresholdSettings");
+    const input = $("#rlcd42VadThresholdInput");
+    settings.classList.toggle("is-disabled", !handsFree);
+    input.disabled = !handsFree;
+    const status = rlcd.vadStatus;
+    let message = localized(
+      "小さい値ほど離れた声を拾いやすくなります。周囲の音には自動で追従します。",
+      "Lower values pick up voices from farther away. Ambient noise is compensated automatically.",
+    );
+    if (!enabled) message = localized("マイクは停止しています。", "The microphone is off.");
+    else if (!rlcd.microphoneReady && rlcd.connected) {
+      message = localized("マイク対応のCharaDockファームウェアへ更新してください。", "Update to the microphone-enabled CharaDock firmware.");
+    } else if (!handsFree) message = localized("KEYを押している間だけ録音します。", "Recording runs only while KEY is held.");
+    else if (status?.calibrationChunks) message = localized("周囲の音を確認しています…", "Measuring ambient sound…");
+    else if (status?.monitoring || status?.active) {
+      message = localized(
+        `現在の音声 ${status.rms} · 実効しきい値 ${status.startThreshold} · 周囲ノイズ ${status.noiseFloor}`,
+        `Current voice ${status.rms} · effective threshold ${status.startThreshold} · ambient noise ${status.noiseFloor}`,
+      );
+    }
+    setStatus($("#rlcd42VadStatus"), message, Boolean(enabled && rlcd.connected && !rlcd.microphoneReady));
+  }
+
+  function syncRlcd42Ui() {
+    const rlcd = state?.rlcd42 || {};
+    const enabled = Boolean(rlcd.enabled);
+    $("#rlcd42EnabledToggle").checked = enabled;
+    $("#rlcd42EnabledSettings").hidden = !enabled;
+    $("#rlcd42LiveIdleTimeoutToggle").checked = rlcd.liveIdleTimeoutEnabled === true;
+    renderRlcd42Ports();
+    $("#rlcd42TransportSelect").value = ["usb", "wifi"].includes(rlcd.transportPreference) ? rlcd.transportPreference : "auto";
+    $("#rlcd42ArtStyleSelect").value = rlcd.artStyle === "manga" ? "manga" : "illustration";
+    $("#rlcd42CaptionModeSelect").value = rlcd.captionMode === "off" ? "off" : "auto";
+    $("#rlcd42SpeakerToggle").checked = rlcd.speakerEnabled !== false;
+    const outputGainInput = $("#rlcd42OutputGainInput");
+    if (document.activeElement !== outputGainInput) outputGainInput.value = String(Math.max(50, Math.min(150, Number(rlcd.outputGain) || 100)));
+    $("#rlcd42OutputGainOutput").textContent = `${Math.round(Number(outputGainInput.value) || 100)}%`;
+    updateRangeProgress(outputGainInput);
+    $("#rlcd42MicrophoneToggle").checked = rlcd.microphoneEnabled !== false;
+    $("#rlcd42CaptureModeSelect").value = rlcd.captureMode === "hands-free" ? "hands-free" : "push-to-talk";
+    $("#rlcd42CaptureModeSelect").disabled = rlcd.microphoneEnabled === false;
+    const vadThresholdInput = $("#rlcd42VadThresholdInput");
+    if (document.activeElement !== vadThresholdInput) vadThresholdInput.value = String(Math.max(80, Math.min(800, Number(rlcd.vadThreshold) || 120)));
+    $("#rlcd42VadThresholdOutput").textContent = atomEchoVadThresholdLabel(vadThresholdInput.value);
+    updateRangeProgress(vadThresholdInput);
+    renderRlcd42VadStatus();
+
+    const badge = $("#rlcd42StatusBadge");
+    const labels = {
+      off: localized("停止中", "Off"),
+      connecting: localized("接続中", "Connecting"),
+      "setup-required": localized("初期設定", "Setup required"),
+      "usb-ready": localized("USB接続", "USB connected"),
+      ready: rlcd.wirelessConnected ? localized("Wi-Fi接続", "Wi-Fi connected") : localized("接続済み", "Connected"),
+      error: localized("要確認", "Needs attention"),
+    };
+    badge.textContent = labels[rlcd.connectionState] || labels.off;
+    badge.classList.toggle("is-ready", Boolean(rlcd.connected));
+    badge.classList.toggle("is-warning", rlcd.connectionState === "error");
+    $("#syncRlcd42DisplayButton").disabled = !rlcd.connected;
+    $("#testRlcd42SpeakerButton").disabled = !rlcd.connected
+      || rlcd.speakerEnabled === false
+      || !rlcd.playbackReady
+      || !rlcd.ttsReady;
+    $("#provisionRlcd42WifiButton").disabled = !rlcd.usb?.connected;
+    const ssidInput = $("#rlcd42WifiSsidInput");
+    if (document.activeElement !== ssidInput && !ssidInput.value && rlcd.wifiSsid) ssidInput.value = rlcd.wifiSsid;
+    const setup = rlcd.wifiSetup || {};
+    let setupMessage = "";
+    if (setup.error) setupMessage = setup.error;
+    else if (setup.phase === "connected" || setup.connected) setupMessage = localized("Wi-Fi設定を保存し、ネットワークへ接続しました。", "Wi-Fi settings were saved and the device joined the network.");
+    else if (setup.phase === "connecting") setupMessage = localized("RLCD 4.2をWi-Fiへ接続しています…", "Connecting RLCD 4.2 to Wi-Fi…");
+    else if (rlcd.usb?.connected) setupMessage = localized("USBを認識しました。Wi-Fi情報を入力して設定できます。", "USB detected. Enter Wi-Fi details to configure the device.");
+    else setupMessage = localized("初回設定するときだけRLCD 4.2をUSB接続します。", "Connect RLCD 4.2 over USB only for initial setup.");
+    setStatus($("#rlcd42WifiSetupStatus"), setupMessage, Boolean(setup.error));
+
+    let audioMessage;
+    let audioError = false;
+    if (rlcd.speakerEnabled === false) {
+      audioMessage = localized("音声はPC側で再生します。", "Speech plays on the PC.");
+    } else if (!rlcd.connected) {
+      audioMessage = localized("USBまたはWi-Fi接続後にスピーカーを確認できます。", "Connect over USB or Wi-Fi to check the speaker.");
+    } else if (!rlcd.playbackReady) {
+      audioMessage = localized("スピーカー対応のCharaDockファームウェアへ更新してください。", "Update to the speaker-enabled CharaDock firmware.");
+      audioError = true;
+    } else if (!rlcd.ttsReady) {
+      audioMessage = localized("「キャラクターの声」で通常TTSを選ぶと本体から再生できます。", "Choose a standard TTS provider under Character Voice to play on the device.");
+    } else {
+      audioMessage = localized(
+        `${rlcd.inputMode === "live" ? "GPT-Live" : rlcd.ttsProvider || "通常TTS"}のPC生成音声を本体スピーカーへ送ります。`,
+        `${rlcd.inputMode === "live" ? "GPT-Live" : rlcd.ttsProvider || "Standard TTS"} audio generated on the PC will play on the device speaker.`,
+      );
+    }
+    setStatus($("#rlcd42AudioStatus"), audioMessage, audioError);
+
+    const sensors = rlcd.sensors || {};
+    const available = sensors.available || {};
+    $("#rlcd42Temperature").textContent = available.temperatureHumidity && Number.isFinite(Number(sensors.temperatureC))
+      ? `${Number(sensors.temperatureC).toFixed(1)} °C` : "--";
+    $("#rlcd42Humidity").textContent = available.temperatureHumidity && Number.isFinite(Number(sensors.humidityPercent))
+      ? `${Math.round(Number(sensors.humidityPercent))}%` : "--";
+    $("#rlcd42Battery").textContent = available.battery && Number.isFinite(Number(sensors.batteryPercent))
+      ? `${Math.round(Number(sensors.batteryPercent))}%` : "--";
+    $("#rlcd42Firmware").textContent = String(rlcd.device?.firmware || "--");
+
+    let message = String(rlcd.error || "");
+    if (!message && rlcd.wirelessConnected) {
+      const route = rlcd.inputMode === "live"
+        ? rlcd.beatriceActive ? "GPT-Live · Beatrice 2" : "GPT-Live"
+        : rlcd.interactionMode === "work" ? "Work · キャラクターTTS" : "Chat · キャラクターTTS";
+      message = localized(
+        `${rlcd.wifiSsid || "Wi-Fi"}から無線接続中 · ${route} · ${rlcd.captureMode === "hands-free" ? "そのまま話しかけられます。" : "KEYを押したまま話してください。"}`,
+        `Connected wirelessly through ${rlcd.wifiSsid || "Wi-Fi"} · ${route} · ${rlcd.captureMode === "hands-free" ? "Just start speaking." : "Hold KEY while speaking."}`,
+      );
+    } else if (!message && rlcd.connected) {
+      message = localized(
+        `${rlcd.port || "USB"}で接続中です。${rlcd.captureMode === "hands-free" ? "そのまま話しかけられます。" : "KEYを押したまま話してください。"}`,
+        `Connected through ${rlcd.port || "USB"}. ${rlcd.captureMode === "hands-free" ? "Just start speaking." : "Hold KEY while speaking."}`,
+      );
+    } else if (!message && rlcd.paired) {
+      message = localized(`${rlcd.wifiSsid || "設定済みWi-Fi"}上のRLCD 4.2を待っています…`, `Waiting for RLCD 4.2 on ${rlcd.wifiSsid || "the configured Wi-Fi"}…`);
+    } else if (!message && enabled) {
+      message = localized("初期設定用USBまたは設定済みRLCD 4.2を探しています…", "Looking for setup USB or a configured RLCD 4.2…");
+    } else if (!message) {
+      message = localized("RLCD 4.2は停止しています。", "RLCD 4.2 is off.");
+    }
+    if (enabled && rlcd.microphoneEnabled !== false && rlcd.inputMode !== "live" && !rlcd.streamingSpeechReady) {
+      message += localized(" 音声入力にはストリーミング音声認識モデルの導入が必要です。", " Install a streaming speech model for voice input.");
+    }
+    setStatus($("#rlcd42Status"), message, Boolean(rlcd.error));
+  }
+
+  async function refreshRlcd42Ports() {
+    const button = $("#refreshRlcd42PortsButton");
+    button.disabled = true;
+    try {
+      rlcd42Ports = await api.listRlcd42Ports();
+      renderRlcd42Ports();
+      if (!rlcd42Ports.length) setStatus($("#rlcd42Status"), localized("USBシリアルポートが見つかりません。", "No USB serial ports were found."), true);
+    } catch (error) {
+      setStatus($("#rlcd42Status"), error.message, true);
+    } finally {
+      button.disabled = false;
+    }
+  }
+
+  async function saveRlcd42Settings() {
+    const toggle = $("#rlcd42EnabledToggle");
+    toggle.disabled = true;
+    try {
+      state = await api.setRlcd42Config({
+        enabled: toggle.checked,
+        transport: $("#rlcd42TransportSelect").value,
+        port: $("#rlcd42PortSelect").value,
+        artStyle: $("#rlcd42ArtStyleSelect").value,
+        captionMode: $("#rlcd42CaptionModeSelect").value,
+        speakerEnabled: $("#rlcd42SpeakerToggle").checked,
+        outputGain: Number($("#rlcd42OutputGainInput").value),
+        microphoneEnabled: $("#rlcd42MicrophoneToggle").checked,
+        captureMode: $("#rlcd42CaptureModeSelect").value,
+        vadThreshold: Number($("#rlcd42VadThresholdInput").value),
+        liveIdleTimeoutEnabled: $("#rlcd42LiveIdleTimeoutToggle").checked,
+      });
+      syncUi();
+    } catch (error) {
+      state = await api.getState().catch(() => state);
+      if (state?.rlcd42) state.rlcd42.error = error.message;
+      syncRlcd42Ui();
+    } finally {
+      toggle.disabled = false;
+    }
+  }
+
+  async function provisionRlcd42Wifi() {
+    const button = $("#provisionRlcd42WifiButton");
+    button.disabled = true;
+    setStatus($("#rlcd42WifiSetupStatus"), localized("Wi-Fi情報をRLCD 4.2へ安全に渡しています…", "Sending Wi-Fi settings directly to RLCD 4.2…"));
+    try {
+      state = await api.provisionRlcd42Wifi({
+        ssid: $("#rlcd42WifiSsidInput").value,
+        password: $("#rlcd42WifiPasswordInput").value,
+      });
+      $("#rlcd42WifiPasswordInput").value = "";
+      syncUi();
+      setStatus($("#rlcd42WifiSetupStatus"), localized("設定を保存しました。無線接続を待っています…", "Settings saved. Waiting for the wireless connection…"));
+    } catch (error) {
+      setStatus($("#rlcd42WifiSetupStatus"), error.message, true);
+    } finally {
+      button.disabled = !state?.rlcd42?.usb?.connected;
+    }
+  }
+
   function syncUi() {
     i18n?.setLanguage(state.language || "ja");
     document.documentElement.dataset.character = state.characterId || "amber-avatar";
@@ -3651,6 +3862,7 @@
     renderCharacterWorkspace();
     syncRemoteUi();
     syncAtomEchoUi();
+    syncRlcd42Ui();
     $("#openChatWorkDirectoryButton").disabled = !state.hasWorkDirectory;
     $("#chatComposerHint").textContent = state.interactionMode === "work"
       ? localized("Work · 選択フォルダー内へ書き込みできます", "Work · Can write inside the selected folder")
@@ -4551,6 +4763,7 @@
 
   function stopSpeechPlayback() {
     speechPlaybackToken += 1;
+    api.stopRlcd42Speaker?.().catch(() => {});
     if (speechTtsStreamId) api.cancelTtsStream(speechTtsStreamId).catch(() => {});
     speechTtsStreamId = "";
     window.speechSynthesis?.cancel();
@@ -4617,6 +4830,10 @@
         setStatus($("#ttsStatus"), `${providerName}で生成しています…`);
         const result = await api.synthesizeTts(text);
         if (result?.error) throw new Error(result.error);
+        if (result?.externalPlayback === "rlcd42") {
+          if (token === speechPlaybackToken) setStatus($("#ttsStatus"), localized("RLCD 4.2で再生しました。", "Played on RLCD 4.2."));
+          return;
+        }
         const sources = result?.audioDataUrls || [];
         if (!sources.length) throw new Error(`${providerName}から音声データが返されませんでした。音声出力がONか確認してください。`);
         await playGeneratedResult(result, token);
@@ -4915,6 +5132,11 @@
       state.atomEcho.vadStatus = status;
       renderAtomEchoVadStatus();
     });
+    api.onRlcd42CaptureStatus?.((status) => {
+      if (!state?.rlcd42) return;
+      state.rlcd42.vadStatus = status;
+      renderRlcd42VadStatus();
+    });
     api.onUpdateStatus?.((update) => {
       state.appUpdate = update;
       syncUpdateUi();
@@ -5144,6 +5366,60 @@
         setStatus($("#atomEchoStatus"), error.message, true);
       } finally {
         button.disabled = !state?.atomEcho?.connected || !state?.atomEcho?.ttsReady;
+      }
+    });
+    $("#rlcd42EnabledToggle").addEventListener("change", saveRlcd42Settings);
+    $("#rlcd42TransportSelect").addEventListener("change", saveRlcd42Settings);
+    $("#rlcd42PortSelect").addEventListener("change", saveRlcd42Settings);
+    $("#rlcd42ArtStyleSelect").addEventListener("change", saveRlcd42Settings);
+    $("#rlcd42CaptionModeSelect").addEventListener("change", saveRlcd42Settings);
+    $("#rlcd42SpeakerToggle").addEventListener("change", saveRlcd42Settings);
+    $("#rlcd42OutputGainInput").addEventListener("input", () => {
+      const input = $("#rlcd42OutputGainInput");
+      $("#rlcd42OutputGainOutput").textContent = `${Math.round(Number(input.value) || 100)}%`;
+      updateRangeProgress(input);
+    });
+    $("#rlcd42OutputGainInput").addEventListener("change", saveRlcd42Settings);
+    $("#rlcd42MicrophoneToggle").addEventListener("change", saveRlcd42Settings);
+    $("#rlcd42CaptureModeSelect").addEventListener("change", saveRlcd42Settings);
+    $("#rlcd42LiveIdleTimeoutToggle").addEventListener("change", saveRlcd42Settings);
+    $("#rlcd42VadThresholdInput").addEventListener("input", () => {
+      const input = $("#rlcd42VadThresholdInput");
+      $("#rlcd42VadThresholdOutput").textContent = atomEchoVadThresholdLabel(input.value);
+      updateRangeProgress(input);
+    });
+    $("#rlcd42VadThresholdInput").addEventListener("change", saveRlcd42Settings);
+    $("#refreshRlcd42PortsButton").addEventListener("click", refreshRlcd42Ports);
+    $("#provisionRlcd42WifiButton").addEventListener("click", provisionRlcd42Wifi);
+    $("#testRlcd42SpeakerButton").addEventListener("click", async () => {
+      const button = $("#testRlcd42SpeakerButton");
+      button.disabled = true;
+      setStatus($("#rlcd42AudioStatus"), localized("キャラクターの声を準備しています…", "Preparing the character voice…"));
+      try {
+        state = await api.testRlcd42Speaker();
+        syncUi();
+        setStatus($("#rlcd42AudioStatus"), localized("RLCD 4.2からテスト音声を再生しました。", "The test voice played on RLCD 4.2."));
+      } catch (error) {
+        setStatus($("#rlcd42AudioStatus"), error.message, true);
+      } finally {
+        button.disabled = !state?.rlcd42?.connected
+          || state?.rlcd42?.speakerEnabled === false
+          || !state?.rlcd42?.playbackReady
+          || !state?.rlcd42?.ttsReady;
+      }
+    });
+    $("#syncRlcd42DisplayButton").addEventListener("click", async () => {
+      const button = $("#syncRlcd42DisplayButton");
+      button.disabled = true;
+      setStatus($("#rlcd42Status"), localized("キャラクター画像と表示状態を同期しています…", "Syncing the character image and display state…"));
+      try {
+        state = await api.syncRlcd42Display();
+        syncUi();
+        setStatus($("#rlcd42Status"), localized("選択中のキャラクターをRLCD 4.2へ同期しました。", "The selected character is now synced to RLCD 4.2."));
+      } catch (error) {
+        setStatus($("#rlcd42Status"), error.message, true);
+      } finally {
+        button.disabled = !state?.rlcd42?.connected;
       }
     });
     $("#refreshRemoteTailscaleButton").addEventListener("click", async () => {
@@ -6280,6 +6556,7 @@
     bindEvents();
     syncUi();
     if (state?.atomEcho?.enabled) queueMicrotask(() => refreshAtomEchoPorts());
+    if (state?.rlcd42?.enabled) queueMicrotask(() => refreshRlcd42Ports());
     const page = sessionStorage.getItem("charadock.activePage") || "chat";
     showPage(["chat", "remote", "esp32", "character", "skills", "mcp", "voice", "connection", "desktop", "support"].includes(page) ? page : "chat");
     if (page === "support") refreshSupportDiagnostics();

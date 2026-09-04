@@ -20,10 +20,16 @@ Read the attached image as the sole identity/style reference and read `request.j
 7. `front-hair.png`
 8. `hair-reference.png` (quality proof only; the app does not install it)
 9. `character.json`
+10. `rlcd42-portrait.png`
+11. `rlcd42-portrait-blink.png`
+12. `rlcd42-portrait-mouth-half.png`
+13. `rlcd42-portrait-mouth-open.png`
 
 Keep all PNGs the same 512–4096 px canvas size and pixel registration. Prefer `hairMode: "layered"`: the six expression frames contain the same character and outfit without the hair isolated into `front-hair.png`, and `front-hair.png` contains only movable front/side hair in its exact overlay position—never the face, body, accessory, costume, or whole source image. When a clean separation cannot be proven after one strict repair attempt, use the documented `hairMode: "static"` fallback: retain the complete hair in all six expression frames and write a same-canvas transparent `front-hair.png`. Never install a torn or rectangular hair layer merely to provide hair motion.
 
 Use genuine alpha in final files. Image generation often paints a fake checkerboard instead of transparency, so request a perfectly flat `#00FF00` background for every generated working image. Never request or accept a checkerboard. The compose script converts green to alpha.
+
+The four `rlcd42-*` files are a separate registered 4:3 presentation set for a 400×300 one-bit reflective LCD. Generate them from the same identity reference as crisp monochrome manga ink on a perfectly flat opaque white background. Keep face, neck, and all skin white. Use strong black contours, selective separated solid-black masses in deep rear hair/clothing/accessory shadows, and broad coarse diagonal hatch groups; target roughly 8–18% apparent black coverage after reduction. Do not use color, gray gradients, soft shadows, tiny dots, fine screentone, dense halftone, stippling, texture, black-filled skin, or one connected black mass. Frame the head and shoulders large enough to remain legible after reduction to 400×300. All four must use the exact same canvas, crop, pose, hair, accessories, clothing, fill placement, and line weight. Change only both eyelids for blink, or only the compact mouth for half/open speech. These files are independent of the transparent desktop avatar canvas and do not have to share its dimensions.
 
 ## Mandatory generation workflow
 
@@ -73,7 +79,15 @@ node .agents/skills/build-purupuru-avatar/scripts/validate-output.cjs output --r
 It checks alpha/chroma background, transparent safe margins, unique hashes, visible character/hair coverage, localized eye/mouth differences, registration drift, metadata, rig geometry, lower-face contamination, long axis-aligned clipping seams, and pixel reconstruction against the intact hair reference. It also writes `output/qa-preview.png`, a 3×2 sheet with the hair overlaid.
 
 10. Inspect `output/qa-preview.png` with the image-viewing tool. Confirm all six complete characters are visible, hair meets the scalp, both source eyes and the original face angle remain visible, eyes close in the lower row, mouth progresses closed → half → open in both rows, and nothing jumps between cells.
-11. On any validator or visual failure, regenerate the defective working image and repeat assembly/validation. Do not bypass a failure by copying, renaming, editing hashes, weakening the validator, deleting hair, or claiming completion.
+11. Create the four registered RLCD drawings with identity-preserving image generation/editing. Start from `rlcd42-portrait.png`, then edit that same image for blink, half-open mouth, and open mouth; never generate four unrelated compositions. Run:
+
+```bash
+node .agents/skills/build-purupuru-avatar/scripts/validate-output.cjs \
+  output --require-hair-reference --require-rlcd42
+```
+
+12. Inspect `output/qa-rlcd42-preview.png` and all four `output/rlcd42-*.png` files at full size and mentally at 400×300. Confirm the identity and silhouette match the source, the background and skin remain white, contours are strong, selective rear-hair/clothing fills are separated, coarse hatching remains readable, no fine dot pattern was introduced, both eyes visibly close, mouth progresses closed → half → open, and the composition or fill placement does not jump.
+13. On any validator or visual failure, regenerate the defective working image and repeat assembly/validation. Do not bypass a failure by copying, renaming, editing hashes, weakening the validator, deleting hair, or claiming completion.
 
 ## Metadata contract
 
@@ -121,5 +135,6 @@ Reject and repair all of the following:
 - unchanged half/open mouth or unchanged closed eyes;
 - seams, long straight/rectangular cut boundaries, double hair, shifted/redrawn hair, exposed forehead holes, newly added text, or watermarks;
 - incorrect rig positions or a preview that does not show six complete states.
+- missing, duplicate, weak, overfilled, non-4:3, or composition-shifting RLCD portraits; grayscale shading, fine screentone, dense halftone, stippling, texture, black-filled skin, or a non-white RLCD background.
 
 Return only a compact JSON summary with `status`, `name`, `personality`, and `outputDirectory` after the validator exits successfully and the preview passes visual inspection. The app reads the full validated `director` from `output/character.json`; do not repeat it in the completion message.

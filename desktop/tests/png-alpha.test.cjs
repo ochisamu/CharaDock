@@ -41,7 +41,11 @@ test("bundled desktop avatars have fully transparent background corners", () => 
   const projectRoot = path.resolve(__dirname, "../..");
   for (const directory of ["amber-avatar", "bronze-avatar", "towa-avatar", "sage-avatar", "nike-avatar"]) {
     const assetDirectory = path.join(projectRoot, "assets", directory);
-    for (const name of fs.readdirSync(assetDirectory).filter((entry) => entry.endsWith(".png"))) {
+    // RLCD-specific portraits are complete opaque white-paper illustrations,
+    // not composited desktop avatar layers, so the transparent-corner rule
+    // intentionally does not apply to them.
+    for (const name of fs.readdirSync(assetDirectory).filter((entry) =>
+      entry.endsWith(".png") && !entry.startsWith("rlcd42-portrait"))) {
       const png = PNG.sync.read(fs.readFileSync(path.join(assetDirectory, name)));
       for (const [x, y] of [[0, 0], [png.width - 1, 0], [0, png.height - 1]]) {
         assert.equal(png.data[((y * png.width) + x) * 4 + 3], 0, `${directory}/${name}@${x},${y}`);
