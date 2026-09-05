@@ -16,7 +16,8 @@ RLCD 4.2のキャラクター表示・音声会話に対応し、ESP32との接�
 - **Windows x64**: `CharaDock.Setup.0.6.0.exe`（インストーラー）
 - **Windows x64**: `CharaDock.0.6.0.exe`（ポータブル）
 - **Microsoft Store提出用**: `CharaDock-0.6.0.0-store-x64-unsigned.msix`
-- SHA-256: EXEは`SHA256SUMS.txt`、MSIXは`SHA256SUMS-store-v0.6.0.txt`で確認できます。
+- **macOS Apple Silicon / arm64（実験版）**: `CharaDock-0.6.0-mac-arm64.dmg` / `CharaDock-0.6.0-mac-arm64.zip`
+- SHA-256: EXEは`SHA256SUMS.txt`、MSIXは`SHA256SUMS-store-v0.6.0.txt`、Mac版は`SHA256SUMS-macos-arm64.txt`で確認できます。
 
 ESP32利用時は [CharaDock-ESP32 v0.6.0](https://github.com/ochisamu/CharaDock-ESP32/releases/tag/v0.6.0)
 を併用してください。音声認識・合成はPC側で行い、端末へモデルやsanoTTSは搭載しません。
@@ -24,6 +25,8 @@ ESP32利用時は [CharaDock-ESP32 v0.6.0](https://github.com/ochisamu/CharaDock
 ## 注意
 
 > 通常のWindowsパッケージは未署名です。OSが警告を表示する場合があります。MSIXはMicrosoft Store提出用の未署名パッケージで、一般的なサイドロード用途ではありません。このReleaseへの添付は、Microsoft Storeでの公開完了を意味しません。
+
+> macOS版は未署名・未公証の実験版です。リリースタグを指定したGitHub Actionsでビルドし、arm64のネイティブホスト同梱とチェックサムを検証しています。Mac実機でのGUI・音声・ESP32接続の動作確認を意味するものではありません。
 
 物音判定や認識精度は環境に依存し、すべてのノイズを除外する保証はありません。
 モデル・認証情報・会話ログはこのリリースの配布物には含めません。
@@ -56,9 +59,12 @@ Use [CharaDock-ESP32 v0.6.0](https://github.com/ochisamu/CharaDock-ESP32/release
 - **Windows x64**: `CharaDock.Setup.0.6.0.exe` (installer)
 - **Windows x64**: `CharaDock.0.6.0.exe` (portable)
 - **Microsoft Store submission**: `CharaDock-0.6.0.0-store-x64-unsigned.msix`
-- Verify EXEs with `SHA256SUMS.txt` and the MSIX with `SHA256SUMS-store-v0.6.0.txt`.
+- **macOS Apple Silicon / arm64 (experimental)**: `CharaDock-0.6.0-mac-arm64.dmg` / `CharaDock-0.6.0-mac-arm64.zip`
+- Verify EXEs with `SHA256SUMS.txt`, the MSIX with `SHA256SUMS-store-v0.6.0.txt`, and Mac packages with `SHA256SUMS-macos-arm64.txt`.
 
 > Regular Windows packages are unsigned. The unsigned MSIX is for Microsoft Store submission, not normal sideloading. Attaching it here does not mean the update has been published to Microsoft Store. Downloadable speech models, credentials, and conversation logs are not bundled.
+
+> The macOS package is experimental, unsigned, and unnotarized. It is built from the release tag using GitHub Actions, with bundled arm64 native-host and checksum verification. This does not constitute hardware validation of the Mac GUI, audio, or ESP32 connectivity.
 
 There are outstanding GitHub security advisories for development-only fast-uri / xmldom dependencies under electron-builder. Neither package is included in the packaged application; source builders should still review these development-environment warnings.
 
