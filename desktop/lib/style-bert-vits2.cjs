@@ -24,8 +24,15 @@ function styleBertVoiceEndpoint(rawUrl) {
   return url;
 }
 
-function splitTtsText(value, maxLength = 100, maxChunks = 10) {
-  return splitNaturalSpeechText(value, maxLength, maxChunks);
+function splitTtsText(value, maxLength = 80, maxChunks = 100) {
+  const sentences = String(value || "").replace(/\s+/g, " ").trim()
+    .match(/[\s\S]+?(?:[。！？!?]+[」』】）)\]"'”’]*|$)/gu) || [];
+  const chunks = [];
+  for (const sentence of sentences) {
+    if (chunks.length >= maxChunks) break;
+    chunks.push(...splitNaturalSpeechText(sentence, maxLength, maxChunks - chunks.length));
+  }
+  return chunks;
 }
 
 function audioMimeType(bytes, responseType = "") {
@@ -72,7 +79,7 @@ async function synthesizeStyleBertVits2({
     const mimeType = audioMimeType(bytes, response.headers.get("content-type"));
     audioDataUrls.push(`data:${mimeType};base64,${bytes.toString("base64")}`);
   }
-  return { audioDataUrls };
+  return { audioDataUrls, audioTexts: chunks };
 }
 
 module.exports = { audioMimeType, splitTtsText, styleBertVoiceEndpoint, synthesizeStyleBertVits2 };

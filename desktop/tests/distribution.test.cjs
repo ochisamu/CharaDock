@@ -48,7 +48,8 @@ test("interface symbols use individually licensed SVG assets", () => {
   assert.ok(icons.length >= 18);
   for (const icon of icons) {
     const svg = fs.readFileSync(path.join(iconDirectory, icon), "utf8");
-    assert.match(svg, /@license Lucide/);
+    assert.match(svg, ["chip.svg", "device-link.svg"].includes(icon)
+      ? /SPDX-License-Identifier: Apache-2.0/ : /@license Lucide/);
     assert.match(svg, /viewBox="0 0 24 24"/);
   }
   for (const cssFile of ["control.css", "mascot-overlay.css"]) {
@@ -610,7 +611,7 @@ test("remote access exposes compact avatar dialogue, device controls, and Live r
   const remoteCss = fs.readFileSync(path.join(projectRoot, "desktop", "remote", "remote.css"), "utf8");
   const remoteJs = fs.readFileSync(path.join(projectRoot, "desktop", "remote", "remote.js"), "utf8");
   const main = fs.readFileSync(path.join(projectRoot, "desktop", "main.cjs"), "utf8");
-  assert.match(controlHtml, /data-page="remote"[\s\S]*ui-symbol-settings[\s\S]*リモート/);
+  assert.match(controlHtml, /data-page="remote"><span class="ui-symbol ui-symbol-device-link"[^>]*><\/span>CharaDock Link/);
   for (const id of ["remoteDeviceList", "remotePcAudioToggle", "remoteResponseModeSelect", "remotePairingCode", "remotePairingTransport", "remotePairingRouteHint", "remotePortInput", "remoteTailscaleHttpsPortInput", "startRemoteTailscaleButton", "stopRemoteTailscaleButton"]) assert.match(controlHtml, new RegExp(`id="${id}"`));
   assert.match(controlJs, /revokeRemoteSession\(device\.id\)/);
   assert.match(controlJs, /startRemoteTailscale\(\)/);
@@ -715,7 +716,7 @@ test("ESP32 devices have a scalable settings page independent of CharaDock Link"
   assert.match(main, /deviceProfiles[\s\S]*RLCD42_PROFILE_ID/);
   assert.match(main, /syncRlcd42Presentation/);
   assert.match(main, /playRlcd42Speech[\s\S]*resamplePcm16[\s\S]*playPcm16/);
-  assert.match(main, /onPttStart: async \(\) => esp32PttStart\("rlcd42"\)[\s\S]*onPcmChunk: async \(chunk\) => esp32PcmChunk\(chunk\)/);
+  assert.match(main, /onPttStart: async \(\) => esp32InputStart\("rlcd42"\)[\s\S]*onPcmChunk: async \(chunk\) => esp32InputGate\("rlcd42"\).chunk\(chunk\)/);
   assert.match(main, /rlcd42LiveAudioRoute = new AtomEchoLiveAudioRoute\(\{[\s\S]*processorOptions: rlcd42OutputProfile/);
   assert.match(main, /rlcd42:testSpeaker/);
   assert.match(main, /ipcMain\.handle\("rlcd42:stopSpeaker"[\s\S]*?assertTrustedAppSender\(event\)/);

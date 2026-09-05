@@ -1324,6 +1324,7 @@ window.addEventListener("DOMContentLoaded", () => {
   };
   const stopTtsPlayback = () => {
     ttsPlaybackToken += 1;
+    ipcRenderer.invoke("mascotInline:speechCaption", { done: true, generation: ttsPlaybackToken }).catch(() => {});
     ipcRenderer.invoke("rlcd42:stopSpeaker").catch(() => {});
     for (const streamId of activeTtsStreamIds) ipcRenderer.invoke("mascotInline:cancelTtsStream", streamId).catch(() => {});
     activeTtsStreamIds.clear();
@@ -1522,7 +1523,7 @@ window.addEventListener("DOMContentLoaded", () => {
       return null;
     }
     if (streamId) activeTtsStreamIds.add(streamId);
-    return { segment, text, spokenText, sources, playbackRate: result?.playbackRate, streamId };
+    return { segment, text, spokenText, sources, audioTexts: result?.audioTexts || [], playbackRate: result?.playbackRate, streamId };
   };
   const prepareQueuedSpeechSegment = (segment, provider, token) => prepareSpeechSegment(segment, provider, token)
     .then((prepared) => ({ prepared }), (error) => ({ error }));
@@ -1531,30 +1532,35 @@ window.addEventListener("DOMContentLoaded", () => {
     const { segment, text, spokenText, sources, playbackRate, externalPlayback } = prepared;
     let streamId = String(prepared.streamId || "");
     let activated = false;
-    const activate = () => {
-      if (activated) return;
-      activated = true;
-      streamCurrentSpeechText = text;
-      if (!bubble.classList.contains("is-expanded")) bubbleText.textContent = normalizeDisplayText(text);
+    const activate = (caption = text) => {
+      if (token !== ttsPlaybackToken) return;
+      streamCurrentSpeechText = caption;
+      if (!bubble.classList.contains("is-expanded")) bubbleText.textContent = normalizeDisplayText(caption);
       syncBubbleOverflow();
-      if (segment?.expression) ipcRenderer.invoke("mascotInline:expression", segment.expression).catch(() => {});
+      ipcRenderer.invoke("mascotInline:speechCaption", { text: caption, generation: token }).catch(() => {});
+      if (!activated && segment?.expression) ipcRenderer.invoke("mascotInline:expression", segment.expression).catch(() => {});
+      activated = true;
     };
     if (externalPlayback === "rlcd42") {
-      activate();
+      // Main publishes captions at device playback time, not after this
+      // synthesis IPC resolves (external playback has already completed).
       return;
     }
     if (isGeneratedTtsProvider(provider)) {
       let chunkSources = sources;
+      let chunkTexts = prepared.audioTexts || [];
       try {
         while (chunkSources.length) {
           const nextPromise = streamId ? ipcRenderer.invoke("mascotInline:nextTtsChunk", streamId) : null;
-          for (const source of chunkSources) {
+          for (const [index, source] of chunkSources.entries()) {
             if (token !== ttsPlaybackToken) return;
-            await playAudioSource(source, spokenText, token, activate, playbackRate);
+            const caption = chunkTexts[index] || text;
+            await playAudioSource(source, caption, token, () => activate(caption), playbackRate);
           }
           if (!nextPromise || token !== ttsPlaybackToken) break;
           const next = await nextPromise;
           chunkSources = next?.audioDataUrl ? [next.audioDataUrl] : [];
+          chunkTexts = [next?.audioText || text];
           if (next?.done) {
             activeTtsStreamIds.delete(streamId);
             streamId = "";
@@ -1578,10 +1584,11 @@ window.addEventListener("DOMContentLoaded", () => {
     stopTtsPulse();
     ttsAudio = null;
     setTtsBusy(false);
+    ipcRenderer.invoke("mascotInline:speechCaption", { done: true, generation: ttsPlaybackToken }).catch(() => {});
     if (vadActive) vadResumeAt = performance.now() + 650;
     if (streamTtsFinished && !streamTtsQueue.length) {
-      streamCurrentSpeechText = "";
-      if (!bubble.classList.contains("is-expanded") && streamFullText) bubbleText.textContent = normalizeDisplayText(streamFullText);
+      // Keep the last spoken sentence; the existing Full text button opens
+      // the complete answer without flooding the compact bubble again.
       ipcRenderer.invoke("mascotInline:expression", { emotion: null, forceMouth: null, forceEyesClosed: null, durationMs: 100 }).catch(() => {});
       syncBubbleOverflow();
     }
@@ -1668,7 +1675,7 @@ window.addEventListener("DOMContentLoaded", () => {
     clearPermission();
     clearBubbleArtifactActions();
     clearTimeout(hideTimer);
-    streamFullText = "";
+    streamFullText = normalizeDisplayText(payload?.text);
     streamCurrentSpeechText = "";
     bubbleText.textContent = normalizeDisplayText(payload?.text);
     bubble.classList.remove("is-expanded", "has-overflow", "has-full-reply");
@@ -3230,6 +3237,14 @@ window.addEventListener("DOMContentLoaded", () => {
       onboardingFirstWorkRunning = false;
     }
   });
+  ipcRenderer.on("speech:caption", (_event, payload = {}) => {
+    if (payload.done || !payload.text) return;
+    streamCurrentSpeechText = normalizeDisplayText(payload.displayText || payload.text);
+    if (!streamFullText && payload.fullText) streamFullText = normalizeDisplayText(payload.fullText);
+    if (!bubble.classList.contains("is-expanded")) bubbleText.textContent = streamCurrentSpeechText;
+    bubble.classList.add("is-visible");
+    syncBubbleOverflow();
+  });
   ipcRenderer.on("audio:stopNormalSpeech", () => stopTtsPlayback());
   ipcRenderer.on("mascot:workHistory", (_event, payload) => {
     workHistoryState = payload && Array.isArray(payload.runs) ? payload : { activeWorkRunId: null, runs: [] };
@@ -3350,8 +3365,7 @@ window.addEventListener("DOMContentLoaded", () => {
       renderArtifactActions(artifactActions, payload?.artifacts, payload?.workRunId);
       scheduleBubbleArtifactActionsClear();
       if (!streamTtsConfig.enabled || (!streamTtsDraining && !streamTtsQueue.length)) {
-        streamCurrentSpeechText = "";
-        if (!payload?.deferDisplayToRealtime && !bubble.classList.contains("is-expanded") && streamFullText) bubbleText.textContent = normalizeDisplayText(streamFullText);
+        if (!payload?.deferDisplayToRealtime && !bubble.classList.contains("is-expanded") && streamFullText && !streamCurrentSpeechText) bubbleText.textContent = normalizeDisplayText(streamFullText);
         if (streamTtsConfig.enabled) finishTtsPlayback();
       }
       syncBubbleOverflow();

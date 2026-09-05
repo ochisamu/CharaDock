@@ -18,11 +18,63 @@ function fixture(callbacks = {}) {
   const usb = hub.serial.callbacks;
   const wifi = hub.wifi.inner.callbacks;
   const connectWifi = () => {
+    hub.transportPreference = "wifi";
     hub.wifi.activeCandidate = {};
     hub.wifi.inner.connectionState = "ready";
   };
   return { hub, usb, wifi, connectWifi };
 }
+
+test("auto prefers USB, falls back to Wi-Fi, and explicit Wi-Fi disables USB", async () => {
+  const { hub, connectWifi } = fixture();
+  hub.hasPairing = true;
+  hub.serialOptions = { port: "COM7" };
+  const changes = [];
+  hub.serial.configure = async (options) => {
+    hub.serial.enabled = options.enabled;
+    changes.push(options);
+  };
+  connectWifi();
+  hub.transportPreference = "auto";
+  assert.equal(hub.activeSource(), "usb");
+  await hub.syncSerialPolicy();
+  assert.equal(changes.length, 0);
+  hub.serial.connectionState = "off";
+  assert.equal(hub.activeSource(), "wifi");
+  hub.serial.enabled = false;
+  await hub.syncSerialPolicy();
+  assert.equal(changes.at(-1).enabled, true);
+  assert.equal(changes.at(-1).port, "COM7");
+  hub.transportPreference = "wifi";
+  await hub.syncSerialPolicy();
+  assert.equal(changes.at(-1).enabled, false);
+  hub.hasPairing = false;
+  assert.equal(hub.shouldEnableSerial(), true);
+  hub.enabled = false;
+  assert.equal(hub.shouldEnableSerial(), false);
+});
+
+test("failed PCM admission releases the RLCD capture for an immediate retry", async () => {
+  let fail = true;
+  const { hub, usb } = fixture({ onPcmChunk: async () => { if (fail) throw new Error("recognizer failed"); } });
+  await usb.onPttStart();
+  await assert.rejects(usb.onPcmChunk(Buffer.alloc(2)), /recognizer failed/);
+  assert.equal(hub.inputCapture, null);
+  fail = false;
+  await usb.onPttStart(); await usb.onPcmChunk(Buffer.alloc(2)); await usb.onPttEnd();
+  assert.equal(hub.inputCapture, null);
+});
+
+test("standby capture telemetry remains diagnostic-only", async () => {
+  const logs = [], updates = [];
+  const { hub, wifi, connectWifi } = fixture({ logger: (...args) => logs.push(args), onCaptureStatus: (s) => updates.push(s) });
+  connectWifi();
+  hub.transportPreference = "auto";
+  await wifi.onCaptureStatus({ rms: 42 });
+  assert.equal(updates.length, 0);
+  assert.equal(logs.at(-1)[1], "rlcd42-standby-capture-status");
+  assert.equal(logs.at(-1)[2].source, "wifi");
+});
 
 for (const source of ["usb", "wifi"]) {
   test(`old PTT end preserves the newer ${source} capture and its disconnect cleanup`, async () => {

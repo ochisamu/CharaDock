@@ -10,6 +10,62 @@ const {
 } = require("../lib/device-protocol-v2.cjs");
 
 const nextTurn = () => new Promise((resolve) => setImmediate(resolve));
+
+test("ACK deadline also bounds a stalled transport write callback", async () => {
+  const gateway = new Rlcd42SerialGateway();
+  gateway.connectionState = "ready";
+  gateway.writeBytes = () => new Promise(() => {});
+  const keepAlive = setTimeout(() => {}, 1000);
+  try {
+    await assert.rejects(gateway.writeWithAck(FRAME_TYPES.AUDIO_CHUNK, Buffer.alloc(2), { timeoutMs: 10 }), /AUDIO_CHUNK/);
+    assert.equal(gateway.pending.size, 0);
+  } finally { clearTimeout(keepAlive); }
+});
+
+test("failed old playback never stops a replacement playback", async () => {
+  const gateway = new Rlcd42SerialGateway();
+  gateway.connectionState = "ready";
+  gateway.capabilities = { capabilities: { audio: { playback: true } } };
+  let stopped = false;
+  gateway.stopPlayback = async () => { stopped = true; };
+  gateway.writeWithAck = async (type) => {
+    if (type === FRAME_TYPES.AUDIO_CHUNK) {
+      gateway.playbackGeneration++;
+      gateway.activePlayback = { generation: gateway.playbackGeneration };
+      throw new Error("old transfer failed");
+    }
+  };
+  await assert.rejects(gateway.playPcm16(Buffer.alloc(640)), /old transfer/);
+  assert.equal(stopped, false);
+  assert.equal(gateway.activePlayback.generation, gateway.playbackGeneration);
+});
+
+for (const failedType of [FRAME_TYPES.AUDIO_BEGIN, FRAME_TYPES.AUDIO_CHUNK, FRAME_TYPES.AUDIO_END]) {
+  test(`failed playback ${failedType} sends STOP and restores idle`, async () => {
+    const gateway = new Rlcd42SerialGateway();
+    gateway.connectionState = "ready";
+    gateway.capabilities = { capabilities: { audio: { playback: true } } };
+    const commands = [];
+    gateway.writeWithAck = async (type, payload) => {
+      commands.push([type, payload]);
+      if (type === failedType) throw new Error("test timeout");
+    };
+    await assert.rejects(gateway.playPcm16(Buffer.alloc(640)), /test timeout/);
+    assert.equal(gateway.activePlayback, null);
+    assert.ok(commands.some(([type]) => type === FRAME_TYPES.AUDIO_STOP));
+    assert.equal(commands.at(-1)[0], FRAME_TYPES.STATE);
+    assert.equal(commands.at(-1)[1][0], 0);
+  });
+}
+
+test("disconnect before write completion does not create an unhandled ACK rejection", async () => {
+  const gateway = new Rlcd42SerialGateway();
+  const pending = gateway.pendingResponse("ack:test", 1000, "timeout");
+  gateway.rejectPending("disconnected");
+  await nextTurn();
+  await assert.rejects(pending.promise, /disconnected/);
+  assert.equal(gateway.pending.size, 0);
+});
 const waitUntil = async (predicate, timeoutMs = 500) => {
   const deadline = Date.now() + timeoutMs;
   while (!predicate()) {

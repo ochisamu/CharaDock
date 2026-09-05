@@ -1047,11 +1047,19 @@
 
   function setCodexModelOptions(select, selectedValue) {
     const value = String(selectedValue || "");
-    select.replaceChildren(new Option("Codex既定", ""));
+    select.replaceChildren(new Option("既定（GPT-6 Astra）", ""));
     for (const model of codexModels) {
-      const option = new Option(`${model.displayName || model.model}${model.isDefault ? "（既定）" : ""}`, model.model);
+      const label = model.model === "gpt-6-astra" ? "GPT-6 Astra" : model.displayName || model.model;
+      const option = new Option(label, model.model);
       option.title = model.description || "";
       select.appendChild(option);
+    }
+    // Older Codex installations may omit newly released models from model/list.
+    // Keep the explicit ID selectable without silently changing saved defaults.
+    if (![...select.options].some((option) => option.value === "gpt-6-astra")) {
+      const astra = new Option("GPT-6 Astra", "gpt-6-astra");
+      astra.title = localized("利用にはCodex側のモデルアクセス権が必要です。", "Requires model access in your Codex account.");
+      select.appendChild(astra);
     }
     if (value && ![...select.options].some((option) => option.value === value)) {
       select.appendChild(new Option(`${value}（保存済み）`, value));
@@ -5149,6 +5157,30 @@
       setStatus($("#chatStatus"), message);
       setStatus($("#beatriceStatus"), message);
     });
+    $("#speechCaptionFull").addEventListener("click", () => {
+      const expanded = $("#speechCaptionFull").getAttribute("aria-expanded") !== "true";
+      $("#speechCaptionFull").setAttribute("aria-expanded", String(expanded));
+      $("#speechCaptionFull").textContent = expanded
+        ? localized("全文・履歴を閉じる", "Close full text / history")
+        : localized("全文・履歴を開く", "Open full text / history");
+      $("#chatLog").hidden = !expanded;
+    });
+    api.onSpeechCaption?.((payload) => {
+      if (payload.done) {
+        $("#speechCaptionStatus").textContent = localized("再生終了 · 全文は下のボタンから", "Playback ended · Open full text below");
+        return;
+      }
+      if (!payload.text) return;
+      const first = $("#speechCaptionPanel").hidden;
+      $("#speechCaptionPanel").hidden = false;
+      $("#speechCaptionText").textContent = payload.displayText || payload.text;
+      $("#speechCaptionStatus").textContent = localized("前の文 ＋ いま話している文", "Previous + now speaking");
+      if (first) {
+        $("#speechCaptionFull").setAttribute("aria-expanded", "false");
+        $("#speechCaptionFull").textContent = localized("全文・履歴を開く", "Open full text / history");
+        $("#chatLog").hidden = true;
+      }
+    });
     api.onChatStream?.((payload) => {
       const phase = String(payload?.phase || "");
       const mode = payload?.mode === "work" ? "work" : "chat";
@@ -5162,6 +5194,8 @@
         return;
       }
       if (phase === "start") {
+        $("#speechCaptionPanel").hidden = true;
+        $("#chatLog").hidden = false;
         activeStreamMode = mode;
         activeStreamTurnId = turnId;
         activeStreamWorkRunId = String(payload?.workRunId || "");

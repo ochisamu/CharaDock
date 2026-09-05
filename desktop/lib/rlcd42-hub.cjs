@@ -50,8 +50,17 @@ class Rlcd42Hub {
           throw error;
         }
       },
-      onPcmChunk: async (chunk) => this.inputCapture?.source === source && !this.inputCapture.endPending
-        ? onPcmChunk?.(chunk) : undefined,
+      onPcmChunk: async (chunk) => {
+        const capture = this.inputCapture;
+        if (capture?.source !== source || capture.endPending) return;
+        try { return await onPcmChunk?.(chunk); }
+        catch (error) {
+          // The transport invalidates this queue on error and may never call
+          // PTT_END. Release ownership now so the next utterance can start.
+          this.releaseInput(capture);
+          throw error;
+        }
+      },
       onPttEnd: async () => {
         const capture = this.inputCapture;
         if (!capture || capture.source !== source || capture.endPending) return;
@@ -66,9 +75,17 @@ class Rlcd42Hub {
         this.releaseInput(this.inputCapture);
         return onInterrupt?.();
       },
-      onCaptureStatus: async (status) => active(source) ? onCaptureStatus?.({ ...status, source }) : undefined,
+      onCaptureStatus: async (status) => {
+        if (active(source)) return onCaptureStatus?.({ ...status, source });
+        // Preserve standby diagnostics without letting them change the active
+        // microphone UI or admit a second conversation input.
+        logger?.("info", "rlcd42-standby-capture-status", { ...status, source });
+      },
       onReady: async (status) => this.activeSource() === source ? onReady?.({ ...status, source }) : undefined,
       onStatus: () => {
+        if (source === "wifi" && this.serialPolicyConfigured && !this.configuring) {
+          this.syncSerialPolicy().catch((error) => logger?.("warn", "rlcd42-usb-policy-failed", { error: error.message }));
+        }
         const sourceStatus = source === "wifi" ? this.wifi?.status() : this.serial?.status();
         if (this.inputCapture?.source === source && sourceStatus && !sourceStatus.connected) {
           this.interruptInput().catch((error) => {
@@ -110,8 +127,8 @@ class Rlcd42Hub {
   activeSource() {
     if (this.transportPreference === "usb") return this.serial.status().connected ? "usb" : "";
     if (this.transportPreference === "wifi") return this.wifi.status().connected ? "wifi" : "";
-    if (this.wifi.status().connected) return "wifi";
     if (this.serial.status().connected) return "usb";
+    if (this.wifi.status().connected) return "wifi";
     return "";
   }
 
@@ -126,7 +143,7 @@ class Rlcd42Hub {
     const active = source === "wifi" ? wifi : source === "usb" ? usb : null;
     let connectionState = "off";
     if (this.enabled) {
-      if (active?.connected) connectionState = source === "usb" && this.transportPreference === "auto" ? "usb-ready" : "ready";
+      if (active?.connected) connectionState = "ready";
       else if (wifi.connectionState === "setup-required" && this.transportPreference !== "usb") connectionState = "setup-required";
       else connectionState = "connecting";
     }
@@ -177,10 +194,14 @@ class Rlcd42Hub {
     }
 
     const wifiEnabled = this.transportPreference !== "usb";
+    this.serialPolicyConfigured = true;
+    this.configuring = true;
+    this.serialOptions = { port, captureMode: this.captureMode, vadThreshold: this.vadThreshold, microphoneEnabled: this.microphoneEnabled };
+    this.hasPairing = Boolean(deviceId && token);
     const serialMicrophone = this.transportPreference !== "wifi" && this.microphoneEnabled;
     const results = await Promise.allSettled([
       this.serial.configure({
-        enabled: true,
+        enabled: this.shouldEnableSerial(),
         port,
         captureMode: this.captureMode,
         vadThreshold: this.vadThreshold,
@@ -195,12 +216,30 @@ class Rlcd42Hub {
         microphoneEnabled: this.microphoneEnabled,
       }),
     ]);
+    this.configuring = false;
+    await this.syncSerialPolicy();
     if (results.every((result) => result.status === "rejected")) throw results[0].reason;
     this.onStatus(this.status());
     return this.status();
   }
 
+  shouldEnableSerial() {
+    if (!this.enabled) return false;
+    if (this.transportPreference === "usb") return true;
+    // Unpaired devices still need USB for initial Wi-Fi provisioning.
+    return this.transportPreference === "auto" || !this.hasPairing;
+  }
+
+  async syncSerialPolicy() {
+    const enabled = this.shouldEnableSerial();
+    if (this.serial.enabled === enabled) return;
+    await this.serial.configure({ ...this.serialOptions, enabled,
+      captureMode: this.captureMode, vadThreshold: this.vadThreshold,
+      microphoneEnabled: this.microphoneEnabled });
+  }
+
   async setPairing({ deviceId, token } = {}) {
+    // Keep the provisioning USB session until Wi-Fi actually connects.
     return this.wifi.configure({
       enabled: this.enabled && this.transportPreference !== "usb",
       deviceId,

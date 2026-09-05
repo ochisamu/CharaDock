@@ -53,6 +53,15 @@ const WORD_PRONUNCIATIONS = Object.freeze(new Map([
   ["of", "オブ"],
   ["to", "トゥ"],
   ["is", "イズ"],
+  ["chatgpt", "チャットジーピーティー"],
+  ["wifi", "ワイファイ"],
+  ["wi-fi", "ワイファイ"],
+  ["bluetooth", "ブルートゥース"],
+  ["linux", "リナックス"],
+  ["docker", "ドッカー"],
+  ["json", "ジェイソン"],
+  ["nasa", "ナサ"],
+  ["vits2", "ビッツツー"],
 ]));
 
 const LETTER_NAMES = Object.freeze({
@@ -82,29 +91,51 @@ function escapeRegExp(value) {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-function applyUserPronunciations(text, dictionary) {
-  return parseUserPronunciations(dictionary).reduce((result, [word, reading]) => result.replace(
-    new RegExp(`(?<![A-Za-z0-9])${escapeRegExp(word)}(?![A-Za-z0-9])`, "gi"),
-    () => reading,
-  ), text);
-}
-
-function normalizeSpeechPronunciation(value, { enabled = true, userDictionary = "" } = {}) {
-  const text = String(value || "");
-  if (!text || !enabled) return text;
-  return applyUserPronunciations(text, userDictionary).replace(/[A-Za-z][A-Za-z0-9+#._'-]*/g, (token) => {
+function readEnglishToken(token) {
     const known = WORD_PRONUNCIATIONS.get(token.toLowerCase());
     if (known) return known;
     // File names, versions, hashes, and paths should remain intact rather than
     // being turned into misleading words.
-    if (/[._\\/]/.test(token) || /\d/.test(token) && !/^vits2$/i.test(token)) return token;
+    if (/[._\\/]/.test(token) || /\d/.test(token)) return token;
+    const parts = token.replace(/([a-z])([A-Z])/g, "$1 $2")
+      .replace(/([A-Z])([A-Z][a-z])/g, "$1 $2").split(/[ -]+/);
+    if (parts.length > 1) {
+      const readings = parts.map(readEnglishToken);
+      // Unknown compounds remain intact; do not invent a partial reading.
+      return readings.every((reading, index) => reading !== parts[index]) ? readings.join("") : token;
+    }
     if (/^[A-Z]{2,8}$/.test(token)) return [...token].map((letter) => LETTER_NAMES[letter]).join("");
     if (/^[A-Za-z]+(?:'[A-Za-z]+)?$/.test(token) && token.length <= 32) {
       const cmuReading = cmuWordToKatakana(token);
       if (cmuReading) return cmuReading;
     }
     return token;
-  });
+}
+
+function normalizeSpeechPronunciation(value, { enabled = true, userDictionary = "" } = {}) {
+  const text = String(value || "");
+  if (!text || !enabled) return text;
+  const entries = parseUserPronunciations(userDictionary);
+  const normalize = (part) => part.replace(
+    /https?:\/\/[^\s<>]+|[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+|[\\/][A-Za-z0-9._\\/-]+|[A-Za-z0-9][A-Za-z0-9+#._'\\/:-]*/g,
+    (token) => {
+      if (/[@\\/:]/.test(token)) return token;
+      const suffix = token.match(/[.]+$/)?.[0] || "";
+      const core = suffix ? token.slice(0, -suffix.length) : token;
+      return readEnglishToken(core) + suffix;
+    },
+  );
+  if (!entries.length) return normalize(text);
+  // User readings are final: do not re-normalize them or let another entry
+  // rewrite their output. Longest literal entry wins at the same position.
+  const pattern = new RegExp(`(?<![A-Za-z0-9])(?:${entries.map(([word]) => escapeRegExp(word)).join("|")})(?![A-Za-z0-9])`, "gi");
+  let result = "", offset = 0;
+  for (const match of text.matchAll(pattern)) {
+    result += normalize(text.slice(offset, match.index));
+    result += entries.find(([word]) => word.toLowerCase() === match[0].toLowerCase())[1];
+    offset = match.index + match[0].length;
+  }
+  return result + normalize(text.slice(offset));
 }
 
 module.exports = { normalizeSpeechPronunciation, parseUserPronunciations };

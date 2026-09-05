@@ -71,7 +71,7 @@ function speechHarness(overrides = {}) {
     stopRlcd42Speech: async () => {},
     finishStreamingSpeechSession: async () => ({ text: "こんにちは" }),
     handleMascotConversation: async () => ({ text: "返事です" }),
-    diagnosticLog: null,
+    diagnosticLog: null, setTimeout, clearTimeout, rlcd42SpeechActive: false,
     playRlcd42Speech: async (text) => { spoken.push(text); },
     ...overrides,
   });
@@ -87,6 +87,23 @@ test("failed recognition startup releases the session and permits retry", async 
   assert.equal(h.cancelled.length, 1);
   h.ctx.startStreamingSpeechSession = async () => ({});
   await h.ctx.esp32PttStart("rlcd42");
+  assert.equal(h.ctx.rlcd42VoiceStage, "listening");
+});
+
+test("playback failure returns to idle and permits the next utterance", async () => {
+  let recover;
+  const h = speechHarness({
+    setTimeout: (fn) => { recover = fn; return {}; }, clearTimeout: () => {},
+    playRlcd42Speech: async () => { throw new Error("AUDIO_CHUNK timeout"); },
+  });
+  await h.ctx.esp32PttStart("rlcd42");
+  await assert.rejects(h.ctx.esp32PttEnd("rlcd42"), /AUDIO_CHUNK/);
+  assert.equal(h.ctx.rlcd42VoiceStage, "playback-error");
+  recover();
+  assert.equal(h.ctx.rlcd42VoiceStage, "");
+  assert.equal(h.states.at(-1), "idle");
+  await h.ctx.esp32PttStart("rlcd42");
+  recover();
   assert.equal(h.ctx.rlcd42VoiceStage, "listening");
 });
 
@@ -238,6 +255,8 @@ test("late synthesis cannot replace the active RLCD stream cancellation handle",
   const cancelled = [];
   const ctx = vm.createContext({
     RLCD42_TTS_OWNER_ID: "rlcd", rlcd42SpeechGeneration: 0, atomEchoReplyGeneration: 0,
+    rlcd42PlaybackCaption: "", syncRlcd42Scene: async () => {},
+    publishSpeechCaption: () => {}, scheduleRlcd42SceneSync: () => {},
     rlcd42SpeechActive: false, rlcd42SpeechStream: null,
     configuredSpeechText: (text) => text, rlcd42SpeakerSelected: () => true,
     characterTtsSettings: () => ({ provider: "local" }), activeCharacter: () => ({ id: "test" }),

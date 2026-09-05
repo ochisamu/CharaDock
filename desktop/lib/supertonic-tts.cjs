@@ -133,7 +133,8 @@ class EmbeddedSupertonicTts {
       extra: { lang: "ja" },
     });
     const audioDataUrls = [];
-    for (const sentence of splitTtsText(normalizedText)) {
+    const audioTexts = splitTtsText(normalizedText);
+    for (const sentence of audioTexts) {
       // sherpa-onnx defaults to an external ArrayBuffer for generated samples.
       // Packaged Electron rejects those buffers even in Node mode, so request
       // an owned buffer that can safely be encoded before leaving the worker.
@@ -143,7 +144,7 @@ class EmbeddedSupertonicTts {
         : tts.generate(request);
       audioDataUrls.push(wavDataUrl(audio?.samples, audio?.sampleRate || tts.sampleRate));
     }
-    return { audioDataUrls };
+    return { audioDataUrls, audioTexts };
   }
 }
 

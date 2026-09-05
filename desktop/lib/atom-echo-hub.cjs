@@ -33,8 +33,17 @@ class AtomEchoHub {
           throw error;
         }
       },
-      onPcmChunk: async (chunk) => this.inputCapture?.source === source && !this.inputCapture.endPending
-        ? onPcmChunk?.(chunk) : undefined,
+      onPcmChunk: async (chunk) => {
+        const capture = this.inputCapture;
+        if (capture?.source !== source || capture.endPending) return;
+        try { return await onPcmChunk?.(chunk); }
+        catch (error) {
+          // The transport invalidates this queue on error and may never call
+          // PTT_END. Release ownership now so the next utterance can start.
+          this.releaseInput(capture);
+          throw error;
+        }
+      },
       onPttEnd: async () => {
         const capture = this.inputCapture;
         if (!capture || capture.source !== source || capture.endPending) return;

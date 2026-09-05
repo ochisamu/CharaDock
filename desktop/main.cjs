@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
+require("./lib/stdio-guard.cjs").installStdioGuard();
 const fs = require("node:fs");
 const path = require("node:path");
 const os = require("node:os");
@@ -197,6 +198,7 @@ const {
 } = require("./lib/piper-plus.cjs");
 const { EmbeddedSherpaOnnx } = require("./lib/sherpa-embedded.cjs");
 const { EmbeddedSherpaVad, SILERO_VAD_PROFILES } = require("./lib/sherpa-vad.cjs");
+const { DeviceSpeechGate } = require("./lib/device-speech-gate.cjs");
 const { StreamingSpeechRecognition } = require("./lib/streaming-speech-recognition.cjs");
 const { supertonicStatus, validateSupertonicDirectory } = require("./lib/supertonic-tts.cjs");
 const { synthesizeSupertonicInWorker } = require("./lib/supertonic-worker-client.cjs");
@@ -345,6 +347,7 @@ let rlcd42Gateway;
 let rlcd42SceneTimer = null;
 let rlcd42LastSceneSignature = "";
 let rlcd42LastDisplayText = "";
+let rlcd42PlaybackCaption = "";
 let rlcd42VoiceStage = "";
 let rlcd42LastTransport = "";
 let rlcd42SyncGeneration = 0;
@@ -2683,13 +2686,15 @@ function rlcd42SceneSnapshot() {
   return buildRlcd42Scene({
     characterName: activeCharacter().name,
     interactionMode: preferences.data.interactionMode,
-    turn: voiceStage
+    turn: rlcd42PlaybackCaption && !atomEchoCapture && !atomEchoRecognizingCapture
+      ? { ...currentTurn, status: "speaking" }
+      : voiceStage
       ? { ...currentTurn, status: voiceStage.status, mode: atomEchoCapture?.interactionMode || currentTurn.mode }
       : currentTurn,
     speechInputProvider: preferences.data.speechInputProvider,
     beatrice: characterTtsSettings().realtimeVoiceConversion === "beatrice-v2",
     captionMode: profile.captionMode,
-    caption: rlcd42LastDisplayText,
+    caption: rlcd42PlaybackCaption || rlcd42LastDisplayText,
     activityOverride: voiceStage?.activity || "",
     language: interfaceLanguage(),
     transport,
@@ -2816,9 +2821,9 @@ function createRlcd42Gateway() {
       else if (event.event === 5) scheduleRlcd42SceneSync(15_000, { force: true });
       else if (event.event === 6) scheduleRlcd42PresentationSync();
     },
-    onPttStart: async () => esp32PttStart("rlcd42"),
-    onPcmChunk: async (chunk) => esp32PcmChunk(chunk),
-    onPttEnd: async () => esp32PttEnd("rlcd42"),
+    onPttStart: async () => esp32InputStart("rlcd42"),
+    onPcmChunk: async (chunk) => esp32InputGate("rlcd42").chunk(chunk),
+    onPttEnd: async () => esp32InputGate("rlcd42").end(),
     onInterrupt: async () => esp32Interrupt("rlcd42"),
     onCaptureStatus: async (status = {}) => {
       const now = Date.now();
@@ -3004,6 +3009,47 @@ async function provisionRlcd42Wifi(patch = {}) {
   await rlcd42Gateway.provisionWifi({ ssid, password, token });
   diagnosticLog?.write("info", "rlcd42-wifi-provisioned", { deviceId });
   return broadcastAppState();
+}
+
+function esp32SpeechOutput(active) {
+  esp32SpeechOutput.count = Math.max(0, (esp32SpeechOutput.count || 0) + (active ? 1 : -1));
+  esp32SpeechOutput.until = Date.now() + 800;
+}
+
+function esp32InputGate(deviceKind) {
+  const gates = esp32InputGate.instances ||= new Map();
+  if (!gates.has(deviceKind)) gates.set(deviceKind, new DeviceSpeechGate({
+    createVad: async () => {
+      // Share the verified model download, never the PC microphone detector.
+      await embeddedSherpaVad.ensureModel();
+      const vad = new EmbeddedSherpaVad(embeddedSherpaVad.baseDirectory);
+      await vad.start("normal");
+      return vad;
+    },
+    suppress: () => Boolean(esp32SpeechOutput.count) || Date.now() < (esp32SpeechOutput.until || 0),
+    onStart: async () => {
+      diagnosticLog?.write("info", "esp32-silero-accepted", { deviceKind });
+      await esp32PttStart(deviceKind);
+    },
+    onChunk: (bytes) => esp32PcmChunk(bytes),
+    onEnd: () => esp32PttEnd(deviceKind),
+    onReject: async (reason, metrics) => {
+      diagnosticLog?.write("info", "esp32-silero-rejected", { deviceKind, reason, ...metrics });
+      // Rejection is not an input error. Preserve an existing answer owner.
+      if (!atomEchoCapture && !atomEchoRecognizingCapture && !esp32SpeechOutput.count
+          && !activeCodexInteractionClient() && !activeWorkRunId && !openAIClient?.hasActiveTurn?.()) {
+        await esp32VoiceGateway(deviceKind)?.setDeviceState("idle");
+        if (deviceKind === "rlcd42") scheduleRlcd42SceneSync(0, { force: true });
+      }
+    },
+  }));
+  return gates.get(deviceKind);
+}
+
+async function esp32InputStart(deviceKind) {
+  const handsfree = (deviceKind === "rlcd42" ? rlcd42Profile().captureMode
+    : preferences.data.atomEchoCaptureMode) === "hands-free";
+  return esp32InputGate(deviceKind).begin({ bypass: atomEchoUsesRealtime(), handsfree });
 }
 
 function pcm16Samples(bytes) {
@@ -3209,6 +3255,7 @@ async function playAtomEchoSpeech(text) {
   });
   playbackRoute.start();
   let playbackEnded = false;
+  if (typeof esp32SpeechOutput === "function") esp32SpeechOutput(true);
   try {
     while (sources.length) {
       const nextPromise = streamId ? nextIrodoriTtsChunk(streamId, ATOM_ECHO_TTS_OWNER_ID) : null;
@@ -3233,8 +3280,52 @@ async function playAtomEchoSpeech(text) {
     playbackEnded = true;
     return playback.interrupted ? { spoken: false, interrupted: true } : { spoken: true };
   } finally {
+    if (typeof esp32SpeechOutput === "function") esp32SpeechOutput(false);
     if (!playbackEnded) await playbackRoute.interrupt().catch(() => {});
     if (streamId) cancelIrodoriTtsStream(streamId, ATOM_ECHO_TTS_OWNER_ID);
+  }
+}
+
+function scheduleRlcd42CaptionExpiry(delayMs = 15_000) {
+  clearTimeout(scheduleRlcd42CaptionExpiry.timer);
+  scheduleRlcd42CaptionExpiry.timer = null;
+  if (delayMs < 0) return;
+  scheduleRlcd42CaptionExpiry.timer = setTimeout(() => {
+    scheduleRlcd42CaptionExpiry.timer = null;
+    if (rlcd42SpeechActive || atomEchoCapture || atomEchoRecognizingCapture) return;
+    rlcd42LastDisplayText = "";
+    rlcd42LastSceneSignature = "";
+    scheduleRlcd42SceneSync(0, { force: true });
+  }, delayMs);
+  scheduleRlcd42CaptionExpiry.timer.unref?.();
+}
+
+function publishSpeechCaption(payload = {}, preview = false) {
+  const source = payload.source === "rlcd42" ? "rlcd42" : "desktop";
+  const text = String(payload.text || "").slice(0, 1000);
+  const last = publishSpeechCaption.last;
+  const previousText = last?.source === source && (!last.expiresAt || Date.now() < last.expiresAt) ? last.text : "";
+  // Four 16px lines: reserve room for the current chunk, then retain the
+  // nearest context. Never shrink away the sentence currently being spoken.
+  const room = Math.max(0, 88 - [...text].length - 1);
+  const previous = [...previousText];
+  const context = previous.length <= room ? previousText
+    : room > 1 ? `…${previous.slice(-(room - 1)).join("")}` : "";
+  if (preview) return [context, text].filter(Boolean).join(" ");
+  if (!payload.done && text) publishSpeechCaption.last = { source, text };
+  if (payload.done && last?.source === source) last.expiresAt = Date.now() + 15_000;
+  const caption = {
+    text,
+    previousText,
+    displayText: [previousText, text].filter(Boolean).join(" "),
+    done: Boolean(payload.done),
+    source: payload.source === "rlcd42" ? "rlcd42" : "desktop",
+    generation: Number(payload.generation) || 0,
+    fullText: String(remoteLastDisplayText || "").slice(0, 24000),
+  };
+  for (const window of [mascotWindow, controlWindow]) {
+    if (window && !window.isDestroyed() && !window.webContents.isDestroyed())
+      window.webContents.send("speech:caption", caption);
   }
 }
 
@@ -3249,6 +3340,8 @@ async function stopRlcd42Speech() {
   const wasActive = rlcd42SpeechActive || Boolean(activeStream);
   rlcd42SpeechStream = null;
   rlcd42SpeechActive = false;
+  rlcd42PlaybackCaption = "";
+  if (wasActive) publishSpeechCaption({ source: "rlcd42", done: true });
   if (activeStream?.id) cancelIrodoriTtsStream(activeStream.id, activeStream.ownerId);
   if (wasActive && rlcd42Gateway?.status().connected) {
     await rlcd42Gateway.stopPlayback().catch(() => {});
@@ -3287,6 +3380,7 @@ async function playRlcd42Speech(text, ownerId = RLCD42_TTS_OWNER_ID) {
   try {
     const result = await synthesizeConfiguredTts(spokenText, ownerId, { enabled: true });
     let sources = Array.isArray(result?.audioDataUrls) ? result.audioDataUrls : [];
+    let captions = result?.audioTexts || [];
     streamId = String(result?.streamId || "");
     if (!isCurrent()) {
       if (streamId) cancelIrodoriTtsStream(streamId, ownerId);
@@ -3299,7 +3393,7 @@ async function playRlcd42Speech(text, ownerId = RLCD42_TTS_OWNER_ID) {
     ));
 
     while (sources.length) {
-      for (const source of sources) {
+      for (const [sourceIndex, source] of sources.entries()) {
         // Synthesis can finish while a spoken follow-up is recording. Do not
         // overwrite its listening state or feed our speaker back into STT.
         if (!await waitForEsp32PlaybackSlot(isCurrent)) {
@@ -3309,7 +3403,24 @@ async function playRlcd42Speech(text, ownerId = RLCD42_TTS_OWNER_ID) {
         const resampled = resamplePcm16(decoded.samples, decoded.sampleRate, 16_000);
         const pcm = processAtomEchoPcm16(resampled, { sampleRate: 16_000, ...rlcd42OutputProfile() });
         if (!pcm.length) continue;
-        const playback = await rlcd42Gateway.playPcm16(pcm, 16_000);
+        const caption = String(captions[sourceIndex] || spokenText);
+        rlcd42PlaybackCaption = publishSpeechCaption({ text: caption, source: "rlcd42" }, true) || caption;
+        // Commit the matching sentence before AUDIO_BEGIN. Full response
+        // deltas are retained separately and cannot overwrite this caption.
+        await syncRlcd42Scene({ force: true });
+        // Scene transfer is asynchronous too: speech may have started while
+        // its ACK was in flight. Recheck the microphone/turn gate afterwards.
+        if (!await waitForEsp32PlaybackSlot(isCurrent))
+          return { externalPlayback: "rlcd42", spoken: false, interrupted: true };
+        publishSpeechCaption({ text: caption, source: "rlcd42", generation });
+        diagnosticLog?.write("info", "rlcd42-playback-caption", { generation, textLength: caption.length });
+        let playback;
+        if (typeof esp32SpeechOutput === "function") esp32SpeechOutput(true);
+        try {
+          playback = await rlcd42Gateway.playPcm16(pcm, 16_000);
+        } finally {
+          if (typeof esp32SpeechOutput === "function") esp32SpeechOutput(false);
+        }
         if (playback?.interrupted || !isCurrent()) {
           return { externalPlayback: "rlcd42", spoken: false, interrupted: true };
         }
@@ -3321,6 +3432,7 @@ async function playRlcd42Speech(text, ownerId = RLCD42_TTS_OWNER_ID) {
         return { externalPlayback: "rlcd42", spoken: false, interrupted: true };
       }
       sources = next?.audioDataUrl ? [next.audioDataUrl] : [];
+      captions = [next?.audioText || ""];
       if (next?.done) {
         streamId = "";
         rlcd42SpeechStream = null;
@@ -3337,6 +3449,11 @@ async function playRlcd42Speech(text, ownerId = RLCD42_TTS_OWNER_ID) {
     if (generation === rlcd42SpeechGeneration) {
       rlcd42SpeechStream = null;
       rlcd42SpeechActive = false;
+      if (rlcd42PlaybackCaption) rlcd42LastDisplayText = rlcd42PlaybackCaption;
+      rlcd42PlaybackCaption = "";
+      publishSpeechCaption({ source: "rlcd42", generation, done: true });
+      if (typeof scheduleRlcd42CaptionExpiry === "function") scheduleRlcd42CaptionExpiry();
+      scheduleRlcd42SceneSync();
     }
   }
 }
@@ -3438,9 +3555,11 @@ async function esp32PttEnd(deviceKind = "atom-echo") {
     if (capture.generation !== atomEchoTurnGeneration && (atomEchoCapture || atomEchoRecognizingCapture)) return;
     if (deviceKind === "rlcd42") {
       rlcd42VoiceStage = replyReceived ? "playback-error" : speechRecognized ? "send-error" : "recognition-error";
+      diagnosticLog?.write("warn", "esp32-reply-failed", { deviceKind, stage: rlcd42VoiceStage, error: String(error?.message || error) });
       rlcd42LastSceneSignature = "";
       await gateway?.setDeviceState("error").catch(() => {});
       scheduleRlcd42SceneSync(0, { force: true });
+      scheduleRlcd42VoiceRecovery(capture, gateway, rlcd42VoiceStage);
     }
     throw error;
   } finally {
@@ -3448,7 +3567,26 @@ async function esp32PttEnd(deviceKind = "atom-echo") {
   }
 }
 
+function scheduleRlcd42VoiceRecovery(capture, gateway, stage) {
+  clearTimeout(scheduleRlcd42VoiceRecovery.timer);
+  scheduleRlcd42VoiceRecovery.timer = setTimeout(() => {
+    if (capture.replyGeneration !== atomEchoReplyGeneration
+        || capture.generation !== atomEchoTurnGeneration
+        || atomEchoCapture || atomEchoRecognizingCapture || rlcd42SpeechActive
+        || rlcd42VoiceStage !== stage) return;
+    rlcd42VoiceStage = "";
+    rlcd42LastDisplayText = "";
+    rlcd42LastSceneSignature = "";
+    Promise.resolve(gateway?.setDeviceState("idle")).catch(() => {});
+    scheduleRlcd42SceneSync(0, { force: true });
+  }, 6000);
+  scheduleRlcd42VoiceRecovery.timer.unref?.();
+}
+
 function invalidateEsp32SpeechInput() {
+  if (typeof esp32InputGate === "function") {
+    for (const gate of esp32InputGate.instances?.values() || []) gate.cancel();
+  }
   atomEchoTurnGeneration += 1;
   atomEchoReplyGeneration += 1;
   for (const capture of [atomEchoCapture, atomEchoRecognizingCapture]) {
@@ -3471,9 +3609,9 @@ async function esp32Interrupt(deviceKind = "atom-echo") {
   diagnosticLog?.write("info", "esp32-interrupted", { deviceKind });
 }
 
-async function atomEchoPttStart() { return esp32PttStart("atom-echo"); }
-async function atomEchoPcmChunk(bytes) { return esp32PcmChunk(bytes); }
-async function atomEchoPttEnd() { return esp32PttEnd("atom-echo"); }
+async function atomEchoPttStart() { return esp32InputStart("atom-echo"); }
+async function atomEchoPcmChunk(bytes) { return esp32InputGate("atom-echo").chunk(bytes); }
+async function atomEchoPttEnd() { return esp32InputGate("atom-echo").end(); }
 async function atomEchoInterrupt() { return esp32Interrupt("atom-echo"); }
 
 function createAtomEchoGateway() {
@@ -4176,7 +4314,7 @@ function normalizedReasoningEffort(value) {
 
 function conversationCodexSettings() {
   return {
-    model: String(preferences.data.codexChatModel || preferences.data.codexModel || "").trim(),
+    model: String(preferences.data.codexChatModel || preferences.data.codexModel || "gpt-6-astra").trim(),
     reasoningEffort: normalizedReasoningEffort(preferences.data.codexChatReasoningEffort),
   };
 }
@@ -4260,7 +4398,7 @@ async function refreshCodexInstallation() {
 
 function workCodexSettings() {
   return {
-    model: String(preferences.data.codexWorkModel || preferences.data.codexModel || "").trim(),
+    model: String(preferences.data.codexWorkModel || preferences.data.codexModel || "gpt-6-astra").trim(),
     reasoningEffort: normalizedReasoningEffort(preferences.data.codexWorkReasoningEffort),
     networkAccess: preferences.data.workNetworkAccess === true,
   };
@@ -6485,6 +6623,24 @@ async function runSmokeTest() {
   }
   fs.writeFileSync(path.join(outputDir, "mascot-long-answer.png"), (await mascotWindow.capturePage()).toPNG());
   await mascotWindow.webContents.executeJavaScript("document.querySelector('#desktopMascotBubbleMore').click()");
+  publishSpeechCaption({ source: "rlcd42", text: "最初の文を読んでいます。" });
+  publishSpeechCaption({ source: "rlcd42", text: "次の文へ切り替わりました。" });
+  publishSpeechCaption({ source: "rlcd42", done: true });
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  const captionUi = await controlWindow.webContents.executeJavaScript(`(() => {
+    const shown = !document.querySelector('#speechCaptionPanel').hidden &&
+      document.querySelector('#speechCaptionText').textContent === '最初の文を読んでいます。 次の文へ切り替わりました。' &&
+      document.querySelector('#chatLog').hidden;
+    document.querySelector('#speechCaptionFull').click();
+    return shown && !document.querySelector('#chatLog').hidden;
+  })()`);
+  const mascotCaptionUi = await mascotWindow.webContents.executeJavaScript(`(() => {
+    const shown = document.querySelector('#desktopMascotBubbleText').textContent === '最初の文を読んでいます。 次の文へ切り替わりました。';
+    document.querySelector('#desktopMascotBubbleMore').click();
+    return shown && document.querySelector('#desktopMascotBubbleText').textContent.length > 120;
+  })()`);
+  if (!captionUi || !mascotCaptionUi) throw new Error("Playback caption / full response expansion failed");
+  await mascotWindow.webContents.executeJavaScript("document.querySelector('#desktopMascotBubbleMore').click()");
   mascotWindow.webContents.send("mascot:mode", { backend: "codex", interactionMode: "work", workDirectoryName: "avatar_codex", hasWorkDirectory: true });
   await new Promise((resolve) => setTimeout(resolve, 180));
   const workModeVisible = await mascotWindow.webContents.executeJavaScript("document.body.classList.contains('is-work-mode') && document.querySelector('#desktopMascotModeButton').textContent === 'Work'");
@@ -6776,7 +6932,8 @@ async function runSmokeTest() {
     const chat = document.querySelector('#codexChatModelInput');
     const work = document.querySelector('#codexWorkModelInput');
     return chat?.tagName === 'SELECT' && work?.tagName === 'SELECT' &&
-      chat.options[0]?.value === '' && work.options[0]?.value === '';
+      chat.options[0]?.value === '' && work.options[0]?.value === '' &&
+      [chat, work].every(select => [...select.options].some(option => option.value === 'gpt-6-astra'));
   })()`);
   if (!codexModelPickersReady) throw new Error("Codex model dropdown check failed");
   const audioSettingReady = await controlWindow.webContents.executeJavaScript(`(() => {
@@ -7789,7 +7946,7 @@ function beginIrodoriStreamChunk(streamId, stream) {
   if (stream.nextIndex >= stream.chunks.length) return false;
   const chunk = stream.chunks[stream.nextIndex++];
   stream.pending = synthesizeIrodoriSegment(chunk).then(
-    (audioDataUrl) => ({ audioDataUrl }),
+    (audioDataUrl) => ({ audioDataUrl, text: chunk }),
     (error) => ({ error }),
   );
   scheduleIrodoriStreamExpiry(streamId, stream);
@@ -7813,7 +7970,7 @@ async function nextIrodoriTtsChunk(streamId, ownerId) {
     clearTimeout(stream.timer);
     irodoriTtsStreams.delete(id);
   }
-  return { audioDataUrl: result.audioDataUrl, done: !hasMore, playbackRate: preferences.data.irodoriSpeed };
+  return { audioDataUrl: result.audioDataUrl, audioText: result.text, done: !hasMore, playbackRate: preferences.data.irodoriSpeed };
 }
 
 function cancelIrodoriTtsStream(streamId, ownerId) {
@@ -7832,12 +7989,12 @@ async function synthesizeIrodoriTts(text, ownerId = 0) {
   const chunks = splitIrodoriText(text);
   if (!chunks.length) return { audioDataUrls: [], playbackRate: preferences.data.irodoriSpeed };
   const firstAudio = await synthesizeIrodoriSegment(chunks[0]);
-  if (chunks.length === 1) return { audioDataUrls: [firstAudio], playbackRate: preferences.data.irodoriSpeed };
+  if (chunks.length === 1) return { audioDataUrls: [firstAudio], audioTexts: [chunks[0]], playbackRate: preferences.data.irodoriSpeed };
   const streamId = `irodori-stream-${Date.now()}-${nextIrodoriStreamId++}`;
   const stream = { ownerId, chunks, nextIndex: 1, pending: null, timer: null };
   irodoriTtsStreams.set(streamId, stream);
   beginIrodoriStreamChunk(streamId, stream);
-  return { audioDataUrls: [firstAudio], playbackRate: preferences.data.irodoriSpeed, streamId };
+  return { audioDataUrls: [firstAudio], audioTexts: [chunks[0]], playbackRate: preferences.data.irodoriSpeed, streamId };
 }
 
 function scheduleIrodoriPrewarm(delayMs = 3000) {
@@ -7956,8 +8113,9 @@ async function synthesizeKokoroSegment(text) {
 
 async function synthesizeKokoroTts(text) {
   const audioDataUrls = [];
-  for (const sentence of splitTtsText(String(text || ""))) audioDataUrls.push(await synthesizeKokoroSegment(sentence));
-  return { audioDataUrls };
+  const audioTexts = splitTtsText(String(text || ""));
+  for (const sentence of audioTexts) audioDataUrls.push(await synthesizeKokoroSegment(sentence));
+  return { audioDataUrls, audioTexts };
 }
 
 async function synthesizeSbv2Tts(text) {
@@ -7971,6 +8129,7 @@ async function synthesizeSbv2Tts(text) {
   }
   const selection = validSbv2VoiceSelection(model, characterTts.sbv2SpeakerId, characterTts.sbv2StyleId);
   const audioDataUrls = [];
+  const audioTexts = [];
   let actualDevice = "";
   for (const sentence of splitTtsText(String(text || ""))) {
     const result = await sbv2Worker.synthesize({
@@ -7982,10 +8141,13 @@ async function synthesizeSbv2Tts(text) {
       speed: preferences.data.sbv2Speed,
       device: preferences.data.sbv2Device,
     });
-    if (result.audioDataUrl) audioDataUrls.push(result.audioDataUrl);
+    if (result.audioDataUrl) {
+      audioDataUrls.push(result.audioDataUrl);
+      audioTexts.push(sentence);
+    }
     actualDevice = result.device || actualDevice;
   }
-  return { audioDataUrls, device: actualDevice };
+  return { audioDataUrls, audioTexts, device: actualDevice };
 }
 
 function synthesizeConfiguredTts(text, ownerId = 0, { enabled = preferences.data.ttsEnabled } = {}) {
@@ -8094,6 +8256,12 @@ function clearCurrentConversationHistory() {
 
 function publishChatStream(payload = {}) {
   const coordinated = turnCoordinator.apply(payload);
+  if (["start", "follow-up", "announcement", "delta", "realtime-caption"].includes(coordinated.phase)) {
+    scheduleRlcd42CaptionExpiry(-1);
+  } else if (["done", "error", "cancelled"].includes(coordinated.phase)) {
+    scheduleRlcd42CaptionExpiry();
+  }
+  if (["start", "follow-up", "error", "cancelled"].includes(coordinated.phase)) publishSpeechCaption.last = null;
   if (rlcd42VoiceStage && !atomEchoCapture && !atomEchoRecognizingCapture && rlcd42VoiceStage !== "playing"
       && ["announcement", "activity", "delta", "realtime-caption", "done", "error"].includes(coordinated.phase)) {
     rlcd42VoiceStage = "";
@@ -9820,7 +9988,8 @@ function remoteStreamingSpeechCancel(payload = {}) {
 
 function debugStreamingSpeech(event, detail = {}) {
   if (app.isPackaged) return;
-  console.info(`[Streaming STT] ${event}: ${JSON.stringify(detail)}`);
+  // Recognition must not depend on the lifetime of the launcher's output pipe.
+  try { diagnosticLog?.write("info", `streaming-stt-${event}`, detail); } catch {}
 }
 
 async function startStreamingSpeechSession(sessionId, modelId) {
@@ -10078,6 +10247,11 @@ function registerIpc() {
   ipcMain.handle("mascotInline:voice", (event, raw) => {
     assertTrustedSender(event, "mascot");
     pushVoiceLevel(raw);
+    return true;
+  });
+  ipcMain.handle("mascotInline:speechCaption", (event, payload = {}) => {
+    assertTrustedSender(event, "mascot");
+    publishSpeechCaption({ ...payload, source: "desktop" });
     return true;
   });
   ipcMain.handle("mascotInline:expression", (event, expression) => {
@@ -13274,12 +13448,24 @@ async function runMcpAppProfileVerification() {
 
 async function runRlcd42AudioVerification() {
   if (app.isPackaged) throw new Error("RLCD 4.2 audio verification is development-only.");
+  // Auto mode can reject USB capture configuration while Wi-Fi still owns
+  // the device. Allow discovery/reconnect to settle before testing playback.
+  const deadline = Date.now() + 30000;
+  while (!rlcd42Gateway?.status().connected && Date.now() < deadline)
+    await new Promise((resolve) => setTimeout(resolve, 250));
   const status = rlcd42Gateway?.status();
   if (!status?.connected) throw new Error(status?.error || "RLCD 4.2 did not connect.");
-  const result = await playRlcd42Speech(mainText(
-    "接続できたよ。CharaDockの音声です。",
-    "We're connected. This is CharaDock audio.",
-  ));
+  const profile = rlcd42Profile();
+  let result;
+  try {
+    await rlcd42Gateway.requireGateway().setCaptureMode(profile.captureMode, profile.vadThreshold, false);
+    result = await playRlcd42Speech(mainText(
+    "最初の文を読んでいます。次の文に表示が変わります。これで字幕の確認は終わりです。",
+    "This is the first sentence. The caption now changes to the next sentence. The caption check is complete.",
+    ));
+  } finally {
+    await rlcd42Gateway.requireGateway().setCaptureMode(profile.captureMode, profile.vadThreshold, profile.microphoneEnabled);
+  }
   if (!result?.spoken || result?.interrupted) throw new Error("RLCD 4.2 audio verification did not complete playback.");
   const verified = {
     port: status.port,

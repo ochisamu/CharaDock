@@ -26,8 +26,8 @@
       <nav class="nav-tabs" aria-label="設定カテゴリ">
         <p class="nav-section-label">コンパニオン</p>
         <button class="nav-tab is-active" type="button" data-page="chat"><span class="ui-symbol ui-symbol-chat" aria-hidden="true"></span>Chat</button>
-        <button class="nav-tab" type="button" data-page="remote"><span class="ui-symbol ui-symbol-connection" aria-hidden="true"></span>CharaDock Link</button>
-        <button class="nav-tab" type="button" data-page="esp32"><span class="ui-symbol ui-symbol-settings" aria-hidden="true"></span>ESP32デバイス</button>
+        <button class="nav-tab" type="button" data-page="remote"><span class="ui-symbol ui-symbol-device-link" aria-hidden="true"></span>CharaDock Link</button>
+        <button class="nav-tab" type="button" data-page="esp32"><span class="ui-symbol ui-symbol-chip" aria-hidden="true"></span>ESP32デバイス</button>
         <button class="nav-tab" type="button" data-page="character"><span class="ui-symbol ui-symbol-character" aria-hidden="true"></span>キャラクター</button>
         <button class="nav-tab" type="button" data-page="voice"><span class="ui-symbol ui-symbol-voice" aria-hidden="true"></span>音声</button>
         <p class="nav-section-label">拡張</p>
@@ -72,6 +72,11 @@
               <button id="openChatWorkDirectoryButton" class="button button-quiet" type="button">開く</button>
               <button id="chooseChatWorkDirectoryButton" class="button button-quiet" type="button">追加</button>
             </div>
+          </section>
+          <section id="speechCaptionPanel" class="speech-caption-panel" hidden aria-label="読み上げ中の文">
+            <small id="speechCaptionStatus"></small>
+            <p id="speechCaptionText" aria-live="polite"></p>
+            <button id="speechCaptionFull" class="button button-secondary" type="button" aria-expanded="false">全文・履歴を開く</button>
           </section>
           <div id="chatLog" class="chat-log" aria-live="polite">
             <article class="message is-assistant">
@@ -244,7 +249,7 @@
           <div id="rlcd42EnabledSettings" class="esp32-device-settings" hidden>
             <section class="remote-tailscale-card esp32-setup-card" aria-labelledby="rlcd42ConnectionTitle">
               <div class="section-row"><div><strong id="rlcd42ConnectionTitle">接続</strong><small>Wi-Fi情報はUSB経由で本体へ直接保存し、パスワードはCharaDockに残しません</small></div></div>
-              <label>普段の接続<select id="rlcd42TransportSelect"><option value="auto">自動（Wi-Fi優先）</option><option value="wifi">Wi-Fiのみ</option><option value="usb">USBのみ</option></select></label>
+              <label>普段の接続<select id="rlcd42TransportSelect"><option value="auto">自動（USB優先）</option><option value="wifi">Wi-Fiのみ</option><option value="usb">USBのみ</option></select></label>
               <label>Wi-Fi名（SSID）<input id="rlcd42WifiSsidInput" type="text" maxlength="32" autocomplete="off" placeholder="自宅のWi-Fi名" /></label>
               <label>Wi-Fiパスワード<input id="rlcd42WifiPasswordInput" type="password" maxlength="64" autocomplete="new-password" placeholder="設定時だけ入力" /></label>
               <label>初期設定用USBポート<select id="rlcd42PortSelect"><option value="">自動検出（ESP32-S3）</option></select></label>

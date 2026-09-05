@@ -26,6 +26,17 @@ function fixture(callbacks = {}) {
   };
 }
 
+test("failed PCM admission releases the ATOM capture for an immediate retry", async () => {
+  let fail = true;
+  const { hub, usb } = fixture({ onPcmChunk: async () => { if (fail) throw new Error("recognizer failed"); } });
+  await usb.onPttStart();
+  await assert.rejects(usb.onPcmChunk(Buffer.alloc(2)), /recognizer failed/);
+  assert.equal(hub.inputCapture, null);
+  fail = false;
+  await usb.onPttStart(); await usb.onPcmChunk(Buffer.alloc(2)); await usb.onPttEnd();
+  assert.equal(hub.inputCapture, null);
+});
+
 for (const source of ["usb", "wifi"]) {
   test(`old ATOM end preserves new ${source} capture and its disconnect cleanup`, async () => {
     const end = deferred();

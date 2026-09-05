@@ -81,6 +81,9 @@ SOFTWARE.
 - Source: https://github.com/lucide-icons/lucide
 - License: ISC License
 
+The `chip.svg` and `device-link.svg` icons are original CharaDock artwork under
+the project's Apache-2.0 license, not Lucide assets.
+
 Selected SVG interface icons are vendored under `assets/ui/icons/` and retain a
 license marker in each file. Permission to use, copy, modify, and/or distribute
 this software for any purpose with or without fee is hereby granted, provided

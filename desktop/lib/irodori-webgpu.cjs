@@ -8,7 +8,7 @@ const { splitNaturalSpeechText } = require("./natural-speech-chunks.cjs");
 const IRODORI_CHUNK_LENGTH = 40;
 const IRODORI_FIRST_CHUNK_LENGTH = 40;
 const IRODORI_CHUNK_OVERFLOW = 4;
-const IRODORI_MAX_CHUNKS = 24;
+const IRODORI_MAX_CHUNKS = 128;
 const IRODORI_V4_MIN_STEPS = 16;
 
 const V3_MODEL_NAMES = Object.freeze([

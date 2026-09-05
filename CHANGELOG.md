@@ -4,6 +4,16 @@ All notable changes to CharaDock will be documented here.
 
 ## Unreleased
 
+## 0.6.0 - 2026-09-06
+
+- Add RLCD 4.2 display/audio integration, manga artwork and expression frames, ambient clock, and USB-first automatic transport selection with Wi-Fi fallback.
+- Gate standard ESP32 microphone input with PC-side Silero VAD; keep the RLCD clock visible for unconfirmed noise candidates.
+- Synchronize spoken reply captions across PC and RLCD, retain two speech chunks, and expire completed device captions.
+- Recover from playback transfer failures, stalled writes, microphone ownership errors and detached-console EPIPE failures.
+- Make GPT-6 Astra the default Codex model for Chat and Work; give sidebar sections distinct icons.
+- Improve English pronunciation preprocessing without importing the deferred Aivis dictionary.
+- Pair with CharaDock-ESP32 v0.6.0 for USB-first arbitration and voice-confirmed clock transitions.
+
 ## 0.5.1 - 2026-08-29
 
 - Smooth ATOM Voice Wi-Fi playback by keeping a bounded six-chunk PCM window in flight instead of serializing every 32 ms chunk behind a network round trip.

@@ -122,6 +122,11 @@ contextBridge.exposeInMainWorld("mascotDesktop", {
   startBeatrice: () => ipcRenderer.invoke("beatrice:start"),
   pushBeatriceAudio: (audio) => ipcRenderer.send("beatrice:audio", audio),
   stopBeatrice: () => ipcRenderer.invoke("beatrice:stop"),
+  onSpeechCaption: (callback) => {
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on("speech:caption", listener);
+    return () => ipcRenderer.removeListener("speech:caption", listener);
+  },
   onChatStream: (callback) => {
     const listener = (_event, payload) => callback(payload);
     ipcRenderer.on("chat:stream", listener);

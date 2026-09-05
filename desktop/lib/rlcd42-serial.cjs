@@ -492,6 +492,9 @@ class Rlcd42SerialGateway {
       request = { resolve, reject, timer };
       this.pending.set(key, request);
     });
+    // Disconnect can reject the ACK before the socket write has finished.
+    // Handle that interval; the original promise still rejects for the caller.
+    promise.catch(() => {});
     return { promise, request };
   }
 
@@ -500,8 +503,10 @@ class Rlcd42SerialGateway {
     const key = `frame:${responseType}:${sequence}`;
     const pending = this.pendingResponse(key, timeoutMs, "RLCD 4.2ファームウェアから応答がありません。");
     try {
-      await this.writeBytes(encodeFrame(type, sequence, payload));
-      return await pending.promise;
+      const [, response] = await Promise.all([
+        this.writeBytes(encodeFrame(type, sequence, payload)), pending.promise,
+      ]);
+      return response;
     } catch (error) {
       clearTimeout(pending.request.timer);
       this.pending.delete(key);
@@ -513,11 +518,14 @@ class Rlcd42SerialGateway {
     if (requireReady && this.connectionState !== "ready") throw new Error("RLCD 4.2の接続準備ができていません。");
     const sequence = this.nextSequence();
     const key = `ack:${sequence}`;
-    const pending = this.pendingResponse(key, timeoutMs, "RLCD 4.2への表示転送が時間切れになりました。");
+    const command = Object.entries(FRAME_TYPES).find(([, value]) => value === type)?.[0] || String(type);
+    const pending = this.pendingResponse(key, timeoutMs, `RLCD 4.2への転送が時間切れになりました（${command} / ${this.transport}）。`);
     pending.request.requestType = type;
     try {
-      await this.writeBytes(encodeFrame(type, sequence, payload));
-      const response = await pending.promise;
+      // A stalled socket write callback must not bypass the ACK deadline.
+      const [, response] = await Promise.all([
+        this.writeBytes(encodeFrame(type, sequence, payload)), pending.promise,
+      ]);
       if (!response.accepted) throw new Error(responseError(response));
       return response;
     } catch (error) {
@@ -770,16 +778,27 @@ class Rlcd42SerialGateway {
     // generated/transferred completely before playback. Longer/Live streams
     // use the device's rolling prebuffer.
     const advertisedSamples = bytes.length <= 512 * 1024 ? totalSamples : 0xffffffff;
-    const generation = await this.beginPcm16Playback(sampleRate, advertisedSamples);
-    for (let offset = 0; offset < bytes.length; offset += PLAYBACK_CHUNK_BYTES) {
-      if (generation !== this.playbackGeneration) return { interrupted: true };
-      const result = await this.writePcm16PlaybackChunk(
-        bytes.subarray(offset, offset + PLAYBACK_CHUNK_BYTES),
-        generation,
-      );
-      if (result.interrupted) return result;
+    // begin can fail after STATE or AUDIO_BEGIN reached the device. Track
+    // ownership before awaiting so a partial start is cleaned up as well.
+    const expectedGeneration = this.playbackGeneration + 1;
+    try {
+      const generation = await this.beginPcm16Playback(sampleRate, advertisedSamples);
+      for (let offset = 0; offset < bytes.length; offset += PLAYBACK_CHUNK_BYTES) {
+        if (generation !== this.playbackGeneration) return { interrupted: true };
+        const result = await this.writePcm16PlaybackChunk(
+          bytes.subarray(offset, offset + PLAYBACK_CHUNK_BYTES),
+          generation,
+        );
+        if (result.interrupted) return result;
+      }
+      return await this.endPcm16Playback(generation);
+    } catch (error) {
+      if (this.playbackGeneration === expectedGeneration) {
+        await this.stopPlayback().catch(() => {});
+      }
+      this.log("warn", "rlcd42-playback-failed", { error: String(error?.message || error), transport: this.transport });
+      throw error;
     }
-    return this.endPcm16Playback(generation);
   }
 }
 

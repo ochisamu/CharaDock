@@ -295,9 +295,9 @@ test("new installs enable onboarding and desktop positioning defaults", () => {
   assert.equal(state.remoteTailscaleHttpsPort, 443);
   assert.equal(state.remoteTailscaleManaged, false);
   assert.equal(state.remoteTrustedDevices, undefined);
-  assert.equal(state.codexChatModel, "");
+  assert.equal(state.codexChatModel, "gpt-6-astra");
   assert.equal(state.codexChatReasoningEffort, "");
-  assert.equal(state.codexWorkModel, "");
+  assert.equal(state.codexWorkModel, "gpt-6-astra");
   assert.equal(state.codexWorkReasoningEffort, "");
   assert.equal(state.workNetworkAccess, false);
   assert.equal(state.hasWorkDirectory, false);

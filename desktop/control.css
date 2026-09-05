@@ -1351,6 +1351,18 @@ input[type="range"]:active::-webkit-slider-thumb { transform: scale(1.16); box-s
   .page.is-active, .onboarding-window, .onboarding-step.is-active { transform: none !important; filter: none !important; }
   input[type="range"]::-webkit-slider-thumb { transition: box-shadow 120ms ease !important; }
 }
+.ui-symbol-device-link { -webkit-mask-image: url("../assets/ui/icons/device-link.svg"); mask-image: url("../assets/ui/icons/device-link.svg"); }
+.ui-symbol-chip { -webkit-mask-image: url("../assets/ui/icons/chip.svg"); mask-image: url("../assets/ui/icons/chip.svg"); }
+.speech-caption-panel {
+  padding: 20px;
+  border: 1px solid var(--border, #555);
+  border-radius: 16px;
+  background: var(--surface-raised);
+}
+.speech-caption-panel p { font-size: 18px; line-height: 1.7; overflow-wrap: anywhere; }
+.speech-caption-panel small { opacity: .7; }
+#speechCaptionPanel[hidden], #chatLog[hidden] { display: none; }
+
 @media (prefers-reduced-transparency: reduce) {
   .sidebar, .page-header, .composer, .composer-add-popover, .onboarding, .onboarding-window, .settings-search-results, .update-banner, .artifact-preview { backdrop-filter: none; }
   .sidebar { background: var(--canvas-raised); }

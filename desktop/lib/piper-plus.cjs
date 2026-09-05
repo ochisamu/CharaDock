@@ -115,7 +115,7 @@ async function synthesizePiperPlus({
       if (!validWave || bytes.length > 20 * 1024 * 1024) throw new Error("piper-plusの音声データが正しくありません。");
       audioDataUrls.push(`data:audio/wav;base64,${bytes.toString("base64")}`);
     }
-    return { audioDataUrls };
+    return { audioDataUrls, audioTexts: chunks };
   } finally {
     fs.rmSync(temporaryDirectory, { recursive: true, force: true });
   }

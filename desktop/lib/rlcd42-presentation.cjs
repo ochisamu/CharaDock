@@ -39,7 +39,8 @@ function buildRlcd42Scene({
   const visibleCaption = captionMode === "auto" ? truncateUtf8(caption, 960).trim() : "";
   // Thinking/listening begins before answer text exists. Keep the portrait
   // full-height until there is something real to put in the caption panel.
-  const scene = status === "error" ? "recovery" : workMode ? "work"
+  const scene = status === "error" ? "recovery"
+    : status === "speaking" && visibleCaption ? "conversation" : workMode ? "work"
     : status === "idle" || !visibleCaption ? "home" : "conversation";
   const activity = {
     idle: text("準備できています", "Ready"),
