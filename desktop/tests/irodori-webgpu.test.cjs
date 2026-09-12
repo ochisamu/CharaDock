@@ -37,6 +37,19 @@ function int4Fixture() {
   return root;
 }
 
+test("Anime INT4 uses the V4 runtime, voice design, and its own release identity", () => {
+  const root = int4Fixture();
+  try {
+    fs.writeFileSync(path.join(root, "onnx_int4_webgpu_official", "model-config.json"), JSON.stringify({repo: "phasefield-audio/Irodori-TTS-v4.1-Anime"}));
+    const status = irodoriModelStatus(root, "", true, {version: "v4-anime", mode: "design"});
+    assert.equal(status.ready, true);
+    assert.equal(status.version, "v4-anime");
+    assert.equal(status.modelRelease, "v4.1-anime");
+    assert.equal(irodoriModelStatus(root, "", true, {version: "v4-anime", mode: "reference"}).ready, false);
+    assert.equal(irodoriGenerationSettings("v4-anime", {numSteps: 4}).numSteps, 16);
+  } finally { fs.rmSync(root, {recursive: true, force: true}); }
+});
+
 function v3Fixture() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "charadock-irodori-v3-"));
   const models = path.join(root, "onnx_fp16");

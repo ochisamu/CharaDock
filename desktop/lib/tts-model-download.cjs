@@ -6,6 +6,7 @@ const { spawn } = require("node:child_process");
 
 const fsp = fs.promises;
 const HASH_YIELD_BYTES = 8 * 1024 * 1024;
+const animeManifest = require("./irodori-anime-manifest.json");
 
 const PIPER_MODEL_COMMIT = "36b59c825c36bd386b8960cf3f604382f52f2a87";
 const KOKORO_COMMIT = "1939ad2a8e416c0acfeecc08a694d14ef25f2231";
@@ -169,6 +170,19 @@ const TTS_MODELS = Object.freeze({
       url: url || `${IRODORI_V4_INT4_RELEASE_BASE}/${path.basename(relativePath)}`,
       bytes,
       sha256,
+    }))),
+  }),
+  "irodori-anime-int4": Object.freeze({
+    id: "irodori-anime-int4",
+    label: "Irodori TTS v4.1 Anime · INT4 WebGPU",
+    description: "アニメ調の声で学習したv4.1派生モデル。約854MBのWebGPU用INT4版です。",
+    directoryName: "irodori-tts-v4.1-anime-webgpu-int4-r1",
+    downloadBytes: animeManifest.totalBytes,
+    sourceUrl: "https://huggingface.co/phasefield-audio/Irodori-TTS-v4.1-Anime",
+    licenseUrl: "https://huggingface.co/phasefield-audio/Irodori-TTS-v4.1-Anime#license",
+    files: Object.freeze(animeManifest.files.map((file) => Object.freeze({
+      name: file.name, relativePath: file.path, bytes: file.bytes, sha256: file.sha256,
+      url: `https://github.com/ochisamu/irodori-tts-v4-webgpu-models/releases/download/${animeManifest.releaseTag}/${file.name}`,
     }))),
   }),
   "irodori-500m-v3": Object.freeze({

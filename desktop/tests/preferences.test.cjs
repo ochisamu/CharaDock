@@ -434,6 +434,32 @@ test("Irodori INT4 selection is normalized globally and per character", () => {
   fs.rmSync(root, { recursive: true, force: true });
 });
 
+test("Anime INT4 persists independently without leaking model paths or changing other characters", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "charadock-preferences-anime-"));
+  try {
+    const file = path.join(root, "preferences.json");
+    fs.writeFileSync(file, JSON.stringify({
+      irodoriVersion: "v4-anime", irodoriPrecision: "fp16",
+      irodoriV41AnimeModelDirectory: "C:/models/anime",
+      irodoriV4Int4ModelDirectory: "C:/models/small",
+      characterTtsProfiles: {
+        "custom-avatar": { provider: "irodori-webgpu", irodoriVersion: "v4-anime", irodoriPrecision: "fp16" },
+        "sage-avatar": { provider: "irodori-webgpu", irodoriVersion: "v4-small", irodoriPrecision: "fp16" },
+      },
+    }));
+    const preferences = new Preferences(file);
+    assert.equal(preferences.data.irodoriPrecision, "int4");
+    assert.equal(preferences.data.characterTtsProfiles["custom-avatar"].irodoriVersion, "v4-anime");
+    assert.equal(preferences.data.characterTtsProfiles["custom-avatar"].irodoriPrecision, "int4");
+    assert.equal(preferences.data.characterTtsProfiles["sage-avatar"].irodoriVersion, "v4-small");
+    assert.equal(preferences.data.characterTtsProfiles["sage-avatar"].irodoriPrecision, "fp16");
+    assert.equal(preferences.data.irodoriV4Int4ModelDirectory, "C:/models/small");
+    assert.equal(preferences.publicState().irodoriV41AnimeModelDirectory, undefined);
+    preferences.patch({ irodoriVersion: "v4-anime" });
+    assert.equal(new Preferences(file).data.irodoriV41AnimeModelDirectory, "C:/models/anime");
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
 test("built-in Kohaku and Hiro profiles keep the legacy Irodori model unless explicitly changed", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "charadock-preferences-irodori-builtins-"));
   const file = path.join(root, "preferences.json");

@@ -61,6 +61,7 @@ const DEFAULTS = Object.freeze({
   irodoriModelDirectory: "",
   irodoriV4ModelDirectory: "",
   irodoriV4Int4ModelDirectory: "",
+  irodoriV41AnimeModelDirectory: "",
   irodoriReferenceAudioPath: "",
   irodoriVoices: DEFAULT_IRODORI_VOICES,
   irodoriVoiceId: "builtin-kohaku",
@@ -128,6 +129,7 @@ const DEFAULTS = Object.freeze({
   atomEchoVadThreshold: 120,
   atomEchoLiveIdleTimeoutEnabled: true,
   deviceProfiles: {},
+  characterDeviceType: "waveshare-rlcd-4.2",
   onboardingComplete: false,
   positionLocked: false,
   edgeSnap: true,
@@ -166,7 +168,7 @@ function normalizeDeviceProfiles(value) {
     const id = String(profileId || "").trim().slice(0, 80);
     if (!/^[A-Za-z0-9._:-]+$/.test(id) || !profile || typeof profile !== "object" || Array.isArray(profile)) return [];
     const type = String(profile.type || "").trim().slice(0, 80);
-    if (type !== "waveshare-rlcd-4.2") return [];
+    if (!["waveshare-rlcd-4.2", "m5stack-stackchan-k151"].includes(type)) return [];
     const requestedPort = String(profile.port || "");
     const port = /^(?:COM\d{1,3}|\/dev\/[A-Za-z0-9._/-]{1,100})$/i.test(requestedPort)
       ? requestedPort.slice(0, 120)
@@ -182,9 +184,9 @@ function normalizeDeviceProfiles(value) {
       speakerEnabled: typeof profile.speakerEnabled === "boolean" ? profile.speakerEnabled : true,
       outputGain: Math.max(50, Math.min(150, Math.round(Number(profile.outputGain) || 100))),
       microphoneEnabled: typeof profile.microphoneEnabled === "boolean" ? profile.microphoneEnabled : true,
-      captureMode: profile.captureMode === "hands-free" ? "hands-free" : "push-to-talk",
+      captureMode: type !== "m5stack-stackchan-k151" && profile.captureMode === "hands-free" ? "hands-free" : "push-to-talk",
       vadThreshold: Math.max(80, Math.min(800, Math.round(Number(profile.vadThreshold) || 120))),
-      deviceId: /^cd-rlcd-[a-f0-9]{12}$/.test(String(profile.deviceId || "").toLowerCase())
+      deviceId: (type === "m5stack-stackchan-k151" ? /^stackchan-[a-f0-9]{12}$/ : /^cd-rlcd-[a-f0-9]{12}$/).test(String(profile.deviceId || "").toLowerCase())
         ? String(profile.deviceId).toLowerCase()
         : "",
       wifiSsid: String(profile.wifiSsid || "").replace(/[\u0000-\u001f\u007f]/g, "").slice(0, 32),
@@ -455,6 +457,8 @@ class Preferences {
       if (typeof this.data.irodoriModelDirectory !== "string") this.data.irodoriModelDirectory = "";
       if (typeof this.data.irodoriV4ModelDirectory !== "string") this.data.irodoriV4ModelDirectory = "";
       if (typeof this.data.irodoriV4Int4ModelDirectory !== "string") this.data.irodoriV4Int4ModelDirectory = "";
+      if (typeof this.data.irodoriV41AnimeModelDirectory !== "string") this.data.irodoriV41AnimeModelDirectory = "";
+      this.data.irodoriV41AnimeModelDirectory = this.data.irodoriV41AnimeModelDirectory.slice(0, 1000);
       if (typeof this.data.irodoriReferenceAudioPath !== "string") this.data.irodoriReferenceAudioPath = "";
       this.data.irodoriModelDirectory = this.data.irodoriModelDirectory.slice(0, 1000);
       this.data.irodoriV4ModelDirectory = this.data.irodoriV4ModelDirectory.slice(0, 1000);
@@ -483,10 +487,11 @@ class Preferences {
       this.data.irodoriSeed = Math.min(2147483647, Math.max(0, Math.round(Number(this.data.irodoriSeed) || 0)));
       if (!Object.prototype.hasOwnProperty.call(parsed, "irodoriVersion") && this.data.irodoriModelDirectory && !this.data.irodoriV4ModelDirectory) {
         this.data.irodoriVersion = "500m-v3";
-      } else if (!["500m-v3", "v4-small"].includes(this.data.irodoriVersion)) {
+      } else if (!["500m-v3", "v4-small", "v4-anime"].includes(this.data.irodoriVersion)) {
         this.data.irodoriVersion = "v4-small";
       }
       if (!["fp16", "int4"].includes(this.data.irodoriPrecision)) this.data.irodoriPrecision = "fp16";
+      if (this.data.irodoriVersion === "v4-anime") this.data.irodoriPrecision = "int4";
       if (!["reference", "design"].includes(this.data.irodoriMode)) this.data.irodoriMode = "reference";
       this.data.irodoriCaption = String(this.data.irodoriCaption || "自然で明瞭な日本語。落ち着いた親しみやすい口調で話す。").trim().slice(0, 1000);
       if (typeof this.data.irodoriAutoEmotion !== "boolean") this.data.irodoriAutoEmotion = true;
@@ -579,11 +584,11 @@ class Preferences {
           beatricePitchCorrection: Math.max(0, Math.min(1, Number(profile.beatricePitchCorrection) || 0)),
           beatricePitchCorrectionType: Number(profile.beatricePitchCorrectionType) === 1 ? 1 : 0,
           irodoriVoiceId: String(profile.irodoriVoiceId || "").slice(0, 80),
-          irodoriVersion: ["500m-v3", "v4-small"].includes(profile.irodoriVersion)
+          irodoriVersion: ["500m-v3", "v4-small", "v4-anime"].includes(profile.irodoriVersion)
             ? profile.irodoriVersion
-            : ["500m-v3", "v4-small"].includes(defaultProfile.irodoriVersion)
+            : ["500m-v3", "v4-small", "v4-anime"].includes(defaultProfile.irodoriVersion)
               ? defaultProfile.irodoriVersion : this.data.irodoriVersion,
-          irodoriPrecision: ["fp16", "int4"].includes(profile.irodoriPrecision)
+          irodoriPrecision: (profile.irodoriVersion || defaultProfile.irodoriVersion || this.data.irodoriVersion) === "v4-anime" ? "int4" : ["fp16", "int4"].includes(profile.irodoriPrecision)
             ? profile.irodoriPrecision : this.data.irodoriPrecision,
           irodoriMode: ["reference", "design"].includes(profile.irodoriMode) ? profile.irodoriMode : "reference",
           irodoriCaption: String(profile.irodoriCaption || defaultProfile.irodoriCaption || "").trim().slice(0, 1000),
@@ -660,7 +665,7 @@ class Preferences {
   publicState() {
     const state = {};
     for (const key of PUBLIC_KEYS) {
-      if (!["customCharacters", "workDirectory", "piperPlusExecutablePath", "piperPlusModelPath", "supertonicModelDirectory", "irodoriModelDirectory", "irodoriV4ModelDirectory", "irodoriV4Int4ModelDirectory", "irodoriReferenceAudioPath", "irodoriVoices", "kokoroModelDirectory", "sbv2Models", "beatriceVstPath", "beatriceModelPath", "beatriceModels", "characterTtsProfiles", "conversationHistories", "characterMemories", "characterWorkspaces", "continuationSummaries", "managedSkills", "skillAssignments", "mcpServers", "mcpAssignments", "webPreviewRuntimes", "workHistory", "remoteTrustedDevices"].includes(key)) state[key] = this.data[key];
+      if (!["customCharacters", "workDirectory", "piperPlusExecutablePath", "piperPlusModelPath", "supertonicModelDirectory", "irodoriModelDirectory", "irodoriV4ModelDirectory", "irodoriV4Int4ModelDirectory", "irodoriV41AnimeModelDirectory", "irodoriReferenceAudioPath", "irodoriVoices", "kokoroModelDirectory", "sbv2Models", "beatriceVstPath", "beatriceModelPath", "beatriceModels", "characterTtsProfiles", "conversationHistories", "characterMemories", "characterWorkspaces", "continuationSummaries", "managedSkills", "skillAssignments", "mcpServers", "mcpAssignments", "webPreviewRuntimes", "workHistory", "remoteTrustedDevices"].includes(key)) state[key] = this.data[key];
     }
     state.hasWorkDirectory = Boolean(this.data.workDirectory);
     state.workDirectoryName = this.data.workDirectory ? path.basename(this.data.workDirectory) : "";

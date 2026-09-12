@@ -105,6 +105,8 @@ CharaDockは、[rotejin/PuruPuruPNGTuber](https://github.com/rotejin/PuruPuruPNG
 - **Kokoro:** 日本語5音声。WebGPUを優先し、無音・非有限値を検出した場合はCPUで再生成
 - **Irodori TTS:** v4 Small（推奨）と、従来の500M-v3 WebGPU Voice Cloneモデルをキャラごとに選択できます。v4 Smallは高品質なFP16（約1.7GB）と、公式INT4チェックポイントを起点にWebGPU向けW4A16へ変換した軽量版（約853MB）を切り替えられます。captionによるVoice Designと最大120秒の許諾済み参照音声に対応し、基本captionへ発話単位の感情を3段階の強さで追加のAI推論なしに反映します。500M-v3は既存の参照音声設定を維持し、最大60秒の参照音声を利用できます。WAV / MP3 / M4A / AAC / OGG / FLAC / WebMは48kHz WAVへ変換してアプリ管理領域へ保存します。各モデルをアプリ内でダウンロード・SHA-256検証でき、手動選択にも対応します。モデル本体はCharaDockへ同梱しません
 
+- **Irodori v4.1 Anime:** アニメ調の追加モデルをINT4 WebGPU版（約854MB）で利用できます。Irodoriの「モデル世代」から選んでダウンロードします。Smallとは別に保存され、キャラごとに切り替え可能です。PCへ導入後はリモートからも選択できます。Voice Designと許諾済み参照音声に対応しますが、声の説明・感情指定の効果はSmallと異なる場合があります。[元モデル・利用条件](https://huggingface.co/phasefield-audio/Irodori-TTS-v4.1-Anime) · [変換モデル](https://github.com/ochisamu/irodori-tts-v4-webgpu-models/releases/tag/v4.1-anime-6b259f5-webgpu-int4-r1)
+
 長文は句点や自然な区切りで分割し、現在の区間を再生しながら次の区間を合成します。Style-Bert-VITS2はローカルAPIのURL、モデルID、速度を指定できます。
 </details>
 

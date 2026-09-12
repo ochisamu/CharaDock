@@ -33,7 +33,7 @@ const V4_MODEL_NAMES = Object.freeze([
 
 // Kept as the V4 alias for callers introduced with the V4 runtime.
 const MODEL_NAMES = V4_MODEL_NAMES;
-const IRODORI_VERSIONS = Object.freeze(["500m-v3", "v4-small"]);
+const IRODORI_VERSIONS = Object.freeze(["500m-v3", "v4-small", "v4-anime"]);
 
 function isFile(filePath) {
   try { return fs.statSync(filePath).isFile(); } catch { return false; }
@@ -50,6 +50,7 @@ function irodoriV4ModelRelease(modelsDirectory) {
     if (!stat.isFile() || stat.size > 128 * 1024) return { modelRelease: "unknown", modelOutdated: false };
     const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
     const repository = String(config?.repo || "");
+    if (/Irodori-TTS-v4\.1-Anime(?:\/|$)/.test(repository)) return { modelRelease: "v4.1-anime", modelOutdated: false };
     if (/Irodori-TTS-v4\.1-Small(?:-Quantized)?(?:\/|$)/.test(repository)) {
       return { modelRelease: "v4.1", modelOutdated: false };
     }
@@ -91,7 +92,7 @@ function v3CandidateLayouts(root) {
 }
 
 function normalizedVersion(value) {
-  return value === "500m-v3" ? "500m-v3" : "v4-small";
+  return IRODORI_VERSIONS.includes(value) ? value : "v4-small";
 }
 
 function irodoriGenerationSettings(version, {
@@ -100,7 +101,7 @@ function irodoriGenerationSettings(version, {
   cfgExecution = "sequential",
 } = {}) {
   const normalizedSteps = Math.min(40, Math.max(4, Math.round(Number(numSteps) || 16)));
-  if (normalizedVersion(version) === "v4-small") {
+  if (normalizedVersion(version) !== "500m-v3") {
     // Keep both V4 precisions on the same known-good recipe as the standalone
     // runtime. The Sway shortcut belongs to the older 500M-v3 integration.
     return {
@@ -124,7 +125,7 @@ function resolveIrodoriModelDirectory(directory, requestedVersion = "v4-small") 
   for (const candidate of layouts) {
     if (hasModels(candidate.models, modelNames)) return { root, ...candidate, version, modelNames };
   }
-  const fallback = layouts[version === "v4-small" ? 1 : 0] || layouts[0];
+  const fallback = layouts[version === "500m-v3" ? 0 : 1] || layouts[0];
   return {
     root,
     ...fallback,
@@ -144,8 +145,8 @@ function irodoriModelStatus(directory, referenceAudioPath = "", webgpuAvailable 
     && isFile(path.join(resolved.tokenizer, "tokenizer.json"))
     && isFile(path.join(resolved.tokenizer, "tokenizer_config.json"));
   const referenceReady = isFile(referenceAudioPath) && path.extname(referenceAudioPath).toLowerCase() === ".wav";
-  const referenceRequired = !(resolved.version === "v4-small" && options.mode === "design");
-  const release = resolved.version === "v4-small"
+  const referenceRequired = !(resolved.version !== "500m-v3" && options.mode === "design");
+  const release = resolved.version !== "500m-v3"
     ? irodoriV4ModelRelease(resolved.models)
     : { modelRelease: "500m-v3", modelOutdated: false };
   return {

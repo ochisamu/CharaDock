@@ -155,8 +155,8 @@ async function loadReference(referenceAudioPath, maxSeconds = 120) {
 
 async function synthesizeRequest(request) {
   const startedAt = performance.now();
-  const version = request.version === "500m-v3" ? "500m-v3" : "v4-small";
-  const mode = version === "v4-small" && request.mode === "design" ? "design" : "reference";
+  const version = ["500m-v3", "v4-anime"].includes(request.version) ? request.version : "v4-small";
+  const mode = version !== "500m-v3" && request.mode === "design" ? "design" : "reference";
   const generation = irodoriGenerationSettings(version, {
     numSteps: request.numSteps,
     tScheduleMode: request.tScheduleMode,
@@ -259,9 +259,9 @@ ipcRenderer.on("irodori:synthesize", async (_event, request = {}) => {
 
 ipcRenderer.on("irodori:prewarm", async (_event, request = {}) => {
   try {
-    const version = request.version === "500m-v3" ? "500m-v3" : "v4-small";
+    const version = ["500m-v3", "v4-anime"].includes(request.version) ? request.version : "v4-small";
     const resolved = resolveIrodoriModelDirectory(request.modelDirectory, version);
-    const designMode = version === "v4-small" && request.mode === "design";
+    const designMode = version !== "500m-v3" && request.mode === "design";
     const reference = designMode ? null : await loadReference(request.referenceAudioPath, version === "500m-v3" ? 60 : 120);
     const key = `${resolved.root}:${version}:${request.mode}:${reference?.key || "design"}:${request.tScheduleMode}:${request.numSteps}`;
     if (prewarmKey === key) return;

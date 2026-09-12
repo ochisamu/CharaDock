@@ -11,6 +11,12 @@ function truncateUtf8(value, maximumBytes) {
   return output;
 }
 
+function liveCaptionWindow(value, limit = 88) {
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  const sentences = text.match(/[^。！？!?]+[。！？!?]*|[。！？!?]+/gu) || [];
+  return Array.from(sentences.slice(-2).join("").trim()).slice(-limit).join("");
+}
+
 function buildRlcd42Scene({
   characterName = "CharaDock",
   interactionMode = "chat",
@@ -19,6 +25,7 @@ function buildRlcd42Scene({
   beatrice = false,
   captionMode = "auto",
   caption = "",
+  liveCaption = false,
   activityOverride = "",
   language = "ja",
   transport = "usb",
@@ -40,6 +47,7 @@ function buildRlcd42Scene({
   // Thinking/listening begins before answer text exists. Keep the portrait
   // full-height until there is something real to put in the caption panel.
   const scene = status === "error" ? "recovery"
+    : liveCaption && visibleCaption ? "conversation"
     : status === "speaking" && visibleCaption ? "conversation" : workMode ? "work"
     : status === "idle" || !visibleCaption ? "home" : "conversation";
   const activity = {
@@ -78,4 +86,4 @@ function buildRlcd42Scene({
   };
 }
 
-module.exports = { buildRlcd42Scene, truncateUtf8 };
+module.exports = { buildRlcd42Scene, truncateUtf8, liveCaptionWindow };

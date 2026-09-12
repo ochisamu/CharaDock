@@ -47,12 +47,19 @@ function likelyRlcd42Port(port = {}) {
   return ["303a", "1a86", "10c4"].includes(item.vendorId);
 }
 
-function validatedDevice(hello, capabilities) {
-  if (!hello || hello.board !== EXPECTED_BOARD) throw new Error("選択したポートはWaveshare RLCD 4.2ではありません。");
-  if (!capabilities || Number(capabilities.protocol) !== 2 || capabilities.board !== EXPECTED_BOARD) {
+function validatedDevice(hello, capabilities, expectedBoard = EXPECTED_BOARD) {
+  if (!hello || hello.board !== expectedBoard) throw new Error(`選択したポートの機種が一致しません: ${expectedBoard}`);
+  if (!capabilities || Number(capabilities.protocol) !== 2 || capabilities.board !== expectedBoard) {
     throw new Error("RLCD 4.2のDevice Protocol v2ファームウェアを確認できません。");
   }
   const display = capabilities.capabilities?.display;
+  if (expectedBoard === "m5stack-stackchan-k151") {
+    if (display?.width !== 320 || display?.height !== 240 || display?.bitsPerPixel !== 16
+      || !display?.bitmap?.includes("rgb565le") || !/^stackchan-[a-f0-9]{12}$/.test(hello.deviceId || "")) {
+      throw new Error("StackChanの表示能力または個体IDが一致しません。");
+    }
+    return { board: expectedBoard, deviceId: hello.deviceId, firmware: String(hello.firmware || "").slice(0, 80) };
+  }
   if (Number(display?.width) !== 400 || Number(display?.height) !== 300 || Number(display?.bitsPerPixel) !== 1) {
     throw new Error("RLCD 4.2の表示能力がファームウェア仕様と一致しません。");
   }
@@ -73,6 +80,7 @@ function responseError(response) {
 
 class Rlcd42SerialGateway {
   constructor({
+    expectedBoard = EXPECTED_BOARD,
     SerialPortClass = null,
     listPorts = null,
     onInput = async () => {},
@@ -90,6 +98,7 @@ class Rlcd42SerialGateway {
     heartbeatIntervalMs = HEARTBEAT_INTERVAL_MS,
     heartbeatTimeoutMs = HEARTBEAT_TIMEOUT_MS,
   } = {}) {
+    this.expectedBoard = expectedBoard;
     this.SerialPortClass = SerialPortClass;
     this.listPortsOverride = listPorts;
     this.callbacks = {
@@ -279,10 +288,10 @@ class Rlcd42SerialGateway {
     );
     const hello = await this.requestFrame(FRAME_TYPES.DEVICE_HELLO, Buffer.alloc(0), FRAME_TYPES.DEVICE_HELLO, 4_000);
     const capabilities = await this.requestFrame(FRAME_TYPES.CAPABILITIES, Buffer.alloc(0), FRAME_TYPES.CAPABILITIES, 4_000);
-    this.device = validatedDevice(parseJsonPayload(hello.payload), parseJsonPayload(capabilities.payload));
+    this.device = validatedDevice(parseJsonPayload(hello.payload), parseJsonPayload(capabilities.payload), this.expectedBoard);
     this.device.transport = this.transport;
     this.capabilities = parseJsonPayload(capabilities.payload);
-    await this.writeWithAck(FRAME_TYPES.TIME_SYNC, timeSyncPayload(), { requireReady: false });
+    if (this.expectedBoard === EXPECTED_BOARD) await this.writeWithAck(FRAME_TYPES.TIME_SYNC, timeSyncPayload(), { requireReady: false });
     // 0.1.x display/speaker firmware did not know CaptureConfig.  Keep that
     // useful subset connectable and let the capability-driven UI ask for a
     // firmware update only when microphone input is actually requested.
@@ -293,7 +302,7 @@ class Rlcd42SerialGateway {
         { requireReady: false },
       );
     }
-    try {
+    if (this.expectedBoard === EXPECTED_BOARD) try {
       const sensorFrame = await this.requestFrame(
         FRAME_TYPES.SENSOR_REPORT,
         Buffer.alloc(0),
@@ -526,7 +535,7 @@ class Rlcd42SerialGateway {
       const [, response] = await Promise.all([
         this.writeBytes(encodeFrame(type, sequence, payload)), pending.promise,
       ]);
-      if (!response.accepted) throw new Error(responseError(response));
+      if (!response.accepted) throw Object.assign(new Error(responseError(response)), { deviceResponse: response });
       return response;
     } catch (error) {
       clearTimeout(pending.request.timer);
@@ -565,12 +574,12 @@ class Rlcd42SerialGateway {
     }
     if (frame.type === FRAME_TYPES.DEVICE_HELLO) {
       const hello = parseJsonPayload(frame.payload);
-      if (hello?.board === EXPECTED_BOARD) this.device = { ...this.device, ...hello };
+      if (hello?.board === this.expectedBoard) this.device = { ...this.device, ...hello };
       return;
     }
     if (frame.type === FRAME_TYPES.CAPABILITIES) {
       const capabilities = parseJsonPayload(frame.payload);
-      if (capabilities?.board === EXPECTED_BOARD) this.capabilities = capabilities;
+      if (capabilities?.board === this.expectedBoard) this.capabilities = capabilities;
       return;
     }
     if (frame.type === FRAME_TYPES.SENSOR_REPORT) {
@@ -760,7 +769,22 @@ class Rlcd42SerialGateway {
     if (generation !== this.playbackGeneration) return { interrupted: true };
     const playback = this.activePlayback;
     await this.writeWithAck(FRAME_TYPES.AUDIO_END, Buffer.alloc(0), { timeoutMs: 5_000 });
-    if (playback?.totalSamples !== 0xffffffff) {
+    if (playback?.totalSamples !== 0xffffffff && this.capabilities?.capabilities?.audio?.playbackStatus === true) {
+      // AUDIO_END acknowledges receipt, not DMA/codec drain. Never replace a
+      // still-playing part merely because its nominal duration has elapsed.
+      const deadline = Date.now() + Math.ceil(playback.totalSamples * 1000 / playback.sampleRate) + 10_000;
+      while (true) {
+        if (generation !== this.playbackGeneration) return { interrupted: true };
+        const frame = await this.requestFrame(FRAME_TYPES.AUDIO_STATUS, Buffer.alloc(0), FRAME_TYPES.AUDIO_STATUS);
+        if (generation !== this.playbackGeneration) return { interrupted: true };
+        const state = frame.payload?.length === 1 ? frame.payload[0] : -1;
+        if (state === 0) break;
+        if (state === 3) { this.activePlayback = null; return { interrupted: true }; }
+        if (state !== 1) throw new Error("RLCD 4.2の実機音声再生が失敗しました。");
+        if (Date.now() >= deadline) throw new Error("RLCD 4.2の音声再生完了を確認できませんでした。");
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+    } else if (playback?.totalSamples !== 0xffffffff) {
       const durationMs = Math.ceil(playback.totalSamples * 1000 / playback.sampleRate) + 250;
       await new Promise((resolve) => setTimeout(resolve, durationMs));
     }
@@ -773,16 +797,24 @@ class Rlcd42SerialGateway {
   async playPcm16(pcm, sampleRate = PLAYBACK_SAMPLE_RATE) {
     const bytes = Buffer.isBuffer(pcm) ? pcm : Buffer.from(pcm || []);
     if (!bytes.length || bytes.length % 2) throw new Error("RLCD 4.2へ送るPCM音声が正しくありません。");
+    // Normal TTS must not fall back to the Live/unknown-length protocol:
+    // chunk ACKs only mean accepted, not played, and the device rejects a
+    // full ring. Keep every transfer bounded and wait for its playback before
+    // beginning the next part (also preserving cancellation between parts).
+    const bufferBytes = 512 * 1024;
+    if (bytes.length > bufferBytes) {
+      for (let offset = 0; offset < bytes.length; offset += bufferBytes) {
+        const result = await this.playPcm16(bytes.subarray(offset, offset + bufferBytes), sampleRate);
+        if (result.interrupted) return result;
+      }
+      return { interrupted: false };
+    }
     const totalSamples = bytes.length / 2;
-    // Known-length utterances up to the device's 512 KiB PSRAM ring are
-    // generated/transferred completely before playback. Longer/Live streams
-    // use the device's rolling prebuffer.
-    const advertisedSamples = bytes.length <= 512 * 1024 ? totalSamples : 0xffffffff;
     // begin can fail after STATE or AUDIO_BEGIN reached the device. Track
     // ownership before awaiting so a partial start is cleaned up as well.
     const expectedGeneration = this.playbackGeneration + 1;
     try {
-      const generation = await this.beginPcm16Playback(sampleRate, advertisedSamples);
+      const generation = await this.beginPcm16Playback(sampleRate, totalSamples);
       for (let offset = 0; offset < bytes.length; offset += PLAYBACK_CHUNK_BYTES) {
         if (generation !== this.playbackGeneration) return { interrupted: true };
         const result = await this.writePcm16PlaybackChunk(

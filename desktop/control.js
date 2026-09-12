@@ -3130,8 +3130,15 @@
   }
 
   function syncIrodoriUi(info = state?.irodori || {}) {
-    const version = $("#irodoriVersionSelect").value === "500m-v3" ? "500m-v3" : "v4-small";
+    const version = ["500m-v3", "v4-anime"].includes($("#irodoriVersionSelect").value) ? $("#irodoriVersionSelect").value : "v4-small";
     const legacy = version === "500m-v3";
+    const anime = version === "v4-anime";
+    if (anime) $("#irodoriPrecisionSelect").value = "int4";
+    $("#irodoriPrecisionSelect").disabled = anime;
+    $("#irodoriPrecisionSelect option[value=int4]").textContent = anime
+      ? localized("INT4（軽量・約854MB）", "INT4 (lightweight, about 854 MB)")
+      : localized("INT4（軽量・約853MB）", "INT4 (lightweight, about 853 MB)");
+    $("#irodoriV4Title").textContent = `Irodori TTS v4.1 ${anime ? "Anime" : "Small"} · WebGPU`;
     const precision = $("#irodoriPrecisionSelect").value === "int4" ? "int4" : "fp16";
     const quantized = !legacy && precision === "int4";
     const generationMode = $("#irodoriSamplingModeSelect");
@@ -3145,7 +3152,7 @@
     );
     $("#irodoriV4Panel").hidden = legacy;
     $("#irodoriV3Panel").hidden = !legacy;
-    $("#irodoriManualModelLabel").textContent = legacy ? "500M-v3 FP16モデル" : `V4.1 Small ${quantized ? "INT4" : "FP16"}モデル`;
+    $("#irodoriManualModelLabel").textContent = legacy ? "500M-v3 FP16モデル" : `V4.1 ${anime ? "Anime" : "Small"} ${quantized ? "INT4" : "FP16"}モデル`;
     $("#irodoriManualModelHint").textContent = legacy
       ? "irodori-tts-webgpuのルート、onnx_fp16フォルダー、または同じ配置の変換済み500M-v3モデルを選択できます。"
       : "irodori-tts-webgpuのルート、v4-small-unifiedフォルダー、または同じ配置の変換済みV4モデルを選択できます。";
@@ -3173,9 +3180,11 @@
     $("#irodoriReferenceSettings").hidden = !legacy && $("#irodoriModeSelect").value === "design";
     $("#irodoriEmotionStrengthSettings").classList.toggle("is-disabled", !$("#irodoriAutoEmotionToggle").checked);
     $("#irodoriEmotionStrengthSelect").disabled = !$("#irodoriAutoEmotionToggle").checked;
-    const selectedV4Model = quantized ? info.int4SampleModel : info.fp16SampleModel;
+    const selectedV4Model = anime ? info.animeSampleModel : quantized ? info.int4SampleModel : info.fp16SampleModel;
     syncTtsSampleModelUi("irodori", selectedV4Model || info.sampleModel);
-    $("#irodoriModelDownloadHint").textContent = quantized
+    $("#irodoriModelDownloadHint").textContent = anime
+      ? localized("アニメ調の声で学習した約854MBのINT4モデル。声の説明・感情指定の効き方はSmallと異なる場合があります。", "An approximately 854 MB INT4 model trained on anime-style speech. Voice descriptions and emotion controls may behave differently from Small.")
+      : quantized
       ? "約853MBのWebGPU向けW4A16モデルを初回だけ取得し、SHA-256を検証して端末へ保存します。"
       : "約1.7GBのFP16モデルを初回だけ取得し、SHA-256を検証して端末へ保存します。";
     syncTtsSampleModelUi("irodoriV3", info.v3SampleModel);
@@ -3682,6 +3691,18 @@
   function syncRlcd42Ui() {
     const rlcd = state?.rlcd42 || {};
     const enabled = Boolean(rlcd.enabled);
+    const stackchan = rlcd.boardType === "m5stack-stackchan-k151";
+    $("#characterDeviceBoardSelect").value = stackchan ? "m5stack-stackchan-k151" : "waveshare-rlcd-4.2";
+    $("#characterDeviceBoardSelect").disabled = enabled;
+    $("#rlcd42Title").textContent = stackchan ? "StackChan" : "RLCD 4.2";
+    $("#stackchanFeatureNote").hidden = !stackchan;
+    $("#stackchanMotionControls").hidden = !stackchan;
+    $("#stackchanMotionEnable").disabled = !rlcd.connected;
+    $("#stackchanMotionDisable").disabled = !rlcd.connected;
+    $("#rlcd42ArtStyleSelect").closest("section").hidden = stackchan;
+    $("#rlcd42SensorStrip").hidden = stackchan;
+    $("#rlcd42CaptureModeSelect").querySelector('[value="hands-free"]').disabled = stackchan;
+    $("#rlcd42CaptureModeSelect").querySelector('[value="push-to-talk"]').textContent = stackchan ? "頭に触れたまま話す" : "KEYを押して話す";
     $("#rlcd42EnabledToggle").checked = enabled;
     $("#rlcd42EnabledSettings").hidden = !enabled;
     $("#rlcd42LiveIdleTimeoutToggle").checked = rlcd.liveIdleTimeoutEnabled === true;
@@ -3785,6 +3806,7 @@
     if (enabled && rlcd.microphoneEnabled !== false && rlcd.inputMode !== "live" && !rlcd.streamingSpeechReady) {
       message += localized(" 音声入力にはストリーミング音声認識モデルの導入が必要です。", " Install a streaming speech model for voice input.");
     }
+    if (stackchan) message = message.replaceAll("RLCD 4.2", "StackChan").replaceAll("KEYを押したまま", "頭に触れたまま").replaceAll("Hold KEY", "Touch and hold the head");
     setStatus($("#rlcd42Status"), message, Boolean(rlcd.error));
   }
 
@@ -3807,6 +3829,7 @@
     toggle.disabled = true;
     try {
       state = await api.setRlcd42Config({
+        boardType: $("#characterDeviceBoardSelect").value,
         enabled: toggle.checked,
         transport: $("#rlcd42TransportSelect").value,
         port: $("#rlcd42PortSelect").value,
@@ -3926,7 +3949,7 @@
     $("#kokoroSettings").hidden = $("#ttsProviderSelect").value !== "kokoro";
     syncKokoroUi();
     $("#irodoriSpeedInput").value = Number(state.irodoriSpeed) || 1;
-    $("#irodoriVersionSelect").value = state.irodoriVersion === "500m-v3" ? "500m-v3" : "v4-small";
+    $("#irodoriVersionSelect").value = ["500m-v3", "v4-anime"].includes(state.irodoriVersion) ? state.irodoriVersion : "v4-small";
     $("#irodoriPrecisionSelect").value = state.irodoriPrecision === "int4" ? "int4" : "fp16";
     $("#irodoriModeSelect").value = state.irodoriMode || "reference";
     $("#irodoriCaptionInput").value = state.irodoriCaption || "自然で明瞭な日本語。落ち着いた親しみやすい口調で話す。";
@@ -4104,10 +4127,10 @@
       irodoriEmotionStrength: $("#irodoriEmotionStrengthSelect").value,
       irodoriCfgExecution: "sequential",
       irodoriSpeed: Number($("#irodoriSpeedInput").value),
-      irodoriSamplingMode: $("#irodoriVersionSelect").value === "v4-small"
+      irodoriSamplingMode: $("#irodoriVersionSelect").value !== "500m-v3"
         ? state.irodoriSamplingMode
         : $("#irodoriSamplingModeSelect").value,
-      irodoriSteps: $("#irodoriVersionSelect").value === "v4-small"
+      irodoriSteps: $("#irodoriVersionSelect").value !== "500m-v3"
         ? state.irodoriSteps
         : Number($("#irodoriStepsInput").value),
       irodoriSeed: Number($("#irodoriSeedInput").value),
@@ -5409,6 +5432,15 @@
     $("#rlcd42EnabledToggle").addEventListener("change", saveRlcd42Settings);
     $("#rlcd42TransportSelect").addEventListener("change", saveRlcd42Settings);
     $("#rlcd42PortSelect").addEventListener("change", saveRlcd42Settings);
+    $("#characterDeviceBoardSelect").addEventListener("change", saveRlcd42Settings);
+    for (const [id, motionEnabled] of [["stackchanMotionEnable",true],["stackchanMotionDisable",false]]) {
+      $("#"+id).addEventListener("click", async () => {
+        try {
+          state = await api.setRlcd42Config({ motionEnabled });
+          setStatus($("#rlcd42Status"), motionEnabled ? "首振りを有効にしました。再接続時はOFFに戻ります。" : "首振りを停止しました。");
+        } catch(error) { setStatus($("#rlcd42Status"), error.message, true); }
+      });
+    }
     $("#rlcd42ArtStyleSelect").addEventListener("change", saveRlcd42Settings);
     $("#rlcd42CaptionModeSelect").addEventListener("change", saveRlcd42Settings);
     $("#rlcd42SpeakerToggle").addEventListener("change", saveRlcd42Settings);
@@ -6227,19 +6259,19 @@
       { prefix: "irodoriV3", provider: "irodori-500m-v3" },
     ]) {
       $(`#${prefix}ModelDownloadButton`).addEventListener("click", async () => {
-        const selectedProvider = prefix === "irodori" && $("#irodoriPrecisionSelect").value === "int4"
+        const selectedProvider = prefix === "irodori" && $("#irodoriVersionSelect").value === "v4-anime" ? "irodori-anime-int4" : prefix === "irodori" && $("#irodoriPrecisionSelect").value === "int4"
           ? "irodori-webgpu-int4" : provider;
         try {
           if (selectedProvider === "piper-plus" && !window.confirm(localized(
             "つくよみちゃんコーパスのクレジットと利用条件を確認し、同意してダウンロードしますか？",
             "Have you reviewed and accepted the Tsukuyomi-chan Corpus credits and terms, and do you want to download it?",
           ))) return;
-          if (["irodori-webgpu", "irodori-webgpu-int4", "irodori-500m-v3"].includes(selectedProvider) && !window.confirm(localized(
+          if (["irodori-webgpu", "irodori-webgpu-int4", "irodori-anime-int4", "irodori-500m-v3"].includes(selectedProvider) && !window.confirm(localized(
             "Irodori TTSの利用条件を守り、本人の明示的な同意がある音声だけを参照に使いますか？",
             "Will you follow the Irodori TTS terms and only use reference voices with the speaker's explicit consent?",
           ))) return;
-          const stateKey = { "piper-plus": "piperPlus", "supertonic-3": "supertonic", "irodori-webgpu": "irodori", "irodori-webgpu-int4": "irodori", "irodori-500m-v3": "irodori", kokoro: "kokoro" }[selectedProvider];
-          const sampleKey = selectedProvider === "irodori-500m-v3" ? "v3SampleModel"
+          const stateKey = { "piper-plus": "piperPlus", "supertonic-3": "supertonic", "irodori-webgpu": "irodori", "irodori-anime-int4": "irodori", "irodori-webgpu-int4": "irodori", "irodori-500m-v3": "irodori", kokoro: "kokoro" }[selectedProvider];
+          const sampleKey = selectedProvider === "irodori-anime-int4" ? "animeSampleModel" : selectedProvider === "irodori-500m-v3" ? "v3SampleModel"
             : selectedProvider === "irodori-webgpu-int4" ? "int4SampleModel"
               : selectedProvider === "irodori-webgpu" ? "fp16SampleModel" : "sampleModel";
           syncTtsSampleModelUi(prefix, {
@@ -6255,10 +6287,10 @@
         }
       });
       $(`#${prefix}ModelRemoveButton`).addEventListener("click", async () => {
-        const selectedProvider = prefix === "irodori" && $("#irodoriPrecisionSelect").value === "int4"
+        const selectedProvider = prefix === "irodori" && $("#irodoriVersionSelect").value === "v4-anime" ? "irodori-anime-int4" : prefix === "irodori" && $("#irodoriPrecisionSelect").value === "int4"
           ? "irodori-webgpu-int4" : provider;
-        const stateKey = { "piper-plus": "piperPlus", "supertonic-3": "supertonic", "irodori-webgpu": "irodori", "irodori-webgpu-int4": "irodori", "irodori-500m-v3": "irodori", kokoro: "kokoro" }[selectedProvider];
-        const sampleKey = selectedProvider === "irodori-500m-v3" ? "v3SampleModel"
+        const stateKey = { "piper-plus": "piperPlus", "supertonic-3": "supertonic", "irodori-webgpu": "irodori", "irodori-anime-int4": "irodori", "irodori-webgpu-int4": "irodori", "irodori-500m-v3": "irodori", kokoro: "kokoro" }[selectedProvider];
+        const sampleKey = selectedProvider === "irodori-anime-int4" ? "animeSampleModel" : selectedProvider === "irodori-500m-v3" ? "v3SampleModel"
           : selectedProvider === "irodori-webgpu-int4" ? "int4SampleModel"
             : selectedProvider === "irodori-webgpu" ? "fp16SampleModel" : "sampleModel";
         const label = state[stateKey]?.[sampleKey]?.label || "ダウンロード済みモデル";
@@ -6573,19 +6605,24 @@
         "supertonic-3": ["supertonic", "supertonic"],
         kokoro: ["kokoro", "kokoro"],
         "irodori-webgpu": ["irodori", "irodori"],
-        "irodori-webgpu-int4": ["irodori", "irodori"],
+        "irodori-anime-int4": ["irodori", "irodori"], "irodori-webgpu-int4": ["irodori", "irodori"],
         "irodori-500m-v3": ["irodori", "irodoriV3"],
       }[model?.provider];
       if (!mapping) return;
       state[mapping[0]] ||= {};
-      const sampleKey = model?.provider === "irodori-500m-v3" ? "v3SampleModel"
+      const sampleKey = model?.provider === "irodori-anime-int4" ? "animeSampleModel" : model?.provider === "irodori-500m-v3" ? "v3SampleModel"
         : model?.provider === "irodori-webgpu-int4" ? "int4SampleModel"
           : model?.provider === "irodori-webgpu" ? "fp16SampleModel" : "sampleModel";
       state[mapping[0]][sampleKey] = model;
-      if (model?.provider === (state.irodoriPrecision === "int4" ? "irodori-webgpu-int4" : "irodori-webgpu")) {
+      if (model?.provider === (state.irodoriVersion === "v4-anime" ? "irodori-anime-int4" : state.irodoriPrecision === "int4" ? "irodori-webgpu-int4" : "irodori-webgpu")) {
         state[mapping[0]].sampleModel = model;
       }
-      syncTtsSampleModelUi(mapping[1], model);
+      const selectedIrodoriProvider = $("#irodoriVersionSelect").value === "v4-anime"
+        ? "irodori-anime-int4"
+        : $("#irodoriPrecisionSelect").value === "int4" ? "irodori-webgpu-int4" : "irodori-webgpu";
+      if (mapping[1] !== "irodori" || model.provider === selectedIrodoriProvider) {
+        syncTtsSampleModelUi(mapping[1], model);
+      }
     });
     api.onSbv2Progress((progress) => {
       state.sbv2 ||= {};

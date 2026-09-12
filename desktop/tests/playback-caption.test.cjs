@@ -29,13 +29,19 @@ test("completed captions expire and no longer seed a later utterance", () => {
 
 test("RLCD commits each audio sentence before playback, including streamed tail", async () => {
   const events = [];
+  let held = false;
+  const holds = [];
   const ctx = vm.createContext({
     RLCD42_TTS_OWNER_ID: "test", rlcd42SpeechGeneration: 0, atomEchoReplyGeneration: 0,
     rlcd42SpeechActive: false, rlcd42SpeechStream: null, rlcd42PlaybackCaption: "",
     configuredSpeechText: (text) => text, rlcd42SpeakerSelected: () => true,
     characterTtsSettings: () => ({ provider: "test" }), activeCharacter: () => ({ id: "test" }),
     synthesizeConfiguredTts: async () => ({ audioDataUrls: ["a", "b"], audioTexts: ["一文目。", "二文目。"], streamId: "tail" }),
-    nextIrodoriTtsChunk: async () => ({ audioDataUrl: "c", audioText: "最後の文。", done: true }),
+    nextIrodoriTtsChunk: async () => {
+      assert.equal(held, true, "hands-free suppression must survive the synthesis gap");
+      return { audioDataUrl: "c", audioText: "最後の文。", done: true };
+    },
+    esp32SpeechOutput: (active) => { held = active; holds.push(active); },
     cancelIrodoriTtsStream: () => {},
     rlcd42Gateway: {
       status: () => ({ connected: true, capabilities: { audio: { playback: true } } }),
@@ -55,6 +61,8 @@ test("RLCD commits each audio sentence before playback, including streamed tail"
   vm.runInContext(main.slice(main.indexOf("function publishSpeechCaption("), main.indexOf("function rlcd42SpeakerSelected(")), ctx);
   vm.runInContext(main.slice(main.indexOf("async function stopRlcd42Speech("), main.indexOf("async function esp32PttEnd(")), ctx);
   const result = await ctx.playRlcd42Speech("回答全文");
+  assert.deepEqual(holds, [true, false], "one output lease spans the entire reply");
+  assert.equal(held, false);
   assert.equal(result.spoken, true);
   assert.deepEqual(events.slice(0, 9), [
     ["scene", "一文目。"], ["caption", "一文目。"], ["audio", "a"],

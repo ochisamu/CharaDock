@@ -16,6 +16,34 @@ async function runtimeModule() {
   return import(pathToFileURL(path.join(__dirname, "..", "irodori", "v4-pipeline.mjs")).href);
 }
 
+test("reference duration guard corrects runaway allocation without changing speaker synthesis", async () => {
+  const { IrodoriV4TTS, noSpeakerCondition } = await runtimeModule();
+  const calls = [];
+  let referenceFrames = 110;
+  const runtime = new IrodoriV4TTS({ ort: { Tensor }, tokenizer: {}, sessions: sessions({
+    duration: { run: async (feed) => {
+      const reference = Boolean(feed.has_speaker.data[0]); calls.push(reference);
+      if (!reference) assert.equal(feed.has_caption.data[0], 0, "neutral timing also disables style conditioning");
+      return { log_frames: { data: [Math.log1p(reference ? referenceFrames : 40)] } };
+    } },
+  }) });
+  const text = { state: new Float32Array(512), mask: new Uint8Array([1]), tokens: 1, dim: 512 };
+  const speaker = { state: new Float32Array(768), mask: new Uint8Array([1]), tokens: 1, dim: 768 };
+  assert.equal(await runtime.predictDuration(text, text, speaker), 40);
+  assert.deepEqual(calls, [true, false]);
+  assert.equal(speaker.mask[0], 1);
+  referenceFrames = 75;
+  assert.equal(await runtime.predictDuration(text, text, speaker), 40, "moderate ratio but >1 second surplus is bounded");
+  referenceFrames = 60;
+  assert.equal(await runtime.predictDuration(text, text, speaker), 60, "ordinary slower voice is preserved");
+  referenceFrames = 110;
+  assert.equal(await runtime.predictDuration(text, text, speaker, { guardReferenceDuration: false }), 110);
+  calls.length = 0;
+  const noCaption = { ...text, mask: new Uint8Array(1) };
+  assert.equal(await runtime.predictDuration(text, noCaption, noSpeakerCondition()), 40);
+  assert.deepEqual(calls, [false], "voice design does not run twice");
+});
+
 function sessions(overrides = {}) {
   const unused = { run: async () => { throw new Error("unexpected session call"); } };
   return {
@@ -99,17 +127,18 @@ test("Irodori v4 removes an unrelated utterance after a long silent gap", async 
 
   assert.equal(shouldTrimTrailingUtterance("音声テストです。"), true);
   assert.equal(shouldTrimTrailingUtterance("これからよろしくね。"), true);
-  assert.equal(shouldTrimTrailingUtterance("今、確認してるね。"), true);
-  assert.equal(shouldTrimTrailingUtterance("うん、これから確認するね。"), true);
-  assert.equal(shouldTrimTrailingUtterance("最高33℃、最低27℃。"), true);
+  assert.equal(shouldTrimTrailingUtterance("今、確認してるね。"), false);
+  assert.equal(shouldTrimTrailingUtterance("うん、これから確認するね。"), false);
+  assert.equal(shouldTrimTrailingUtterance("最高33℃、最低27℃。"), false);
   assert.equal(shouldTrimTrailingUtterance("午後に少し雨が降る見込みです。"), true);
-  assert.equal(shouldTrimTrailingUtterance("今日は晴れ、明日は雨です。"), true);
-  assert.equal(shouldTrimTrailingUtterance("はい、今、確認してるね。"), true);
+  assert.equal(shouldTrimTrailingUtterance("今日は晴れ、明日は雨です。"), false);
+  assert.equal(shouldTrimTrailingUtterance("はい、今、確認してるね。"), false);
+  assert.equal(shouldTrimTrailingUtterance("確認します。そのあと要点をまとめます。"), false);
   assert.equal(shouldTrimTrailingUtterance("午前の結果：晴れです。"), false);
   assert.equal(shouldTrimTrailingUtterance("折りたたみ傘と熱中症対策があると安心だよ。"), true);
 });
 
-test("Irodori v4 synthesis applies trailing-utterance cleanup to comma prose", async () => {
+test("Irodori v4 cleanup preserves pauses in comma prose and multiple sentences", async () => {
   const { IrodoriVoiceDesignTTS } = await import(pathToFileURL(path.join(__dirname, "..", "irodori", "voicedesign-pipeline.mjs")).href);
   const runtime = new IrodoriVoiceDesignTTS({
     ort: { Tensor },
@@ -130,9 +159,14 @@ test("Irodori v4 synthesis applies trailing-utterance cleanup to comma prose", a
     return audio;
   };
 
-  const result = await runtime.synthesize("今、確認してるね。", "自然な日本語", {
+  const result = await runtime.synthesize("今確認してるね。", "自然な日本語", {
     trimTrailingUtterance: true,
   });
   assert.equal(result.trailingUtteranceTrimmed, true);
   assert.equal(result.audio.length, 1.08 * 48_000);
+  for (const text of ["今日は晴れ、明日は雨です。", "確認します。そのあと要点をまとめます。", "確認してから\n次に進みます。"]) {
+    const preserved = await runtime.synthesize(text, "自然な日本語", { trimTrailingUtterance: true });
+    assert.equal(preserved.trailingUtteranceTrimmed, false);
+    assert.equal(preserved.audio.length, 3 * 48_000);
+  }
 });

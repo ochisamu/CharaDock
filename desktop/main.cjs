@@ -179,8 +179,10 @@ const { RemoteCompanionServer, isPrivateIpv4 } = require("./lib/remote-server.cj
 const { AtomEchoHub } = require("./lib/atom-echo-hub.cjs");
 const { AtomEchoLiveAudioRoute } = require("./lib/atom-echo-live-audio.cjs");
 const { Rlcd42Hub } = require("./lib/rlcd42-hub.cjs");
+const { StackchanSerialGateway, STACKCHAN_BOARD } = require("./lib/stackchan-serial.cjs");
+const { renderStackchanPortrait } = require("./lib/stackchan-portrait.cjs");
 const { renderCharacterPortraitFrames } = require("./lib/rlcd42-monochrome.cjs");
-const { buildRlcd42Scene } = require("./lib/rlcd42-presentation.cjs");
+const { buildRlcd42Scene, liveCaptionWindow } = require("./lib/rlcd42-presentation.cjs");
 const { LiveIdleTimer } = require("./lib/live-idle-timer.cjs");
 const {
   atomEchoConversationRoute,
@@ -348,6 +350,7 @@ let rlcd42SceneTimer = null;
 let rlcd42LastSceneSignature = "";
 let rlcd42LastDisplayText = "";
 let rlcd42PlaybackCaption = "";
+let rlcd42LiveCaption = "";
 let rlcd42VoiceStage = "";
 let rlcd42LastTransport = "";
 let rlcd42SyncGeneration = 0;
@@ -916,10 +919,10 @@ function characterTtsSettings(characterId = preferences.data.characterId) {
     beatricePitchCorrection: Math.max(0, Math.min(1, Number(stored.beatricePitchCorrection) || 0)),
     beatricePitchCorrectionType: Number(stored.beatricePitchCorrectionType) === 1 ? 1 : 0,
     irodoriVoiceId: String(stored.irodoriVoiceId || preferences.data.irodoriVoiceId || ""),
-    irodoriVersion: ["500m-v3", "v4-small"].includes(stored.irodoriVersion)
+    irodoriVersion: ["500m-v3", "v4-small", "v4-anime"].includes(stored.irodoriVersion)
       ? stored.irodoriVersion
-      : ["500m-v3", "v4-small"].includes(preferences.data.irodoriVersion) ? preferences.data.irodoriVersion : "v4-small",
-    irodoriPrecision: ["fp16", "int4"].includes(stored.irodoriPrecision)
+      : ["500m-v3", "v4-small", "v4-anime"].includes(preferences.data.irodoriVersion) ? preferences.data.irodoriVersion : "v4-small",
+    irodoriPrecision: (stored.irodoriVersion || preferences.data.irodoriVersion) === "v4-anime" ? "int4" : ["fp16", "int4"].includes(stored.irodoriPrecision)
       ? stored.irodoriPrecision
       : ["fp16", "int4"].includes(preferences.data.irodoriPrecision) ? preferences.data.irodoriPrecision : "fp16",
     irodoriMode: ["reference", "design"].includes(stored.irodoriMode) ? stored.irodoriMode
@@ -1001,6 +1004,7 @@ function activeIrodoriVoicePath(characterId = preferences.data.characterId) {
 
 function activeIrodoriModelDirectory(characterId = preferences.data.characterId) {
   const settings = characterTtsSettings(characterId);
+  if (settings.irodoriVersion === "v4-anime") return preferences.data.irodoriV41AnimeModelDirectory;
   if (settings.irodoriVersion !== "v4-small") return preferences.data.irodoriModelDirectory;
   return settings.irodoriPrecision === "int4"
     ? preferences.data.irodoriV4Int4ModelDirectory
@@ -1643,6 +1647,7 @@ function remoteTtsProviderOptions(characterId = preferences.data.characterId) {
           [preferences.data.irodoriModelDirectory, "500m-v3"],
           [preferences.data.irodoriV4ModelDirectory, "v4-small"],
           [preferences.data.irodoriV4Int4ModelDirectory, "v4-small"],
+          [preferences.data.irodoriV41AnimeModelDirectory, "v4-anime"],
         ];
         const available = candidates.some(([directory, version]) => irodoriModelStatus(directory, referencePath, irodoriWebGpuAvailable, { version, mode: settings.irodoriMode }).ready);
         return { available, phone: true };
@@ -1719,11 +1724,12 @@ function remoteTtsModelSettings(characterId = preferences.data.characterId) {
       { value: "500m-v3:fp16", label: "500M-v3 · FP16", version: "500m-v3", precision: "fp16", directory: preferences.data.irodoriModelDirectory },
       { value: "v4-small:fp16", label: "v4.1 Small · FP16", version: "v4-small", precision: "fp16", directory: preferences.data.irodoriV4ModelDirectory },
       { value: "v4-small:int4", label: "v4.1 Small · INT4", version: "v4-small", precision: "int4", directory: preferences.data.irodoriV4Int4ModelDirectory },
+      { value: "v4-anime:int4", label: "v4.1 Anime · INT4", version: "v4-anime", precision: "int4", directory: preferences.data.irodoriV41AnimeModelDirectory },
     ].map((variant) => ({
       ...variant,
       available: irodoriModelStatus(variant.directory, referencePath, irodoriWebGpuAvailable, { version: variant.version, mode: settings.irodoriMode }).modelReady,
     }));
-    const selectedVariant = settings.irodoriVersion === "500m-v3" ? "500m-v3:fp16" : `v4-small:${settings.irodoriPrecision}`;
+    const selectedVariant = settings.irodoriVersion === "500m-v3" ? "500m-v3:fp16" : settings.irodoriVersion === "v4-anime" ? "v4-anime:int4" : `v4-small:${settings.irodoriPrecision}`;
     const voices = irodoriVoiceLibrary.publicVoices(preferences.data.irodoriVoices, settings.irodoriVoiceId);
     return {
       provider: settings.provider,
@@ -2204,11 +2210,12 @@ function applyRemoteTtsModelSetting(setting = {}) {
   } else if (key === "irodoriModelVariant" && current.provider === "irodori-webgpu") {
     const [version, requestedPrecision] = value.split(":");
     const precision = version === "500m-v3" ? "fp16" : requestedPrecision;
-    if (![["500m-v3", "fp16"], ["v4-small", "fp16"], ["v4-small", "int4"]].some(([allowedVersion, allowedPrecision]) => version === allowedVersion && precision === allowedPrecision)) {
+    if (![["500m-v3", "fp16"], ["v4-small", "fp16"], ["v4-small", "int4"], ["v4-anime", "int4"]].some(([allowedVersion, allowedPrecision]) => version === allowedVersion && precision === allowedPrecision)) {
       throw new Error(mainText("Irodoriのモデル指定が正しくありません。", "The Irodori model selection is invalid."));
     }
     const directory = version === "500m-v3"
       ? preferences.data.irodoriModelDirectory
+      : version === "v4-anime" ? preferences.data.irodoriV41AnimeModelDirectory
       : precision === "int4" ? preferences.data.irodoriV4Int4ModelDirectory : preferences.data.irodoriV4ModelDirectory;
     const voice = activeIrodoriVoice();
     const referencePath = voice ? irodoriVoiceLibrary.voicePath(voice) : "";
@@ -2597,13 +2604,17 @@ function publicAtomEchoState() {
   };
 }
 
-const RLCD42_PROFILE_ID = "rlcd42-default";
+// One active display/conversation satellite, separately retained pairings.
+let RLCD42_PROFILE_ID = "rlcd42-default";
+const stackchanProfile = (profile) => profile?.type === "m5stack-stackchan-k151";
+const characterDeviceIdValid = (id, profile = rlcd42Profile()) =>
+  (stackchanProfile(profile) ? /^stackchan-[a-f0-9]{12}$/ : /^cd-rlcd-[a-f0-9]{12}$/).test(String(id || "").toLowerCase());
 
 function rlcd42Profile() {
   const stored = preferences?.data?.deviceProfiles?.[RLCD42_PROFILE_ID];
-  return stored?.type === "waveshare-rlcd-4.2" ? stored : {
-    type: "waveshare-rlcd-4.2",
-    name: "RLCD 4.2",
+  return ["waveshare-rlcd-4.2", STACKCHAN_BOARD].includes(stored?.type) ? stored : {
+    type: RLCD42_PROFILE_ID === "stackchan-default" ? STACKCHAN_BOARD : "waveshare-rlcd-4.2",
+    name: RLCD42_PROFILE_ID === "stackchan-default" ? "StackChan" : "RLCD 4.2",
     enabled: false,
     transport: "auto",
     port: "",
@@ -2637,6 +2648,7 @@ function publicRlcd42State() {
   return {
     ...runtime,
     profileId: RLCD42_PROFILE_ID,
+    boardType: profile.type,
     enabled: profile.enabled,
     requestedPort: profile.port || runtime.requestedPort || "",
     name: profile.name,
@@ -2694,7 +2706,8 @@ function rlcd42SceneSnapshot() {
     speechInputProvider: preferences.data.speechInputProvider,
     beatrice: characterTtsSettings().realtimeVoiceConversion === "beatrice-v2",
     captionMode: profile.captionMode,
-    caption: rlcd42PlaybackCaption || rlcd42LastDisplayText,
+    caption: rlcd42PlaybackCaption || rlcd42LiveCaption || rlcd42LastDisplayText,
+    liveCaption: Boolean(rlcd42LiveCaption) && !atomEchoCapture && !atomEchoRecognizingCapture,
     activityOverride: voiceStage?.activity || "",
     language: interfaceLanguage(),
     transport,
@@ -2771,7 +2784,11 @@ async function syncRlcd42Presentation({ includePortrait = true } = {}) {
   let portraitAlgorithm = "";
   let portraitMetrics = null;
   let animationFrames = [];
-  if (includePortrait) {
+  if (includePortrait && stackchanProfile(rlcd42Profile())) {
+    const colour = renderStackchanPortrait(characterAssetDirectory(character));
+    if (colour) await rlcd42Gateway.sendPortrait(colour);
+  }
+  if (includePortrait && !stackchanProfile(rlcd42Profile())) {
     const pack = rlcd42PortraitPackForCharacter(character, rlcd42Profile().artStyle);
     const portrait = pack.neutral;
     const result = await rlcd42Gateway.sendPortrait(portrait);
@@ -2814,9 +2831,20 @@ function scheduleRlcd42PresentationSync() {
 }
 
 function createRlcd42Gateway() {
+  let meetingMuted = false;
   return new Rlcd42Hub({
+    ...(stackchanProfile(rlcd42Profile()) ? { GatewayClass: StackchanSerialGateway, expectedBoard: STACKCHAN_BOARD } : {}),
     onInput: async (event) => {
       diagnosticLog?.write("info", "rlcd42-input", event);
+      if (event.event === 7 || event.event === 8) {
+        const muted = event.event === 7;
+        if (meetingMuted === muted) return;
+        meetingMuted = muted;
+        await esp32Interrupt("rlcd42");
+        if (muted && activeRealtimeTarget === "rlcd42")
+          await stopActiveRealtime().catch(() => {});
+        return;
+      }
       if (event.event === 1) scheduleRlcd42SceneSync(4_500, { force: true });
       else if (event.event === 5) scheduleRlcd42SceneSync(15_000, { force: true });
       else if (event.event === 6) scheduleRlcd42PresentationSync();
@@ -2838,7 +2866,7 @@ function createRlcd42Gateway() {
     },
     onWifiStatus: async (status = {}) => {
       const profile = rlcd42Profile();
-      const deviceId = /^cd-rlcd-[a-f0-9]{12}$/.test(String(status.deviceId || "").toLowerCase())
+      const deviceId = characterDeviceIdValid(status.deviceId, profile)
         ? String(status.deviceId).toLowerCase()
         : profile.deviceId;
       const wifiSsid = String(status.ssid || profile.wifiSsid || "").replace(/[\u0000-\u001f\u007f]/g, "").slice(0, 32);
@@ -2873,6 +2901,24 @@ function createRlcd42Gateway() {
 
 async function configureRlcd42(patch = {}) {
   const previous = rlcd42Profile();
+  const type = patch.boardType === STACKCHAN_BOARD ? STACKCHAN_BOARD
+    : patch.boardType === "waveshare-rlcd-4.2" ? "waveshare-rlcd-4.2" : previous.type;
+  const boardChanged = type !== previous.type;
+  if (boardChanged && (previous.enabled || patch.enabled === true)) throw new Error("機種の変更前にデバイスをOFFにしてください。");
+  if (boardChanged) {
+    await rlcd42Gateway.configure({ enabled: false });
+    RLCD42_PROFILE_ID = type === STACKCHAN_BOARD ? "stackchan-default" : "rlcd42-default";
+    preferences.patch({ characterDeviceType: type });
+    // Keep this device OFF until explicitly enabled; retain its port and key.
+    const selected = rlcd42Profile();
+    preferences.patch({ deviceProfiles: { ...preferences.data.deviceProfiles,
+      [RLCD42_PROFILE_ID]: { ...selected, enabled: false } } });
+    rlcd42Gateway = createRlcd42Gateway();
+    if (rlcd42LiveAudioRoute) rlcd42LiveAudioRoute.gateway = rlcd42Gateway;
+    rlcd42LastSceneSignature = "";
+    rlcd42LastTransport = "";
+    return broadcastAppState();
+  }
   const liveIdleTimeoutEnabled = typeof patch.liveIdleTimeoutEnabled === "boolean"
     ? patch.liveIdleTimeoutEnabled
     : preferences.data.atomEchoLiveIdleTimeoutEnabled === true;
@@ -2881,12 +2927,12 @@ async function configureRlcd42(patch = {}) {
   const transport = ["usb", "wifi"].includes(patch.transport ?? previous.transport)
     ? (patch.transport ?? previous.transport)
     : "auto";
-  const captureMode = (patch.captureMode ?? previous.captureMode) === "hands-free" ? "hands-free" : "push-to-talk";
+  const captureMode = type !== STACKCHAN_BOARD && (patch.captureMode ?? previous.captureMode) === "hands-free" ? "hands-free" : "push-to-talk";
   const vadThreshold = Math.max(80, Math.min(800, Math.round(Number(patch.vadThreshold ?? previous.vadThreshold) || 120)));
   const outputGain = Math.max(50, Math.min(150, Math.round(Number(patch.outputGain ?? previous.outputGain) || 100)));
   const profile = {
-    type: "waveshare-rlcd-4.2",
-    name: previous.name || "RLCD 4.2",
+    type,
+    name: type === STACKCHAN_BOARD ? "StackChan" : "RLCD 4.2",
     enabled: typeof patch.enabled === "boolean" ? patch.enabled : previous.enabled === true,
     transport,
     port,
@@ -2901,7 +2947,7 @@ async function configureRlcd42(patch = {}) {
       : previous.microphoneEnabled !== false,
     captureMode,
     vadThreshold,
-    deviceId: /^cd-rlcd-[a-f0-9]{12}$/.test(String(previous.deviceId || "").toLowerCase())
+    deviceId: characterDeviceIdValid(previous.deviceId, { type })
       ? String(previous.deviceId).toLowerCase()
       : "",
     wifiSsid: String(previous.wifiSsid || "").replace(/[\u0000-\u001f\u007f]/g, "").slice(0, 32),
@@ -2968,6 +3014,10 @@ async function configureRlcd42(patch = {}) {
     captureMode: profile.captureMode,
     vadThreshold: profile.vadThreshold,
   });
+  // Session-only opt-in. Never persist or resend servo power after reconnect.
+  if (stackchanProfile(profile) && typeof patch.motionEnabled === "boolean") {
+    await rlcd42Gateway.requireGateway().setMotionEnabled(patch.motionEnabled);
+  }
   return broadcastAppState();
 }
 
@@ -2989,7 +3039,7 @@ async function provisionRlcd42Wifi(patch = {}) {
   ));
   const usb = rlcd42Gateway.status().usb;
   const deviceId = String(usb?.device?.deviceId || "").toLowerCase();
-  if (!usb?.connected || !/^cd-rlcd-[a-f0-9]{12}$/.test(deviceId)) throw new Error(mainText(
+  if (!usb?.connected || !characterDeviceIdValid(deviceId, profile)) throw new Error(mainText(
     "初回設定のため、CharaDockファームを書き込んだRLCD 4.2をUSBで接続してください。",
     "Connect an RLCD 4.2 with CharaDock firmware over USB for initial setup.",
   ));
@@ -3072,6 +3122,7 @@ async function esp32PttStart(deviceKind = "atom-echo") {
   // being misleading, an empty/stale conversation card looks like a solid
   // black rectangle on the reflective 1-bit panel while recognition runs.
   if (deviceKind === "rlcd42") {
+    rlcd42LiveCaption = "";
     rlcd42LastDisplayText = "";
     rlcd42VoiceStage = "";
     rlcd42LastSceneSignature = "";
@@ -3293,11 +3344,35 @@ function scheduleRlcd42CaptionExpiry(delayMs = 15_000) {
   scheduleRlcd42CaptionExpiry.timer = setTimeout(() => {
     scheduleRlcd42CaptionExpiry.timer = null;
     if (rlcd42SpeechActive || atomEchoCapture || atomEchoRecognizingCapture) return;
+    rlcd42LiveCaption = "";
     rlcd42LastDisplayText = "";
     rlcd42LastSceneSignature = "";
     scheduleRlcd42SceneSync(0, { force: true });
   }, delayMs);
   scheduleRlcd42CaptionExpiry.timer.unref?.();
+}
+
+function syncRlcd42LiveCaption(target, message = {}) {
+  if (target !== "rlcd42") return;
+  const phase = message.phase;
+  if (["start", "follow-up", "interrupted", "cancelled", "error"].includes(phase)) {
+    rlcd42LiveCaption = "";
+    rlcd42LastDisplayText = "";
+    scheduleRlcd42CaptionExpiry(-1);
+    scheduleRlcd42SceneSync(0, { force: true });
+    return;
+  }
+  if (phase !== "realtime-caption" && phase !== "done") return;
+  const caption = liveCaptionWindow(message.displayText || message.text);
+  if (caption) {
+    rlcd42LiveCaption = caption;
+    rlcd42LastDisplayText = caption;
+    if (!atomEchoCapture && !atomEchoRecognizingCapture) rlcd42VoiceStage = "";
+  }
+  const final = message.final === true || phase === "done";
+  scheduleRlcd42CaptionExpiry(final ? 15_000 : -1);
+  // Coalesce deltas without indefinitely postponing the render on every token.
+  if (final || !rlcd42SceneTimer) scheduleRlcd42SceneSync(final ? 0 : 180);
 }
 
 function publishSpeechCaption(payload = {}, preview = false) {
@@ -3377,6 +3452,7 @@ async function playRlcd42Speech(text, ownerId = RLCD42_TTS_OWNER_ID) {
   rlcd42SpeechActive = true;
   let streamId = "";
   let played = false;
+  let outputHeld = false;
   try {
     const result = await synthesizeConfiguredTts(spokenText, ownerId, { enabled: true });
     let sources = Array.isArray(result?.audioDataUrls) ? result.audioDataUrls : [];
@@ -3414,13 +3490,11 @@ async function playRlcd42Speech(text, ownerId = RLCD42_TTS_OWNER_ID) {
           return { externalPlayback: "rlcd42", spoken: false, interrupted: true };
         publishSpeechCaption({ text: caption, source: "rlcd42", generation });
         diagnosticLog?.write("info", "rlcd42-playback-caption", { generation, textLength: caption.length });
-        let playback;
-        if (typeof esp32SpeechOutput === "function") esp32SpeechOutput(true);
-        try {
-          playback = await rlcd42Gateway.playPcm16(pcm, 16_000);
-        } finally {
-          if (typeof esp32SpeechOutput === "function") esp32SpeechOutput(false);
-        }
+        // Keep hands-free echo admission suppressed across caption transfers
+        // and subsequent synthesis, not just while each individual WAV plays.
+        // Manual PTT still bypasses suppression in DeviceSpeechGate.
+        if (!outputHeld) { esp32SpeechOutput(true); outputHeld = true; }
+        const playback = await rlcd42Gateway.playPcm16(pcm, 16_000);
         if (playback?.interrupted || !isCurrent()) {
           return { externalPlayback: "rlcd42", spoken: false, interrupted: true };
         }
@@ -3445,6 +3519,7 @@ async function playRlcd42Speech(text, ownerId = RLCD42_TTS_OWNER_ID) {
     });
     return { externalPlayback: "rlcd42", spoken: played, interrupted: false };
   } finally {
+    if (outputHeld) esp32SpeechOutput(false);
     if (streamId) cancelIrodoriTtsStream(streamId, ownerId);
     if (generation === rlcd42SpeechGeneration) {
       rlcd42SpeechStream = null;
@@ -3597,6 +3672,7 @@ function invalidateEsp32SpeechInput() {
 }
 
 async function esp32Interrupt(deviceKind = "atom-echo") {
+  if (deviceKind === "rlcd42") syncRlcd42LiveCaption(deviceKind, { phase: "interrupted" });
   invalidateEsp32SpeechInput();
   esp32LiveAudioRoute(activeRealtimeTarget || deviceKind)?.interrupt().catch(() => {});
   sendAtomEchoLiveCommand({ type: "interrupt" });
@@ -4071,7 +4147,8 @@ function publicAppState() {
       ...activeIrodoriStatus(irodoriWebGpuAvailable),
       voices: irodoriVoiceLibrary?.publicVoices(preferences.data.irodoriVoices, irodoriVoice?.id || "") || [],
       voiceId: irodoriVoice?.id || "",
-      sampleModel: embeddedTtsModels?.status(characterTts.irodoriPrecision === "int4" ? "irodori-webgpu-int4" : "irodori-webgpu") || null,
+      sampleModel: embeddedTtsModels?.status(characterTts.irodoriVersion === "v4-anime" ? "irodori-anime-int4" : characterTts.irodoriPrecision === "int4" ? "irodori-webgpu-int4" : "irodori-webgpu") || null,
+      animeSampleModel: embeddedTtsModels?.status("irodori-anime-int4") || null,
       fp16SampleModel: embeddedTtsModels?.status("irodori-webgpu") || null,
       int4SampleModel: embeddedTtsModels?.status("irodori-webgpu-int4") || null,
       v3SampleModel: embeddedTtsModels?.status("irodori-500m-v3") || null,
@@ -6422,7 +6499,7 @@ async function runSmokeTest() {
     'irodoriVersionSelect', 'irodoriPrecisionSelect'
   ].every((id) => Boolean(document.getElementById(id)))`);
   if (!ttsDownloadUiReady) throw new Error("TTS model download controls check failed");
-  for (const provider of ["piper-plus", "supertonic-3", "kokoro", "irodori-webgpu", "irodori-webgpu-int4", "irodori-500m-v3"]) {
+  for (const provider of ["piper-plus", "supertonic-3", "kokoro", "irodori-webgpu", "irodori-webgpu-int4", "irodori-anime-int4", "irodori-500m-v3"]) {
     const model = embeddedTtsModels.status(provider);
     const expectedSupported = provider !== "piper-plus" || process.platform === "win32";
     if (!model.label || !model.downloadBytes || model.supported !== expectedSupported) throw new Error(`TTS model manifest check failed: ${provider}`);
@@ -7912,7 +7989,7 @@ async function synthesizeIrodoriSegment(text) {
   });
   const characterTts = characterTtsSettings();
   const modelStatus = activeIrodoriStatus(null);
-  const caption = characterTts.irodoriVersion === "v4-small"
+  const caption = characterTts.irodoriVersion !== "500m-v3"
     ? dynamicIrodoriCaption(characterTts.irodoriCaption, text, {
       enabled: characterTts.irodoriAutoEmotion,
       strength: characterTts.irodoriEmotionStrength,
@@ -8775,6 +8852,7 @@ async function startCodexRealtimeVoice(payload, target = "control") {
     }
   };
   const sendMascotStream = (message) => {
+    syncRlcd42LiveCaption(target, message);
     try {
       const contents = mascotWindow && !mascotWindow.isDestroyed() ? mascotWindow.webContents : null;
       if (contents && !contents.isDestroyed()) contents.send("mascot:stream", message);
@@ -9513,6 +9591,7 @@ async function startCodexRealtimeVoice(payload, target = "control") {
         if (assistantTranscript.active && !workMode) {
           sendMascotStream(terminalTurnPayload || { phase: "done", mode: "chat", text: assistantTranscript.text });
         }
+        syncRlcd42LiveCaption(target, { phase: "cancelled" });
         assistantTranscript.active = false;
         if (activeRealtimeWorkDispatcher === realtimeWorkDispatcher) {
           realtimeWorkDispatcher.close();
@@ -10596,9 +10675,9 @@ function registerIpc() {
     const requestedIrodoriVoiceId = String(patch?.irodoriVoiceId || "");
     const irodoriVoiceId = preferences.data.irodoriVoices.some((voice) => voice.id === requestedIrodoriVoiceId)
       ? requestedIrodoriVoiceId : activeIrodoriVoice(activeCharacterId)?.id || "";
-    const irodoriVersion = ["500m-v3", "v4-small"].includes(patch?.irodoriVersion)
+    const irodoriVersion = ["500m-v3", "v4-small", "v4-anime"].includes(patch?.irodoriVersion)
       ? patch.irodoriVersion : characterTtsSettings(activeCharacterId).irodoriVersion;
-    const irodoriPrecision = ["fp16", "int4"].includes(patch?.irodoriPrecision)
+    const irodoriPrecision = irodoriVersion === "v4-anime" ? "int4" : ["fp16", "int4"].includes(patch?.irodoriPrecision)
       ? patch.irodoriPrecision : characterTtsSettings(activeCharacterId).irodoriPrecision;
     const irodoriMode = ["reference", "design"].includes(patch?.irodoriMode) ? patch.irodoriMode : "reference";
     const irodoriCaption = String(patch?.irodoriCaption || "自然で明瞭な日本語。落ち着いた親しみやすい口調で話す。").trim().slice(0, 1000);
@@ -10838,6 +10917,10 @@ function registerIpc() {
       preferences.patch({ irodoriV4ModelDirectory: status.modelDirectory });
       destroyIrodoriWindow();
       scheduleIrodoriPrewarm();
+    } else if (normalizedProvider === "irodori-anime-int4") {
+      preferences.patch({ irodoriV41AnimeModelDirectory: status.modelDirectory });
+      destroyIrodoriWindow();
+      scheduleIrodoriPrewarm();
     } else if (normalizedProvider === "irodori-webgpu-int4") {
       preferences.patch({ irodoriV4Int4ModelDirectory: status.modelDirectory });
       destroyIrodoriWindow();
@@ -10856,10 +10939,11 @@ function registerIpc() {
       "supertonic-3": "supertonic",
       "irodori-webgpu": "irodori",
       "irodori-webgpu-int4": "irodori",
+      "irodori-anime-int4": "irodori",
       "irodori-500m-v3": "irodori",
       kokoro: "kokoro",
     }[normalizedProvider]];
-    const progressModel = normalizedProvider === "irodori-500m-v3"
+    const progressModel = normalizedProvider === "irodori-anime-int4" ? progressState?.animeSampleModel : normalizedProvider === "irodori-500m-v3"
       ? progressState?.v3SampleModel
       : normalizedProvider === "irodori-webgpu-int4"
         ? progressState?.int4SampleModel
@@ -10887,6 +10971,9 @@ function registerIpc() {
       destroyIrodoriWindow();
     } else if (normalizedProvider === "irodori-webgpu-int4") {
       if (preferences.data.irodoriV4Int4ModelDirectory === managedPaths.modelDirectory) preferences.patch({ irodoriV4Int4ModelDirectory: "" });
+      destroyIrodoriWindow();
+    } else if (normalizedProvider === "irodori-anime-int4") {
+      if (preferences.data.irodoriV41AnimeModelDirectory === managedPaths.modelDirectory) preferences.patch({ irodoriV41AnimeModelDirectory: "" });
       destroyIrodoriWindow();
     } else if (normalizedProvider === "irodori-500m-v3") {
       if (preferences.data.irodoriModelDirectory === managedPaths.modelDirectory) preferences.patch({ irodoriModelDirectory: "" });
@@ -10938,7 +11025,7 @@ function registerIpc() {
     assertTrustedSender(event);
     const settings = characterTtsSettings();
     const version = settings.irodoriVersion;
-    const versionLabel = version === "500m-v3" ? "Irodori TTS 500M-v3" : `Irodori TTS v4.1 Small ${settings.irodoriPrecision.toUpperCase()}`;
+    const versionLabel = version === "v4-anime" ? "Irodori TTS v4.1 Anime INT4" : version === "500m-v3" ? "Irodori TTS 500M-v3" : `Irodori TTS v4.1 Small ${settings.irodoriPrecision.toUpperCase()}`;
     const result = await dialog.showOpenDialog(controlWindow, {
       title: mainText(`${versionLabel}のモデルフォルダーを選択`, `Choose the ${versionLabel} model folder`),
       properties: ["openDirectory"],
@@ -10947,6 +11034,7 @@ function registerIpc() {
     const modelDirectory = validateIrodoriModelDirectory(result.filePaths[0], version);
     preferences.patch(version === "500m-v3"
       ? { irodoriModelDirectory: modelDirectory }
+      : version === "v4-anime" ? { irodoriV41AnimeModelDirectory: modelDirectory }
       : settings.irodoriPrecision === "int4"
         ? { irodoriV4Int4ModelDirectory: modelDirectory }
         : { irodoriV4ModelDirectory: modelDirectory });
@@ -13486,6 +13574,7 @@ async function boot() {
   const projectRootIsArchive = projectRoot.toLowerCase().includes(".asar");
   codexWorkingDirectory = app.isPackaged || projectRootIsArchive ? app.getPath("documents") : projectRoot;
   preferences = new Preferences(path.join(app.getPath("userData"), "preferences.json"), safeStorage);
+  RLCD42_PROFILE_ID = preferences.data.characterDeviceType === STACKCHAN_BOARD ? "stackchan-default" : "rlcd42-default";
   ensureBuiltInSkillCreator();
   await removeRetiredWorkSlmData();
   characterHomeManager = new CharacterHomeManager(

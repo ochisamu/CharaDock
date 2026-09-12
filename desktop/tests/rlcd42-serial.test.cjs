@@ -11,6 +11,50 @@ const {
 
 const nextTurn = () => new Promise((resolve) => setImmediate(resolve));
 
+for (const transport of ["usb", "wifi"]) {
+  test(`${transport}: normal TTS waits for device drain, not nominal duration`, async () => {
+    const gateway = new Rlcd42SerialGateway({ transport });
+    gateway.capabilities = { capabilities: { audio: { playbackStatus: true } } };
+    gateway.playbackGeneration = 1;
+    gateway.activePlayback = { totalSamples: 1, sampleRate: 16000 };
+    gateway.writeWithAck = async () => {};
+    let polls = 0;
+    gateway.requestFrame = async (type) => {
+      assert.equal(type, FRAME_TYPES.AUDIO_STATUS);
+      return { payload: Buffer.from([++polls <= 4 ? 1 : 0]) };
+    };
+    gateway.setDeviceState = async () => assert.equal(polls, 5);
+    assert.deepEqual(await gateway.endPcm16Playback(1), { interrupted: false });
+    assert.equal(polls, 5, "busy beyond the old 250ms margin must not truncate playback");
+  });
+}
+
+test("device playback failure is not reported as completed", async () => {
+  const gateway = new Rlcd42SerialGateway();
+  gateway.capabilities = { capabilities: { audio: { playbackStatus: true } } };
+  gateway.playbackGeneration = 1;
+  gateway.activePlayback = { totalSamples: 1, sampleRate: 16000 };
+  gateway.writeWithAck = async () => {};
+  gateway.requestFrame = async () => ({ payload: Buffer.from([2]) });
+  await assert.rejects(gateway.endPcm16Playback(1), /実機音声再生が失敗/);
+});
+
+test("stop during completion query cannot complete or clear a newer playback", async () => {
+  const gateway = new Rlcd42SerialGateway();
+  gateway.capabilities = { capabilities: { audio: { playbackStatus: true } } };
+  gateway.playbackGeneration = 1;
+  gateway.activePlayback = { totalSamples: 1, sampleRate: 16000 };
+  gateway.writeWithAck = async () => {};
+  const replacement = { generation: 2 };
+  gateway.requestFrame = async () => {
+    gateway.playbackGeneration = 2;
+    gateway.activePlayback = replacement;
+    return { payload: Buffer.from([0]) };
+  };
+  assert.deepEqual(await gateway.endPcm16Playback(1), { interrupted: true });
+  assert.equal(gateway.activePlayback, replacement);
+});
+
 test("ACK deadline also bounds a stalled transport write callback", async () => {
   const gateway = new Rlcd42SerialGateway();
   gateway.connectionState = "ready";
@@ -38,6 +82,46 @@ test("failed old playback never stops a replacement playback", async () => {
   await assert.rejects(gateway.playPcm16(Buffer.alloc(640)), /old transfer/);
   assert.equal(stopped, false);
   assert.equal(gateway.activePlayback.generation, gateway.playbackGeneration);
+});
+
+for (const transport of ["usb", "wifi"]) {
+  test(`long normal TTS stays bounded and waits for each part over ${transport}`, async () => {
+    const gateway = new Rlcd42SerialGateway({ transport });
+    const capacity = 512 * 1024;
+    const pcm = Buffer.alloc(capacity * 2 + 128, 42);
+    const counts = [], received = [];
+    let pending = false;
+    gateway.beginPcm16Playback = async (rate, count) => {
+      assert.equal(pending, false, "previous part must finish before beginning another");
+      assert.equal(rate, 16000);
+      assert.ok(count * 2 <= capacity);
+      counts.push(count);
+      pending = true;
+      return ++gateway.playbackGeneration;
+    };
+    gateway.writePcm16PlaybackChunk = async (bytes) => {
+      received.push(bytes);
+      return { interrupted: false };
+    };
+    gateway.endPcm16Playback = async () => {
+      await nextTurn();
+      pending = false;
+      return { interrupted: false };
+    };
+    assert.deepEqual(await gateway.playPcm16(pcm), { interrupted: false });
+    assert.deepEqual(counts, [capacity / 2, capacity / 2, 64]);
+    assert.deepEqual(Buffer.concat(received), pcm);
+  });
+}
+
+test("long TTS cancellation does not start the remaining parts", async () => {
+  const gateway = new Rlcd42SerialGateway();
+  let begins = 0;
+  gateway.beginPcm16Playback = async () => { begins++; return ++gateway.playbackGeneration; };
+  gateway.writePcm16PlaybackChunk = async () => ({ interrupted: false });
+  gateway.endPcm16Playback = async () => ({ interrupted: true });
+  assert.deepEqual(await gateway.playPcm16(Buffer.alloc(512 * 1024 + 2)), { interrupted: true });
+  assert.equal(begins, 1);
 });
 
 for (const failedType of [FRAME_TYPES.AUDIO_BEGIN, FRAME_TYPES.AUDIO_CHUNK, FRAME_TYPES.AUDIO_END]) {

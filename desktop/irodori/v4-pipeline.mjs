@@ -70,6 +70,22 @@ export class IrodoriV4TTS extends IrodoriVoiceDesignTTS {
     return this._encodeV4(text, this.s.text, "text_state", IRODORI_V4_CONFIG.textDim, "text", onStage);
   }
 
+  async predictDuration(text, caption, speaker, options = {}) {
+    const conditioned = await super.predictDuration(text, caption, speaker, options);
+    if (options.guardReferenceDuration === false || !Array.from(speaker.mask).some(Boolean)) return conditioned;
+    // Some reference embeddings add several seconds to short utterances. The
+    // flow model fills that allocation with unrelated speech, even at 40 steps.
+    // Compare the same text with both voice/style conditions disabled ONLY for
+    // timing. Caption + reference can jointly inflate a short utterance. Keep
+    // both for the actual synthesis. Leave ordinary tempo changes alone:
+    // correction requires both a >1.5x ratio and >1 second surplus.
+    const textOnly = await super.predictDuration(text, {
+      state: new Float32Array(caption.dim), mask: new Uint8Array(1), tokens: 1, dim: caption.dim,
+    }, noSpeakerCondition(), options);
+    const surplusSeconds = (conditioned - textOnly) * IRODORI_V4_CONFIG.hopLength / IRODORI_V4_CONFIG.sampleRate;
+    return conditioned > textOnly * 1.5 && surplusSeconds > 1 ? textOnly : conditioned;
+  }
+
   async encodeCaption(caption, onStage = null) {
     const key = String(caption || "").trim();
     if (this.captionCache.has(key)) {

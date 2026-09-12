@@ -1,0 +1,124 @@
+{
+  "format": "irodori-tts-v4-webgpu-release-v1",
+  "releaseTag": "v4.1-anime-6b259f5-webgpu-int4-r1",
+  "originalModel": "phasefield-audio/Irodori-TTS-v4.1-Anime",
+  "originalRevision": "6b259f5baa5e236b3d14cbd1f8555ca87d92b530",
+  "precision": "int4-w4a16",
+  "totalBytes": 853559099,
+  "files": [
+    {
+      "name": "caption_projector.onnx",
+      "path": "models/caption_projector.onnx",
+      "bytes": 29610,
+      "sha256": "296a06530f32d14f18140f27e6a821eee266ab0478eb7bd0020212445ab2e4ca"
+    },
+    {
+      "name": "caption_projector.onnx.data",
+      "path": "models/caption_projector.onnx.data",
+      "bytes": 3473408,
+      "sha256": "7c1e519add03647d6b2099623e7c4c8521ec5323cab395b57460a6bd5a0e2250"
+    },
+    {
+      "name": "dacvae_decoder.onnx",
+      "path": "models/dacvae_decoder.onnx",
+      "bytes": 854956,
+      "sha256": "28ab7aabdb11f07816c34cb93cd1a7c293427bcc831a832969fccf0ee8f7aab0"
+    },
+    {
+      "name": "dacvae_decoder.onnx.data",
+      "path": "models/dacvae_decoder.onnx.data",
+      "bytes": 166184768,
+      "sha256": "eb3ecfc543eb957e06e9165796014d5c17951bd933d30d76fd00a6eda3b21930"
+    },
+    {
+      "name": "dacvae_encoder.onnx",
+      "path": "models/dacvae_encoder.onnx",
+      "bytes": 924571,
+      "sha256": "2461ab41da0acf2af30faf3ebfddb80034b8235bf78ca72ca3fea15d7a30be43"
+    },
+    {
+      "name": "dacvae_encoder.onnx.data",
+      "path": "models/dacvae_encoder.onnx.data",
+      "bytes": 54697984,
+      "sha256": "a963ab4f4be69451b04243e0b8ef9b53e3be5d615e09595e5eb83be5b9094489"
+    },
+    {
+      "name": "dit_v4.onnx",
+      "path": "models/dit_v4.onnx",
+      "bytes": 2929663,
+      "sha256": "7d999514ec12b8c8b231eb9706a23a09c50d6f0bb9414a5d0b4dc608f23559fc"
+    },
+    {
+      "name": "dit_v4.onnx.data",
+      "path": "models/dit_v4.onnx.data",
+      "bytes": 253895424,
+      "sha256": "de2ddeb983e646bf70c7e8acdfe7102ea50bd3aa112e75a191d332bad8087c81"
+    },
+    {
+      "name": "duration.onnx",
+      "path": "models/duration.onnx",
+      "bytes": 295238,
+      "sha256": "9c9c651d88c1d233e569e371d34acbb2ef9dde01b87a6e6f3d564c0d2f1b9f6c"
+    },
+    {
+      "name": "duration.onnx.data",
+      "path": "models/duration.onnx.data",
+      "bytes": 43581440,
+      "sha256": "5cd54a1488c76928c3eecaaf9e1d494769de75afcf1462f827382cc27d1e105e"
+    },
+    {
+      "name": "model-config.json",
+      "path": "models/model-config.json",
+      "bytes": 4678,
+      "sha256": "19b587fa9bbde50ba9352e6fad043c0dbc1385ba9c6d10a5b9de8e3e5e0a82bb"
+    },
+    {
+      "name": "speaker_encoder.onnx",
+      "path": "models/speaker_encoder.onnx",
+      "bytes": 1424232,
+      "sha256": "e4c9d1b4cfa092d1ef5e43f517e0570683c2d9eed49d91a65ed566a34aaba702"
+    },
+    {
+      "name": "speaker_encoder.onnx.data",
+      "path": "models/speaker_encoder.onnx.data",
+      "bytes": 31836480,
+      "sha256": "e3713e5eb782f270a48db1738c408d9ad4fd0a5fe2ddfe56f66c359ac955ed61"
+    },
+    {
+      "name": "text_backbone.onnx",
+      "path": "models/text_backbone.onnx",
+      "bytes": 3266957,
+      "sha256": "110df0d14af321610e6b46cd44278965ff39a430ade553851a1031dd5ca9aaa7"
+    },
+    {
+      "name": "text_backbone.onnx.data",
+      "path": "models/text_backbone.onnx.data",
+      "bytes": 279937536,
+      "sha256": "3ab0addc5c5f0a85b10b0774ad7d149ce2005b999cbefe53d49c096e5eebea16"
+    },
+    {
+      "name": "text_projector.onnx",
+      "path": "models/text_projector.onnx",
+      "bytes": 29583,
+      "sha256": "30d7c0122cfc9d66e729f5641de2cddbae356b92e257990d1f6f3b7e61162977"
+    },
+    {
+      "name": "text_projector.onnx.data",
+      "path": "models/text_projector.onnx.data",
+      "bytes": 3473408,
+      "sha256": "07bec4d49dda0d3a1aab439e15e192bfac45a674431c17f04bb9e3c40a65bfa0"
+    },
+    {
+      "name": "tokenizer.json",
+      "path": "tokenizer/irodori_v4/tokenizer.json",
+      "bytes": 6718495,
+      "sha256": "6a0734cf21c802169defaffe719bc2ef12bb9d0be37e54b61ed27aa89394723d"
+    },
+    {
+      "name": "tokenizer_config.json",
+      "path": "tokenizer/irodori_v4/tokenizer_config.json",
+      "bytes": 668,
+      "sha256": "d229a271c64de1a7939d20d3665498e873fa91d5ee2edf135d73ec752cb9c9d3"
+    }
+  ]
+}

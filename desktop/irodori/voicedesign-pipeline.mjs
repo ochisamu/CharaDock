@@ -187,6 +187,9 @@ export function findTrailingUtteranceCutoff(audio, sampleRate, {
 
 export function shouldTrimTrailingUtterance(textValue) {
   const normalized = normalizeText(textValue).trim();
+  // Never confuse a normal pause between clauses/sentences with invented speech.
+  const phrase = normalized.replace(/[。．.!！?？]+$/u, "");
+  if (/[、,，。．.!！?？\r\n]/u.test(phrase)) return false;
   if (!normalized || /[；;：:…（）()［］\[\]「」『』]/u.test(normalized)) return false;
   const spokenCharacters = [...normalized.replace(/[\s。．.!！?？"'“”‘’]/gu, "")].length;
   return spokenCharacters > 0;

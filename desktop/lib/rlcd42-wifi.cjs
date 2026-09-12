@@ -19,8 +19,8 @@ const DISCOVERY_PREFIX = "CHARADOCK_DEVICE_DISCOVER_V2 ";
 const HOST_PREFIX = "CHARADOCK_DEVICE_HOST_V2 ";
 const HOST_PROOF_DOMAIN = Buffer.from("CHARADOCK_HOST_V2:", "ascii");
 
-function validDeviceId(value) {
-  return /^cd-rlcd-[a-f0-9]{12}$/.test(String(value || "").toLowerCase());
+function validDeviceId(value, board = EXPECTED_BOARD) {
+  return (board === "m5stack-stackchan-k151" ? /^stackchan-[a-f0-9]{12}$/ : /^cd-rlcd-[a-f0-9]{12}$/).test(String(value || "").toLowerCase());
 }
 
 function ipv4Number(value) {
@@ -100,6 +100,8 @@ class SocketPortAdapter extends EventEmitter {
 
 class Rlcd42WifiGateway {
   constructor({
+    GatewayClass = Rlcd42SerialGateway,
+    expectedBoard = EXPECTED_BOARD,
     discoveryPort = DEFAULT_DISCOVERY_PORT,
     audioPort = DEFAULT_AUDIO_PORT,
     host = "0.0.0.0",
@@ -113,6 +115,7 @@ class Rlcd42WifiGateway {
     onStatus = () => {},
     logger = null,
   } = {}) {
+    this.expectedBoard = expectedBoard;
     this.discoveryPort = discoveryPort;
     this.audioPort = audioPort;
     this.host = host;
@@ -132,7 +135,7 @@ class Rlcd42WifiGateway {
     this.candidates = new Set();
     this.activeCandidate = null;
     this.sequence = 0;
-    this.inner = new Rlcd42SerialGateway({
+    this.inner = new GatewayClass({
       onInput,
       onPttStart,
       onPcmChunk,
@@ -189,7 +192,7 @@ class Rlcd42WifiGateway {
     vadThreshold = this.vadThreshold,
     microphoneEnabled = this.microphoneEnabled,
   } = {}) {
-    const nextDeviceId = validDeviceId(deviceId) ? String(deviceId).toLowerCase() : "";
+    const nextDeviceId = validDeviceId(deviceId, this.expectedBoard) ? String(deviceId).toLowerCase() : "";
     const nextToken = /^[a-f0-9]{64}$/.test(String(token || "").toLowerCase()) ? String(token).toLowerCase() : "";
     const pairingChanged = nextDeviceId !== this.expectedDeviceId || nextToken !== this.pairingToken;
     this.enabled = enabled === true;
@@ -258,7 +261,7 @@ class Rlcd42WifiGateway {
   handleDiscovery(message, remote) {
     if (!this.enabled || !this.expectedDeviceId || !this.pairingToken || !this.udpSocket || !this.tcpServer) return;
     const request = message.toString("utf8").trim();
-    if (request !== `${DISCOVERY_PREFIX}${this.expectedDeviceId} ${EXPECTED_BOARD}`) return;
+    if (request !== `${DISCOVERY_PREFIX}${this.expectedDeviceId} ${this.expectedBoard}`) return;
     const address = this.host !== "0.0.0.0" && ipv4Number(this.host) !== null
       ? this.host
       : matchingLocalAddress(remote.address);
@@ -309,7 +312,7 @@ class Rlcd42WifiGateway {
     if (candidate.activating || candidate.authenticated) return;
     if (frame.type === FRAME_TYPES.DEVICE_HELLO) {
       const info = parseJsonPayload(frame.payload) || {};
-      if (String(info.deviceId || "").toLowerCase() !== this.expectedDeviceId || info.board !== EXPECTED_BOARD) {
+      if (String(info.deviceId || "").toLowerCase() !== this.expectedDeviceId || info.board !== this.expectedBoard) {
         this.rejectCandidate(candidate, "unexpected device");
         return;
       }
@@ -439,6 +442,10 @@ class Rlcd42WifiGateway {
   sendPortrait(...args) { return this.inner.sendPortrait(...args); }
   sendPortraitFrame(...args) { return this.inner.sendPortraitFrame(...args); }
   sendScene(...args) { return this.inner.sendScene(...args); }
+  setMotionEnabled(enabled) {
+    if (typeof this.inner.setMotionEnabled !== "function") throw new Error("This device has no servo control.");
+    return this.inner.setMotionEnabled(enabled);
+  }
   setDeviceState(...args) { return this.inner.setDeviceState(...args); }
   stopPlayback(...args) { return this.inner.stopPlayback(...args); }
   playPcm16(...args) { return this.inner.playPcm16(...args); }

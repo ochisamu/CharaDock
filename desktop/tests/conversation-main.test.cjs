@@ -254,6 +254,7 @@ test("late synthesis cannot replace the active RLCD stream cancellation handle",
   const oldSynthesis = deferred(), oldStarted = deferred(), playback = deferred(), playing = deferred();
   const cancelled = [];
   const ctx = vm.createContext({
+    esp32SpeechOutput: () => {},
     RLCD42_TTS_OWNER_ID: "rlcd", rlcd42SpeechGeneration: 0, atomEchoReplyGeneration: 0,
     rlcd42PlaybackCaption: "", syncRlcd42Scene: async () => {},
     publishSpeechCaption: () => {}, scheduleRlcd42SceneSync: () => {},

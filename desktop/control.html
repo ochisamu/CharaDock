@@ -246,6 +246,9 @@
             <span id="rlcd42StatusBadge" class="setup-state-badge">停止中</span>
           </div>
           <label class="switch-row esp32-device-switch"><span><strong>このデバイスを使う</strong><small>初回はUSBで設定し、普段はWi-FiまたはUSBで画像・会話・音声を同期します</small></span><input id="rlcd42EnabledToggle" type="checkbox" /><i></i></label>
+          <label>機種（OFF時に変更）<select id="characterDeviceBoardSelect"><option value="waveshare-rlcd-4.2">Waveshare RLCD 4.2</option><option value="m5stack-stackchan-k151">M5Stack StackChan K151（実機検証待ち）</option></select></label>
+          <p id="stackchanFeatureNote" class="inline-status" hidden>頭に触れたまま話す／再生中のタッチで割り込み。カラーのロボット顔・口パク・瞬き・状態LED対応。サーボは起動時OFF。現段階ではハンズフリーとRLCD用時計画面は対象外です。</p>
+          <div id="stackchanMotionControls" class="remote-actions" hidden><button id="stackchanMotionEnable" class="button button-secondary" type="button">周囲の安全を確認して首振りON（接続中のみ）</button><button id="stackchanMotionDisable" class="button button-secondary" type="button">首振りOFF</button></div>
           <div id="rlcd42EnabledSettings" class="esp32-device-settings" hidden>
             <section class="remote-tailscale-card esp32-setup-card" aria-labelledby="rlcd42ConnectionTitle">
               <div class="section-row"><div><strong id="rlcd42ConnectionTitle">接続</strong><small>Wi-Fi情報はUSB経由で本体へ直接保存し、パスワードはCharaDockに残しません</small></div></div>
@@ -851,10 +854,11 @@
               <div id="irodoriSettings" class="tts-provider-settings" hidden>
                 <label>モデル世代<select id="irodoriVersionSelect">
                   <option value="v4-small">v4.1 Small（推奨・Voice Design対応）</option>
+                  <option value="v4-anime">v4.1 Anime（アニメ調・INT4）</option>
                   <option value="500m-v3">500M-v3（従来版・Voice Clone）</option>
                 </select></label>
                 <div id="irodoriV4Panel">
-                  <p class="hint"><strong>Irodori TTS v4.1 Small · WebGPU</strong></p>
+                  <p class="hint"><strong id="irodoriV4Title">Irodori TTS v4.1 Small · WebGPU</strong></p>
                   <label>モデル精度<select id="irodoriPrecisionSelect">
                     <option value="fp16">FP16（高品質・約1.7GB）</option>
                     <option value="int4">INT4（軽量・約853MB）</option>

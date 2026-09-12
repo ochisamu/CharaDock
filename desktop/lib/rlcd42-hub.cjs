@@ -4,6 +4,8 @@ const { Rlcd42WifiGateway } = require("./rlcd42-wifi.cjs");
 
 class Rlcd42Hub {
   constructor({
+    GatewayClass = Rlcd42SerialGateway,
+    expectedBoard,
     onInput,
     onPttStart,
     onPcmChunk,
@@ -97,7 +99,7 @@ class Rlcd42Hub {
       logger,
     });
 
-    this.serial = new Rlcd42SerialGateway({
+    this.serial = new GatewayClass({
       ...callbacks("usb"),
       onWifiStatus: async (status) => {
         this.wifiSetupStatus = status && typeof status === "object" ? { ...status } : {};
@@ -105,7 +107,7 @@ class Rlcd42Hub {
         return onWifiStatus?.(this.wifiSetupStatus);
       },
     });
-    this.wifi = new Rlcd42WifiGateway(callbacks("wifi"));
+    this.wifi = new Rlcd42WifiGateway({ ...callbacks("wifi"), GatewayClass, expectedBoard });
   }
 
   releaseInput(capture) {

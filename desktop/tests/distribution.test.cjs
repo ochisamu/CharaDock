@@ -711,7 +711,9 @@ test("ESP32 devices have a scalable settings page independent of CharaDock Link"
   assert.match(atomSettings, /id="rlcd42AudioTitle"[\s\S]*id="rlcd42SpeakerToggle"[\s\S]*id="testRlcd42SpeakerButton"/);
   assert.match(atomSettings, /id="rlcd42MicrophoneToggle"[\s\S]*id="rlcd42CaptureModeSelect"[\s\S]*ハンズフリー[\s\S]*id="rlcd42VadThresholdInput"[\s\S]*id="rlcd42LiveIdleTimeoutToggle"/);
   assert.match(atomSettings, /id="rlcd42SensorStrip"[\s\S]*id="syncRlcd42DisplayButton"/);
-  assert.doesNotMatch(atomSettings, /StackChan|検討中/);
+  assert.match(atomSettings, /id="characterDeviceBoardSelect"[\s\S]*m5stack-stackchan-k151/);
+  assert.match(atomSettings, /id="stackchanMotionEnable"[\s\S]*id="stackchanMotionDisable"/);
+  assert.doesNotMatch(atomSettings, /検討中/);
   assert.doesNotMatch(atomSettings, /Bluetooth|atomEchoAudioOutputSelect/);
   assert.match(main, /deviceProfiles[\s\S]*RLCD42_PROFILE_ID/);
   assert.match(main, /syncRlcd42Presentation/);
