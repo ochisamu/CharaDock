@@ -29,6 +29,7 @@ function buildRlcd42Scene({
   activityOverride = "",
   language = "ja",
   transport = "usb",
+  nowPlaying = null,
   now = Date.now(),
 } = {}) {
   const text = (japanese, english) => language === "en" ? english : japanese;
@@ -80,7 +81,12 @@ function buildRlcd42Scene({
     caption: scene === "conversation" ? visibleCaption : "",
     activity: truncateUtf8(activityOverride || activity, 384),
     nextAction: status === "approval" ? text("許可または却下を選択", "Approve or decline") : "",
-    footer: activeTransport === "wifi"
+    // Reuse the existing bounded footer text channel. Never overwrite speech,
+    // approval, or work status, and never open the conversation panel for music.
+    footer: scene === "home" && ["idle", "completed"].includes(status)
+      && nowPlaying?.title && ["Playing", "Paused"].includes(nowPlaying.status)
+      ? `${nowPlaying.status === "Playing" ? text("再生中", "Playing") : text("一時停止", "Paused")}\n${truncateUtf8(nowPlaying.title, 96)}\n${truncateUtf8(nowPlaying.artist, 40)}`
+      : activeTransport === "wifi"
       ? text("Wi-Fi接続  CharaDock", "Wi-Fi  CharaDock")
       : text("USB接続  CharaDock", "USB  CharaDock"),
   };

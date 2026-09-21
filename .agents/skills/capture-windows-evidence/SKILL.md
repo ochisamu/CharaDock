@@ -96,7 +96,13 @@ fps when encoding. Do not interpolate a few stills into fake movement.
 `--audio-output` records the actual media played by the chosen renderer,
 including TTS or Realtime audio. Start this script before triggering speech.
 Chunked TTS can produce numbered WebM segments and a JSON manifest; concatenate
-them in manifest order, then mux with the visual track. If no audio is captured,
+non-overlapping segments at their recorded offsets, then mux with the visual track.
+Use each segment's `startedOffsetMs` minus video metadata `audioLeadMs` to align it;
+do not blindly concatenate simultaneous Web Audio contexts or mix duplicate tracks.
+For Live played by the control window, add `--audio-url=desktop/control.html` while
+keeping `--url=mode=obs` for the image. `-IncludeSelectedBeatrice` on profile preparation
+explicitly retains only the selected local Beatrice model reference and tuning.
+If no audio is captured,
 do not substitute unrelated narration—verify that the sanitized profile sees
 its model junction and that playback began during the capture interval.
 

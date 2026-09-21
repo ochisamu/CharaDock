@@ -2,13 +2,14 @@
 <Package
   xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
   xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:uap7="http://schemas.microsoft.com/appx/manifest/uap/windows10/7"
   xmlns:uap10="http://schemas.microsoft.com/appx/manifest/uap/windows10/10"
   xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
-  IgnorableNamespaces="uap uap10 rescap">
+  IgnorableNamespaces="uap uap7 uap10 rescap">
   <Identity
     Name="ochisamu.CharaDock"
     Publisher="CN=69C091B3-AED2-456C-BF7B-A39616771379"
-    Version="0.6.0.0"
+    Version="0.7.0.0"
     ProcessorArchitecture="x64" />
   <Properties>
     <DisplayName>CharaDock</DisplayName>
@@ -43,6 +44,7 @@
   <Capabilities>
     <Capability Name="internetClient" />
     <Capability Name="privateNetworkClientServer" />
+    <uap7:Capability Name="globalMediaControl" />
     <rescap:Capability Name="runFullTrust" />
     <DeviceCapability Name="microphone" />
     <DeviceCapability Name="webcam" />

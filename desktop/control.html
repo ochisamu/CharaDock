@@ -610,6 +610,32 @@
           </section>
         </div>
         <p id="connectionStatus" class="inline-status" role="status"></p>
+        <section class="card settings-card" id="jevSettings">
+          <header><div><h2>Jev · TypeSafe</h2><p id="jevApiKeyState" role="status"></p></div></header>
+          <label class="switch-row"><span><strong data-jev-ja="Jevを有効にする（任意）" data-jev-en="Enable Jev (optional)">Jevを有効にする（任意）</strong></span><input id="jevEnabledToggle" type="checkbox" /><i></i></label>
+          <p data-jev-ja="有効な場合のみ、認識した指示・応答の必要最小限のテキストをTypeSafeに送信します。" data-jev-en="Only when enabled, the minimum necessary recognized instruction and response text is sent to TypeSafe.">有効な場合のみ、認識した指示・応答の必要最小限のテキストをTypeSafeに送信します。</p>
+          <label class="switch-row"><span><strong data-jev-ja="メディア操作" data-jev-en="Media control">メディア操作</strong></span><input id="jevMediaEnabledToggle" type="checkbox" checked disabled /><i></i></label>
+          <label class="switch-row"><span><strong data-jev-ja="表情の選択" data-jev-en="Expression selection">表情の選択</strong></span><input id="jevExpressionEnabledToggle" type="checkbox" checked disabled /><i></i></label>
+          <label class="switch-row"><span><strong data-jev-ja="ニケちゃん・表現拡張（試作）" data-jev-en="Nike expressive performance (prototype)">ニケちゃん・表現拡張（試作）</strong><small data-jev-ja="標準AIニケちゃん専用。会話に合わせた身振りを追加します。" data-jev-en="Built-in AI Nike only. Adds conversational body gestures.">標準AIニケちゃん専用。会話に合わせた身振りを追加します。</small></span><input id="jevNikePerformanceEnabledToggle" type="checkbox" disabled /><i></i></label>
+          <label>ハンズフリーの呼びかけ判定<select id="jevAddressModeSelect"><option value="off">OFF（従来のVADのみ）</option><option value="standard">標準（短い雑音・独り言・他人宛てを除外）</option><option value="strict">厳しめ（挨拶・返事・確実な呼びかけ）</option></select></label>
+          <p>通常TTSのデスクトップ・ATOM Echo・RLCDに適用。認識文と直近の回答をJevへ送ります。ON時に判定できなければ応答しません。手動入力とLiveは対象外です。誤反応を完全には防げないため、会議中はミュートしてください。</p>
+          <div class="button-row" id="jevPerformancePreviews">
+            <button type="button" data-jev-preview="ponder" data-jev-ja="考える" data-jev-en="Ponder">考える</button>
+            <button type="button" data-jev-preview="explain" data-jev-ja="説明する" data-jev-en="Explain">説明する</button>
+            <button type="button" data-jev-preview="celebrate" data-jev-ja="喜ぶ" data-jev-en="Celebrate">喜ぶ</button>
+            <button type="button" data-jev-preview="nod" data-jev-ja="うなずく" data-jev-en="Agree">うなずく</button>
+            <button type="button" data-jev-preview="recoil" data-jev-ja="驚く" data-jev-en="Surprise">驚く</button>
+            <button type="button" data-jev-preview="reassure" data-jev-ja="寄り添う" data-jev-en="Reassure">寄り添う</button>
+            <button type="button" data-jev-preview="joy" data-jev-ja="満面の笑顔" data-jev-en="Big smile">満面の笑顔</button>
+            <button type="button" data-jev-preview="worried" data-jev-ja="困り顔" data-jev-en="Worried">困り顔</button>
+            <button type="button" data-jev-preview="proud" data-jev-ja="得意げ" data-jev-en="Proud">得意げ</button>
+            <button type="button" data-jev-preview="exasperated" data-jev-ja="やれやれ" data-jev-en="Exasperated">やれやれ</button>
+          </div>
+          <label><span data-jev-ja="JevアプリAPIキー" data-jev-en="Jev app API key">JevアプリAPIキー</span><div class="input-action"><input id="jevApiKeyInput" type="password" autocomplete="new-password" spellcheck="false" /><button id="saveJevApiKeyButton" type="button" data-jev-ja="保存" data-jev-en="Save">保存</button><button id="clearJevApiKeyButton" type="button" data-jev-ja="削除" data-jev-en="Clear">削除</button></div></label>
+          <p data-jev-ja="キーはOSの暗号化ストレージで保存します。利用できない場合は今回の起動中のみ保持します。接続テストには保存済みのキーを使います。" data-jev-en="The key is saved using OS encryption. If unavailable, it is kept only for this session. Connection tests use the saved key.">キーはOSの暗号化ストレージで保存します。利用できない場合は今回の起動中のみ保持します。接続テストには保存済みのキーを使います。</p>
+          <button id="testJevConnectionButton" type="button" disabled data-jev-ja="接続テスト" data-jev-en="Test connection">接続テスト</button>
+          <p id="jevStatus" class="inline-status" role="status" aria-live="polite"></p>
+        </section>
       </section>
 
       <section class="page" data-page-panel="desktop">
@@ -653,7 +679,7 @@
               </select></label>
               <div id="voiceActivationSettings" class="tts-provider-settings" hidden>
                 <label>開始方法<select id="voiceActivationModeSelect">
-                  <option value="vad">VAD（発話と無音を自動検出）</option>
+              <option value="vad">ハンズフリー（キャラ横マイクで開始・停止）</option>
                   <option value="manual">ボタンで開始・停止</option>
                 </select></label>
                 <label>VAD感度<select id="vadSensitivitySelect">

@@ -6,6 +6,8 @@ param(
   [string]$CharacterId = "amber-avatar",
   [string]$WorkDirectory = "",
   [switch]$LinkModelData,
+  [switch]$IncludeSelectedBeatrice,
+  [switch]$IncludeSelectedSbv2,
   [switch]$Overwrite
 )
 
@@ -31,7 +33,7 @@ $allowList = @(
   "supertonicVoice", "supertonicSpeed", "supertonicSteps", "irodoriVoiceId", "irodoriSpeed", "irodoriSteps",
   "irodoriSamplingMode", "irodoriSeed", "irodoriVersion", "irodoriMode", "irodoriCaption", "irodoriAutoEmotion",
   "irodoriEmotionStrength", "irodoriCfgExecution", "kokoroVoice", "kokoroSpeed", "kokoroDevice",
-  "realtimeVoice", "englishPronunciationEnabled"
+  "realtimeVoice", "englishPronunciationEnabled", "speechInputProvider", "realtimeAutoStartOnText"
 )
 foreach ($key in $allowList) {
   if ($null -ne $original.PSObject.Properties[$key]) { $safe[$key] = $original.$key }
@@ -66,8 +68,36 @@ $safe["piperPlusModelPath"] = ""
 $safe["beatriceVstPath"] = ""
 $safe["beatriceModelPath"] = ""
 
+# Explicit opt-in: retain only the selected voice's local model reference.
+# No model weights, credentials or unrelated voice models are copied.
+if ($IncludeSelectedBeatrice) {
+  $voice = $safe["characterTtsProfiles"][$CharacterId]
+  if (!$voice -or $voice.realtimeVoiceConversion -ne "beatrice-v2") { throw "Selected character has no Beatrice voice." }
+  $model = @($original.beatriceModels | Where-Object { $_.id -eq $voice.beatriceModelId })
+  if ($model.Count -ne 1 -or !(Test-Path -LiteralPath $model[0].modelPath -PathType Leaf)) { throw "Selected Beatrice model is unavailable." }
+  if (!(Test-Path -LiteralPath $original.beatriceVstPath)) { throw "Beatrice VST is unavailable." }
+  $safe["beatriceModels"] = @($model[0])
+  $safe["beatriceVstPath"] = $original.beatriceVstPath
+}
+
+if ($IncludeSelectedSbv2) {
+  $voice = $safe["characterTtsProfiles"][$CharacterId]
+  if (!$voice -or $voice.provider -ne "sbv2-jp-extra") { throw "Selected character has no SBV2 voice." }
+  $model = @($original.sbv2Models | Where-Object { $_.id -eq $voice.sbv2ModelId })
+  if ($model.Count -ne 1 -or $model[0].id -notmatch '^sbv2-[a-z0-9-]+$') { throw "Selected SBV2 model is unavailable." }
+  $modelRoot = Join-Path $source ("sbv2-models\" + $model[0].id)
+  if (!(Test-Path -LiteralPath (Join-Path $modelRoot "model.aivmx") -PathType Leaf)) { throw "SBV2 weights are unavailable." }
+  $safe["sbv2Models"] = @($model[0])
+  $safe["ttsEnabled"] = $true
+  $safe["realtimeAutoStartOnText"] = $false
+  $safe["speechInputProvider"] = "streaming-local"
+  $targetRoot = Join-Path $destination "sbv2-models"
+  [IO.Directory]::CreateDirectory($targetRoot) | Out-Null
+  New-Item -ItemType Junction -Path (Join-Path $targetRoot $model[0].id) -Target $modelRoot | Out-Null
+}
+
 $destinationPreferences = Join-Path $destination "preferences.json"
-$safe | ConvertTo-Json -Depth 100 | Set-Content -LiteralPath $destinationPreferences -Encoding UTF8
+[IO.File]::WriteAllText($destinationPreferences, ($safe | ConvertTo-Json -Depth 100), [Text.UTF8Encoding]::new($false))
 
 $linked = @()
 if ($LinkModelData) {

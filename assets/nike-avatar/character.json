@@ -19,6 +19,7 @@
     }
   ],
   "rig": {
+    "articulatedMouthEmotions": ["proud"],
     "faceCenter": [
       644,
       649

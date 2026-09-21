@@ -178,7 +178,7 @@ test("MCP App host waits for initialized before sending input and result notific
 
 test("settings chat, desktop chat, and Realtime all feed the shared MCP App observer", () => {
   const source = fs.readFileSync(path.resolve(__dirname, "..", "main.cjs"), "utf8");
-  assert.match(source, /ipcMain\.handle\("chat:send"[\s\S]{0,1200}sendChatMessage/);
+  assert.match(source, /ipcMain\.handle\("chat:send"[\s\S]{0,1200}handleMascotConversation/);
   assert.match(source, /ipcMain\.handle\("mascotInline:chat"[\s\S]{0,1200}handleMascotConversation/);
   assert.match(source, /async function handleMascotConversation[\s\S]{0,1800}sendChatMessage/);
   assert.match(source, /observeMcpAppEvent\(conversationClient, event, \{ mode: "chat"/);

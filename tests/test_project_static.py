@@ -1254,7 +1254,9 @@ class ProjectStaticTests(unittest.TestCase):
         self.assertIn("/ durationMs", blend_body)
         self.assertIn("targetCtx.globalAlpha = prevAlpha;", blend_body)
         self.assertIn("targetCtx.globalAlpha = prevAlpha * blendT;", blend_body)
-        self.assertNotIn("prevAlpha * (1 - blendT)", blend_body)
+        # Ordinary source-over mouths keep their opaque underlay. Only additive
+        # pose composition uses complementary weights, otherwise it overexposes.
+        self.assertIn('targetCtx.globalCompositeOperation === "lighter" ? prevAlpha * (1 - blendT) : prevAlpha', blend_body)
         self.assertNotIn("MOUTH_CROSSFADE_MS", blend_body)
 
         thresholds_body = self.js_function_body(app, "function mouthResponseConfig(")

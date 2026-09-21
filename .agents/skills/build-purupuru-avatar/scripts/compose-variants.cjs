@@ -106,7 +106,9 @@ function main() {
   process.stdout.write(`${JSON.stringify({ ok: true, output, size: [base.width, base.height] })}\n`);
 }
 
-try { main(); } catch (error) {
+module.exports = { readNormalized, withRegions };
+
+if (require.main === module) try { main(); } catch (error) {
   process.stderr.write(`${error.message}\n`);
   process.exitCode = 1;
 }

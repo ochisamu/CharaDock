@@ -3,7 +3,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 function options(argv) {
-  const result = { port: 9222, title: "", url: "mode=obs", output: "", audioOutput: "", audioTestTone: false, captureMode: "screenshots", duration: 0, fps: 30, delayMs: 600, timeoutMs: 20_000, waitSelector: "", stopSelector: "", overwrite: false };
+  const result = { port: 9222, title: "", url: "mode=obs", output: "", audioOutput: "", audioUrl: "", audioTestTone: false, captureMode: "screenshots", duration: 0, fps: 30, delayMs: 600, timeoutMs: 20_000, waitSelector: "", stopSelector: "", overwrite: false };
   for (const argument of argv) {
     if (argument === "--overwrite") result.overwrite = true;
     else if (argument === "--audio-test-tone") result.audioTestTone = true;
@@ -38,7 +38,7 @@ class CdpClient {
     this.socket.addEventListener("message", (event) => {
       const payload = JSON.parse(String(event.data));
       if (!payload.id) {
-        this.events.push(payload);
+        if (payload.method === "Runtime.executionContextCreated") this.events.push(payload);
         for (const listener of this.listeners.get(payload.method) || []) listener(payload.params || {});
         return;
       }
@@ -96,7 +96,7 @@ async function evaluate(client, expression, contextId) {
 
 const installAudioCaptureExpression = `(() => {
   if (globalThis.__charadockEvidenceAudio) return true;
-  const state = { entries: [], segments: [], contexts: new WeakMap(), sessionStartedAt: performance.now() };
+  const state = { entries: [], segments: [], contexts: new WeakMap(), sessionStartedAt: performance.now(), epochStartedAt: Date.now() };
   const createRecorder = (stream) => {
     if (!stream?.getAudioTracks?.().length || typeof MediaRecorder !== 'function') return null;
     const mimeType = ['audio/webm;codecs=opus', 'audio/webm'].find((type) => MediaRecorder.isTypeSupported(type)) || '';
@@ -160,6 +160,10 @@ const installAudioCaptureExpression = `(() => {
     return result;
   };
   state.finish = async () => {
+    // The default world may also have been enumerated by its context id.
+    // Save its recording once, not twice (which would double the muxed voice).
+    if (state.collected) return [];
+    state.collected = true;
     for (const entry of state.entries) if (entry.recorder.state !== 'inactive') entry.recorder.stop();
     await Promise.all(state.entries.map((entry) => entry.done));
     return state.segments;
@@ -256,11 +260,15 @@ async function screenshot(client) {
 
 async function screencastFrames(client, config) {
   const sourceFrames = [];
+  const sourceDirectory = path.join(config.output, "source");
+  fs.mkdirSync(sourceDirectory, { recursive: true });
   let startedAt = 0;
   const removeListener = client.on("Page.screencastFrame", (params) => {
     const timestamp = Number(params.metadata?.timestamp) || performance.now() / 1000;
     if (!startedAt) startedAt = timestamp;
-    sourceFrames.push({ timestamp: Math.max(0, timestamp - startedAt), bytes: Buffer.from(params.data || "", "base64") });
+    const sourcePath = path.join(sourceDirectory, `source-${String(sourceFrames.length).padStart(6, "0")}.png`);
+    fs.writeFileSync(sourcePath, Buffer.from(params.data || "", "base64"));
+    sourceFrames.push({ timestamp: Math.max(0, timestamp - startedAt), sourcePath });
     client.send("Page.screencastFrameAck", { sessionId: params.sessionId }).catch(() => {});
   });
   await client.send("Page.startScreencast", { format: "png", everyNthFrame: 1 });
@@ -278,7 +286,7 @@ async function screencastFrames(client, config) {
   for (let index = 0; index < outputFrames; index += 1) {
     const targetTime = index / config.fps;
     while (sourceIndex + 1 < sourceFrames.length && sourceFrames[sourceIndex + 1].timestamp <= targetTime) sourceIndex += 1;
-    fs.writeFileSync(path.join(config.output, `frame-${String(index).padStart(5, "0")}.png`), sourceFrames[sourceIndex].bytes);
+    fs.copyFileSync(sourceFrames[sourceIndex].sourcePath, path.join(config.output, `frame-${String(index).padStart(5, "0")}.png`));
   }
   return {
     frameCount: outputFrames,
@@ -295,13 +303,20 @@ async function main() {
   const target = await targetFor(config);
   const client = new CdpClient(target.webSocketDebuggerUrl);
   await client.connect();
+  let audioClient = client;
   try {
     await client.send("Page.enable");
     await client.send("Runtime.enable");
-    const audioContexts = config.audioOutput ? await installAudioCapture(client) : [];
+    if (config.audioOutput && config.audioUrl && config.audioUrl !== config.url) {
+      const audioTarget = await targetFor({ ...config, title: "", url: config.audioUrl });
+      audioClient = new CdpClient(audioTarget.webSocketDebuggerUrl);
+      await audioClient.connect();
+      await audioClient.send("Runtime.enable");
+    }
+    const audioContexts = config.audioOutput ? await installAudioCapture(audioClient) : [];
     if (config.audioTestTone) {
       if (!config.audioOutput || config.duration <= 0) throw new Error("--audio-test-tone requires --audio-output and a positive --duration.");
-      await playDiagnosticTone(client, audioContexts);
+      await playDiagnosticTone(audioClient, audioContexts);
     }
     await delay(config.delayMs);
     const waitDeadline = Date.now() + config.timeoutMs;
@@ -314,6 +329,8 @@ async function main() {
       console.log(JSON.stringify({ mode: "screenshot", title: target.title, output: config.output }));
       return;
     }
+    const videoEpochStartedAt = Date.now();
+    const audioEpochStartedAt = config.audioOutput ? await evaluate(audioClient, "globalThis.__charadockEvidenceAudio?.epochStartedAt || 0") : 0;
     let frameCount;
     let elapsedSeconds;
     let measuredFps;
@@ -335,11 +352,11 @@ async function main() {
       elapsedSeconds = (performance.now() - startedAt) / 1000;
       measuredFps = frameCount / elapsedSeconds;
     }
-    const audioOutputs = config.audioOutput ? await saveAudioCapture(client, audioContexts, config.audioOutput) : [];
-    const metadata = { mode: "frames", captureMode: config.captureMode, title: target.title, output: config.output, frameCount, duration: elapsedSeconds, fps: measuredFps, requestedFps: config.fps, sourceFrameCount, sourceFps, audioOutputs };
+    const audioOutputs = config.audioOutput ? await saveAudioCapture(audioClient, audioContexts, config.audioOutput) : [];
+    const metadata = { mode: "frames", captureMode: config.captureMode, title: target.title, output: config.output, frameCount, duration: elapsedSeconds, fps: measuredFps, requestedFps: config.fps, sourceFrameCount, sourceFps, audioOutputs, videoEpochStartedAt, audioLeadMs: audioEpochStartedAt ? videoEpochStartedAt - audioEpochStartedAt : 0 };
     fs.writeFileSync(path.join(config.output, "capture.json"), `${JSON.stringify(metadata, null, 2)}\n`);
     console.log(JSON.stringify(metadata));
-  } finally { client.close(); }
+  } finally { if (audioClient !== client) audioClient.close(); client.close(); }
 }
 
 main().catch((error) => { console.error(error.stack || error.message); process.exitCode = 1; });

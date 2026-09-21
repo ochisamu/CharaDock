@@ -4,6 +4,7 @@ const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
 const { PNG } = require("pngjs");
+const { OPTIONAL_AVATAR_IMAGE_FILES, validateEmotionSprites } = require("./emotion-sprites.cjs");
 
 const EXPRESSION_NAMES = Object.freeze([
   "eyes-open-mouth-closed.png",
@@ -258,7 +259,7 @@ function writeRlcd42Preview(directory, images) {
   return previewPath;
 }
 
-function validateAvatarOutput(directory, { writePreview = false, requireHairReference = false, requireRlcd42 = false } = {}) {
+function validateAvatarOutput(directory, { writePreview = false, requireHairReference = false, requireRlcd42 = false, requireEmotions = false } = {}) {
   const root = path.resolve(directory || "output");
   const errors = [];
   const qualityMetrics = {};
@@ -479,6 +480,17 @@ function validateAvatarOutput(directory, { writePreview = false, requireHairRefe
     }
   }
 
+  try {
+    const avatar = {};
+    for (const mouth of ["closed", "half", "open"]) {
+      avatar[`eyesOpenMouth${mouth[0].toUpperCase() + mouth.slice(1)}`] = images.get(`eyes-open-mouth-${mouth}.png`)?.bytes;
+    }
+    for (const [key, name] of Object.entries(OPTIONAL_AVATAR_IMAGE_FILES)) {
+      if (fs.existsSync(path.join(root, name))) avatar[key] = fs.readFileSync(path.join(root, name));
+    }
+    validateEmotionSprites(avatar, { strict: true, required: requireEmotions, rig: character?.rig });
+  } catch (error) { errors.push(error.message); }
+
   let previewPath = "";
   let rlcd42PreviewPath = "";
   if (writePreview) {
@@ -512,6 +524,7 @@ if (require.main === module) {
       writePreview: true,
       requireHairReference: process.argv.includes("--require-hair-reference"),
       requireRlcd42: process.argv.includes("--require-rlcd42"),
+      requireEmotions: process.argv.includes("--require-emotions"),
     });
     process.stdout.write(`${JSON.stringify(report)}\n`);
   } catch (error) {

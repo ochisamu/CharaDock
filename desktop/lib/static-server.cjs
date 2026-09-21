@@ -71,7 +71,7 @@ class MascotStaticServer {
   }
 
   pushInput(values = {}) {
-    const expressionKeys = ["forceMouth", "forceEyesClosed", "emotion", "reaction", "durationMs", "intensity"];
+    const expressionKeys = ["forceMouth", "forceEyesClosed", "emotion", "reaction", "durationMs", "intensity", "nikePerformance"];
     const persistent = { ...values };
     for (const key of expressionKeys) delete persistent[key];
     this.input = { ...this.input, ...persistent, timestamp: Date.now() };

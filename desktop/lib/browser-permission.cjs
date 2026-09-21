@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
-const APPROVE_PATTERN = /(?:はい|うん|いいよ|どうぞ|お願い|許可(?:する)?|開いて(?:いいよ)?|見て(?:いいよ)?|みて(?:いいよ)?|ok|okay)/i;
+const { englishControlConsent, englishControlRequest, englishControlContinuation } = require("./english-control-intent.cjs");
+
+const APPROVE_PATTERN = /(?:はい|うん|いいよ|どうぞ|お願い|許可(?:する)?|開いて(?:いいよ)?|見て(?:いいよ)?|みて(?:いいよ)?)/i;
 const DENY_PATTERN = /(?:やめて|だめ|ダメ|キャンセル|開かない|使わない|許可しない|今はいい)/i;
 const STOP_CONTINUATION_PATTERN = /(?:ブラウザ(?:ー)?(?:操作|利用)?(?:は)?(?:終了|終わり)|操作(?:は)?ここまで|もう(?:ブラウザ(?:ー)?を)?使わない|もういい|閉じて|やめ(?:て|る))/i;
 const CONTINUATION_PATTERN = /(?:続けて|そのまま|引き続き|次に|それから|さらに|もう一度|続きを|次の|さっきの|同じ|(?:その|この)(?:ページ|サイト|リンク|ボタン|項目|欄)|(?:最初|最後|[一二三四五]|[1-9])つ?目の(?:リンク|ボタン|項目)|(?:右|左|上|下)の(?:リンク|ボタン|項目)|下へ|上へ|戻って)/i;
@@ -54,17 +56,19 @@ function browserConversationAction(message, hasPendingRequest = false) {
   const text = String(message || "").trim().slice(0, 800);
   if (!text) return "";
   if (hasPendingRequest) {
+    const consent = englishControlConsent(text);
+    if (consent) return consent;
     if (DENY_PATTERN.test(text)) return "deny";
     if (text.length <= 48 && APPROVE_PATTERN.test(text)) return "approve";
     return "replace";
   }
-  const explicitBrowserMentioned = /(?:ブラウザ|browser|URL|リンク)/i.test(text);
-  const siteMentioned = /(?:ウェブ|web|サイト|ホームページ)/i.test(text);
-  const browserAction = /(?:開いて|開く|見て|みて|確認して|読んで|調べて|検索して|探して|閲覧して|アクセスして|移動して|操作して|操作|使って|起動して)/i.test(text);
+  const explicitBrowserMentioned = /(?:ブラウザ|\b(?:browser|URL|link)\b|リンク)/i.test(text);
+  const siteMentioned = /(?:ウェブ|\b(?:web|website|site|webpage)\b|サイト|ホームページ)/i.test(text);
+  const browserAction = /(?:開いて|開く|見て|みて|確認して|読んで|調べて|検索して|探して|閲覧して|アクセスして|移動して|操作して|操作|使って|起動して)/i.test(text) || englishControlRequest(text, "browser");
   const localArtifactMentioned = !/https?:\/\//i.test(text)
     && /(?:^|[\s"'`/\\])[^\s"'`/\\]+\.(?:html?|css|js|cjs|mjs|ts|tsx|jsx|json|md|pdf|png|jpe?g|webp|svg|wav|mp3)(?=$|[\s、。"'`をのにへでと])/i.test(text);
   const artifactAuthoring = localArtifactMentioned
-    && /(?:作って|作る|作成|生成|実装|更新|修正|直して|書いて|保存|変換|連携)/i.test(text);
+    && /(?:作って|作る|作成|生成|実装|更新|修正|直して|書いて|保存|変換|連携|\b(?:create|build|implement|update|fix|write|save|convert)\b)/i.test(text);
   const target = extractBrowserTarget(text);
   const fileLikeHostname = Boolean(target)
     && /\.(?:html?|css|js|cjs|mjs|ts|tsx|jsx|json|md|pdf|png|jpe?g|webp|svg|wav|mp3)$/i.test(target.hostname);
@@ -76,6 +80,8 @@ function browserConversationAction(message, hasPendingRequest = false) {
 function browserContinuationAction(message) {
   const text = String(message || "").trim().slice(0, 800);
   if (!text) return "";
+  const english = englishControlContinuation(text, "browser");
+  if (english) return english;
   if (STOP_CONTINUATION_PATTERN.test(text)) return "stop";
   return CONTINUATION_PATTERN.test(text) && CONTINUATION_ACTION_PATTERN.test(text) ? "continue" : "";
 }

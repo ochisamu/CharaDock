@@ -671,7 +671,7 @@ test("remote access exposes compact avatar dialogue, device controls, and Live r
   assert.match(main, /realtime:\s*true,\s*delegated:\s*appended\?\.delegated === true/);
   assert.match(main, /Realtime V3 appendText is context-only[\s\S]*client\.sendMessage\(normalized, \{ skillItems, requireMcpReady \}\)/);
   assert.match(main, /prompt: undefined,[\s\S]*clientManagedHandoffs:\s*false/);
-  assert.match(main, /Chat is conversational and strictly read-only/);
+  assert.match(main, /Chat is conversational and read-only except for the explicitly listed built-in playback controls/);
   assert.match(main, /const answer = cleanAssistantText\(result\?\.text \|\| ""\)\.trim\(\)/);
   assert.match(main, /realtime-work-conversation-handoff-started/);
   assert.match(main, /async dispatchConversation\(request\)/);
@@ -779,7 +779,7 @@ test("Character memory and continuation are grouped, scoped, editable, private, 
   assert.match(preload, /continuation:clear/);
   assert.match(main, /function maybeOfferStartupContinuation/);
   assert.match(main, /preferences\.data\.continuationStartupSpeechEnabled === false/);
-  assert.match(main, /dynamicTools: \[\.\.\.MEMORY_DYNAMIC_TOOLS, \.\.\.CONTINUATION_DYNAMIC_TOOLS, \.\.\.HISTORY_DYNAMIC_TOOLS, \.\.\.SKILL_CREATOR_DYNAMIC_TOOLS\]/);
+  assert.match(main, /dynamicTools: \[\.\.\.MEMORY_DYNAMIC_TOOLS, \.\.\.CONTINUATION_DYNAMIC_TOOLS, \.\.\.HISTORY_DYNAMIC_TOOLS, \.\.\.SKILL_CREATOR_DYNAMIC_TOOLS, \.\.\.mediaTools\]/);
   assert.match(main, /developerInstructions: `\$\{workModeInstructions\(\)\}[\s\S]*MEMORY_TOOL_INSTRUCTIONS/);
   assert.match(main, /function codexRuntimeMatches\(client, runtime, mcpSignature = ""\)/);
   assert.match(main, /client\.commandArgs[\s\S]{0,300}runtime\.workspaceRoots/);

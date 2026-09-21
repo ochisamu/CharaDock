@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
-const APPROVE_PATTERN = /(?:はい|うん|いいよ|どうぞ|お願い|許可(?:する)?|操作して(?:いいよ)?|進めて|ok|okay)/i;
+const { englishControlConsent, englishControlRequest, englishControlContinuation } = require("./english-control-intent.cjs");
+
+const APPROVE_PATTERN = /(?:はい|うん|いいよ|どうぞ|お願い|許可(?:する)?|操作して(?:いいよ)?|進めて)/i;
 const DENY_PATTERN = /(?:やめて|だめ|ダメ|キャンセル|操作しない|触らないで|許可しない|今はいい)/i;
 const COMPUTER_NOUN = /(?:パソコン|PC|コンピューター|Windows|Mac|macOS|デスクトップ|アプリ|ウィンドウ|メモ帳|エクスプローラー|設定画面)/i;
 const COMPUTER_ACTION = /(?:操作して|操作|動かして|クリックして|押して|入力して|開いて|起動して|切り替えて|設定して|やって)/i;
@@ -12,11 +14,13 @@ function computerConversationAction(message, hasPendingRequest = false) {
   const text = String(message || "").trim().slice(0, 800);
   if (!text) return "";
   if (hasPendingRequest) {
+    const consent = englishControlConsent(text);
+    if (consent) return consent;
     if (DENY_PATTERN.test(text)) return "deny";
     if (text.length <= 48 && APPROVE_PATTERN.test(text)) return "approve";
     return "replace";
   }
-  return COMPUTER_NOUN.test(text) && COMPUTER_ACTION.test(text) ? "request" : "";
+  return (COMPUTER_NOUN.test(text) && COMPUTER_ACTION.test(text)) || englishControlRequest(text, "computer") ? "request" : "";
 }
 
 function normalizeComputerToolName(value) {
@@ -27,6 +31,8 @@ function normalizeComputerToolName(value) {
 function computerContinuationAction(message) {
   const text = String(message || "").trim().slice(0, 800);
   if (!text) return "";
+  const english = englishControlContinuation(text, "computer");
+  if (english) return english;
   if (STOP_CONTINUATION_PATTERN.test(text)) return "stop";
   return CONTINUATION_PATTERN.test(text) && CONTINUATION_ACTION_PATTERN.test(text) ? "continue" : "";
 }

@@ -8,6 +8,7 @@
   const $$ = (selector) => [...document.querySelectorAll(selector)];
   const localized = (japanese, english) => state?.language === "en" ? english : japanese;
   let state = null;
+  let jevBusy = false;
   let atomEchoPorts = [];
   let rlcd42Ports = [];
   let audioStream = null;
@@ -3871,8 +3872,86 @@
     }
   }
 
+  function syncJevUi() {
+    for (const element of $$("#jevSettings [data-jev-ja]")) {
+      element.textContent = localized(element.dataset.jevJa, element.dataset.jevEn);
+    }
+    const enabled = state?.jevEnabled === true;
+    $("#jevEnabledToggle").checked = enabled;
+    $("#jevEnabledToggle").disabled = jevBusy;
+    $("#jevMediaEnabledToggle").checked = state?.jevMediaEnabled !== false;
+    $("#jevExpressionEnabledToggle").checked = state?.jevExpressionEnabled !== false;
+    $("#jevNikePerformanceEnabledToggle").checked = state?.jevNikePerformanceEnabled === true;
+    $("#jevAddressModeSelect").value = state?.jevAddressMode || "off";
+    $("#jevAddressModeSelect").disabled = jevBusy;
+    $("#jevNikePerformanceEnabledToggle").disabled = jevBusy || !enabled || state?.jevExpressionEnabled === false;
+    for (const button of $$("[data-jev-preview]")) button.disabled = jevBusy || !enabled || !state?.jevApiKeyConfigured
+      || state?.jevExpressionEnabled === false || state?.jevNikePerformanceEnabled !== true;
+    $("#jevMediaEnabledToggle").disabled = jevBusy || !enabled;
+    $("#jevExpressionEnabledToggle").disabled = jevBusy || !enabled;
+    $("#jevApiKeyInput").disabled = jevBusy;
+    $("#saveJevApiKeyButton").disabled = jevBusy || !$("#jevApiKeyInput").value.trim();
+    $("#clearJevApiKeyButton").disabled = jevBusy || !state?.jevApiKeyConfigured;
+    $("#testJevConnectionButton").disabled = jevBusy || !enabled || !state?.jevApiKeyConfigured || Boolean($("#jevApiKeyInput").value.trim());
+    $("#jevApiKeyState").textContent = !state?.jevApiKeyConfigured
+      ? localized("APIキー未設定", "API key not configured")
+      : state.jevApiKeyPersistence === "encrypted"
+        ? localized("APIキー設定済み（暗号化保存）", "API key configured (encrypted storage)")
+        : localized("APIキー設定済み（今回のみ）", "API key configured (this session only)");
+  }
+
+  async function saveJevConfig(keyAction) {
+    if (jevBusy) return;
+    const payload = {
+      enabled: $("#jevEnabledToggle").checked,
+      mediaEnabled: $("#jevMediaEnabledToggle").checked,
+      expressionEnabled: $("#jevExpressionEnabledToggle").checked,
+      nikePerformanceEnabled: $("#jevNikePerformanceEnabledToggle").checked,
+      addressMode: $("#jevAddressModeSelect").value,
+    };
+    if (keyAction === "save") {
+      const key = $("#jevApiKeyInput").value.trim();
+      if (!key) return;
+      payload.apiKey = key;
+    } else if (keyAction === "clear") payload.apiKey = "";
+    jevBusy = true;
+    if (keyAction) $("#jevApiKeyInput").value = "";
+    syncJevUi();
+    try {
+      state = await api.setJevConfig(payload);
+      syncUi();
+      setStatus($("#jevStatus"), localized("Jev設定を保存しました。", "Jev settings saved."));
+    } catch {
+      setStatus($("#jevStatus"), localized("Jev設定を保存できませんでした。", "Could not save Jev settings."), true);
+    } finally {
+      jevBusy = false;
+      syncJevUi();
+    }
+  }
+
+  async function testJevConnection() {
+    if (jevBusy || !state?.jevEnabled || !state?.jevApiKeyConfigured || $("#jevApiKeyInput").value.trim()) return;
+    jevBusy = true;
+    syncJevUi();
+    setStatus($("#jevStatus"), localized("接続を確認しています…", "Testing connection…"));
+    try {
+      const result = await api.testJevConnection();
+      const latency = Number.isFinite(result?.latencyMs) ? ` (${Math.max(0, Math.round(result.latencyMs))} ms)` : "";
+      setStatus($("#jevStatus"), result?.ok
+        ? localized("接続できました。", "Connected.") + latency
+        : localized("接続できませんでした。APIキーと接続を確認してください。", "Connection failed. Check the API key and connection."), !result?.ok);
+    } catch {
+      // Do not render raw IPC/provider errors, which may contain credentials.
+      setStatus($("#jevStatus"), localized("接続テストに失敗しました。", "Connection test failed."), true);
+    } finally {
+      jevBusy = false;
+      syncJevUi();
+    }
+  }
+
   function syncUi() {
     i18n?.setLanguage(state.language || "ja");
+    syncJevUi();
     document.documentElement.dataset.character = state.characterId || "amber-avatar";
     const sidebarCharacter = currentCharacter();
     if (sidebarCharacter) {
@@ -6410,6 +6489,24 @@
         setStatus($("#connectionStatus"), error.message, true);
       }
     });
+    for (const button of $$("[data-jev-preview]")) button.addEventListener("click", async () => {
+      try {
+        await api.previewJevPerformance(button.dataset.jevPreview);
+        setStatus($("#jevStatus"), localized("例文をJevで判定しています（音声なし）。", "Classifying a sample with Jev (no audio)."));
+      } catch {
+        setStatus($("#jevStatus"), localized("標準AIニケちゃんを選び、表現拡張とAPIキーを確認してください。", "Select built-in AI Nike and check performance settings and the API key."), true);
+      }
+    });
+    for (const selector of ["#jevEnabledToggle", "#jevMediaEnabledToggle", "#jevExpressionEnabledToggle", "#jevNikePerformanceEnabledToggle", "#jevAddressModeSelect"]) {
+      $(selector).addEventListener("change", () => saveJevConfig());
+    }
+    $("#jevApiKeyInput").addEventListener("input", () => {
+      setStatus($("#jevStatus"), "");
+      syncJevUi();
+    });
+    $("#saveJevApiKeyButton").addEventListener("click", () => saveJevConfig("save"));
+    $("#clearJevApiKeyButton").addEventListener("click", () => saveJevConfig("clear"));
+    $("#testJevConnectionButton").addEventListener("click", testJevConnection);
     $("#testBackendButton").addEventListener("click", async () => {
       const backend = $("input[name='backend']:checked")?.value || state.backend;
       try {

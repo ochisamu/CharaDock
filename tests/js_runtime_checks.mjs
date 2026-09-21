@@ -156,6 +156,7 @@ const definitions = [
   extractConst("ZIP_UTF8_FLAG"),
   extractConst("ZIP_STORE_METHOD"),
   extractConst("AVATAR_PACKAGE_ASSETS"),
+  extractConst("OPTIONAL_AVATAR_EXPRESSION_ASSETS"),
   extractFunction("function sanitizeImportedJsonValue("),
   extractFunction("function jsonByteSize("),
   extractFunction("function parseSettingsJson("),
@@ -355,6 +356,12 @@ const parsed = await parsePuruPuruPackageBlob(minimalPackageBlob());
 assert.equal(parsed.settingsPayload.avatarImageSize.width, 900);
 assert.equal(parsed.settingsPayload.avatarImageSize.height, 900);
 assert.equal(Object.keys(parsed.avatarImageBlobs).length, Object.keys(AVATAR_PACKAGE_ASSETS).length);
+const emotionFiles = Object.fromEntries(["closed", "half", "open"].map((mouth) => ["avatar/emotion-thinking-mouth-" + mouth + ".png", tinyPngBytes()]));
+const withEmotions = await parsePuruPuruPackageBlob(minimalPackageBlob({ extraFiles: emotionFiles }));
+assert.ok(withEmotions.avatarImageBlobs.emotionThinkingMouthClosed);
+assert.ok(withEmotions.avatarImageBlobs.emotionThinkingMouthHalf);
+assert.ok(withEmotions.avatarImageBlobs.emotionThinkingMouthOpen);
+await expectReject(() => parsePuruPuruPackageBlob(minimalPackageBlob({ extraFiles: { "avatar/emotion-thinking-mouth-closed.png": tinyPngBytes() } })), /Incomplete/);
 
 const tooManyItemLayers = Array.from({ length: MAX_ITEM_LAYER_COUNT + 5 }, (_, index) => ({
   id: index + 1,
@@ -384,5 +391,3 @@ await vm.runInNewContext(testProgram, {
   DataView,
   btoa: (value) => Buffer.from(value, "binary").toString("base64"),
 });
-
-

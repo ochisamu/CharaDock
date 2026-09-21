@@ -263,6 +263,7 @@ window.addEventListener("DOMContentLoaded", () => {
   let realtimeDataChannel = null;
   let realtimeInputBridge = null;
   let realtimeSessionState = "idle";
+  let externalRealtimeLive = false;
   let realtimeRemoteAudio = null;
   let realtimeOutputSuppressed = false;
   let realtimeMeterContext = null;
@@ -965,7 +966,7 @@ window.addEventListener("DOMContentLoaded", () => {
     const english = appState?.language === "en";
     const workMode = appState?.interactionMode === "work";
     const liveConfigured = appState?.speechInputProvider === "realtime" && appState?.backend === "codex";
-    const live = realtimeSessionState === "live";
+    const live = realtimeSessionState === "live" || externalRealtimeLive;
     const connecting = realtimeSessionState === "connecting";
     const voiceMode = live ? "LIVE" : connecting ? (english ? "CONNECTING" : "LIVE接続中") : appState?.ttsEnabled ? "TTS" : "TEXT";
     const mode = workMode ? "Work" : "Chat";
@@ -1250,15 +1251,16 @@ window.addEventListener("DOMContentLoaded", () => {
     stopTtsPlayback();
     bubblePersistent = false;
     const permissionType = String(result?.permissionRequest?.type || "");
-    const question = normalizeDisplayText(result?.text || "今回だけ許可してもいい？");
+    const question = normalizeDisplayText(result?.text || uiText("今回だけ許可してもいい？", "May I do this for this request?"));
     streamFullText = question;
     streamCurrentSpeechText = "";
     bubbleText.textContent = question;
     permissionActions.dataset.requestId = String(result?.permissionRequest?.id || "");
     permissionActions.dataset.permissionType = permissionType;
     permissionActions.querySelector('[data-permission-action="approve"]').textContent = permissionType === "screen"
-      ? "今回だけ見る"
-      : permissionType === "computer" ? "操作を許可" : "ブラウザを許可";
+      ? uiText("今回だけ見る", "View once")
+      : permissionType === "computer" ? uiText("操作を許可", "Allow control") : uiText("ブラウザを許可", "Allow browser");
+    permissionActions.querySelector('[data-permission-action="deny"]').textContent = uiText("やめる", "Not now");
     permissionActions.hidden = false;
     bubble.classList.remove("is-expanded", "has-overflow", "has-full-reply");
     bubble.classList.add("is-visible", "is-permission");
@@ -1493,7 +1495,11 @@ window.addEventListener("DOMContentLoaded", () => {
       && Object.prototype.hasOwnProperty.call(segment, "spokenText");
     const spokenText = String(hasSpokenText ? segment.spokenText : text).trim();
     if (!text || !spokenText || token !== ttsPlaybackToken) return null;
-    if (!isGeneratedTtsProvider(provider)) return { segment, text, spokenText, sources: null, playbackRate: 1 };
+    const expressionPromise = segment?.expression?.jevText
+      ? ipcRenderer.invoke("mascotInline:prepareExpression", segment.expression.jevText).catch(() => null)
+      : Promise.resolve(null);
+    const preparedExpression = async () => ({ ...segment?.expression, jevPrepared: true, jevPreparedId: await expressionPromise });
+    if (!isGeneratedTtsProvider(provider)) return { segment: { ...segment, expression: await preparedExpression() }, text, spokenText, sources: null, playbackRate: 1 };
     if (generatedTtsInCooldown(provider)) return null;
     let result;
     try {
@@ -1517,13 +1523,14 @@ window.addEventListener("DOMContentLoaded", () => {
       return null;
     }
     clearGeneratedTtsFailure(provider);
+    const expression = await preparedExpression();
     const streamId = String(result?.streamId || "");
     if (token !== ttsPlaybackToken) {
       if (streamId) ipcRenderer.invoke("mascotInline:cancelTtsStream", streamId).catch(() => {});
       return null;
     }
     if (streamId) activeTtsStreamIds.add(streamId);
-    return { segment, text, spokenText, sources, audioTexts: result?.audioTexts || [], playbackRate: result?.playbackRate, streamId };
+    return { segment: { ...segment, expression }, text, spokenText, sources, audioTexts: result?.audioTexts || [], playbackRate: result?.playbackRate, streamId };
   };
   const prepareQueuedSpeechSegment = (segment, provider, token) => prepareSpeechSegment(segment, provider, token)
     .then((prepared) => ({ prepared }), (error) => ({ error }));
@@ -1751,11 +1758,11 @@ window.addEventListener("DOMContentLoaded", () => {
         speechLanguage: appState?.speechLanguage || "ja-JP",
       });
       setStatus(action === "approve"
-        ? isScreen ? "画面を確認しました" : isComputer ? "コンピューター操作が完了しました" : "ブラウザ確認が完了しました"
-        : isScreen ? "画面は共有されませんでした" : isComputer ? "コンピューターは操作されませんでした" : "ブラウザは開かれませんでした");
+        ? isScreen ? uiText("画面を確認しました", "Screen reviewed") : isComputer ? uiText("コンピューター操作が完了しました", "Computer task finished") : uiText("ブラウザ確認が完了しました", "Browser task finished")
+        : isScreen ? uiText("画面は共有されませんでした", "Screen was not shared") : isComputer ? uiText("コンピューターは操作されませんでした", "Computer was not controlled") : uiText("ブラウザは開かれませんでした", "Browser was not opened"));
     } catch (error) {
       clearPermission();
-      const actionLabel = isScreen ? "画面を共有できませんでした" : isComputer ? "コンピューターを操作できませんでした" : "ブラウザを利用できませんでした";
+      const actionLabel = isScreen ? uiText("画面を共有できませんでした", "Could not share the screen") : isComputer ? uiText("コンピューターを操作できませんでした", "Could not control the computer") : uiText("ブラウザを利用できませんでした", "Could not use the browser");
       setStatus(`${actionLabel} · ${friendlyInteractionErrorMessage(error)}`, 9000);
     } finally {
       sendButton.disabled = false;
@@ -1856,7 +1863,7 @@ window.addEventListener("DOMContentLoaded", () => {
       }
       if (["screen", "browser", "computer"].includes(result.permissionRequest?.type)) {
         showPermission(result);
-        setStatus("「いいよ」「やめて」と話しても選べます", 9000);
+        setStatus(uiText("「いいよ」「やめて」と話しても選べます", 'You can also say “yes” or “not now”'), 9000);
       } else if (!result.streamed) {
         showSpeech({
           text: result.text,
@@ -1868,7 +1875,7 @@ window.addEventListener("DOMContentLoaded", () => {
       }
       if (!["screen", "browser", "computer"].includes(result.permissionRequest?.type)) {
         setStatus(result.permissionDeclined
-          ? result.permissionType === "browser" ? "ブラウザは開かれませんでした" : result.permissionType === "computer" ? "コンピューターは操作されませんでした" : "画面は共有されませんでした"
+          ? result.permissionType === "browser" ? uiText("ブラウザは開かれませんでした", "Browser was not opened") : result.permissionType === "computer" ? uiText("コンピューターは操作されませんでした", "Computer was not controlled") : uiText("画面は共有されませんでした", "Screen was not shared")
           : result.mode === "work" ? `${result.workDirectoryName || "選択フォルダー"}で作業完了` : result.provider === "codex" ? "Codexから返答" : "OpenAIから返答");
       }
     } catch (error) {
@@ -2294,8 +2301,26 @@ window.addEventListener("DOMContentLoaded", () => {
 
   const waitingVoiceStatus = () => "音声待機中…そのまま話してください";
 
+  const checkVadAddress = async (command) => {
+    // Keep VAD's endpoint and the existing auto-send countdown unchanged.
+    // OFF must not depend on the optional classifier IPC being available.
+    if (!appState?.jevAddressMode || appState.jevAddressMode === "off") return { accepted: true };
+    setStatus("発話終了・認識済み：Jevで呼びかけを確認中…", 30_000);
+    try {
+      const result = await ipcRenderer.invoke("mascotInline:addressSpeech", command);
+      return result?.accepted ? result : { ...result, notice: result?.reason === "unrelated"
+        ? "キャラ宛てではない発話を除外しました。音声待機中…"
+        : ["non_speech", "unclear_speech"].includes(result?.reason)
+          ? "会話として不明瞭な短い音声を除外しました。音声待機中…"
+        : "呼びかけ判定ができず送信を保留しました。Jev設定を確認してください。音声待機中…" };
+    } catch {
+      return { accepted: false, notice: "Jevとの通信に失敗しました。設定確認または呼びかけ判定をOFFにしてください。音声待機中…" };
+    }
+  };
+
   const processVadTranscript = async (blob, provider) => {
     const generation = vadGeneration;
+    let admissionNotice = "";
     vadProcessing = true;
     setVadUi("processing");
     try {
@@ -2309,6 +2334,9 @@ window.addEventListener("DOMContentLoaded", () => {
         return;
       }
       const command = transcript;
+      const admission = await checkVadAddress(command);
+      admissionNotice = admission.notice || "";
+      if (!vadActive || generation !== vadGeneration || !admission?.accepted) return;
       input.value = command;
       resizeInput();
       setOpen(true, { focus: true });
@@ -2325,7 +2353,7 @@ window.addEventListener("DOMContentLoaded", () => {
         vadLoudSince = 0;
         vadSilentSince = 0;
         setVadUi("waiting");
-        if (!input.value.trim()) setStatus(waitingVoiceStatus(), 30_000);
+        if (admissionNotice || !input.value.trim()) setStatus(admissionNotice || waitingVoiceStatus(), 30_000);
       } else {
         cleanupVadMedia();
       }
@@ -2333,6 +2361,8 @@ window.addEventListener("DOMContentLoaded", () => {
   };
 
   const processVadRecognizedText = async (transcript) => {
+    const generation = vadGeneration;
+    let admissionNotice = "";
     vadProcessing = true;
     setVadUi("processing");
     try {
@@ -2341,12 +2371,18 @@ window.addEventListener("DOMContentLoaded", () => {
         setStatus(waitingVoiceStatus(), 30_000);
         return;
       }
+      const admission = await checkVadAddress(command);
+      admissionNotice = admission.notice || "";
+      if (!vadActive || generation !== vadGeneration || !admission?.accepted) return;
       input.value = command;
       resizeInput();
       setOpen(true, { focus: true });
       setStatus(`認識: ${command}`, 5000);
       beginAutoSendCountdown(command);
+    } catch (error) {
+      if (generation === vadGeneration) setStatus(error.message, 5000);
     } finally {
+      if (generation !== vadGeneration) return;
       vadProcessing = false;
       if (vadActive) {
         vadResumeAt = performance.now() + Math.max(700, autoSendCountdownEndsAt ? autoSendCountdownEndsAt - performance.now() + 250 : 0);
@@ -2355,7 +2391,7 @@ window.addEventListener("DOMContentLoaded", () => {
         vadLoudSince = 0;
         vadSilentSince = 0;
         setVadUi("waiting");
-        if (!input.value.trim()) setStatus(waitingVoiceStatus(), 30_000);
+        if (admissionNotice || !input.value.trim()) setStatus(admissionNotice || waitingVoiceStatus(), 30_000);
       } else {
         cleanupVadMedia();
       }
@@ -3332,6 +3368,7 @@ window.addEventListener("DOMContentLoaded", () => {
       return;
     }
     if (payload?.phase === "realtime-caption") {
+      if (!streamWorkMode) setWorkActivity(appState?.language === "en" ? "Live response" : "Live応答中");
       renderRealtimeCaption(payload.displayText || payload.text);
       return;
     }
@@ -3395,6 +3432,10 @@ window.addEventListener("DOMContentLoaded", () => {
     }
     if (["done", "error", "interrupted"].includes(payload?.phase)) drainPendingMascotFollowUp();
     if (!ttsBusy) ipcRenderer.invoke("mascotInline:voice", 0).catch(() => {});
+  });
+  ipcRenderer.on("mascot:externalRealtimeStatus", (_event, status) => {
+    externalRealtimeLive = status?.live === true;
+    updateVoiceContext();
   });
   ipcRenderer.on("mascot:realtimeEvent", async (_event, message) => {
     const method = String(message?.method || "");

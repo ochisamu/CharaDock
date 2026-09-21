@@ -52,6 +52,7 @@ CharaDockは、[rotejin/PuruPuruPNGTuber](https://github.com/rotejin/PuruPuruPNG
 
 ### 会話を続けられる
 
+- 任意の[Jev連携](./docs/jev.md): アプリ内でAPIキーを設定し、Windowsの曲送り等と表情・仕草を判定。既定OFF、会話モデルやTTSは変更しません。
 - Codex app-serverのChatGPTログイン、またはOpenAI Responses API
 - 現在読み上げている文を吹き出しへ表示し、完了後は全文へ戻る長文表示
 - 会話履歴と作業履歴をアプリ終了後も復元

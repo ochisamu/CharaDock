@@ -39,6 +39,14 @@ function fakeClock() {
   };
 }
 
+test("English fallback does not echo instructions as character speech or invent progress", () => {
+  for (const request of ["Fix the layout and check phone size", "Reply with a greeting", "Compare three options", "Delete the file"]) {
+    const text = workAcknowledgementFallback(request, "en");
+    assert.equal(text, "Give me a moment to think.");
+    assert.doesNotMatch(text, /start with:|fixed|deleted|comparing|checking/i);
+  }
+});
+
 test("work acknowledgements are content-aware", () => {
   const nagoya = workAcknowledgementFallback("名古屋の週間天気をHTMLにしてプレビューしてください。お願いします");
   const osaka = workAcknowledgementFallback("大阪の予算表をPDFにまとめてください");

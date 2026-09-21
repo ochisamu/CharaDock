@@ -4,7 +4,7 @@
   "use strict";
 
   const DEFAULT_AVATAR_IMAGE_SIZE = { w: 1024, h: 1536 };
-  const { createIdleGazeController, createReactionController } = window.PuruPuruMotionRuntime;
+  const { createIdleGazeController, createReactionController, createPerformanceController, performanceWarpPoint } = window.PuruPuruMotionRuntime;
   const CROP = { x: 0, y: 0, w: DEFAULT_AVATAR_IMAGE_SIZE.w, h: DEFAULT_AVATAR_IMAGE_SIZE.h };
   const DEFAULT_FACE_CENTER = { x: 512, y: 726 };
   const TAU = Math.PI * 2;
@@ -116,6 +116,14 @@
     eyesClosedMouthOpen: "avatar/eyes-closed-mouth-open.png",
   };
   const OPTIONAL_AVATAR_EXPRESSION_ASSETS = {
+    ...Object.fromEntries(["ponder", "explain", "celebrate"].flatMap(pose =>
+      ["open", "closed"].flatMap(eye => ["closed", "half", "open"].map(mouth => [
+        `performance${pose[0].toUpperCase() + pose.slice(1)}Eyes${eye[0].toUpperCase() + eye.slice(1)}Mouth${mouth[0].toUpperCase() + mouth.slice(1)}`,
+        `avatar/performance-${pose}-eyes-${eye}-mouth-${mouth}.png`,
+      ])))),
+    emotionThinkingMouthClosed: "avatar/emotion-thinking-mouth-closed.png",
+    emotionThinkingMouthHalf: "avatar/emotion-thinking-mouth-half.png",
+    emotionThinkingMouthOpen: "avatar/emotion-thinking-mouth-open.png",
     emotionHappyMouthClosed: "avatar/emotion-happy-mouth-closed.png",
     emotionHappyMouthHalf: "avatar/emotion-happy-mouth-half.png",
     emotionHappyMouthOpen: "avatar/emotion-happy-mouth-open.png",
@@ -125,6 +133,18 @@
     emotionSoftMouthClosed: "avatar/emotion-soft-mouth-closed.png",
     emotionSoftMouthHalf: "avatar/emotion-soft-mouth-half.png",
     emotionSoftMouthOpen: "avatar/emotion-soft-mouth-open.png",
+    emotionJoyMouthClosed: "avatar/emotion-joy-mouth-closed.png",
+    emotionJoyMouthHalf: "avatar/emotion-joy-mouth-half.png",
+    emotionJoyMouthOpen: "avatar/emotion-joy-mouth-open.png",
+    emotionWorriedMouthClosed: "avatar/emotion-worried-mouth-closed.png",
+    emotionWorriedMouthHalf: "avatar/emotion-worried-mouth-half.png",
+    emotionWorriedMouthOpen: "avatar/emotion-worried-mouth-open.png",
+    emotionProudMouthClosed: "avatar/emotion-proud-mouth-closed.png",
+    emotionProudMouthHalf: "avatar/emotion-proud-mouth-half.png",
+    emotionProudMouthOpen: "avatar/emotion-proud-mouth-open.png",
+    emotionExasperatedMouthClosed: "avatar/emotion-exasperated-mouth-closed.png",
+    emotionExasperatedMouthHalf: "avatar/emotion-exasperated-mouth-half.png",
+    emotionExasperatedMouthOpen: "avatar/emotion-exasperated-mouth-open.png",
   };
   const DRAWN_AVATAR_SOURCE_KIND = "drawn-avatar";
   const DRAWING_AVATAR_CANVAS_WIDTH = 1024;
@@ -885,6 +905,10 @@
   let idleMotionPlan = null;
   const idleGazeMotion = createIdleGazeController();
   const reactionMotion = createReactionController();
+  const nikePerformance = createPerformanceController();
+  let nikePerformanceOutput = nikePerformance.update(0);
+  let obsPerformanceCharacter = "";
+  const performanceReducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
   let reactionMotionOutput = reactionMotion.update(0);
   let voiceLevel = 0;
   let voicePeak = 0;
@@ -2004,6 +2028,7 @@
     const mergedImages = { ...images, ...(loadedImages || {}) };
     const size = validateAvatarImageSetDimensions(mergedImages);
     setAvatarImageSize(size.w, size.h);
+    for (const key of Object.keys(OPTIONAL_AVATAR_EXPRESSION_ASSETS)) delete images[key];
     for (const [key, image] of Object.entries(loadedImages || {})) {
       images[key] = image;
     }
@@ -2036,6 +2061,12 @@
       if (!image) throw new Error(`キャラ素材が不足しています: ${key}`);
       validateAvatarImageDimensions(image, key, { w: CROP.w, h: CROP.h });
       files[path] = await imageToPngU8(image);
+    }
+    for (const [key, path] of Object.entries(OPTIONAL_AVATAR_EXPRESSION_ASSETS)) {
+      if (!images[key]) continue;
+      validateAvatarImageDimensions(images[key], key, { w: CROP.w, h: CROP.h });
+      manifest.avatar[key] = path;
+      files[path] = await imageToPngU8(images[key]);
     }
 
     const settings = buildAllSettingsPayload({ includeItemImages: false });
@@ -2121,6 +2152,22 @@
       expectedAvatarSize = validateAvatarImageDimensions(image, key, expectedAvatarSize);
       loadedAvatarImages[key] = image;
       avatarImageBlobs[key] = pngU8ToBlob(assetU8);
+    }
+    for (const [key, fallbackPath] of Object.entries(OPTIONAL_AVATAR_EXPRESSION_ASSETS)) {
+      const assetPath = assertSafePackagePath(manifest.avatar?.[key] || fallbackPath);
+      const assetU8 = unzipped[assetPath];
+      if (!assetU8 && !manifest.avatar?.[key]) continue;
+      if (!assetU8) throw new Error(`Missing emotion sprite: ${assetPath}`);
+      const image = await loadPngImageFromU8(assetU8, assetPath);
+      validateAvatarImageDimensions(image, key, expectedAvatarSize);
+      loadedAvatarImages[key] = image;
+      avatarImageBlobs[key] = pngU8ToBlob(assetU8);
+    }
+    for (const emotion of ["Happy", "Thinking", "Surprised", "Soft"]) {
+      const keys = ["Closed", "Half", "Open"].map((mouth) => `emotion${emotion}Mouth${mouth}`);
+      if (keys.some((key) => loadedAvatarImages[key]) && !keys.every((key) => loadedAvatarImages[key])) {
+        throw new Error(`Incomplete ${emotion} emotion mouth triplet`);
+      }
     }
     settingsPayload.avatarImageSize = {
       width: expectedAvatarSize.w,
@@ -3659,6 +3706,9 @@
       validateAvatarImageDimensions(image, key, { w: CROP.w, h: CROP.h });
       avatarImageBlobs[key] = await imageToPngBlob(image);
     }
+    for (const key of Object.keys(OPTIONAL_AVATAR_EXPRESSION_ASSETS)) {
+      if (images[key]) avatarImageBlobs[key] = await imageToPngBlob(images[key]);
+    }
     return avatarImageBlobs;
   }
 
@@ -3667,6 +3717,12 @@
     for (const key of Object.keys(AVATAR_PACKAGE_ASSETS)) {
       const blob = avatarImageBlobs?.[key];
       if (!blob) throw new Error(`キャラ素材が不足しています: ${key}`);
+      const u8 = new Uint8Array(await blob.arrayBuffer());
+      parts.push(`${key}:${u8.length}:${crc32(u8).toString(16)}`);
+    }
+    for (const key of Object.keys(OPTIONAL_AVATAR_EXPRESSION_ASSETS)) {
+      const blob = avatarImageBlobs?.[key];
+      if (!blob) continue;
       const u8 = new Uint8Array(await blob.arrayBuffer());
       parts.push(`${key}:${u8.length}:${crc32(u8).toString(16)}`);
     }
@@ -3743,6 +3799,20 @@
     return settingsPayload;
   }
 
+  async function loadOptionalEmotionImages(assetMap, loaded, expectedSize) {
+    const reference = assetMap?.eyesOpenMouthClosed;
+    if (typeof reference !== "string" || !reference.endsWith("eyes-open-mouth-closed.png")) return;
+    const directory = reference.slice(0, -"eyes-open-mouth-closed.png".length);
+    await Promise.all(Object.entries(OPTIONAL_AVATAR_EXPRESSION_ASSETS).map(async ([key, filename]) => {
+      if (loaded[key]) return;
+      try {
+        const image = await loadImage(directory + filename.replace(/^avatar\//, ""));
+        validateAvatarImageDimensions(image, key, expectedSize);
+        loaded[key] = image;
+      } catch { /* Older characters can omit emotion sprites. */ }
+    }));
+  }
+
   async function loadAvatarImagesFromAssetMap(assetMap) {
     const loaded = {};
     let expectedAvatarSize = null;
@@ -3760,6 +3830,7 @@
       loaded[key] = image;
     }
     if (missing.length) throw new Error(`追加キャラ素材を読み込めません: ${missing.join(", ")}`);
+    await loadOptionalEmotionImages(assetMap, loaded, expectedAvatarSize);
     return { loadedImages: loaded, size: expectedAvatarSize };
   }
 
@@ -4118,6 +4189,13 @@
       if (!blob) throw new Error(`キャラ素材が不足しています: ${key}`);
       const image = await loadPngImageFromU8(new Uint8Array(await blob.arrayBuffer()), key);
       expectedAvatarSize = validateAvatarImageDimensions(image, key, expectedAvatarSize);
+      loaded[key] = image;
+    }
+    for (const key of Object.keys(OPTIONAL_AVATAR_EXPRESSION_ASSETS)) {
+      const blob = record?.avatarImageBlobs?.[key];
+      if (!blob) continue;
+      const image = await loadPngImageFromU8(new Uint8Array(await blob.arrayBuffer()), key);
+      validateAvatarImageDimensions(image, key, expectedAvatarSize);
       loaded[key] = image;
     }
     return loaded;
@@ -6904,6 +6982,10 @@
         try {
           obsLastEventId = Math.max(obsLastEventId, Math.round(Number(event.lastEventId) || 0));
           const data = sanitizeImportedJsonValue(JSON.parse(event.data));
+          if (Object.hasOwn(data, "nikePerformance")) {
+            const allowed = obsPerformanceCharacter === "nike-avatar";
+            nikePerformance.trigger(allowed ? data.nikePerformance : "none", performance.now());
+          }
           obsExternalInput.targetX = clamp(Number(data.targetX) || 0, -3, 3);
           obsExternalInput.targetY = clamp(Number(data.targetY) || 0, -3, 3);
           obsExternalInput.angleX = clamp(Number(data.angleX ?? data.targetX) || 0, -3, 3);
@@ -6912,7 +6994,7 @@
           if (Object.prototype.hasOwnProperty.call(data, "forceMouth") || Object.prototype.hasOwnProperty.call(data, "forceEyesClosed") || Object.prototype.hasOwnProperty.call(data, "emotion") || Object.prototype.hasOwnProperty.call(data, "reaction")) {
             obsExternalInput.forceMouth = Number.isInteger(data.forceMouth) ? clamp(data.forceMouth, 0, 2) : null;
             obsExternalInput.forceEyesClosed = typeof data.forceEyesClosed === "boolean" ? data.forceEyesClosed : null;
-            obsExternalInput.emotion = ["happy", "surprised", "soft"].includes(data.emotion) ? data.emotion : null;
+            obsExternalInput.emotion = ["happy", "thinking", "surprised", "soft", "joy", "worried", "proud", "exasperated"].includes(data.emotion) ? data.emotion : null;
             obsExternalInput.reaction = ["neutral", "listening", "thinking", "soft", "sad", "happy", "surprised", "angry"].includes(data.reaction) ? data.reaction : "neutral";
             obsExternalInput.expressionUntil = performance.now() + clamp(Number(data.durationMs) || 1200, 100, 10000);
             reactionMotion.trigger(
@@ -7017,6 +7099,9 @@
     for (const key of Object.keys(AVATAR_PACKAGE_ASSETS)) {
       avatarImages[key] = await imageToPngDataUrl(images[key]);
     }
+    for (const key of Object.keys(OPTIONAL_AVATAR_EXPRESSION_ASSETS)) {
+      if (images[key]) avatarImages[key] = await imageToPngDataUrl(images[key]);
+    }
     return {
       type: "purupuru-obs-snapshot",
       version: 1,
@@ -7082,6 +7167,12 @@
   }
 
   async function applyObsSnapshot(snapshot) {
+    if (obsPerformanceCharacter !== String(snapshot?.characterId || "")) {
+      nikePerformance.reset();
+      nikePerformanceOutput = nikePerformance.update(performance.now());
+    }
+    obsPerformanceCharacter = String(snapshot?.characterId || "");
+    nikePerformance.trigger("none", performance.now());
     if (!snapshot || snapshot.type !== "purupuru-obs-snapshot") return false;
     if (snapshot.avatarImages && typeof snapshot.avatarImages === "object") {
       const requiredKeys = Object.keys(AVATAR_PACKAGE_ASSETS);
@@ -9320,6 +9411,7 @@
           missing.push(entries[i][0]);
         }
       }
+      await loadOptionalEmotionImages(ASSETS, loadedImages, expectedAvatarSize);
       if (avatarPackageImageVersion !== packageImageVersionAtStart) {
         // 起動直後に .purupuru を読み込んだ場合、遅れて完了した初期素材ロードで
         // パッケージ内画像を上書きしない。
@@ -10195,6 +10287,8 @@
     p.y += -Math.abs(nx) * voice * 1.5 * dome + lowerMask * voice * 2.5;
     p = applyMouthPuniWarp(x, y, p);
 
+    if (nikePerformanceOutput.active) p = performanceWarpPoint(p.x, p.y, nikePerformanceOutput, "", CROP.w, CROP.h);
+
     return p;
   }
 
@@ -10772,7 +10866,7 @@
   function computeCharacterTransform() {
     const fit = Math.min(stage.w / (CROP.w + 50), stage.h / (CROP.h * 0.76));
     const frozenSetup = shouldFreezeCharacterMotion();
-    const reactionScale = frozenSetup ? 1 : reactionMotionOutput.scale;
+    const reactionScale = frozenSetup ? 1 : reactionMotionOutput.scale * (1 + nikePerformanceOutput.scale);
     // 呼吸・重心ドリフト(C)。breathStrength=0 で現状同等。
     const breathAmt = frozenSetup ? 0 : state.breathStrength / 100;
     const breath = Math.sin(TAU * animationSeconds * 0.18); // 約5.6秒周期
@@ -10788,8 +10882,8 @@
     const drawW = CROP.w * scaleX;
     const drawH = CROP.h * scaleY;
     const avatarX = DESKTOP_MASCOT_MODE ? 0 : state.avatarX;
-    const reactionShakeX = frozenSetup ? 0 : reactionMotionOutput.shakeX * CROP.w * baseScale;
-    const reactionOffsetY = frozenSetup ? 0 : reactionMotionOutput.offsetY * CROP.h * baseScale;
+    const reactionShakeX = frozenSetup ? 0 : (reactionMotionOutput.shakeX + nikePerformanceOutput.x) * CROP.w * baseScale;
+    const reactionOffsetY = frozenSetup ? 0 : (reactionMotionOutput.offsetY + nikePerformanceOutput.y) * CROP.h * baseScale;
     const centerX = stage.w * 0.5 + avatarX + state.angleX * 20 * (state.angleStrength / 100) + swayX + reactionShakeX;
     const centerY = stage.h * 0.5 + state.avatarY - bounce + state.angleY * 22 * (state.angleStrength / 100) + reactionOffsetY;
     const rollAmt = frozenSetup ? 0 : state.rollStrength / 100;
@@ -10798,7 +10892,7 @@
       (Math.PI / 180) *
       (state.angleX * 2.2 * (state.angleStrength / 100) +
         Math.sin(TAU * (animationSeconds * 0.34 + 0.1)) * 0.7 +
-        rollIdle) + (frozenSetup ? 0 : reactionMotionOutput.tilt);
+        rollIdle) + (frozenSetup ? 0 : reactionMotionOutput.tilt + nikePerformanceOutput.tilt);
 
     const neckPivot = currentNeckPivot();
     const pivotX = neckPivot.x;
@@ -10941,7 +11035,7 @@
     const useTearLensMesh = state.tearLensEnabled && state.tearLensStrength > 0 && !state.eyeSetupMode && !state.faceDepthSetupMode && !blinkClosed;
     const yaw = Math.abs(clamp(state.angleX * (state.angleStrength / 100), -1.6, 1.6));
     const useFeatureTurnMesh = faceTurnDepthAmount() > 0.001 && yaw > 0.02 && !state.eyeSetupMode && !state.faceDepthSetupMode;
-    const useHighMesh = useTearLensMesh || useFeatureTurnMesh;
+    const useHighMesh = useTearLensMesh || useFeatureTurnMesh || nikePerformanceOutput.active;
     faceMeshSpecCache.warpFn = currentFaceMeshWarpPoint;
     faceMeshSpecCache.cols = useHighMesh ? 28 : 14;
     faceMeshSpecCache.rows = useHighMesh ? 20 : 10;
@@ -11101,7 +11195,23 @@
   function drawFaceAndHighlightLayer() {
     clearCharacterCanvas();
     const faceSpec = currentFaceMeshSpec();
-    drawMouthBlendedExpression(charCtx, faceSpec);
+    const poses = Object.entries(nikePerformanceOutput.poses || {}).filter(([pose, weight]) =>
+      weight > .001 && images[`performance${pose[0].toUpperCase() + pose.slice(1)}EyesOpenMouthClosed`]);
+    const poseWeight = poses.reduce((sum, [, weight]) => sum + weight, 0);
+    if (!poses.length) drawMouthBlendedExpression(charCtx, faceSpec);
+    else {
+      // Add premultiplied layers: unlike source-over fading, shared face pixels
+      // remain opaque while changing silhouette (hands/arms).
+      charCtx.save();
+      charCtx.globalCompositeOperation = "lighter";
+      charCtx.globalAlpha = Math.max(0, 1 - poseWeight);
+      drawMouthBlendedExpression(charCtx, faceSpec);
+      for (const [pose, weight] of poses) {
+        charCtx.globalAlpha = weight;
+        drawMouthBlendedExpression(charCtx, faceSpec, pose);
+      }
+      charCtx.restore();
+    }
 
     // 目ハイライト(D): 各目中心基準でぷるぷるスケール、前髪の下、まばたき連動
     if (state.highlightEnabled) {
@@ -11128,21 +11238,68 @@
     drawCharacterCanvasToStage();
   }
 
-  function drawMouthBlendedExpression(targetCtx, faceSpec) {
+  // Registered face art remains independent of the generated arms/body. Keep
+  // only twelve combinations: no persistent pose x emotion x mouth atlas.
+  const performanceFaceCache = [];
+  function performanceFaceImage(body, face, mouthOnly = false) {
+    if (!body || !face || !obsExternalInput.emotion || (blinkClosed && !mouthOnly)) return body;
+    const cached = performanceFaceCache.find(item => item.body === body && item.face === face && item.mouthOnly === mouthOnly);
+    if (cached) return cached.canvas;
+    const canvas = document.createElement("canvas");
+    canvas.width = body.width; canvas.height = body.height;
+    const ctx = canvas.getContext("2d");
+    ctx.drawImage(body, 0, 0);
+    const patch = document.createElement("canvas");
+    patch.width = canvas.width; patch.height = canvas.height;
+    const p = patch.getContext("2d");
+    // Same canonical registration as build-nike-performances.cjs. Never used
+    // for other characters or to manufacture new expression artwork.
+    for (const [x, y, rx, ry, feather] of [[557, 629, 100, 90, .16], [731, 604, 100, 90, .16], [641, 756, 68, 42, .6]]) {
+      if (mouthOnly && y !== 756) continue;
+      p.save(); p.translate(x, y); p.scale(rx, ry);
+      const gradient = p.createRadialGradient(0, 0, 1 - feather, 0, 0, 1);
+      gradient.addColorStop(0, "white"); gradient.addColorStop(1, "transparent");
+      p.fillStyle = gradient; p.fillRect(-1, -1, 2, 2); p.restore();
+    }
+    p.globalCompositeOperation = "source-in"; p.drawImage(face, 0, 0);
+    ctx.drawImage(patch, 0, 0);
+    performanceFaceCache.push({ body, face, mouthOnly, canvas });
+    if (performanceFaceCache.length > 12) performanceFaceCache.shift();
+    return canvas;
+  }
+
+  function drawMouthBlendedExpression(targetCtx, faceSpec, pose = "") {
+    if (pose && nikePerformanceOutput.active) {
+      const original = faceSpec.warpFn;
+      faceSpec = { ...faceSpec, cols: 28, rows: 28, warpFn: (x, y) => {
+        const p = original(x, y);
+        return performanceWarpPoint(p.x, p.y, nikePerformanceOutput, pose, CROP.w, CROP.h);
+      } };
+    }
+    const poseImage = (mouth) => {
+      // Proud has authored smiling speech apertures. Blinking closes only the
+      // eyes; it must not flash back to the neutral mouth for a single frame.
+      const keepSmile = blinkClosed && obsExternalInput.emotion === "proud" && images.emotionProudMouthClosed;
+      const face = images[expressionKeyForMouth(mouth, keepSmile ? false : blinkClosed)];
+      if (!pose) return keepSmile ? performanceFaceImage(images[expressionKeyForMouth(mouth)], face, true) : face;
+      const prefix = `performance${pose[0].toUpperCase() + pose.slice(1)}Eyes${blinkClosed ? "Closed" : "Open"}`;
+      const body = images[`${prefix}Mouth${mouth === 2 ? "Open" : mouth === 1 ? "Half" : "Closed"}`];
+      return body ? performanceFaceImage(body, face, Boolean(keepSmile)) : face;
+    };
     const durationMs = mouthCrossfadeDurationMs();
     if (mouthBlendFromState === mouthBlendToState || durationMs <= 0) {
-      drawMeshCroppedImage(targetCtx, images[expressionKey()], faceSpec.warpFn, faceSpec.cols, faceSpec.rows);
+      drawMeshCroppedImage(targetCtx, poseImage(mouthState), faceSpec.warpFn, faceSpec.cols, faceSpec.rows);
       return;
     }
 
     const blendT = clamp(((lastTimestamp || performance.now()) - mouthBlendStartedAt) / durationMs, 0, 1);
     if (blendT >= 1) {
-      drawMeshCroppedImage(targetCtx, images[expressionKey()], faceSpec.warpFn, faceSpec.cols, faceSpec.rows);
+      drawMeshCroppedImage(targetCtx, poseImage(mouthState), faceSpec.warpFn, faceSpec.cols, faceSpec.rows);
       return;
     }
 
-    const fromImage = images[expressionKeyForMouth(mouthBlendFromState)];
-    const toImage = images[expressionKeyForMouth(mouthBlendToState)];
+    const fromImage = poseImage(mouthBlendFromState);
+    const toImage = poseImage(mouthBlendToState);
     if (!fromImage || !toImage) {
       drawMeshCroppedImage(targetCtx, images[expressionKey()], faceSpec.warpFn, faceSpec.cols, faceSpec.rows);
       return;
@@ -11152,7 +11309,7 @@
     try {
       // from画像を不透明のまま敷き、to画像だけをフェードインする。
       // 表情PNGは口以外が同一前提なので、顔全体の不透明度を落とさず口領域だけを滑らかにつなぐ。
-      targetCtx.globalAlpha = prevAlpha;
+      targetCtx.globalAlpha = targetCtx.globalCompositeOperation === "lighter" ? prevAlpha * (1 - blendT) : prevAlpha;
       drawMeshCroppedImage(targetCtx, fromImage, faceSpec.warpFn, faceSpec.cols, faceSpec.rows);
       targetCtx.globalAlpha = prevAlpha * blendT;
       drawMeshCroppedImage(targetCtx, toImage, faceSpec.warpFn, faceSpec.cols, faceSpec.rows);
@@ -13164,6 +13321,10 @@
 
       animationSeconds += delta;
       reactionMotionOutput = reactionMotion.update(timestamp);
+      nikePerformanceOutput = nikePerformance.update(timestamp, performanceReducedMotion.matches || setupActive, {
+        enabled: obsPerformanceCharacter === "nike-avatar" && Boolean(images.performanceExplainEyesOpenMouthClosed),
+        speakingLevel: voiceLevel,
+      });
 
       if (OBS_MODE) {
         applyObsExternalTarget(timestamp);

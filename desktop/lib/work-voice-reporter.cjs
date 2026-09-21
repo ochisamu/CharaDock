@@ -99,12 +99,10 @@ function japaneseCommitment(value) {
 }
 
 function englishCommitment(value) {
-  const text = cleanWorkRequest(value)
-    .replace(/^please\s+/iu, "")
-    .replace(/[.!?]+$/u, "")
-    .trim();
-  if (!text) return "";
-  return `Got it. I'll start with: ${text}.`;
+  if (!cleanWorkRequest(value)) return "";
+  // A timeout fallback has no evidence of the worker's chosen next action.
+  // Natural, grounded commentary replaces it as soon as the worker responds.
+  return "Give me a moment to think.";
 }
 
 function workAcknowledgementFallback(request, language = "ja") {

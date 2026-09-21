@@ -23,7 +23,7 @@ class DeviceSpeechGate {
     session.rejected = !bypass && handsfree && this.suppress();
     if (session.rejected) return;
     try {
-      if (bypass) return await this.onStart();
+      if (bypass) return await this.onStart({ handsfree });
       const vad = await this.createVad();
       if (this.current !== session) { vad.stop(); return; }
       session.vad = vad;
@@ -69,7 +69,7 @@ class DeviceSpeechGate {
         if (!result.detected && !result.segmentComplete) continue;
         s.accepted = true;
         s.vad.stop();
-        await this.onStart();
+        await this.onStart({ handsfree: s.handsfree });
         if (this.current !== s) return;
         const initial = Buffer.concat(s.buffers);
         s.buffers = [];

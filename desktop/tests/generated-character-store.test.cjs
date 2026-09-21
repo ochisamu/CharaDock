@@ -67,7 +67,7 @@ function storedZip(files) {
   return Buffer.concat([...localParts, central, end]);
 }
 
-function testPuruPuruPackage({ rlcd42 = false, partialRlcd42 = false } = {}) {
+function testPuruPuruPackage({ rlcd42 = false, partialRlcd42 = false, emotions = false, partialEmotions = false } = {}) {
   const image = new PNG({ width: 4, height: 6 });
   image.data.fill(255);
   const png = PNG.sync.write(image);
@@ -82,6 +82,13 @@ function testPuruPuruPackage({ rlcd42 = false, partialRlcd42 = false } = {}) {
     eyesClosedMouthOpen: "avatar/eyes-closed-mouth-open.png",
   };
   const files = Object.fromEntries(Object.values(avatar).map((name) => [name, png]));
+  if (emotions || partialEmotions) {
+    for (const [index, mouth] of ["closed", "half", "open"].entries()) {
+      if (partialEmotions && index > 0) continue;
+      image.data[0] = index * 60;
+      files[`avatar/emotion-thinking-mouth-${mouth}.png`] = PNG.sync.write(image);
+    }
+  }
   files["thumbnail.png"] = png;
   files["manifest.json"] = JSON.stringify({ format: "purupuru-avatar-package", formatVersion: 1, characterName: "テスト", settings: "settings.json", thumbnail: "thumbnail.png", avatar });
   files["settings.json"] = JSON.stringify({ type: "purupuru-pngtuber-settings", version: 2, state: { avatarSize: 125, hairSpring: 60 } });
@@ -108,6 +115,17 @@ function testPuruPuruPackage({ rlcd42 = false, partialRlcd42 = false } = {}) {
   }
   return storedZip(files);
 }
+
+test("optional emotion sprites survive package import and installation", (t) => {
+  const bytes = testPuruPuruPackage({ emotions: true });
+  const parsed = parsePuruPuruPackage(bytes);
+  assert.ok(parsed.avatar.emotionThinkingMouthHalf);
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "emotion-import-"));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const installed = installPuruPuruCharacter({ bytes, fileName: "emotion.purupuru", userDataDirectory: directory });
+  assert.deepEqual(fs.readFileSync(path.join(installed.assetDir, "emotion-thinking-mouth-half.png")), parsed.avatar.emotionThinkingMouthHalf);
+  assert.throws(() => parsePuruPuruPackage(testPuruPuruPackage({ partialEmotions: true })), /Incomplete/);
+});
 
 test("generated character removal clears its record and per-character settings", () => {
   const userData = path.join(os.tmpdir(), "charadock-generated-store-plan");

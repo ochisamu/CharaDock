@@ -70,6 +70,7 @@ function speechHarness(overrides = {}) {
     startStreamingSpeechSession: async () => ({}),
     stopRlcd42Speech: async () => {},
     finishStreamingSpeechSession: async () => ({ text: "こんにちは" }),
+    jevAddressGate: { check: async () => ({ accepted: true, reason: "bypass" }) },
     handleMascotConversation: async () => ({ text: "返事です" }),
     diagnosticLog: null, setTimeout, clearTimeout, rlcd42SpeechActive: false,
     playRlcd42Speech: async (text) => { spoken.push(text); },

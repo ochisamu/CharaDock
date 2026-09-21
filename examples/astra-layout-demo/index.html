@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Focus Room · Find your flow</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="nav"><a class="wordmark" href="#">focus<span>room</span><i></i></a><span class="nav-note">A LITTLE SPACE. A BETTER DAY.</span></header>
+  <main>
+    <section class="hero"><div><p class="eyebrow"><span></span> YOUR NEXT GOOD HOUR</p><h1>Less noise.<br><em>More you.</em></h1><p class="intro">Make room for the work that matters.<br>A calm space. Good company. One clear goal.</p></div><div class="orbit" aria-hidden="true"><div class="ring ring-one"></div><div class="ring ring-two"></div><div class="planet"></div><span class="orbit-note">IN YOUR<br>ELEMENT.</span><b class="star">✦</b></div></section>
+    <section class="sessions"><div class="section-head"><h2>Find your flow</h2><span>Three ways to begin ↘</span></div><div class="session-grid">
+      <article class="session"><span class="number">01 / RESET</span><h3>A fresh start.</h3><p>Clear the clutter.<br>Find your first small step.</p><div class="session-bottom"><span>25 MIN</span><button data-session="Reset">Choose Reset <span>↗</span></button></div></article>
+      <article class="session featured"><span class="number">02 / DEEP WORK</span><h3>In the zone.</h3><p>One thing at a time.<br>Make meaningful progress.</p><div class="session-bottom"><span>50 MIN</span><button data-session="Deep Work">Choose Deep Work <span>↗</span></button></div></article>
+      <article class="session"><span class="number">03 / CREATE</span><h3>Room to think.</h3><p>Follow a new idea.<br>See where it takes you.</p><div class="session-bottom"><span>90 MIN</span><button data-session="Create">Choose Create <span>↗</span></button></div></article>
+    </div></section>
+    <p id="selection" class="selection" role="status">Pick a session. Make it yours.</p>
+  </main>
+  <footer><span>SMALL STEPS. REAL PROGRESS.</span><span>Focus Room / Local demo</span></footer>
+  <script>for (const button of document.querySelectorAll('[data-session]')) button.addEventListener('click', () => { document.querySelector('#selection').textContent = button.dataset.session + ' selected. Your space is ready.'; });</script>
+</body>
+</html>

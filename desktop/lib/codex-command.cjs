@@ -98,6 +98,19 @@ function macCodexCandidates(env = process.env) {
   ].filter(Boolean);
 }
 
+async function resolveInstalledWslCodexCommand(options = {}) {
+  const { platform = process.platform, env = process.env, runCommand = run } = options;
+  if (platform !== "win32") return "";
+  if (env.CODEX_WSL_CLI_PATH) return resolveWslCodexCommand(options);
+  // Discover the user's regular Linux installation, not an app-specific copy.
+  // A login shell includes the standard user-local npm prefix in PATH.
+  const output = await runCommand("wsl.exe", ["--exec", "/bin/sh", "-lc", "command -v codex"]);
+  const candidate = String(output || "").trim();
+  if (candidate.startsWith("/") && !/[\r\n\0]/.test(candidate)
+    && !/\/\.codex\/bin\/wsl\//.test(candidate)) return candidate;
+  return resolveWslCodexCommand(options);
+}
+
 function resolveWslCodexCommand({
   platform = process.platform,
   env = process.env,
@@ -252,6 +265,7 @@ module.exports = {
   resolveCodexCommand,
   resolveNpmCodexBinary,
   resolveWslCodexCommand,
+  resolveInstalledWslCodexCommand,
   wslCommandArgsForPath,
   wslPathTarget,
   windowsPathToWsl,

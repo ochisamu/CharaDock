@@ -89,6 +89,31 @@ node .agents/skills/build-purupuru-avatar/scripts/validate-output.cjs \
 12. Inspect `output/qa-rlcd42-preview.png` and all four `output/rlcd42-*.png` files at full size and mentally at 400×300. Confirm the identity and silhouette match the source, the background and skin remain white, contours are strong, selective rear-hair/clothing fills are separated, coarse hatching remains readable, no fine dot pattern was introduced, both eyes visibly close, mouth progresses closed → half → open, and the composition or fill placement does not jump.
 13. On any validator or visual failure, regenerate the defective working image and repeat assembly/validation. Do not bypass a failure by copying, renaming, editing hashes, weakening the validator, deleting hair, or claiming completion.
 
+## Generated emotion differences
+
+For each new character, also generate happy, thinking, and surprised eye/brow expressions with real image generation/editing. These assets are optional for older installed characters; new builds must supply all three mouth triplets. Preserve legacy `soft` triplets if present. Never simulate generated expression artwork with a tint, warp, copied neutral image, or procedural facial drawing.
+
+Use `output/eyes-open-mouth-closed.png` as the registered reference for three identity-preserving edits: `work/happy-edit.png`, `work/thinking-edit.png`, and `work/surprised-edit.png`. Change only eyes and brows. Preserve the mouth, face angle, head position, costume, hair separation, crop, and exact canvas size. Use a perfectly flat #00FF00 background, never a checkerboard. Happy should read warmly delighted, thinking attentive/contemplative, and surprised with widened eyes/raised brows; keep both eyes open. Inspect each master before composition.
+
+After the six canonical mouth/blink frames are assembled, run:
+
+```bash
+node .agents/skills/build-purupuru-avatar/scripts/compose-emotions.cjs \
+  --output output --metadata output/character.json \
+  --happy work/happy-edit.png --thinking work/thinking-edit.png \
+  --surprised work/surprised-edit.png
+```
+
+This writes nine RGBA PNGs named `emotion-{happy,thinking,surprised}-mouth-{closed,half,open}.png`. The composer copies localized eye/brow differences onto each canonical mouth frame, preserving alpha and excluding every pixel involved in canonical speech differences. Audio continues to select closed/half/open mouths; the normal blink controller selects existing `eyes-closed-mouth-*.png` frames during blinks. Do not force a static mouth or disable blinks for emotions.
+
+The composer accepts `rig.eyeCenters` from character metadata or `faceDepthSetup.anchors.leftEye/rightEye` from existing `default-settings.json`. All coordinates refer to the canonical output canvas. For the five shipped defaults, use `assets/{amber,bronze,towa,sage,nike}-avatar/default-settings.json` and the matching directory's canonical open-eye PNGs; amber/bronze/towa/sage are 1254×1254, nike is 1536×1536. Do not reframe generated masters to fit; repair the edit if it changes registration.
+
+Run the final validator with `--require-emotions` in addition to the hair/RLCD flags. It rejects incomplete triplets, unchanged emotion images, duplicate mouths, canvas mismatch, alpha drift, and edits that replace audio mouth differences. Inspect all nine results with the existing hair layers overlaid: happy/thinking/surprised should remain legible, no eye/brow seams should appear, and mouths must visibly progress without identity drift. Pixel checks cannot establish expression quality; regenerate masters when visual inspection fails. Existing packages without emotion assets remain valid without this flag.
+
+For a complete emotion contact sheet, run `node .agents/skills/build-purupuru-avatar/scripts/preview-emotions.cjs output`. This enforces `required: true` and strict registration before writing `output/qa-emotions-preview.png`: rows happy/thinking/surprised, columns closed/half/open mouth. For staged default assets, pass the original asset directory as a second argument to overlay its existing hair. Use this required validation for every completed default character set. All shared emotion code lives inside `scripts/` so copying the skill to an isolated job needs only its existing `pngjs` dependency, not application code.
+
+Legacy canonical mouth frames can also differ around the eyes (notably Sage). When both eye and mouth anchors are available, the composer replaces only the declared eye/brow regions outside the canonical mouth region, retaining speech pixels exactly. Pass the normalized rig as `rig: emotionRig(metadata)` when directly calling `validateEmotionSprites` on such defaults; the preview command obtains this metadata automatically. Without mouth anchors, the conservative fallback excludes every canonical difference pixel. Inspect these legacy composites carefully because pixel registration alone cannot verify that the emotion reads correctly.
+
 ## Metadata contract
 
 Write this exact structure:

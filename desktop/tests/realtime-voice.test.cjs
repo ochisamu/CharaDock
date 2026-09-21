@@ -45,7 +45,8 @@ test("Realtime sessions start only from voice input, accept typed turns, and kee
   assert.match(main, /delegationAckFiller: false/);
   assert.match(main, /includeStartupContext: !workMode/);
   assert.match(main, /initialItems: \[\{[\s\S]*realtimeWorkFrontendContext[\s\S]*realtimeChatFrontendContext/);
-  assert.match(main, /Chat is conversational and strictly read-only/);
+  assert.match(main, /Chat is conversational and read-only except for the explicitly listed built-in playback controls/);
+  assert.match(main, /Built-in media_control is the only playback exception/);
   assert.match(main, /For current information, web research, verification, or read-only inspection, request exactly one Codex delegation/);
   assert.match(main, /never repeat, quote, or paraphrase the user's request as assistant dialogue/);
   assert.match(main, /the assistant must not echo a request ending in '教えて'/);

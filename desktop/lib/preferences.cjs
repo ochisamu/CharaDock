@@ -32,6 +32,11 @@ const DEFAULT_CHARACTER_TTS_PROFILES = Object.freeze({
 const DEFAULTS = Object.freeze({
   language: "ja",
   backend: "codex",
+  jevEnabled: false,
+  jevMediaEnabled: true,
+  jevExpressionEnabled: true,
+  jevNikePerformanceEnabled: false,
+  jevAddressMode: "off",
   characterId: "amber-avatar",
   openaiModel: "gpt-5.6-luna",
   transcriptionModel: "gpt-4o-mini-transcribe",
@@ -363,6 +368,7 @@ class Preferences {
       }])),
     };
     this.sessionApiKey = "";
+    this.sessionJevApiKey = "";
     this.sessionAtomEchoPairingToken = "";
     this.sessionDevicePairingTokens = new Map();
     this.sessionMcpApiKeys = new Map();
@@ -376,6 +382,9 @@ class Preferences {
         if (Object.prototype.hasOwnProperty.call(parsed, key)) this.data[key] = parsed[key];
       }
       // Migrate the former single Codex model setting without discarding it.
+      for (const key of ["jevEnabled", "jevMediaEnabled", "jevExpressionEnabled", "jevNikePerformanceEnabled"]) {
+        if (typeof this.data[key] !== "boolean") this.data[key] = DEFAULTS[key];
+      }
       if (typeof parsed.codexModel === "string") {
         if (!Object.prototype.hasOwnProperty.call(parsed, "codexChatModel")) this.data.codexChatModel = parsed.codexModel;
         if (!Object.prototype.hasOwnProperty.call(parsed, "codexWorkModel")) this.data.codexWorkModel = parsed.codexModel;
@@ -388,6 +397,7 @@ class Preferences {
       if (typeof this.data.realtimeAutoStartOnPet !== "boolean") this.data.realtimeAutoStartOnPet = false;
       if (typeof this.data.workNetworkAccess !== "boolean") this.data.workNetworkAccess = false;
       if (!["ja", "en"].includes(this.data.language)) this.data.language = "ja";
+      if (!["off", "standard", "strict"].includes(this.data.jevAddressMode)) this.data.jevAddressMode = "off";
       if (!["manual", "vad"].includes(this.data.voiceActivationMode)) this.data.voiceActivationMode = "vad";
       if (!["low", "normal", "high"].includes(this.data.vadSensitivity)) this.data.vadSensitivity = "normal";
       if (!Object.prototype.hasOwnProperty.call(parsed, "mascotPointerMode")) {
@@ -631,6 +641,7 @@ class Preferences {
         : {};
       this.data.workHistory = normalizeWorkHistory(this.data.workHistory);
       if (typeof parsed.encryptedApiKey === "string") this.data.encryptedApiKey = parsed.encryptedApiKey;
+      if (typeof parsed.encryptedJevApiKey === "string") this.data.encryptedJevApiKey = parsed.encryptedJevApiKey;
       if (typeof parsed.encryptedAtomEchoPairingToken === "string" && parsed.encryptedAtomEchoPairingToken.length <= 8_192) {
         this.data.encryptedAtomEchoPairingToken = parsed.encryptedAtomEchoPairingToken;
       }
@@ -671,6 +682,8 @@ class Preferences {
     state.workDirectoryName = this.data.workDirectory ? path.basename(this.data.workDirectory) : "";
     state.hasApiKey = Boolean(this.getApiKey());
     state.apiKeyPersistence = this.canEncrypt() ? "encrypted" : "session";
+    state.jevApiKeyConfigured = Boolean(this.getJevApiKey());
+    state.jevApiKeyPersistence = this.sessionJevApiKey || !this.canEncryptJevKey() ? "session" : "encrypted";
     state.mcpServers = publicMcpServers(this.data.mcpServers, (serverId) => Boolean(this.getMcpApiKey(serverId)));
     state.mcpAssignments = normalizeMcpAssignments(this.data.mcpAssignments, this.data.mcpServers.map((server) => server.id));
     state.mcpApiKeyPersistence = this.canEncrypt() ? "encrypted" : "session";
@@ -684,6 +697,8 @@ class Preferences {
     for (const key of PUBLIC_KEYS) {
       if (key === "mcpServers" || key === "mcpAssignments") continue;
       if (Object.prototype.hasOwnProperty.call(values, key)) {
+        if (key === "jevAddressMode" && !["off", "standard", "strict"].includes(values[key])) continue;
+        if (["jevEnabled", "jevMediaEnabled", "jevExpressionEnabled", "jevNikePerformanceEnabled"].includes(key) && typeof values[key] !== "boolean") continue;
         this.data[key] = key === "deviceProfiles" ? normalizeDeviceProfiles(values[key]) : values[key];
       }
     }
@@ -709,6 +724,41 @@ class Preferences {
     }
     this.save();
     return this.publicState();
+  }
+
+  canEncryptJevKey() {
+    try {
+      // Electron's Linux basic_text fallback does not protect persisted secrets.
+      return this.canEncrypt() && this.safeStorage?.getSelectedStorageBackend?.() !== "basic_text";
+    } catch {
+      return false;
+    }
+  }
+
+  setJevApiKey(apiKey) {
+    const normalized = String(apiKey || "").trim();
+    this.sessionJevApiKey = normalized;
+    delete this.data.encryptedJevApiKey;
+    if (normalized && this.canEncryptJevKey()) {
+      try {
+        this.data.encryptedJevApiKey = this.safeStorage.encryptString(normalized).toString("base64");
+        this.sessionJevApiKey = "";
+      } catch {
+        // Keep the key for this session without logging errors that may contain it.
+      }
+    }
+    this.save();
+    return this.publicState();
+  }
+
+  getJevApiKey() {
+    if (this.sessionJevApiKey) return this.sessionJevApiKey;
+    if (!this.data.encryptedJevApiKey || !this.canEncryptJevKey()) return "";
+    try {
+      return this.safeStorage.decryptString(Buffer.from(this.data.encryptedJevApiKey, "base64"));
+    } catch {
+      return "";
+    }
   }
 
   getApiKey() {

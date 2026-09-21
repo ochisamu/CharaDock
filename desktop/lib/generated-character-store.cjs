@@ -3,6 +3,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
 const { PNG } = require("pngjs");
+const { OPTIONAL_AVATAR_IMAGE_FILES, validateEmotionSprites } = require("./emotion-sprites.cjs");
 
 const MAX_PACKAGE_BYTES = 80 * 1024 * 1024;
 const MAX_UNZIPPED_BYTES = 120 * 1024 * 1024;
@@ -213,6 +214,15 @@ function parsePuruPuruPackage(input) {
     imageSize = validatePng(bytes, entryPath, imageSize);
     avatar[key] = bytes;
   }
+  for (const [key, outputName] of Object.entries(OPTIONAL_AVATAR_IMAGE_FILES)) {
+    const entryPath = assertSafePackagePath(manifest.avatar?.[key] || `avatar/${outputName}`);
+    const bytes = entries.get(entryPath);
+    if (!bytes && !manifest.avatar?.[key]) continue;
+    if (!bytes) throw new Error(`Missing optional emotion image: ${entryPath}`);
+    validatePng(bytes, entryPath, imageSize);
+    avatar[key] = bytes;
+  }
+  validateEmotionSprites(avatar);
   let thumbnail = avatar.eyesOpenMouthClosed;
   if (manifest.thumbnail) {
     const candidate = entries.get(assertSafePackagePath(manifest.thumbnail));
@@ -254,6 +264,9 @@ function installPuruPuruCharacter({ bytes, fileName, userDataDirectory }) {
   fs.mkdirSync(staging, { recursive: true });
   try {
     for (const [key, outputName] of Object.entries(AVATAR_FILES)) fs.writeFileSync(path.join(staging, outputName), parsed.avatar[key]);
+    for (const [key, outputName] of Object.entries(OPTIONAL_AVATAR_IMAGE_FILES)) {
+      if (parsed.avatar[key]) fs.writeFileSync(path.join(staging, outputName), parsed.avatar[key]);
+    }
     if (parsed.rlcd42) {
       for (const [key, outputName] of Object.entries(RLCD42_FILES)) fs.writeFileSync(path.join(staging, outputName), parsed.rlcd42[key]);
     }
@@ -343,6 +356,7 @@ function removeGeneratedCharacterDirectory(userDataDirectory, directory) {
 }
 
 module.exports = {
+  OPTIONAL_AVATAR_IMAGE_FILES,
   RLCD42_FILES,
   createGeneratedCharacterRemovalPlan,
   generatedCharactersRoot,

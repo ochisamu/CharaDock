@@ -9,11 +9,33 @@ const {
   parseWslUncPath,
   resolveCodexCommand,
   resolveWslCodexCommand,
+  resolveInstalledWslCodexCommand,
   wslCommandArgsForPath,
   wslPathTarget,
   windowsPathToWsl,
   workspacePathIdentity,
 } = require("../lib/codex-command.cjs");
+
+test("Windows Work discovers the regular WSL CLI before a desktop-managed copy", async () => {
+  const command = await resolveInstalledWslCodexCommand({
+    platform: "win32", env: {},
+    runCommand: async (exe, args) => {
+      assert.equal(exe, "wsl.exe");
+      assert.deepEqual(args, ["--exec", "/bin/sh", "-lc", "command -v codex"]);
+      return "/home/test/.local/bin/codex\n";
+    },
+  });
+  assert.equal(command, "/home/test/.local/bin/codex");
+});
+
+test("WSL CLI discovery safely falls back when WSL is unavailable", async () => {
+  assert.equal(await resolveInstalledWslCodexCommand({
+    platform: "win32", env: {}, runCommand: async () => "",
+  }), "");
+  assert.equal(await resolveInstalledWslCodexCommand({
+    platform: "linux", runCommand: async () => { throw Error("must not run"); },
+  }), "");
+});
 
 test("macOS packaged apps discover Codex Desktop outside the Finder PATH", async () => {
   const desktop = "/Applications/Codex.app/Contents/Resources/codex";
