@@ -1048,19 +1048,22 @@
 
   function setCodexModelOptions(select, selectedValue) {
     const value = String(selectedValue || "");
+    const knownModels = { "gpt-6-astra": "GPT-6 Astra", "gpt-6-sol": "GPT-6 Sol", "gpt-6-luna": "GPT-6 Luna" };
     select.replaceChildren(new Option("既定（GPT-6 Astra）", ""));
     for (const model of codexModels) {
-      const label = model.model === "gpt-6-astra" ? "GPT-6 Astra" : model.displayName || model.model;
+      if ([...select.options].some((option) => option.value === model.model)) continue;
+      const label = Object.hasOwn(knownModels, model.model) ? knownModels[model.model] : model.displayName || model.model;
       const option = new Option(label, model.model);
       option.title = model.description || "";
       select.appendChild(option);
     }
     // Older Codex installations may omit newly released models from model/list.
     // Keep the explicit ID selectable without silently changing saved defaults.
-    if (![...select.options].some((option) => option.value === "gpt-6-astra")) {
-      const astra = new Option("GPT-6 Astra", "gpt-6-astra");
-      astra.title = localized("利用にはCodex側のモデルアクセス権が必要です。", "Requires model access in your Codex account.");
-      select.appendChild(astra);
+    for (const [id, label] of Object.entries(knownModels)) {
+      if ([...select.options].some((option) => option.value === id)) continue;
+      const option = new Option(label, id);
+      option.title = localized("利用にはCodex側のモデルアクセス権が必要です。", "Requires model access in your Codex account.");
+      select.appendChild(option);
     }
     if (value && ![...select.options].some((option) => option.value === value)) {
       select.appendChild(new Option(`${value}（保存済み）`, value));

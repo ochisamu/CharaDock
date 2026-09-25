@@ -7115,7 +7115,8 @@ async function runSmokeTest() {
     const work = document.querySelector('#codexWorkModelInput');
     return chat?.tagName === 'SELECT' && work?.tagName === 'SELECT' &&
       chat.options[0]?.value === '' && work.options[0]?.value === '' &&
-      [chat, work].every(select => [...select.options].some(option => option.value === 'gpt-6-astra'));
+      [chat, work].every(select => ['gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna'].every(id =>
+        [...select.options].some(option => option.value === id)));
   })()`);
   if (!codexModelPickersReady) throw new Error("Codex model dropdown check failed");
   const audioSettingReady = await controlWindow.webContents.executeJavaScript(`(() => {
