@@ -31,6 +31,7 @@ const { OpenAIClient } = require("./backend/openai-client.cjs");
 const { MEDIA_DYNAMIC_TOOLS, MEDIA_TOOL_INSTRUCTIONS, createMediaController } = require("./lib/media-control.cjs");
 const mediaController = createMediaController();
 const { JevClient } = require("./lib/jev-client.cjs");
+const { expressiveCharacterEnabled, KOHAKU_EMOTIONS } = require("./lib/expressive-character.cjs");
 const { JevAddressGate } = require("./lib/jev-address-gate.cjs");
 const { JevMediaGate } = require("./lib/jev-media-gate.cjs");
 const { JevExpressionDirector } = require("./lib/jev-expression-director.cjs");
@@ -47,15 +48,16 @@ const jevAddressGate = new JevAddressGate({
 const jevLiveGates = new Map();
 const jevExpressionDirector = new JevExpressionDirector({
   observe: debugJev,
-  classify: (text, options) => jevClient.expression(text, { ...options, nikePerformance: nikePerformanceEnabled() }),
+  classify: (text, options) => jevClient.expression(text, { ...options, nikePerformance: nikePerformanceEnabled(),
+    allowedEmotions: activeCharacter().id === "amber-avatar" ? KOHAKU_EMOTIONS : undefined }),
   enabled: () => jevEnabled("jevExpressionEnabled"),
   context: () => activeCharacter().id,
   apply: expression => localServer.pushInput({ ...currentCursorInput(), ...expression,
     nikePerformance: nikePerformanceEnabled() ? expression.nikePerformance || "none" : "none" }),
 });
-function nikePerformanceEnabled() {
-  return activeCharacter().id === "nike-avatar" && preferences.data.jevNikePerformanceEnabled === true
-    && jevEnabled("jevExpressionEnabled");
+function nikePerformanceEnabled(characterId = activeCharacter().id) {
+  // Keep the legacy wire name; capability and opt-in are character-specific.
+  return expressiveCharacterEnabled(characterId, preferences.data, jevEnabled("jevExpressionEnabled"));
 }
 function jevEnabled(feature) {
   return preferences.data.jevEnabled === true && preferences.data[feature] !== false
@@ -1586,7 +1588,7 @@ function buildAvatarSnapshot(characterId, motionOverride = null) {
     avatarImages[key] = fileToDataUrl(path.join(directory, filename));
   }
   for (const [key, filename] of Object.entries(OPTIONAL_AVATAR_IMAGE_FILES)) {
-    if (key.startsWith("performance") && (character.id !== "nike-avatar" || !nikePerformanceEnabled())) continue;
+    if (key.startsWith("performance") && !nikePerformanceEnabled(character.id)) continue;
     const imagePath = path.join(directory, filename);
     if (fs.existsSync(imagePath)) avatarImages[key] = fileToDataUrl(imagePath);
   }
@@ -10653,7 +10655,7 @@ function registerIpc() {
     if (!patch || typeof patch !== "object" || Array.isArray(patch)) throw new Error("Invalid Jev settings");
     const performanceWasEnabled = nikePerformanceEnabled();
     const values = {};
-    for (const [input, key] of [["enabled", "jevEnabled"], ["mediaEnabled", "jevMediaEnabled"], ["expressionEnabled", "jevExpressionEnabled"], ["nikePerformanceEnabled", "jevNikePerformanceEnabled"]]) {
+    for (const [input, key] of [["enabled", "jevEnabled"], ["mediaEnabled", "jevMediaEnabled"], ["expressionEnabled", "jevExpressionEnabled"], ["nikePerformanceEnabled", "jevNikePerformanceEnabled"], ["kohakuPerformanceEnabled", "jevKohakuPerformanceEnabled"]]) {
       if (typeof patch[input] === "boolean") values[key] = patch[input];
     }
     if (["off", "standard", "strict"].includes(patch.addressMode)) values.jevAddressMode = patch.addressMode;
@@ -10674,7 +10676,7 @@ function registerIpc() {
   });
   ipcMain.handle("jev:previewPerformance", async (event, cue) => {
     assertTrustedSender(event);
-    if (!nikePerformanceEnabled()) throw new Error("Enable Nike performance with the built-in AI Nike character first");
+    if (!nikePerformanceEnabled()) throw new Error("Enable expressive performance for the selected built-in Kohaku or AI Nike character first");
     const samples = {
       ponder: "うーん、どちらがいいかな。二つの案を比べながら、もう少しじっくり考えてみよう。",
       explain: "やり方を順番に説明するね。まず設定を開いて、次に接続先を選ぶ。この三つが大事なポイントだよ。",

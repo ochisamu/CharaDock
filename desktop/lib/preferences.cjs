@@ -36,6 +36,7 @@ const DEFAULTS = Object.freeze({
   jevMediaEnabled: true,
   jevExpressionEnabled: true,
   jevNikePerformanceEnabled: false,
+  jevKohakuPerformanceEnabled: false,
   jevAddressMode: "off",
   characterId: "amber-avatar",
   openaiModel: "gpt-5.6-luna",
@@ -382,7 +383,7 @@ class Preferences {
         if (Object.prototype.hasOwnProperty.call(parsed, key)) this.data[key] = parsed[key];
       }
       // Migrate the former single Codex model setting without discarding it.
-      for (const key of ["jevEnabled", "jevMediaEnabled", "jevExpressionEnabled", "jevNikePerformanceEnabled"]) {
+      for (const key of ["jevEnabled", "jevMediaEnabled", "jevExpressionEnabled", "jevNikePerformanceEnabled", "jevKohakuPerformanceEnabled"]) {
         if (typeof this.data[key] !== "boolean") this.data[key] = DEFAULTS[key];
       }
       if (typeof parsed.codexModel === "string") {
@@ -698,7 +699,7 @@ class Preferences {
       if (key === "mcpServers" || key === "mcpAssignments") continue;
       if (Object.prototype.hasOwnProperty.call(values, key)) {
         if (key === "jevAddressMode" && !["off", "standard", "strict"].includes(values[key])) continue;
-        if (["jevEnabled", "jevMediaEnabled", "jevExpressionEnabled", "jevNikePerformanceEnabled"].includes(key) && typeof values[key] !== "boolean") continue;
+        if (["jevEnabled", "jevMediaEnabled", "jevExpressionEnabled", "jevNikePerformanceEnabled", "jevKohakuPerformanceEnabled"].includes(key) && typeof values[key] !== "boolean") continue;
         this.data[key] = key === "deviceProfiles" ? normalizeDeviceProfiles(values[key]) : values[key];
       }
     }

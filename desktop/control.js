@@ -3885,11 +3885,17 @@
     $("#jevMediaEnabledToggle").checked = state?.jevMediaEnabled !== false;
     $("#jevExpressionEnabledToggle").checked = state?.jevExpressionEnabled !== false;
     $("#jevNikePerformanceEnabledToggle").checked = state?.jevNikePerformanceEnabled === true;
+    $("#jevKohakuPerformanceEnabledToggle").checked = state?.jevKohakuPerformanceEnabled === true;
+    $("#jevKohakuPerformanceEnabledToggle").disabled = jevBusy || !enabled || state?.jevExpressionEnabled === false;
     $("#jevAddressModeSelect").value = state?.jevAddressMode || "off";
     $("#jevAddressModeSelect").disabled = jevBusy;
     $("#jevNikePerformanceEnabledToggle").disabled = jevBusy || !enabled || state?.jevExpressionEnabled === false;
+    const kohaku = state?.characterId === "amber-avatar";
+    const performanceOn = kohaku ? state?.jevKohakuPerformanceEnabled === true
+      : state?.characterId === "nike-avatar" && state?.jevNikePerformanceEnabled === true;
     for (const button of $$("[data-jev-preview]")) button.disabled = jevBusy || !enabled || !state?.jevApiKeyConfigured
-      || state?.jevExpressionEnabled === false || state?.jevNikePerformanceEnabled !== true;
+      || state?.jevExpressionEnabled === false || !performanceOn
+      || (kohaku && ["joy", "worried", "proud", "exasperated"].includes(button.dataset.jevPreview));
     $("#jevMediaEnabledToggle").disabled = jevBusy || !enabled;
     $("#jevExpressionEnabledToggle").disabled = jevBusy || !enabled;
     $("#jevApiKeyInput").disabled = jevBusy;
@@ -3910,6 +3916,7 @@
       mediaEnabled: $("#jevMediaEnabledToggle").checked,
       expressionEnabled: $("#jevExpressionEnabledToggle").checked,
       nikePerformanceEnabled: $("#jevNikePerformanceEnabledToggle").checked,
+      kohakuPerformanceEnabled: $("#jevKohakuPerformanceEnabledToggle").checked,
       addressMode: $("#jevAddressModeSelect").value,
     };
     if (keyAction === "save") {
@@ -6500,7 +6507,7 @@
         setStatus($("#jevStatus"), localized("標準AIニケちゃんを選び、表現拡張とAPIキーを確認してください。", "Select built-in AI Nike and check performance settings and the API key."), true);
       }
     });
-    for (const selector of ["#jevEnabledToggle", "#jevMediaEnabledToggle", "#jevExpressionEnabledToggle", "#jevNikePerformanceEnabledToggle", "#jevAddressModeSelect"]) {
+    for (const selector of ["#jevEnabledToggle", "#jevMediaEnabledToggle", "#jevExpressionEnabledToggle", "#jevNikePerformanceEnabledToggle", "#jevKohakuPerformanceEnabledToggle", "#jevAddressModeSelect"]) {
       $(selector).addEventListener("change", () => saveJevConfig());
     }
     $("#jevApiKeyInput").addEventListener("input", () => {

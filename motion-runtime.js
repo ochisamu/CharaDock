@@ -170,7 +170,7 @@
     return {
       reset() { kind = "none"; last = null; speech = 0; for (const key of Object.keys(value)) { value[key] = 0; velocity[key] = 0; } for (const key of Object.keys(poses)) poses[key] = 0; },
       trigger(next, now) { kind = PERFORMANCE_KINDS.includes(next) ? next : "none"; start = now; releaseAt = now + 2600; releasing = false; },
-      update(now, reduced = false, { speakingLevel = 0, enabled = false } = {}) {
+      update(now, reduced = false, { speakingLevel = 0, enabled = false, smoothIdle = false } = {}) {
         const dt = last === null ? 0 : clamp((now - last) / 1000, 0, .05); last = now;
         // Critically damped springs retain velocity when a new cue interrupts.
         // Audio provides phrase emphasis; silence never invents mouth movement.
@@ -189,7 +189,7 @@
         if (kind === "recoil") { const surprise = stroke(.05, 1.1); x = .03 * surprise; y = .014 * surprise; scale = -.05 * surprise; tilt = .07 * surprise; }
         if (kind === "reassure") { x = -.018; y = .006; tilt = -.025; scale = .025 * smoothstep(t / .8); }
         if (kind === "explain") { const gesture = stroke(.2, 1.25) - .55 * stroke(1.8, 1.2); x = .022 * gesture; tilt = .03 * gesture; y = -.005 * gesture; }
-        const weight = reduced || kind === "none" ? 0 : envelope;
+        const weight = reduced || kind === "none" || (smoothIdle && !enabled) ? 0 : envelope;
         const anticipation = -Math.sin(Math.PI * clamp(t / .3, 0, 1)) * .012;
         const accent = speech * Math.sin(now * .006);
         const headGesture = kind === "nod" ? .045 * (stroke(.12, .55) - .4 * stroke(.75, .5))
@@ -200,6 +200,13 @@
           head: (headGesture + anticipation) * weight + accent * .018,
           shoulder: -.012 * stroke(.35, 1.4) * weight - accent * .007,
           hand: (.055 * stroke(.35, 1.2) - .025 * stroke(1.9, 1) + anticipation) * weight + accent * .022 };
+        // Low-amplitude, incommensurate cycles avoid a repetitive bob. Keep
+        // eyes/mouth audio-owned and do not make any network request per frame.
+        if (smoothIdle && enabled && !reduced) {
+          const seconds = now / 1000;
+          target.head += .004 * Math.sin(seconds * 1.1) + .002 * Math.sin(seconds * .67);
+          target.shoulder += .0025 * Math.sin(seconds * 1.1 - .7);
+        }
         const blend = 1 - Math.exp(-dt * 12);
         for (const key of Object.keys(value)) {
           const goal = reduced ? 0 : target[key] * (["x", "y", "tilt", "scale"].includes(key) ? weight : 1);
@@ -210,22 +217,33 @@
           value[key] = goal + (offset + c * dt) * decay;
           velocity[key] = (velocity[key] - omega * c * dt) * decay;
         }
-        for (const pose of Object.keys(poses)) poses[pose] += ((pose === kind ? weight : 0) - poses[pose]) * blend;
-        return { ...value, poses: { ...poses }, kind, active: Object.values(value).some(v => Math.abs(v) > .0001) };
+        const poseBlend = smoothIdle ? 1 - Math.exp(-dt * 7) : blend;
+        for (const pose of Object.keys(poses)) poses[pose] += ((pose === kind ? weight : 0) - poses[pose]) * poseBlend;
+        return { ...value, poses: { ...poses }, kind, active: Object.values(value).some(v => Math.abs(v) > .0001) || Object.values(poses).some(v => v > .001) };
       },
     };
   }
   // Normalized joints for the registered Nike prototype, never applied to other
   // characters. A rigid head region preserves eyes/mouth; smooth neck falloff
   // and local sleeve masks add follow-through without moving the whole cutout.
-  function performanceWarpPoint(x, y, motion, pose = "", width = 1536, height = 1536) {
+  function performanceWarpPoint(x, y, motion, pose = "", width = 1536, height = 1536, character = "nike-avatar") {
     const px = x / width, py = y / height;
     const rotate = (cx, cy, angle, weight) => {
       const a = angle * weight, dx = x - cx * width, dy = y - cy * height;
       x = cx * width + dx * Math.cos(a) - dy * Math.sin(a);
       y = cy * height + dx * Math.sin(a) + dy * Math.cos(a);
     };
-    if (!pose) {
+    if (character === "amber-avatar") {
+      // Kohaku's neck is lower and farther right. All layers share this warp,
+      // so the separate front/back hair remains attached to the original head.
+      rotate(.548, .665, motion.head || 0, 1 - smoothstep((py - .62) / .13));
+      rotate(.54, .93, motion.shoulder || 0, smoothstep((py - .70) / .22));
+      const joints = pose === "celebrate" ? [[.36, .79], [.65, .83]] : pose === "explain" ? [[.39, .79]] : pose === "ponder" ? [[.45, .78]] : [];
+      for (const [cx, cy] of joints) {
+        const radius = Math.hypot((px - cx) / .14, (py - cy) / .14);
+        rotate(cx, cy, (motion.hand || 0) * .55, (1 - smoothstep(radius)) * smoothstep((py - .64) / .08));
+      }
+    } else if (!pose) {
       rotate(.452, .60, motion.head || 0, 1 - smoothstep((py - .52) / .16));
       rotate(.48, .88, motion.shoulder || 0, smoothstep((py - .55) / .2));
     } else {

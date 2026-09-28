@@ -53,7 +53,7 @@ test("Jev UI gates features and tests behind opt-in and saves flags without draf
   $("#jevApiKeyInput").value = "draft-secret";
   $("#jevEnabledToggle").checked = true;
   await context.saveJevConfig();
-  assert.deepEqual(JSON.parse(JSON.stringify(payload)), { enabled: true, mediaEnabled: true, expressionEnabled: true, nikePerformanceEnabled: false, addressMode: "off" });
+  assert.deepEqual(JSON.parse(JSON.stringify(payload)), { enabled: true, mediaEnabled: true, expressionEnabled: true, nikePerformanceEnabled: false, kohakuPerformanceEnabled: false, addressMode: "off" });
   assert.equal($("#jevMediaEnabledToggle").disabled, false);
   assert.equal($("#testJevConnectionButton").disabled, true);
 });

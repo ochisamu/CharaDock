@@ -6983,7 +6983,8 @@
           obsLastEventId = Math.max(obsLastEventId, Math.round(Number(event.lastEventId) || 0));
           const data = sanitizeImportedJsonValue(JSON.parse(event.data));
           if (Object.hasOwn(data, "nikePerformance")) {
-            const allowed = obsPerformanceCharacter === "nike-avatar";
+            const allowed = ["nike-avatar", "amber-avatar"].includes(obsPerformanceCharacter)
+              && Boolean(images.performanceExplainEyesOpenMouthClosed);
             nikePerformance.trigger(allowed ? data.nikePerformance : "none", performance.now());
           }
           obsExternalInput.targetX = clamp(Number(data.targetX) || 0, -3, 3);
@@ -10287,15 +10288,17 @@
     p.y += -Math.abs(nx) * voice * 1.5 * dome + lowerMask * voice * 2.5;
     p = applyMouthPuniWarp(x, y, p);
 
-    if (nikePerformanceOutput.active) p = performanceWarpPoint(p.x, p.y, nikePerformanceOutput, "", CROP.w, CROP.h);
+    if (nikePerformanceOutput.active) p = performanceWarpPoint(p.x, p.y, nikePerformanceOutput, "", CROP.w, CROP.h, obsPerformanceCharacter);
 
     return p;
   }
 
-  function faceRigidFollowPoint(x, y) {
+  function faceRigidFollowPoint(x, y, includePerformance = true) {
     let p = deformerWarpPoint("face", x, y);
     p = faceTurnWarpPoint(x, y, p);
     p = applyDiagonalFaceWarp(x, y, p);
+    if (includePerformance && obsPerformanceCharacter === "amber-avatar" && nikePerformanceOutput.active)
+      p = performanceWarpPoint(p.x, p.y, nikePerformanceOutput, "", CROP.w, CROP.h, obsPerformanceCharacter);
     return p;
   }
 
@@ -10311,7 +10314,8 @@
   function frontHairRootFollowPoint(x, y, hairPoint) {
     const amount = frontHairRootFollowAmount();
     if (amount <= 0.001) return hairPoint || { x, y };
-    const facePoint = faceRigidFollowPoint(x, y);
+    // Hair applies the shared performance warp after its own spring motion.
+    const facePoint = faceRigidFollowPoint(x, y, false);
     if (!hairPoint) return facePoint;
     return {
       x: lerp(hairPoint.x, facePoint.x, amount),
@@ -10328,6 +10332,8 @@
       p.x = lerp(p.x, root.x, crownLock * lerp(0.28, 0.72, followAmount));
       p.y = lerp(p.y, root.y, crownLock * lerp(0.72, 0.76, followAmount));
     }
+    if (obsPerformanceCharacter === "amber-avatar" && nikePerformanceOutput.active)
+      p = performanceWarpPoint(p.x, p.y, nikePerformanceOutput, "", CROP.w, CROP.h, obsPerformanceCharacter);
     return p;
   }
 
@@ -10834,6 +10840,8 @@
 
     p.x += motionDX + splayX + squashX;
     p.y += motionDY - arcLift + splayY + squashY; // ★1-Y + ★3 + ★4 + 速度慣性 + ★7 + ★8 + ★9 + ★10
+    if (obsPerformanceCharacter === "amber-avatar" && nikePerformanceOutput.active)
+      p = performanceWarpPoint(p.x, p.y, nikePerformanceOutput, "", CROP.w, CROP.h, obsPerformanceCharacter);
     return p;
   }
 
@@ -11252,10 +11260,12 @@
     const patch = document.createElement("canvas");
     patch.width = canvas.width; patch.height = canvas.height;
     const p = patch.getContext("2d");
-    // Same canonical registration as build-nike-performances.cjs. Never used
-    // for other characters or to manufacture new expression artwork.
-    for (const [x, y, rx, ry, feather] of [[557, 629, 100, 90, .16], [731, 604, 100, 90, .16], [641, 756, 68, 42, .6]]) {
-      if (mouthOnly && y !== 756) continue;
+    // Reviewed per-character registration; never retarget arbitrary avatars.
+    const regions = obsPerformanceCharacter === "amber-avatar"
+      ? [[548, 594, 100, 90, .16], [758, 555, 100, 90, .16], [668, 730, 68, 42, .6]]
+      : [[557, 629, 100, 90, .16], [731, 604, 100, 90, .16], [641, 756, 68, 42, .6]];
+    for (const [index, [x, y, rx, ry, feather]] of regions.entries()) {
+      if (mouthOnly && index !== 2) continue;
       p.save(); p.translate(x, y); p.scale(rx, ry);
       const gradient = p.createRadialGradient(0, 0, 1 - feather, 0, 0, 1);
       gradient.addColorStop(0, "white"); gradient.addColorStop(1, "transparent");
@@ -11273,7 +11283,10 @@
       const original = faceSpec.warpFn;
       faceSpec = { ...faceSpec, cols: 28, rows: 28, warpFn: (x, y) => {
         const p = original(x, y);
-        return performanceWarpPoint(p.x, p.y, nikePerformanceOutput, pose, CROP.w, CROP.h);
+        // original already applies head/shoulder; only add the hand warp here.
+        const motion = obsPerformanceCharacter === "amber-avatar"
+          ? { ...nikePerformanceOutput, head: 0, shoulder: 0 } : nikePerformanceOutput;
+        return performanceWarpPoint(p.x, p.y, motion, pose, CROP.w, CROP.h, obsPerformanceCharacter);
       } };
     }
     const poseImage = (mouth) => {
@@ -13322,7 +13335,8 @@
       animationSeconds += delta;
       reactionMotionOutput = reactionMotion.update(timestamp);
       nikePerformanceOutput = nikePerformance.update(timestamp, performanceReducedMotion.matches || setupActive, {
-        enabled: obsPerformanceCharacter === "nike-avatar" && Boolean(images.performanceExplainEyesOpenMouthClosed),
+        enabled: ["nike-avatar", "amber-avatar"].includes(obsPerformanceCharacter) && Boolean(images.performanceExplainEyesOpenMouthClosed),
+        smoothIdle: obsPerformanceCharacter === "amber-avatar",
         speakingLevel: voiceLevel,
       });
 
