@@ -2,9 +2,9 @@
 // Local display metadata only: never feeds conversation context or memory.
 function selectNowPlaying(result) {
   if (!result?.ok || !Array.isArray(result.players)) return null;
-  const players = result.players.filter(p => p && ['Playing', 'Paused'].includes(p.status));
-  const playing = players.filter(p => p.status === 'Playing');
-  const choices = playing.length ? playing : players;
+  // Windows keeps title/artist on paused sessions. Only active playback belongs
+  // on the device's now-playing panel; pause/stop must clear the old metadata.
+  const choices = result.players.filter(p => p && p.status === 'Playing');
   if (choices.length !== 1) return null;
   const p = choices[0];
   if (typeof p.title !== 'string' || !p.title.trim()) return null;

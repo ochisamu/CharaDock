@@ -33,7 +33,8 @@ const V4_MODEL_NAMES = Object.freeze([
 
 // Kept as the V4 alias for callers introduced with the V4 runtime.
 const MODEL_NAMES = V4_MODEL_NAMES;
-const IRODORI_VERSIONS = Object.freeze(["500m-v3", "v4-small", "v4-anime"]);
+const MF_MODEL_NAMES = Object.freeze(V4_MODEL_NAMES.map(name => name === "dit_v4" ? "dit_v4_mf" : name));
+const IRODORI_VERSIONS = Object.freeze(["500m-v3", "v4-small", "v4-anime", "v4-mf"]);
 
 function isFile(filePath) {
   try { return fs.statSync(filePath).isFile(); } catch { return false; }
@@ -49,6 +50,7 @@ function irodoriV4ModelRelease(modelsDirectory) {
     const stat = fs.statSync(configPath);
     if (!stat.isFile() || stat.size > 128 * 1024) return { modelRelease: "unknown", modelOutdated: false };
     const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
+    if (config?.model?.flow_parameterization === "meanflow") return { modelRelease: "v4.1-mf", modelOutdated: false };
     const repository = String(config?.repo || "");
     if (/Irodori-TTS-v4\.1-Anime(?:\/|$)/.test(repository)) return { modelRelease: "v4.1-anime", modelOutdated: false };
     if (/Irodori-TTS-v4\.1-Small(?:-Quantized)?(?:\/|$)/.test(repository)) {
@@ -100,6 +102,7 @@ function irodoriGenerationSettings(version, {
   tScheduleMode = "linear",
   cfgExecution = "sequential",
 } = {}) {
+  if (version === "v4-mf") return { numSteps: 4, tScheduleMode: "linear", cfgExecution: "none" };
   const normalizedSteps = Math.min(40, Math.max(4, Math.round(Number(numSteps) || 16)));
   if (normalizedVersion(version) !== "500m-v3") {
     // Keep both V4 precisions on the same known-good recipe as the standalone
@@ -120,7 +123,7 @@ function irodoriGenerationSettings(version, {
 function resolveIrodoriModelDirectory(directory, requestedVersion = "v4-small") {
   const root = path.resolve(String(directory || "."));
   const version = normalizedVersion(requestedVersion);
-  const modelNames = version === "500m-v3" ? V3_MODEL_NAMES : V4_MODEL_NAMES;
+  const modelNames = version === "500m-v3" ? V3_MODEL_NAMES : version === "v4-mf" ? MF_MODEL_NAMES : V4_MODEL_NAMES;
   const layouts = version === "500m-v3" ? v3CandidateLayouts(root) : v4CandidateLayouts(root);
   for (const candidate of layouts) {
     if (hasModels(candidate.models, modelNames)) return { root, ...candidate, version, modelNames };
@@ -137,7 +140,7 @@ function resolveIrodoriModelDirectory(directory, requestedVersion = "v4-small") 
 function irodoriModelStatus(directory, referenceAudioPath = "", webgpuAvailable = null, options = {}) {
   const resolved = directory
     ? resolveIrodoriModelDirectory(directory, options.version)
-    : { root: "", models: "", tokenizer: "", version: normalizedVersion(options.version), modelNames: normalizedVersion(options.version) === "500m-v3" ? V3_MODEL_NAMES : V4_MODEL_NAMES };
+    : { root: "", models: "", tokenizer: "", version: normalizedVersion(options.version), modelNames: options.version === "500m-v3" ? V3_MODEL_NAMES : options.version === "v4-mf" ? MF_MODEL_NAMES : V4_MODEL_NAMES };
   const missingFiles = resolved.models
     ? resolved.modelNames.flatMap((name) => [`${name}.onnx`, `${name}.onnx.data`]).filter((name) => !isFile(path.join(resolved.models, name)))
     : resolved.modelNames.flatMap((name) => [`${name}.onnx`, `${name}.onnx.data`]);
@@ -149,9 +152,11 @@ function irodoriModelStatus(directory, referenceAudioPath = "", webgpuAvailable 
   const release = resolved.version !== "500m-v3"
     ? irodoriV4ModelRelease(resolved.models)
     : { modelRelease: "500m-v3", modelOutdated: false };
+  const modelCompatible = resolved.version === "v4-mf" ? release.modelRelease === "v4.1-mf" : release.modelRelease !== "v4.1-mf";
   return {
-    ready: Boolean(resolved.root) && missingFiles.length === 0 && tokenizerReady && (!referenceRequired || referenceReady),
-    modelReady: Boolean(resolved.root) && missingFiles.length === 0 && tokenizerReady,
+    ready: Boolean(resolved.root) && modelCompatible && missingFiles.length === 0 && tokenizerReady && (!referenceRequired || referenceReady),
+    modelReady: Boolean(resolved.root) && modelCompatible && missingFiles.length === 0 && tokenizerReady,
+    modelCompatible,
     referenceReady,
     referenceRequired,
     ...release,
@@ -168,6 +173,7 @@ function validateIrodoriModelDirectory(directory, version = "v4-small") {
   const resolved = resolveIrodoriModelDirectory(directory, version);
   const status = irodoriModelStatus(resolved.root, "", null, { version: resolved.version });
   if (!status.modelReady) {
+    if (!status.modelCompatible) throw new Error("選択したモデルはこのIrodoriの種類と互換性がありません。MF専用モデルと通常モデルを確認してください。");
     const tokenizerName = resolved.version === "500m-v3" ? "tokenizer/llmjp_tok" : "tokenizer/irodori_v4";
     const detail = !status.tokenizerReady ? `${tokenizerName}/{tokenizer.json, tokenizer_config.json}` : status.missingFiles.slice(0, 3).join(", ");
     throw new Error(`Irodori TTSの変換済みモデル一式が揃っていません（不足: ${detail}）。`);

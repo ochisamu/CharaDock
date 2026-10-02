@@ -618,7 +618,8 @@
           <label class="switch-row"><span><strong data-jev-ja="表情の選択" data-jev-en="Expression selection">表情の選択</strong></span><input id="jevExpressionEnabledToggle" type="checkbox" checked disabled /><i></i></label>
           <label class="switch-row"><span><strong data-jev-ja="ニケちゃん・表現拡張（試作）" data-jev-en="Nike expressive performance (prototype)">ニケちゃん・表現拡張（試作）</strong><small data-jev-ja="標準AIニケちゃん専用。会話に合わせた身振りを追加します。" data-jev-en="Built-in AI Nike only. Adds conversational body gestures.">標準AIニケちゃん専用。会話に合わせた身振りを追加します。</small></span><input id="jevNikePerformanceEnabledToggle" type="checkbox" disabled /><i></i></label>
           <label class="switch-row"><span><strong data-jev-ja="コハク・表現拡張（試作）" data-jev-en="Kohaku expressive performance (prototype)">コハク・表現拡張（試作）</strong><small data-jev-ja="標準コハクのPC表示専用。表情・手の仕草・滑らかな頭と肩の動きを追加。Live2Dモデルではありません。" data-jev-en="Built-in Kohaku on PC. Adds expressions, hand poses and smooth head/shoulder motion. Not a Live2D model.">標準コハクのPC表示専用。表情・手の仕草・滑らかな頭と肩の動きを追加。Live2Dモデルではありません。</small></span><input id="jevKohakuPerformanceEnabledToggle" type="checkbox" disabled /><i></i></label>
-          <label>ハンズフリーの呼びかけ判定<select id="jevAddressModeSelect"><option value="off">OFF（従来のVADのみ）</option><option value="standard">標準（短い雑音・独り言・他人宛てを除外）</option><option value="strict">厳しめ（挨拶・返事・確実な呼びかけ）</option></select></label>
+          <label>ハンズフリーの呼びかけ判定<select id="jevAddressModeSelect"><option value="off">OFF（従来のVADのみ）</option><option value="standard">標準（短い雑音・独り言・他人宛てを除外）</option><option value="strict">厳しめ（挨拶・返事・確実な呼びかけ）</option><option value="living">リビング向け（日常会話・曖昧な宛先を除外）</option></select></label>
+          <p>リビング向けも名前の呼びかけは不要です。「今日のニュースを教えて」など自然な質問・相談を受け付け、家族への生活会話や宛先が曖昧な発話は控えめに除外します。回答確定後15秒以内は、その回答に沿う返事も受け付けます。家族とキャラのどちらにも同じ文で話しかけられる場合、文字だけでは区別できないことがあります。</p>
           <p>通常TTSのデスクトップ・ATOM Echo・RLCDに適用。認識文と直近の回答をJevへ送ります。ON時に判定できなければ応答しません。手動入力とLiveは対象外です。誤反応を完全には防げないため、会議中はミュートしてください。</p>
           <div class="button-row" id="jevPerformancePreviews">
             <button type="button" data-jev-preview="ponder" data-jev-ja="考える" data-jev-en="Ponder">考える</button>
@@ -882,6 +883,7 @@
                 <label>モデル世代<select id="irodoriVersionSelect">
                   <option value="v4-small">v4.1 Small（推奨・Voice Design対応）</option>
                   <option value="v4-anime">v4.1 Anime（アニメ調・INT4）</option>
+                  <option value="v4-mf">v4.1 Small MF（実験用・FP16・4ステップ）</option>
                   <option value="500m-v3">500M-v3（従来版・Voice Clone）</option>
                 </select></label>
                 <div id="irodoriV4Panel">
@@ -912,7 +914,7 @@
                     <option value="natural">自然（推奨）</option>
                     <option value="expressive">豊か</option>
                   </select></label>
-                  <div class="irodori-generation-profile" role="note">
+                  <div id="irodoriV4GenerationProfile" class="irodori-generation-profile" role="note">
                     <span>
                       <strong>安定性優先の生成設定</strong>
                       <small>FP16とINT4は、末尾の余分な発話を抑えるため検証済みの設定で生成します。</small>

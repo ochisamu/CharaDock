@@ -7,6 +7,16 @@ const test = require("node:test");
 
 const { Preferences } = require("../lib/preferences.cjs");
 
+test("living address mode persists while invalid modes remain rejected", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "charadock-living-prefs-"));
+  const file = path.join(directory, "preferences.json");
+  const preferences = new Preferences(file);
+  preferences.patch({ jevAddressMode: "living" });
+  assert.equal(new Preferences(file).publicState().jevAddressMode, "living");
+  preferences.patch({ jevAddressMode: "anything" });
+  assert.equal(preferences.publicState().jevAddressMode, "living");
+});
+
 test("preferences encrypts the API key and never exposes it publicly", () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "charadock-prefs-"));
   const file = path.join(directory, "preferences.json");
@@ -458,6 +468,24 @@ test("Anime INT4 persists independently without leaking model paths or changing 
     preferences.patch({ irodoriVersion: "v4-anime" });
     assert.equal(new Preferences(file).data.irodoriV41AnimeModelDirectory, "C:/models/anime");
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test("MF persists as FP16 without changing other character models or exposing local paths", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "charadock-preferences-mf-"));
+  try {
+    const file = path.join(root, "preferences.json");
+    fs.writeFileSync(file, JSON.stringify({irodoriVersion:"v4-mf",irodoriPrecision:"int4",irodoriMfModelDirectory:"C:/models/mf",characterTtsProfiles:{
+      "custom-avatar":{provider:"irodori-webgpu",irodoriVersion:"v4-mf",irodoriPrecision:"int4"},
+      "sage-avatar":{provider:"irodori-webgpu",irodoriVersion:"v4-small",irodoriPrecision:"int4"},
+    }}));
+    const preferences = new Preferences(file);
+    assert.equal(preferences.data.irodoriPrecision,"fp16");
+    assert.equal(preferences.data.characterTtsProfiles["custom-avatar"].irodoriPrecision,"fp16");
+    assert.equal(preferences.data.characterTtsProfiles["sage-avatar"].irodoriPrecision,"int4");
+    assert.equal(preferences.publicState().irodoriMfModelDirectory,undefined);
+    preferences.patch({irodoriVersion:"v4-mf"});
+    assert.equal(new Preferences(file).data.irodoriMfModelDirectory,"C:/models/mf");
+  } finally { fs.rmSync(root,{recursive:true,force:true}); }
 });
 
 test("built-in Kohaku and Hiro profiles keep the legacy Irodori model unless explicitly changed", () => {

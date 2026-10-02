@@ -97,43 +97,57 @@ function resample48k(input, sampleRate) {
 async function loadEngine(modelDirectory, requestedVersion = "v4-small") {
   const resolved = resolveIrodoriModelDirectory(modelDirectory, requestedVersion);
   if (cached?.root === resolved.root && cached?.version === resolved.version) return cached.engine;
+  if (cached) {
+    const previous = cached;
+    cached = null;
+    v4SpeakerCache.clear();
+    prewarmKey = "";
+    await Promise.allSettled(Object.values(previous.sessions).map(session => session.release()));
+  }
   if (!navigator.gpu) throw new Error("このPCまたはElectronではWebGPUを利用できません。");
   const adapter = await navigator.gpu.requestAdapter({ powerPreference: "high-performance" });
   if (!adapter) throw new Error("WebGPU対応GPUアダプターを取得できません。");
   const [ort, tokenizers, pipeline] = await Promise.all([
     import("onnxruntime-web/webgpu"),
     import("@huggingface/tokenizers"),
-    import(pathToFileURL(path.join(__dirname, "irodori", resolved.version === "500m-v3" ? "pipeline.mjs" : "v4-pipeline.mjs")).href),
+    import(pathToFileURL(path.join(__dirname, "irodori", resolved.version === "500m-v3" ? "pipeline.mjs" : resolved.version === "v4-mf" ? "v4-mf-pipeline.mjs" : "v4-pipeline.mjs")).href),
   ]);
   ort.env.wasm.numThreads = 1;
   let ortDist = path.dirname(require.resolve("onnxruntime-web/webgpu"));
   ortDist = ortDist.replace(`${path.sep}app.asar${path.sep}`, `${path.sep}app.asar.unpacked${path.sep}`);
   ort.env.wasm.wasmPaths = pathToFileURL(ortDist + path.sep).href;
   const sessions = {};
-  const modelNames = resolved.version === "500m-v3" ? V3_MODEL_NAMES : V4_MODEL_NAMES;
-  for (const [key, name] of Object.entries(modelNames)) {
-    const [model, externalData] = await Promise.all([
-      fs.readFile(path.join(resolved.models, `${name}.onnx`)),
-      fs.readFile(path.join(resolved.models, `${name}.onnx.data`)),
+  const modelNames = resolved.version === "500m-v3" ? V3_MODEL_NAMES : resolved.version === "v4-mf" ? { ...V4_MODEL_NAMES, dit: "dit_v4_mf" } : V4_MODEL_NAMES;
+  try {
+    for (const [key, name] of Object.entries(modelNames)) {
+      const [model, externalData] = await Promise.all([
+        fs.readFile(path.join(resolved.models, `${name}.onnx`)),
+        fs.readFile(path.join(resolved.models, `${name}.onnx.data`)),
+      ]);
+      sessions[key] = await ort.InferenceSession.create(new Uint8Array(model), {
+        executionProviders: ["webgpu"],
+        graphOptimizationLevel: "all",
+        externalData: [{ path: `${name}.onnx.data`, data: new Uint8Array(externalData) }],
+      });
+    }
+    const [tokenizerJson, tokenizerConfig] = await Promise.all([
+      fs.readFile(path.join(resolved.tokenizer, "tokenizer.json"), "utf8").then(JSON.parse),
+      fs.readFile(path.join(resolved.tokenizer, "tokenizer_config.json"), "utf8").then(JSON.parse),
     ]);
-    sessions[key] = await ort.InferenceSession.create(new Uint8Array(model), {
-      executionProviders: ["webgpu"],
-      graphOptimizationLevel: "all",
-      externalData: [{ path: `${name}.onnx.data`, data: new Uint8Array(externalData) }],
-    });
+    const tokenizer = new tokenizers.Tokenizer(tokenizerJson, tokenizerConfig);
+    const tokenizerAdapter = { encode: (text, options) => tokenizer.encode(text, options).ids };
+    const engine = resolved.version === "500m-v3"
+      ? new pipeline.IrodoriTTS({ ort, sessions, tokenizer: tokenizerAdapter })
+      : resolved.version === "v4-mf"
+      ? new pipeline.IrodoriV4MeanFlowTTS({ ort, sessions, tokenizer: tokenizerAdapter, modelConfig: JSON.parse(await fs.readFile(path.join(resolved.models, "model-config.json"), "utf8")) })
+      : new pipeline.IrodoriV4TTS({ ort, sessions, tokenizer: tokenizerAdapter });
+    cached = { root: resolved.root, version: resolved.version, engine, pipeline, sessions };
+    v4SpeakerCache.clear();
+    return engine;
+  } catch (error) {
+    await Promise.allSettled(Object.values(sessions).map(session => session.release()));
+    throw error;
   }
-  const [tokenizerJson, tokenizerConfig] = await Promise.all([
-    fs.readFile(path.join(resolved.tokenizer, "tokenizer.json"), "utf8").then(JSON.parse),
-    fs.readFile(path.join(resolved.tokenizer, "tokenizer_config.json"), "utf8").then(JSON.parse),
-  ]);
-  const tokenizer = new tokenizers.Tokenizer(tokenizerJson, tokenizerConfig);
-  const tokenizerAdapter = { encode: (text, options) => tokenizer.encode(text, options).ids };
-  const engine = resolved.version === "500m-v3"
-    ? new pipeline.IrodoriTTS({ ort, sessions, tokenizer: tokenizerAdapter })
-    : new pipeline.IrodoriV4TTS({ ort, sessions, tokenizer: tokenizerAdapter });
-  cached = { root: resolved.root, version: resolved.version, engine, pipeline };
-  v4SpeakerCache.clear();
-  return engine;
 }
 
 async function loadReference(referenceAudioPath, maxSeconds = 120) {
@@ -155,7 +169,7 @@ async function loadReference(referenceAudioPath, maxSeconds = 120) {
 
 async function synthesizeRequest(request) {
   const startedAt = performance.now();
-  const version = ["500m-v3", "v4-anime"].includes(request.version) ? request.version : "v4-small";
+  const version = ["500m-v3", "v4-anime", "v4-mf"].includes(request.version) ? request.version : "v4-small";
   const mode = version !== "500m-v3" && request.mode === "design" ? "design" : "reference";
   const generation = irodoriGenerationSettings(version, {
     numSteps: request.numSteps,
@@ -167,7 +181,7 @@ async function synthesizeRequest(request) {
   const preparedAt = performance.now();
   const options = {
     numSteps: generation.numSteps,
-    swayCoeff: -1,
+    ...(version === "v4-mf" ? {} : { swayCoeff: -1 }),
     seed: Math.max(0, Math.round(Number(request.seed) || 0)),
   };
   if (version === "500m-v3") {
@@ -218,7 +232,7 @@ async function synthesizeRequest(request) {
       ...options,
       speaker,
       schedule: generation.tScheduleMode,
-      cfgExecution: generation.cfgExecution,
+      ...(version === "v4-mf" ? {} : { cfgExecution: generation.cfgExecution }),
       trimTrailingUtterance: true,
     },
   );
@@ -259,7 +273,7 @@ ipcRenderer.on("irodori:synthesize", async (_event, request = {}) => {
 
 ipcRenderer.on("irodori:prewarm", async (_event, request = {}) => {
   try {
-    const version = ["500m-v3", "v4-anime"].includes(request.version) ? request.version : "v4-small";
+    const version = ["500m-v3", "v4-anime", "v4-mf"].includes(request.version) ? request.version : "v4-small";
     const resolved = resolveIrodoriModelDirectory(request.modelDirectory, version);
     const designMode = version !== "500m-v3" && request.mode === "design";
     const reference = designMode ? null : await loadReference(request.referenceAudioPath, version === "500m-v3" ? 60 : 120);

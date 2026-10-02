@@ -37,6 +37,25 @@ function int4Fixture() {
   return root;
 }
 
+test("MF requires its own graph and metadata, and always uses four unguided steps", () => {
+  const root = fixture();
+  const models = path.join(root, "onnx_fp16");
+  try {
+    assert.equal(irodoriModelStatus(root, "", true, {version: "v4-mf", mode: "design"}).modelReady, false);
+    for (const extension of ["onnx", "onnx.data"]) fs.copyFileSync(path.join(models, `dit_v4.${extension}`), path.join(models, `dit_v4_mf.${extension}`));
+    assert.equal(irodoriModelStatus(root, "", true, {version: "v4-mf", mode: "design"}).modelReady, false);
+    fs.writeFileSync(path.join(models, "model-config.json"), JSON.stringify({model:{flow_parameterization:"meanflow"}}));
+    const status = irodoriModelStatus(root, "", true, {version: "v4-mf", mode: "design"});
+    assert.equal(status.ready, true);
+    assert.equal(status.modelRelease, "v4.1-mf");
+    assert.equal(irodoriModelStatus(root, "", true, {version: "v4-mf", mode: "reference"}).ready, false);
+    assert.equal(irodoriModelStatus(root, "", true, {version: "v4-small", mode: "design"}).modelReady, false);
+    assert.throws(() => validateIrodoriModelDirectory(root, "v4-small"), /互換性/);
+    assert.equal(validateIrodoriModelDirectory(root, "v4-mf"), root);
+    assert.deepEqual(irodoriGenerationSettings("v4-mf", {numSteps:40,tScheduleMode:"sway",cfgExecution:"batched"}), {numSteps:4,tScheduleMode:"linear",cfgExecution:"none"});
+  } finally { fs.rmSync(root, {recursive:true,force:true}); }
+});
+
 test("Anime INT4 uses the V4 runtime, voice design, and its own release identity", () => {
   const root = int4Fixture();
   try {

@@ -49,3 +49,22 @@ test('remote cannot choose an uninstalled Anime model or a nonexistent FP16 vari
   assert.throws(()=>context.applyRemoteTtsModelSetting({key:'irodoriModelVariant',value:'v4-anime:int4'}));
   assert.equal(data.characterTtsProfiles.kohaku.irodoriVersion,'v4-small');
 });
+
+test('remote MF selection is opt-in, FP16-only and independent from Small/Anime',()=>{
+  const {context,data,calls}=harness();
+  data.irodoriMfModelDirectory='/models/mf';
+  context.irodoriModelStatus=(directory,ref,gpu,options)=>{calls.push({directory,options});return {modelReady:!!directory};};
+  assert.equal(context.remoteTtsModelSettings().fields[0].options.find(o=>o.value==='v4-mf:fp16').available,true);
+  assert.throws(()=>context.applyRemoteTtsModelSetting({key:'irodoriModelVariant',value:'v4-mf:int4'}));
+  context.applyRemoteTtsModelSetting({key:'irodoriModelVariant',value:'v4-mf:fp16'});
+  assert.equal(calls.at(-1).directory,'/models/mf');
+  assert.equal(calls.at(-1).options.version,'v4-mf');
+  assert.equal(data.characterTtsProfiles.kohaku.irodoriPrecision,'fp16');
+  assert.equal(data.characterTtsProfiles.hiro.provider,'system');
+  assert.equal(context.remoteTtsModelSettings().fields[0].value,'v4-mf:fp16');
+  assert.ok(!JSON.stringify(context.remoteTtsModelSettings()).includes('/models/'));
+  context.applyRemoteTtsModelSetting({key:'irodoriModelVariant',value:'v4-small:int4'});
+  data.irodoriMfModelDirectory='';
+  assert.throws(()=>context.applyRemoteTtsModelSetting({key:'irodoriModelVariant',value:'v4-mf:fp16'}));
+  assert.equal(data.characterTtsProfiles.kohaku.irodoriVersion,'v4-small');
+});

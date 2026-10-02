@@ -68,6 +68,7 @@ const DEFAULTS = Object.freeze({
   irodoriV4ModelDirectory: "",
   irodoriV4Int4ModelDirectory: "",
   irodoriV41AnimeModelDirectory: "",
+  irodoriMfModelDirectory: "",
   irodoriReferenceAudioPath: "",
   irodoriVoices: DEFAULT_IRODORI_VOICES,
   irodoriVoiceId: "builtin-kohaku",
@@ -398,7 +399,7 @@ class Preferences {
       if (typeof this.data.realtimeAutoStartOnPet !== "boolean") this.data.realtimeAutoStartOnPet = false;
       if (typeof this.data.workNetworkAccess !== "boolean") this.data.workNetworkAccess = false;
       if (!["ja", "en"].includes(this.data.language)) this.data.language = "ja";
-      if (!["off", "standard", "strict"].includes(this.data.jevAddressMode)) this.data.jevAddressMode = "off";
+      if (!["off", "standard", "strict", "living"].includes(this.data.jevAddressMode)) this.data.jevAddressMode = "off";
       if (!["manual", "vad"].includes(this.data.voiceActivationMode)) this.data.voiceActivationMode = "vad";
       if (!["low", "normal", "high"].includes(this.data.vadSensitivity)) this.data.vadSensitivity = "normal";
       if (!Object.prototype.hasOwnProperty.call(parsed, "mascotPointerMode")) {
@@ -470,6 +471,7 @@ class Preferences {
       if (typeof this.data.irodoriV4Int4ModelDirectory !== "string") this.data.irodoriV4Int4ModelDirectory = "";
       if (typeof this.data.irodoriV41AnimeModelDirectory !== "string") this.data.irodoriV41AnimeModelDirectory = "";
       this.data.irodoriV41AnimeModelDirectory = this.data.irodoriV41AnimeModelDirectory.slice(0, 1000);
+      this.data.irodoriMfModelDirectory = typeof this.data.irodoriMfModelDirectory === "string" ? this.data.irodoriMfModelDirectory.slice(0, 1000) : "";
       if (typeof this.data.irodoriReferenceAudioPath !== "string") this.data.irodoriReferenceAudioPath = "";
       this.data.irodoriModelDirectory = this.data.irodoriModelDirectory.slice(0, 1000);
       this.data.irodoriV4ModelDirectory = this.data.irodoriV4ModelDirectory.slice(0, 1000);
@@ -498,11 +500,12 @@ class Preferences {
       this.data.irodoriSeed = Math.min(2147483647, Math.max(0, Math.round(Number(this.data.irodoriSeed) || 0)));
       if (!Object.prototype.hasOwnProperty.call(parsed, "irodoriVersion") && this.data.irodoriModelDirectory && !this.data.irodoriV4ModelDirectory) {
         this.data.irodoriVersion = "500m-v3";
-      } else if (!["500m-v3", "v4-small", "v4-anime"].includes(this.data.irodoriVersion)) {
+      } else if (!["500m-v3", "v4-small", "v4-anime", "v4-mf"].includes(this.data.irodoriVersion)) {
         this.data.irodoriVersion = "v4-small";
       }
       if (!["fp16", "int4"].includes(this.data.irodoriPrecision)) this.data.irodoriPrecision = "fp16";
       if (this.data.irodoriVersion === "v4-anime") this.data.irodoriPrecision = "int4";
+      if (this.data.irodoriVersion === "v4-mf") this.data.irodoriPrecision = "fp16";
       if (!["reference", "design"].includes(this.data.irodoriMode)) this.data.irodoriMode = "reference";
       this.data.irodoriCaption = String(this.data.irodoriCaption || "自然で明瞭な日本語。落ち着いた親しみやすい口調で話す。").trim().slice(0, 1000);
       if (typeof this.data.irodoriAutoEmotion !== "boolean") this.data.irodoriAutoEmotion = true;
@@ -595,11 +598,11 @@ class Preferences {
           beatricePitchCorrection: Math.max(0, Math.min(1, Number(profile.beatricePitchCorrection) || 0)),
           beatricePitchCorrectionType: Number(profile.beatricePitchCorrectionType) === 1 ? 1 : 0,
           irodoriVoiceId: String(profile.irodoriVoiceId || "").slice(0, 80),
-          irodoriVersion: ["500m-v3", "v4-small", "v4-anime"].includes(profile.irodoriVersion)
+          irodoriVersion: ["500m-v3", "v4-small", "v4-anime", "v4-mf"].includes(profile.irodoriVersion)
             ? profile.irodoriVersion
-            : ["500m-v3", "v4-small", "v4-anime"].includes(defaultProfile.irodoriVersion)
+            : ["500m-v3", "v4-small", "v4-anime", "v4-mf"].includes(defaultProfile.irodoriVersion)
               ? defaultProfile.irodoriVersion : this.data.irodoriVersion,
-          irodoriPrecision: (profile.irodoriVersion || defaultProfile.irodoriVersion || this.data.irodoriVersion) === "v4-anime" ? "int4" : ["fp16", "int4"].includes(profile.irodoriPrecision)
+          irodoriPrecision: (profile.irodoriVersion || defaultProfile.irodoriVersion || this.data.irodoriVersion) === "v4-mf" ? "fp16" : (profile.irodoriVersion || defaultProfile.irodoriVersion || this.data.irodoriVersion) === "v4-anime" ? "int4" : ["fp16", "int4"].includes(profile.irodoriPrecision)
             ? profile.irodoriPrecision : this.data.irodoriPrecision,
           irodoriMode: ["reference", "design"].includes(profile.irodoriMode) ? profile.irodoriMode : "reference",
           irodoriCaption: String(profile.irodoriCaption || defaultProfile.irodoriCaption || "").trim().slice(0, 1000),
@@ -677,7 +680,7 @@ class Preferences {
   publicState() {
     const state = {};
     for (const key of PUBLIC_KEYS) {
-      if (!["customCharacters", "workDirectory", "piperPlusExecutablePath", "piperPlusModelPath", "supertonicModelDirectory", "irodoriModelDirectory", "irodoriV4ModelDirectory", "irodoriV4Int4ModelDirectory", "irodoriV41AnimeModelDirectory", "irodoriReferenceAudioPath", "irodoriVoices", "kokoroModelDirectory", "sbv2Models", "beatriceVstPath", "beatriceModelPath", "beatriceModels", "characterTtsProfiles", "conversationHistories", "characterMemories", "characterWorkspaces", "continuationSummaries", "managedSkills", "skillAssignments", "mcpServers", "mcpAssignments", "webPreviewRuntimes", "workHistory", "remoteTrustedDevices"].includes(key)) state[key] = this.data[key];
+      if (!["customCharacters", "workDirectory", "piperPlusExecutablePath", "piperPlusModelPath", "supertonicModelDirectory", "irodoriModelDirectory", "irodoriV4ModelDirectory", "irodoriV4Int4ModelDirectory", "irodoriV41AnimeModelDirectory", "irodoriMfModelDirectory", "irodoriReferenceAudioPath", "irodoriVoices", "kokoroModelDirectory", "sbv2Models", "beatriceVstPath", "beatriceModelPath", "beatriceModels", "characterTtsProfiles", "conversationHistories", "characterMemories", "characterWorkspaces", "continuationSummaries", "managedSkills", "skillAssignments", "mcpServers", "mcpAssignments", "webPreviewRuntimes", "workHistory", "remoteTrustedDevices"].includes(key)) state[key] = this.data[key];
     }
     state.hasWorkDirectory = Boolean(this.data.workDirectory);
     state.workDirectoryName = this.data.workDirectory ? path.basename(this.data.workDirectory) : "";
@@ -698,7 +701,7 @@ class Preferences {
     for (const key of PUBLIC_KEYS) {
       if (key === "mcpServers" || key === "mcpAssignments") continue;
       if (Object.prototype.hasOwnProperty.call(values, key)) {
-        if (key === "jevAddressMode" && !["off", "standard", "strict"].includes(values[key])) continue;
+        if (key === "jevAddressMode" && !["off", "standard", "strict", "living"].includes(values[key])) continue;
         if (["jevEnabled", "jevMediaEnabled", "jevExpressionEnabled", "jevNikePerformanceEnabled", "jevKohakuPerformanceEnabled"].includes(key) && typeof values[key] !== "boolean") continue;
         this.data[key] = key === "deviceProfiles" ? normalizeDeviceProfiles(values[key]) : values[key];
       }

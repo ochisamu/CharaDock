@@ -6,11 +6,13 @@ const { displayTextPayload } = require('../lib/device-protocol-v2.cjs');
 const track = (status = 'Playing', title = '夕暮れの散歩') => ({title, artist:'サンプル',status});
 const result = (...players) => ({ok:true,players});
 const flush = () => new Promise(resolve => setImmediate(resolve));
-test('selects one playing source, or one paused source, never guesses among multiples', () => {
+test('selects one playing source, hides paused/stopped sources and never guesses among multiples', () => {
   assert.deepEqual(selectNowPlaying(result(track())),track());
   assert.deepEqual(selectNowPlaying(result(track('Paused'),track())),track());
   assert.equal(selectNowPlaying(result(track(),track())),null);
   assert.equal(selectNowPlaying(result(track('Paused'),track('Paused'))),null);
+  assert.equal(selectNowPlaying(result(track('Paused'))),null);
+  assert.equal(selectNowPlaying(result(track('Closed'))),null);
   assert.equal(selectNowPlaying(result(track('Stopped'))),null);
   assert.equal(selectNowPlaying(result(track('Playing',''))),null);
   assert.equal(selectNowPlaying(result(track(),track('Playing',''))),null);
@@ -41,7 +43,7 @@ test('disconnect and reconnect discard old reads without overlapping helpers', a
   assert.equal(calls,1);
   finish(result(track()));await flush();assert.equal(updates.length,0);
   void pending();assert.equal(calls,2);
-  finish(result(track('Paused')));await flush();assert.equal(updates[0].status,'Paused');
+  finish(result(track()));await flush();assert.equal(updates[0].status,'Playing');
   monitor.stop();assert.equal(updates.at(-1),null);
 });
 test('failed reader clears previous track, and repeated stop is harmless', async () => {
@@ -49,6 +51,31 @@ test('failed reader clears previous track, and repeated stop is harmless', async
   const monitor=createNowPlayingMonitor({read:async()=>{if(fail)throw Error();return result(track());},onChange:()=>{},schedule:f=>(pending=f),cancel:()=>{pending=null;}});
   monitor.setConnection('wifi');await flush();fail=true;await pending();
   assert.equal(monitor.snapshot(),null);monitor.stop();monitor.stop();
+});
+test('pause and stop clear retained Windows metadata; resume restores it over either connection', async () => {
+  for(const connection of ['usb:1','wifi:1']) {
+    let value=result(track()),pending;
+    const updates=[];
+    const monitor=createNowPlayingMonitor({read:async()=>value,onChange:x=>updates.push(x),schedule:f=>(pending=f),cancel:()=>{pending=null;}});
+    monitor.setConnection(connection);await flush();
+    for(const status of ['Paused','Stopped']) {
+      value=result(track(status));await pending();
+      assert.equal(monitor.snapshot(),null);
+      assert.equal(updates.at(-1),null);
+      value=result(track());await pending();
+      assert.deepEqual(monitor.snapshot(),track());
+    }
+    value=result(track('Paused'));await pending();
+    const count=updates.length;await pending();
+    assert.equal(updates.length,count);
+    monitor.stop();
+  }
+});
+test('non-playing metadata never reaches the footer even if a stale caller supplies it', () => {
+  for(const transport of ['usb','wifi'])for(const status of ['Paused','Stopped','Closed']) {
+    const scene=buildRlcd42Scene({transport,nowPlaying:track(status)});
+    assert.equal(scene.footer,transport==='wifi'?'Wi-Fi接続  CharaDock':'USB接続  CharaDock');
+  }
 });
 test('music uses only bounded footer; dialogue and work retain priority', () => {
   const p=track('Playing','日本語'.repeat(100));p.artist='歌手'.repeat(100);

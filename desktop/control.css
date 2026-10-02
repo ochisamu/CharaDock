@@ -961,6 +961,7 @@ input[type="range"]:active::-webkit-slider-thumb { transform: scale(1.16); box-s
 .tts-settings .hint.is-error { color: var(--danger); }
 .local-model-download { display: grid; gap: 9px; padding: 11px; background: color-mix(in srgb, var(--accent-soft) 42%, transparent); border: 1px solid color-mix(in srgb, var(--accent) 13%, var(--line)); border-radius: 11px; }
 .local-model-download progress { width: 100%; height: 7px; accent-color: var(--accent-strong); }
+.local-model-download[hidden] { display: none; }
 .irodori-generation-profile { display: grid; gap: 9px; padding: 11px 12px; background: color-mix(in srgb, var(--accent-soft) 34%, var(--field)); border: 1px solid color-mix(in srgb, var(--accent) 16%, var(--line)); border-radius: 11px; }
 .irodori-generation-profile > span { display: grid; gap: 4px; }
 .irodori-generation-profile strong { color: var(--text-secondary); font-size: 11px; }

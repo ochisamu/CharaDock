@@ -84,8 +84,8 @@ function buildRlcd42Scene({
     // Reuse the existing bounded footer text channel. Never overwrite speech,
     // approval, or work status, and never open the conversation panel for music.
     footer: scene === "home" && ["idle", "completed"].includes(status)
-      && nowPlaying?.title && ["Playing", "Paused"].includes(nowPlaying.status)
-      ? `${nowPlaying.status === "Playing" ? text("再生中", "Playing") : text("一時停止", "Paused")}\n${truncateUtf8(nowPlaying.title, 96)}\n${truncateUtf8(nowPlaying.artist, 40)}`
+      && nowPlaying?.title && nowPlaying.status === "Playing"
+      ? `${text("再生中", "Playing")}\n${truncateUtf8(nowPlaying.title, 96)}\n${truncateUtf8(nowPlaying.artist, 40)}`
       : activeTransport === "wifi"
       ? text("Wi-Fi接続  CharaDock", "Wi-Fi  CharaDock")
       : text("USB接続  CharaDock", "USB  CharaDock"),

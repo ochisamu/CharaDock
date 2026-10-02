@@ -1001,10 +1001,10 @@ function characterTtsSettings(characterId = preferences.data.characterId) {
     beatricePitchCorrection: Math.max(0, Math.min(1, Number(stored.beatricePitchCorrection) || 0)),
     beatricePitchCorrectionType: Number(stored.beatricePitchCorrectionType) === 1 ? 1 : 0,
     irodoriVoiceId: String(stored.irodoriVoiceId || preferences.data.irodoriVoiceId || ""),
-    irodoriVersion: ["500m-v3", "v4-small", "v4-anime"].includes(stored.irodoriVersion)
+    irodoriVersion: ["500m-v3", "v4-small", "v4-anime", "v4-mf"].includes(stored.irodoriVersion)
       ? stored.irodoriVersion
-      : ["500m-v3", "v4-small", "v4-anime"].includes(preferences.data.irodoriVersion) ? preferences.data.irodoriVersion : "v4-small",
-    irodoriPrecision: (stored.irodoriVersion || preferences.data.irodoriVersion) === "v4-anime" ? "int4" : ["fp16", "int4"].includes(stored.irodoriPrecision)
+      : ["500m-v3", "v4-small", "v4-anime", "v4-mf"].includes(preferences.data.irodoriVersion) ? preferences.data.irodoriVersion : "v4-small",
+    irodoriPrecision: (stored.irodoriVersion || preferences.data.irodoriVersion) === "v4-mf" ? "fp16" : (stored.irodoriVersion || preferences.data.irodoriVersion) === "v4-anime" ? "int4" : ["fp16", "int4"].includes(stored.irodoriPrecision)
       ? stored.irodoriPrecision
       : ["fp16", "int4"].includes(preferences.data.irodoriPrecision) ? preferences.data.irodoriPrecision : "fp16",
     irodoriMode: ["reference", "design"].includes(stored.irodoriMode) ? stored.irodoriMode
@@ -1087,6 +1087,7 @@ function activeIrodoriVoicePath(characterId = preferences.data.characterId) {
 function activeIrodoriModelDirectory(characterId = preferences.data.characterId) {
   const settings = characterTtsSettings(characterId);
   if (settings.irodoriVersion === "v4-anime") return preferences.data.irodoriV41AnimeModelDirectory;
+  if (settings.irodoriVersion === "v4-mf") return preferences.data.irodoriMfModelDirectory;
   if (settings.irodoriVersion !== "v4-small") return preferences.data.irodoriModelDirectory;
   return settings.irodoriPrecision === "int4"
     ? preferences.data.irodoriV4Int4ModelDirectory
@@ -1740,6 +1741,7 @@ function remoteTtsProviderOptions(characterId = preferences.data.characterId) {
           [preferences.data.irodoriV4ModelDirectory, "v4-small"],
           [preferences.data.irodoriV4Int4ModelDirectory, "v4-small"],
           [preferences.data.irodoriV41AnimeModelDirectory, "v4-anime"],
+          [preferences.data.irodoriMfModelDirectory, "v4-mf"],
         ];
         const available = candidates.some(([directory, version]) => irodoriModelStatus(directory, referencePath, irodoriWebGpuAvailable, { version, mode: settings.irodoriMode }).ready);
         return { available, phone: true };
@@ -1817,11 +1819,12 @@ function remoteTtsModelSettings(characterId = preferences.data.characterId) {
       { value: "v4-small:fp16", label: "v4.1 Small · FP16", version: "v4-small", precision: "fp16", directory: preferences.data.irodoriV4ModelDirectory },
       { value: "v4-small:int4", label: "v4.1 Small · INT4", version: "v4-small", precision: "int4", directory: preferences.data.irodoriV4Int4ModelDirectory },
       { value: "v4-anime:int4", label: "v4.1 Anime · INT4", version: "v4-anime", precision: "int4", directory: preferences.data.irodoriV41AnimeModelDirectory },
+      { value: "v4-mf:fp16", label: mainText("v4.1 Small MF · FP16（実験用・4ステップ）", "v4.1 Small MF · FP16 (experimental, 4 steps)"), version: "v4-mf", precision: "fp16", directory: preferences.data.irodoriMfModelDirectory },
     ].map((variant) => ({
       ...variant,
       available: irodoriModelStatus(variant.directory, referencePath, irodoriWebGpuAvailable, { version: variant.version, mode: settings.irodoriMode }).modelReady,
     }));
-    const selectedVariant = settings.irodoriVersion === "500m-v3" ? "500m-v3:fp16" : settings.irodoriVersion === "v4-anime" ? "v4-anime:int4" : `v4-small:${settings.irodoriPrecision}`;
+    const selectedVariant = settings.irodoriVersion === "v4-mf" ? "v4-mf:fp16" : settings.irodoriVersion === "500m-v3" ? "500m-v3:fp16" : settings.irodoriVersion === "v4-anime" ? "v4-anime:int4" : `v4-small:${settings.irodoriPrecision}`;
     const voices = irodoriVoiceLibrary.publicVoices(preferences.data.irodoriVoices, settings.irodoriVoiceId);
     return {
       provider: settings.provider,
@@ -2302,12 +2305,13 @@ function applyRemoteTtsModelSetting(setting = {}) {
   } else if (key === "irodoriModelVariant" && current.provider === "irodori-webgpu") {
     const [version, requestedPrecision] = value.split(":");
     const precision = version === "500m-v3" ? "fp16" : requestedPrecision;
-    if (![["500m-v3", "fp16"], ["v4-small", "fp16"], ["v4-small", "int4"], ["v4-anime", "int4"]].some(([allowedVersion, allowedPrecision]) => version === allowedVersion && precision === allowedPrecision)) {
+    if (![["500m-v3", "fp16"], ["v4-small", "fp16"], ["v4-small", "int4"], ["v4-anime", "int4"], ["v4-mf", "fp16"]].some(([allowedVersion, allowedPrecision]) => version === allowedVersion && precision === allowedPrecision)) {
       throw new Error(mainText("Irodoriのモデル指定が正しくありません。", "The Irodori model selection is invalid."));
     }
     const directory = version === "500m-v3"
       ? preferences.data.irodoriModelDirectory
       : version === "v4-anime" ? preferences.data.irodoriV41AnimeModelDirectory
+      : version === "v4-mf" ? preferences.data.irodoriMfModelDirectory
       : precision === "int4" ? preferences.data.irodoriV4Int4ModelDirectory : preferences.data.irodoriV4ModelDirectory;
     const voice = activeIrodoriVoice();
     const referencePath = voice ? irodoriVoiceLibrary.voicePath(voice) : "";
@@ -4254,7 +4258,7 @@ function publicAppState() {
       ...activeIrodoriStatus(irodoriWebGpuAvailable),
       voices: irodoriVoiceLibrary?.publicVoices(preferences.data.irodoriVoices, irodoriVoice?.id || "") || [],
       voiceId: irodoriVoice?.id || "",
-      sampleModel: embeddedTtsModels?.status(characterTts.irodoriVersion === "v4-anime" ? "irodori-anime-int4" : characterTts.irodoriPrecision === "int4" ? "irodori-webgpu-int4" : "irodori-webgpu") || null,
+      sampleModel: characterTts.irodoriVersion === "v4-mf" ? null : embeddedTtsModels?.status(characterTts.irodoriVersion === "v4-anime" ? "irodori-anime-int4" : characterTts.irodoriPrecision === "int4" ? "irodori-webgpu-int4" : "irodori-webgpu") || null,
       animeSampleModel: embeddedTtsModels?.status("irodori-anime-int4") || null,
       fp16SampleModel: embeddedTtsModels?.status("irodori-webgpu") || null,
       int4SampleModel: embeddedTtsModels?.status("irodori-webgpu-int4") || null,
@@ -8417,7 +8421,7 @@ function thinkingFillerText() {
 }
 
 function rememberConversationTurn(userText, assistantText) {
-  jevAddressGate.remember(assistantText);
+  jevAddressGate.remember(assistantText, { userText });
   conversationHistory = boundedConversationHistory(conversationHistory, userText, assistantText);
   const histories = { ...(preferences.data.conversationHistories || {}) };
   histories[activeCharacter().id] = conversationHistory;
@@ -9844,6 +9848,7 @@ async function setCharacter(characterId) {
   const characterTtsProfiles = { ...(preferences.data.characterTtsProfiles || {}) };
   if (!characterTtsProfiles[character.id]) characterTtsProfiles[character.id] = characterTtsSettings(character.id);
   preferences.patch({ characterId: character.id, characterTtsProfiles });
+  jevAddressGate.reset();
   const configured = effectiveCharacter(character);
   ensureCharacterHome(configured);
   repairCharacterWorkspaceSelection(configured);
@@ -10658,12 +10663,13 @@ function registerIpc() {
     for (const [input, key] of [["enabled", "jevEnabled"], ["mediaEnabled", "jevMediaEnabled"], ["expressionEnabled", "jevExpressionEnabled"], ["nikePerformanceEnabled", "jevNikePerformanceEnabled"], ["kohakuPerformanceEnabled", "jevKohakuPerformanceEnabled"]]) {
       if (typeof patch[input] === "boolean") values[key] = patch[input];
     }
-    if (["off", "standard", "strict"].includes(patch.addressMode)) values.jevAddressMode = patch.addressMode;
+    if (["off", "standard", "strict", "living"].includes(patch.addressMode)) values.jevAddressMode = patch.addressMode;
     if (Object.hasOwn(patch, "apiKey")) {
       if (typeof patch.apiKey !== "string" || patch.apiKey.length > 4096) throw new Error("Invalid Jev API key");
       preferences.setJevApiKey(patch.apiKey.trim());
     }
     preferences.patch(values);
+    jevAddressGate.reset();
     jevExpressionDirector.cancel();
     localServer.pushInput({ ...currentCursorInput(), nikePerformance: "none" });
     if (performanceWasEnabled !== nikePerformanceEnabled()) localServer.setSnapshot(buildAvatarSnapshot(preferences.data.characterId));
@@ -10895,9 +10901,9 @@ function registerIpc() {
     const requestedIrodoriVoiceId = String(patch?.irodoriVoiceId || "");
     const irodoriVoiceId = preferences.data.irodoriVoices.some((voice) => voice.id === requestedIrodoriVoiceId)
       ? requestedIrodoriVoiceId : activeIrodoriVoice(activeCharacterId)?.id || "";
-    const irodoriVersion = ["500m-v3", "v4-small", "v4-anime"].includes(patch?.irodoriVersion)
+    const irodoriVersion = ["500m-v3", "v4-small", "v4-anime", "v4-mf"].includes(patch?.irodoriVersion)
       ? patch.irodoriVersion : characterTtsSettings(activeCharacterId).irodoriVersion;
-    const irodoriPrecision = irodoriVersion === "v4-anime" ? "int4" : ["fp16", "int4"].includes(patch?.irodoriPrecision)
+    const irodoriPrecision = irodoriVersion === "v4-mf" ? "fp16" : irodoriVersion === "v4-anime" ? "int4" : ["fp16", "int4"].includes(patch?.irodoriPrecision)
       ? patch.irodoriPrecision : characterTtsSettings(activeCharacterId).irodoriPrecision;
     const irodoriMode = ["reference", "design"].includes(patch?.irodoriMode) ? patch.irodoriMode : "reference";
     const irodoriCaption = String(patch?.irodoriCaption || "自然で明瞭な日本語。落ち着いた親しみやすい口調で話す。").trim().slice(0, 1000);
@@ -11245,7 +11251,7 @@ function registerIpc() {
     assertTrustedSender(event);
     const settings = characterTtsSettings();
     const version = settings.irodoriVersion;
-    const versionLabel = version === "v4-anime" ? "Irodori TTS v4.1 Anime INT4" : version === "500m-v3" ? "Irodori TTS 500M-v3" : `Irodori TTS v4.1 Small ${settings.irodoriPrecision.toUpperCase()}`;
+    const versionLabel = version === "v4-mf" ? "Irodori TTS v4.1 Small MF FP16" : version === "v4-anime" ? "Irodori TTS v4.1 Anime INT4" : version === "500m-v3" ? "Irodori TTS 500M-v3" : `Irodori TTS v4.1 Small ${settings.irodoriPrecision.toUpperCase()}`;
     const result = await dialog.showOpenDialog(controlWindow, {
       title: mainText(`${versionLabel}のモデルフォルダーを選択`, `Choose the ${versionLabel} model folder`),
       properties: ["openDirectory"],
@@ -11255,6 +11261,7 @@ function registerIpc() {
     preferences.patch(version === "500m-v3"
       ? { irodoriModelDirectory: modelDirectory }
       : version === "v4-anime" ? { irodoriV41AnimeModelDirectory: modelDirectory }
+      : version === "v4-mf" ? { irodoriMfModelDirectory: modelDirectory }
       : settings.irodoriPrecision === "int4"
         ? { irodoriV4Int4ModelDirectory: modelDirectory }
         : { irodoriV4ModelDirectory: modelDirectory });
@@ -13910,6 +13917,10 @@ async function boot() {
     }, 800);
   }
   embeddedTtsModels = new EmbeddedTtsModels(path.join(app.getPath("userData"), "tts-models"));
+  const localMfDirectory = path.join(app.getPath("userData"), "tts-models", "irodori-v41-mf-webgpu");
+  if (!preferences.data.irodoriMfModelDirectory && irodoriModelStatus(localMfDirectory, "", null, { version: "v4-mf", mode: "design" }).modelReady) {
+    preferences.patch({ irodoriMfModelDirectory: localMfDirectory });
+  }
   sbv2ModelLibrary = new Sbv2ModelLibrary(path.join(app.getPath("userData"), "sbv2-models"));
   sbv2Worker = new Sbv2WorkerClient({
     cacheDirectory: path.join(app.getPath("userData"), "sbv2-cache"),

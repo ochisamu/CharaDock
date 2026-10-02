@@ -3134,15 +3134,22 @@
   }
 
   function syncIrodoriUi(info = state?.irodori || {}) {
-    const version = ["500m-v3", "v4-anime"].includes($("#irodoriVersionSelect").value) ? $("#irodoriVersionSelect").value : "v4-small";
+    const version = ["500m-v3", "v4-anime", "v4-mf"].includes($("#irodoriVersionSelect").value) ? $("#irodoriVersionSelect").value : "v4-small";
     const legacy = version === "500m-v3";
     const anime = version === "v4-anime";
+    const mf = version === "v4-mf";
     if (anime) $("#irodoriPrecisionSelect").value = "int4";
-    $("#irodoriPrecisionSelect").disabled = anime;
+    if (mf) $("#irodoriPrecisionSelect").value = "fp16";
+    $("#irodoriPrecisionSelect").disabled = anime || mf;
     $("#irodoriPrecisionSelect option[value=int4]").textContent = anime
       ? localized("INT4（軽量・約854MB）", "INT4 (lightweight, about 854 MB)")
       : localized("INT4（軽量・約853MB）", "INT4 (lightweight, about 853 MB)");
-    $("#irodoriV4Title").textContent = `Irodori TTS v4.1 ${anime ? "Anime" : "Small"} · WebGPU`;
+    $("#irodoriV4Title").textContent = mf ? localized("Irodori TTS v4.1 Small MF · 実験用・4ステップ", "Irodori TTS v4.1 Small MF · Experimental, 4 steps") : `Irodori TTS v4.1 ${anime ? "Anime" : "Small"} · WebGPU`;
+    $("#irodoriV4GenerationProfile strong").textContent = mf ? localized("実験用の高速生成", "Experimental fast generation") : localized("安定性優先の生成設定", "Stability-first generation settings");
+    $("#irodoriV4GenerationProfile small").textContent = mf
+      ? localized("MF専用モデルを4ステップで生成します。読み間違いや音質の乱れが出る場合があります。", "Uses the dedicated MF model with 4 steps. Pronunciation or audio quality may be unstable.")
+      : localized("FP16とINT4は、末尾の余分な発話を抑えるため検証済みの設定で生成します。", "FP16 and INT4 use validated settings to reduce extra trailing speech.");
+    $("#irodoriV4GenerationProfile b").textContent = mf ? localized("Linear・4ステップ固定", "Linear · Fixed 4 steps") : localized("Linear・16ステップ以上・逐次処理", "Linear · At least 16 steps · Sequential");
     const precision = $("#irodoriPrecisionSelect").value === "int4" ? "int4" : "fp16";
     const quantized = !legacy && precision === "int4";
     const generationMode = $("#irodoriSamplingModeSelect");
@@ -3156,8 +3163,10 @@
     );
     $("#irodoriV4Panel").hidden = legacy;
     $("#irodoriV3Panel").hidden = !legacy;
-    $("#irodoriManualModelLabel").textContent = legacy ? "500M-v3 FP16モデル" : `V4.1 ${anime ? "Anime" : "Small"} ${quantized ? "INT4" : "FP16"}モデル`;
-    $("#irodoriManualModelHint").textContent = legacy
+    $("#irodoriManualModelLabel").textContent = mf ? "V4.1 Small MF FP16モデル" : legacy ? "500M-v3 FP16モデル" : `V4.1 ${anime ? "Anime" : "Small"} ${quantized ? "INT4" : "FP16"}モデル`;
+    $("#irodoriManualModelHint").textContent = mf
+      ? localized("MF専用の変換済みモデルを選択してください（FP16・4ステップ固定）。実験用のため、読み間違いや音質の乱れが出る場合があります。モデルの自動ダウンロードには未対応です。", "Choose a converted MF model (FP16, fixed 4 steps). Experimental: pronunciation or audio quality may be unstable. Automatic model download is not available yet.")
+      : legacy
       ? "irodori-tts-webgpuのルート、onnx_fp16フォルダー、または同じ配置の変換済み500M-v3モデルを選択できます。"
       : "irodori-tts-webgpuのルート、v4-small-unifiedフォルダー、または同じ配置の変換済みV4モデルを選択できます。";
     $("#irodoriReferenceHint").textContent = legacy
@@ -3179,6 +3188,7 @@
     else if (!info.modelReady) setStatus(status, `${legacy ? "Irodori TTS 500M-v3 FP16" : `Irodori TTS v4.1 Small ${quantized ? "INT4" : "FP16"}`}モデルを導入または選択してください。`);
     else if (!legacy && info.modelOutdated) setStatus(status, localized("旧V4モデルを使用中です。末尾発話を改善したV4.1へ更新してください。", "An older V4 model is in use. Update to V4.1 for the trailing-speech fix."));
     else if (info.referenceRequired && !info.referenceReady) setStatus(status, "本人の許可がある参照音声を追加してください。");
+    else if (mf) setStatus(status, localized("MFを4ステップで使用します。実験用のため、読み間違いや音質の乱れが出る場合があります。", "MF uses 4 steps. Experimental: pronunciation or audio quality may be unstable."));
     else if (info.webgpuAvailable === true) setStatus(status, `${legacy ? "Irodori TTS 500M-v3" : "Irodori TTS v4.1 Small"}のWebGPU音声合成を利用できます。`);
     else setStatus(status, `${legacy ? "500M-v3" : "V4"}モデルと音声設定を確認しました。初回生成時にWebGPUを確認します。`);
     $("#irodoriReferenceSettings").hidden = !legacy && $("#irodoriModeSelect").value === "design";
@@ -3186,6 +3196,7 @@
     $("#irodoriEmotionStrengthSelect").disabled = !$("#irodoriAutoEmotionToggle").checked;
     const selectedV4Model = anime ? info.animeSampleModel : quantized ? info.int4SampleModel : info.fp16SampleModel;
     syncTtsSampleModelUi("irodori", selectedV4Model || info.sampleModel);
+    $("#irodoriModelDownloadButton").closest(".local-model-download").hidden = mf;
     $("#irodoriModelDownloadHint").textContent = anime
       ? localized("アニメ調の声で学習した約854MBのINT4モデル。声の説明・感情指定の効き方はSmallと異なる場合があります。", "An approximately 854 MB INT4 model trained on anime-style speech. Voice descriptions and emotion controls may behave differently from Small.")
       : quantized
@@ -4038,7 +4049,7 @@
     $("#kokoroSettings").hidden = $("#ttsProviderSelect").value !== "kokoro";
     syncKokoroUi();
     $("#irodoriSpeedInput").value = Number(state.irodoriSpeed) || 1;
-    $("#irodoriVersionSelect").value = ["500m-v3", "v4-anime"].includes(state.irodoriVersion) ? state.irodoriVersion : "v4-small";
+    $("#irodoriVersionSelect").value = ["500m-v3", "v4-anime", "v4-mf"].includes(state.irodoriVersion) ? state.irodoriVersion : "v4-small";
     $("#irodoriPrecisionSelect").value = state.irodoriPrecision === "int4" ? "int4" : "fp16";
     $("#irodoriModeSelect").value = state.irodoriMode || "reference";
     $("#irodoriCaptionInput").value = state.irodoriCaption || "自然で明瞭な日本語。落ち着いた親しみやすい口調で話す。";
