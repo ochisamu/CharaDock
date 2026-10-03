@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// Kohaku v9: authored drawings, independent hair, registered LIVE eye/mouth patches.
+// Kohaku v9: one canonical head, single eye/lip layers, independent soft hair.
 // Source: user-supplied Kohaku v9 handoff. No runtime model or network inference.
 (function (root, factory) {
   const api = factory();
@@ -56,6 +56,13 @@
     return {x:closed.x,top:closed.y+(open.y-open.h/2-closed.y)*aperture,
       width:half.w+(open.w-half.w)*aperture,height:Math.max(3,open.h*aperture),
       closedWeight:1-openWeight,halfWeight:openWeight*(1-roundWeight),openWeight:openWeight*roundWeight};
+  }
+  function headPoint(x, y, width, height, angle) {
+    // One rigid face above the neck. Only the neck/shoulder band bends;
+    // eyes, lip, nose and hair roots share EXACTLY the same rotation.
+    const weight=1-smooth((y/height-.64)/.28),a=angle*weight;
+    const cx=width*.54,cy=height*.69,dx=x-cx,dy=y-cy;
+    return {x:cx+dx*Math.cos(a)-dy*Math.sin(a),y:cy+dx*Math.sin(a)+dy*Math.cos(a)};
   }
   const VARIANTS = ['open-closed', 'open-half', 'open-open', 'closed-closed', 'closed-half', 'closed-open'];
   const STATES = ['neutral', 'curious_tilt', 'attentive_listening', 'delighted_agreement', 'doubtful_side_eye', 'sleepy_yawn'];
@@ -178,7 +185,7 @@
       }
       let cels = sequence ? celWeights(reduced ? .45 : celPhase).map(f => ({ ...f, name: sequence.name })) : [];
       if (carriedCels.length) {
-        const mix = reduced ? 1 : smooth((now - fadeStarted) / 260);
+        const mix = reduced ? 1 : smooth((now - fadeStarted) / 360);
         cels = [...carriedCels.map(f => ({ ...f, weight: f.weight * (1 - mix) })),
           ...(cels.length ? cels : [{ index: -1, weight: 1 }]).map(f => ({ ...f, weight: f.weight * mix }))].filter(f => f.weight > .0001);
         if (mix === 1) carriedCels = [];
@@ -217,8 +224,8 @@
         const lift=(idle*Math.sin(seconds*.97-i*.8)*(5+i*.7)-lifeVelocity.y*.22)*hairAmount;
         [hairY[i],yVelocities[i]]=softSpring(hairY[i],yVelocities[i],lift,dt,omega*.9,.84);
       }
-      return { pose: tilt > .001 ? 'curious_tilt' : sequence?.name || 'neutral', tilt,
-        transitionFrame: tilt > .001 && tilt < .999 ? Math.round(tilt * ((manifest.transitions?.[0]?.frames.length || 1) - 1)) : null,
+      return { pose: tilt > .001 ? 'curious_tilt' : sequence?.name || 'neutral', tilt, now,
+        transitionFrame: null, tiltRenderer:'shared-rigid-head',
         cels, mouthState: mouth, blinkClosed: blink, mouthValue, blinkAmount, speechMix,
         speaking: now < speechUntil, reducedMotion: reduced, hair: [...hair], hairMiddle:[...hairMiddle],hairY:[...hairY],life: { ...life }, tiltVelocity, ...budget };
     }
@@ -316,7 +323,7 @@
   async function createPlayer({ manifestUrl, signal, canvasOnly = false }) {
     const response = await fetch(manifestUrl, { signal }); if (!response.ok) throw new Error(`Pose manifest ${response.status}`);
     const manifest = await response.json(), controller = createController(manifest), loaded = new Map(), base = new URL(manifestUrl, document.baseURI);
-    let hairRenderer = null, bodyRenderer = null, expressionRenderer = null, disposed = false, output = null, releaseMouth = null;
+    let hairRenderer = null, bodyRenderer = null, disposed = false, output = null, releaseMouth = null;
     const load = async (file, width = manifest.width, height = manifest.height) => {
       if (loaded.has(file)) return loaded.get(file);
       const r = await fetch(new URL(file, base), { signal }); if (!r.ok) throw new Error(`Missing pose asset: ${file}`);
@@ -328,16 +335,17 @@
       if (signal?.aborted) { image.close(); throw new Error('Pose loading aborted'); }
       loaded.set(file, image); return image;
     };
-    const dispose = () => { if (disposed) return; disposed = true; hairRenderer?.dispose(); bodyRenderer?.dispose(); expressionRenderer?.dispose(); hairRenderer = bodyRenderer = expressionRenderer = null; releaseMouth?.(); releaseMouth=null; for (const im of loaded.values()) im.close(); loaded.clear(); };
+    const dispose = () => { if (disposed) return; disposed = true; hairRenderer?.dispose(); bodyRenderer?.dispose(); hairRenderer = bodyRenderer = null; releaseMouth?.(); releaseMouth=null; for (const im of loaded.values()) im.close(); loaded.clear(); };
     try {
-      for (const pose of Object.values(manifest.poses)) { await load(pose.hair); for (const file of Object.values(pose.variants)) await load(file); }
-      for (const clip of manifest.transitions || []) for (const f of clip.frames) { await load(f.base, clip.width, clip.height); await load(f.hair, clip.width, clip.height); }
+      // The supplied optical-flow tilt is a two-key pilot, NOT a six-variant
+      // face rig. Never combine its changing face with neutral feature patches.
+      const neutral=manifest.poses.neutral;
+      await load(neutral.hair);for(const file of Object.values(neutral.variants))await load(file);
       await load(manifest.cels.mask);
       for (const seq of Object.values(manifest.cels.sequences)) for (const file of seq.frames) await load(file);
       const size = manifest.decodeSize, makeCanvas = () => { const c = document.createElement('canvas'); c.width = c.height = size; return c; };
       const faceCanvas = makeCanvas(), faceCtx = faceCanvas.getContext('2d'), celCanvas = makeCanvas(), celCtx = celCanvas.getContext('2d');
       const hairCanvas = makeCanvas(), hairCtx = hairCanvas.getContext('2d'), patchCanvas = makeCanvas(), patchCtx = patchCanvas.getContext('2d');
-      const registeredMask = makeCanvas(), registeredMaskCtx = registeredMask.getContext('2d');
       const maskCanvas = makeCanvas(), maskCtx = maskCanvas.getContext('2d', { willReadFrequently: true });
       maskCtx.drawImage(loaded.get(manifest.cels.mask), 0, 0, size, size);
       const mask = maskCtx.getImageData(0, 0, size, size);
@@ -353,24 +361,10 @@
         mask.data[(y*size+x)*4+3]=min;
       }
       maskCtx.putImageData(mask, 0, 0);
-      const patches = new Map(), regions = { mouth: [668, 735, 65, 51], eyes: [[548, 630, 100, 82], [758, 584, 110, 84]] };
-      function patch(key, region) {
-        const id = `${key}:${region}`; if (patches.has(id)) return patches.get(id);
-        const c = makeCanvas(), p = c.getContext('2d'); p.scale(size / manifest.width, size / manifest.height);
-        for (const [x, y, rx, ry] of (region === 'mouth' ? [regions.mouth] : regions.eyes)) {
-          p.save(); p.translate(x, y); p.scale(rx, ry);
-          const g = p.createRadialGradient(0, 0, .75, 0, 0, 1); g.addColorStop(0, 'white'); g.addColorStop(1, 'transparent');
-          p.fillStyle = g; p.fillRect(-1, -1, 2, 2); p.restore();
-        }
-        p.globalCompositeOperation = 'source-in'; p.drawImage(loaded.get(manifest.poses.neutral.variants[key]), 0, 0, manifest.width, manifest.height);
-        patches.set(id, c); return c;
-      }
       try { hairRenderer = canvasOnly ? createCanvasHairRenderer(size, size) : createHairRenderer(size, size); }
       catch { hairRenderer = createCanvasHairRenderer(size, size); }
       try { bodyRenderer = canvasOnly ? createCanvasHairRenderer(size, size) : createHairRenderer(size, size); }
       catch { bodyRenderer = createCanvasHairRenderer(size, size); }
-      try { expressionRenderer = canvasOnly ? createCanvasHairRenderer(size, size) : createHairRenderer(size, size, true); }
-      catch { expressionRenderer = createCanvasHairRenderer(size, size); }
       const features = new Map(), mouthMasks=new Map(), featureCanvas=makeCanvas(), featureCtx=featureCanvas.getContext('2d',{willReadFrequently:true});
       function featureBounds(file) {
         if(features.has(file))return features.get(file);
@@ -425,6 +419,11 @@
               for(const p of c.points)pixels.push([left+p%W,top+Math.floor(p/W)]);
             mouthMasks.set(file,pixels);
           }
+          if(n<2&&components.length) {
+            // Include lash fragments as well as the iris in the eye crop.
+            const eye=components.filter(c=>c.area>=3);
+            if(eye.length)best={area:eye.reduce((s,c)=>s+c.area,0),x0:Math.min(...eye.map(c=>c.x0)),x1:Math.max(...eye.map(c=>c.x1)),y0:Math.min(...eye.map(c=>c.y0)),y1:Math.max(...eye.map(c=>c.y1))};
+          }
           if(!best||best.area<5)return transformFeature({x:FEATURE_REGIONS[n][0],y:FEATURE_REGIONS[n][1],w:70,h:25},searchTransform);
           return{x:(left+(best.x0+best.x1)/2)/scale,y:(top+(best.y0+best.y1)/2)/scale,w:Math.max(12,(best.x1-best.x0+1)/scale),h:Math.max(8,(best.y1-best.y0+1)/scale)};
         });features.set(file,result);return result;
@@ -472,87 +471,122 @@
       const mouthSprites=['open-closed','open-half','open-open'].map(key=>mouthSprite(manifest.poses.neutral.variants[key]));
       for(const seq of Object.values(manifest.cels.sequences))for(const file of seq.frames)mouthSprite(file);
       const scale=size/manifest.width,blankCanvas=makeCanvas(),blankCtx=blankCanvas.getContext('2d');
-      function withoutMouth(file) {
+      const eyeCache=new Map(),eyeSkinCache=[],releaseLips=releaseMouth;
+      releaseMouth=()=>{releaseLips();for(const p of eyeCache.values())p.image.width=p.image.height=p.skin.width=p.skin.height=1;eyeCache.clear();eyeSkinCache.length=0;};
+      function eyeSprite(file,index) {
+        const key=file+':'+index;if(eyeCache.has(key))return eyeCache.get(key);
+        // Dark-pixel bounds omit the white sclera and amber lower iris.
+        // Use the complete registered eye region, not only the dark component.
+        const [x,y,w,h]=index===0?[445,558,174,140]:[680,498,178,151];
+        const b={x:x+w/2,y:y+h/2,w,h},pad=8,left=Math.floor((b.x-b.w/2-pad)*scale),top=Math.floor((b.y-b.h/2-pad)*scale);
+        const W=Math.ceil((b.w+pad*2)*scale),H=Math.ceil((b.h+pad*2)*scale);
+        featureCtx.clearRect(0,0,size,size);featureCtx.drawImage(loaded.get(file),0,0,size,size);
+        const data=featureCtx.getImageData(left,top,W,H),skinData=featureCtx.createImageData(W,H);
+        // An opaque underpaint owns the whole eye (including white), not only
+        // detected dark pixels. Scaling an iris over the old eye causes ghosts.
+        const skinColors=[];
+        for(let yy=0;yy<H;yy++)for(let xx=0;xx<W;xx++)if(xx<3||xx>W-4||yy<3||yy>H-4) {
+          const i=(yy*W+xx)*4,r=data.data[i],g=data.data[i+1],bl=data.data[i+2];
+          if(data.data[i+3]>240&&r>180&&g>r*.6&&g<r*.88&&bl>r*.43&&bl<r*.82)skinColors.push([r,g,bl]);
+        }
+        const color=[0,1,2].map(k=>skinColors.length?[...skinColors].map(c=>c[k]).sort((a,b)=>a-b)[Math.floor(skinColors.length/2)]:[255,190,146][k]);
+        if(!eyeSkinCache[index]){
+          // Borrow the artist's CLOSED-eye skin, including blush/soft shading.
+          // Remove only the thin lashes, not a large flat skin rectangle.
+          featureCtx.clearRect(0,0,size,size);featureCtx.drawImage(loaded.get(manifest.poses.neutral.variants['closed-closed']),0,0,size,size);
+          const original=featureCtx.getImageData(left,top,W,H).data,clean=new Uint8ClampedArray(original);
+          const valid=i=>original[i+3]>220&&original[i]>180&&original[i+1]>original[i]*.6&&original[i+2]>original[i]*.43;
+          for(let yy=0;yy<H;yy++)for(let xx=0;xx<W;xx++){
+            let ink=false;
+            for(let dy=-2;dy<=2&&!ink;dy++)for(let dx=-2;dx<=2;dx++){
+              const x=xx+dx,y=yy+dy;if(x<0||x>=W||y<0||y>=H)continue;
+              const i=(y*W+x)*4;if(original[i+3]>220&&original[i]<180)ink=true;
+            }
+            if(!ink)continue;
+            let a=-1,b=-1;
+            for(let d=1;d<=25;d++){
+              if(a<0&&yy-d>=0&&valid(((yy-d)*W+xx)*4))a=((yy-d)*W+xx)*4;
+              if(b<0&&yy+d<H&&valid(((yy+d)*W+xx)*4))b=((yy+d)*W+xx)*4;
+              if(a>=0&&b>=0)break;
+            }
+            const i=(yy*W+xx)*4;
+            for(let k=0;k<3;k++)clean[i+k]=a>=0&&b>=0?(original[a+k]+original[b+k])/2:a>=0?original[a+k]:b>=0?original[b+k]:color[k];
+          }
+          eyeSkinCache[index]=clean;
+        }
+        const cleanSkin=eyeSkinCache[index];
+        for(let y=0;y<H;y++)for(let x=0;x<W;x++) {
+          const i=(y*W+x)*4,edge=Math.min(x,y,W-1-x,H-1-y);
+          const r=data.data[i],g=data.data[i+1],bl=data.data[i+2];
+          const ink=r<170||g>r*.90||(g<r*.65&&bl<r*.46);
+          // Feather the artist's blush/skin, but keep every lash, white and
+          // iris pixel fully owned. Feathering ink would leave the old eye.
+          const alpha=ink?1:smooth(edge/Math.max(1,pad*scale*2));
+          for(let k=0;k<3;k++)skinData.data[i+k]=cleanSkin[i+k];
+          skinData.data[i+3]=cleanSkin[i+3]*alpha;data.data[i+3]*=alpha;
+          if(file===manifest.poses.neutral.variants['closed-closed']) {
+            // Closed lashes are ink-only. Restoring their entire skin rectangle
+            // at the last blink frame causes a large colour/shape flash.
+            data.data[i+3]*=1-smooth((data.data[i]-110)/100);
+          }
+        }
+        const image=document.createElement('canvas'),skin=document.createElement('canvas');image.width=skin.width=W;image.height=skin.height=H;
+        image.getContext('2d').putImageData(data,0,0);skin.getContext('2d').putImageData(skinData,0,0);
+        const p={image,skin,left,top,bounds:b};eyeCache.set(key,p);return p;
+      }
+      function withoutFeatures(file) {
         const p=mouthSprite(file);blankCtx.clearRect(0,0,size,size);
-        blankCtx.drawImage(loaded.get(file),0,0,size,size);blankCtx.drawImage(p.skin,p.left,p.top);return blankCanvas;
+        blankCtx.drawImage(loaded.get(file),0,0,size,size);blankCtx.drawImage(p.skin,p.left,p.top);
+        for(let i=0;i<2;i++){const eye=eyeSprite(file,i);blankCtx.drawImage(eye.skin,eye.left,eye.top);}return blankCanvas;
       }
-      function registeredDraw(ctx, image, matrix=landmarkTransform(output.tilt)) {
-        ctx.save(); ctx.scale(size / manifest.width, size / manifest.height);
-        ctx.transform(...matrix); ctx.drawImage(image, 0, 0, manifest.width, manifest.height); ctx.restore();
-      }
-      function warpFeatures(image, from, to, dynamic=false) {
-        return output.reducedMotion ? image : expressionRenderer?.draw(image,(x,y)=>{
-          const p=featureWarp(x/size*manifest.width,y/size*manifest.height,from,to);
-          return{x:p.x/manifest.width*size,y:p.y/manifest.height*size};
-        },dynamic) || image;
-      }
-      function morphCurrentFace(from,to) {
-        if(output.reducedMotion)return;
-        const warped=warpFeatures(faceCanvas,from,to,true);
-        if(warped===faceCanvas)return;
-        faceCtx.clearRect(0,0,size,size);faceCtx.drawImage(warped,0,0);
-      }
-      const interpolateFeatures=(from,to,mix)=>from.map((f,i)=>Object.fromEntries(['x','y','w','h'].map(k=>[k,f[k]+(to[i][k]-f[k])*mix])));
       function bodyPoint(x, y) {
         if(output.reducedMotion) return { x, y };
-        const nx=x/size, ny=y/size, w=1-smooth((ny-.63)/.18), a=output.life.head*w;
-        const dx=x-.55*size, dy=y-.67*size, chest=smooth((ny-.65)/.18);
-        return { x:.55*size+dx*Math.cos(a)-dy*Math.sin(a)+(nx-.53)*output.life.chest*size*.003*chest,
-          y:.67*size+dx*Math.sin(a)+dy*Math.cos(a)-output.life.chest*size*.0017*chest };
+        const nx=x/size,ny=y/size,chest=smooth((ny-.65)/.18);
+        const p=headPoint(x,y,size,size,-output.tilt*.18+output.life.head);
+        return{x:p.x+(nx-.53)*output.life.chest*size*.003*chest,y:p.y-output.life.chest*size*.0017*chest};
       }
-      return { manifest, trigger: controller.trigger, reset: controller.reset,
+      let eyeFile=manifest.poses.neutral.variants['open-closed'],eyePending=eyeFile,eyeSwapStarted=null;
+      return { manifest, trigger: controller.trigger, reset() {controller.reset();eyeFile=eyePending=manifest.poses.neutral.variants['open-closed'];eyeSwapStarted=null;},
         update(now, input) { output = controller.update(now, input); return { ...output, hairRenderer: hairRenderer?.kind || 'rigid-fallback' }; },
         render(ctx, { width = manifest.width, height = manifest.height, hairWarpPoint } = {}) {
           if (disposed || !output) return false;
           faceCtx.clearRect(0, 0, size, size); hairCtx.clearRect(0, 0, size, size);
-          faceCtx.globalCompositeOperation = hairCtx.globalCompositeOperation = 'lighter';
-          const frames = manifest.transitions[0].frames;
-          const samples=poseSamples(output.tilt, frames.length), posedFeatures=FEATURE_REGIONS.map(()=>({x:0,y:0,w:0,h:0}));
-          for(const sample of samples) {
-            const pose = sample.index < 0 ? manifest.poses.neutral : sample.index >= frames.length ? manifest.poses.curious_tilt : null;
-            const pair = pose ? {base:pose.variants['open-closed'],hair:pose.hair} : frames[sample.index];
-            faceCtx.globalAlpha = hairCtx.globalAlpha = sample.weight;
-            faceCtx.drawImage(withoutMouth(pair.base), 0, 0, size, size); hairCtx.drawImage(loaded.get(pair.hair), 0, 0, size, size);
-            featureBounds(pair.base).forEach((b,i)=>{for(const k of ['x','y','w','h'])posedFeatures[i][k]+=b[k]*sample.weight;});
+          const neutralFile=manifest.poses.neutral.variants['open-closed'];
+          faceCtx.drawImage(withoutFeatures(neutralFile),0,0,size,size);
+          hairCtx.drawImage(loaded.get(manifest.poses.neutral.hair),0,0,size,size);
+          const sourceCels=output.cels.map(f=>({...f,file:f.index===-1?neutralFile:manifest.cels.sequences[f.name || output.pose].frames[f.index]}));
+          const ranked=[...sourceCels].sort((a,b)=>b.weight-a.weight);
+          const wantedEyeFile=ranked[0]?.file || neutralFile;
+          if(wantedEyeFile!==eyePending){eyePending=wantedEyeFile;if(eyeSwapStarted===null)eyeSwapStarted=output.now;}
+          let blink=output.blinkAmount;
+          if(output.reducedMotion){eyeFile=eyePending;eyeSwapStarted=null;}
+          else if(eyeSwapStarted!==null){
+            const age=Math.max(0,output.now-eyeSwapStarted);
+            if(age<180)blink=Math.max(blink,smooth(age/180));
+            else {eyeFile=eyePending;blink=Math.max(blink,1-smooth((age-180)/150));if(age>=330)eyeSwapStarted=null;}
           }
-          faceCtx.globalAlpha = hairCtx.globalAlpha = 1;
-          faceCtx.globalCompositeOperation = hairCtx.globalCompositeOperation = 'source-over';
-          let currentFeatures=posedFeatures, sourceCels=[];
-          const registration=landmarkTransform(output.tilt), inverse=inverseAffine(registration);
-          if (output.cels.length) {
-            celCtx.clearRect(0, 0, size, size); celCtx.globalCompositeOperation = 'lighter';
-            registeredMaskCtx.clearRect(0,0,size,size); registeredDraw(registeredMaskCtx,maskCanvas);
-            sourceCels=output.cels.map(f=>({...f,file:f.index===-1?manifest.poses.neutral.variants['open-closed']:manifest.cels.sequences[f.name || output.pose].frames[f.index]}));
-            const target=FEATURE_REGIONS.map((_,i)=>sourceCels.reduce((sum,f)=>{
-              const b=f.index===-1?posedFeatures[i]:transformFeature(featureBounds(f.file)[i],registration);
-              for(const k of ['x','y','w','h'])sum[k]+=b[k]*f.weight;return sum;
-            },{x:0,y:0,w:0,h:0}));
-            for (const { file, weight, index } of sourceCels) {
-              celCtx.globalAlpha = weight;
-              // Both outgoing and incoming features must meet at the same
-              // PRESENTED coordinates. Aligning only the incoming drawing
-              // leaves two eyes/mouths when the current head is still tilted.
-              const image=index===-1?faceCanvas:withoutMouth(file);
-              const from=index===-1?posedFeatures:featureBounds(file);
-              const to=index===-1?target:target.map(f=>transformFeature(f,inverse));
-              const warped=warpFeatures(image,from,to,true);
-              if(index===-1)celCtx.drawImage(warped || image,0,0);
-              else registeredDraw(celCtx,warped || image);
-            }
-            celCtx.globalAlpha = 1; celCtx.globalCompositeOperation = 'destination-in'; celCtx.drawImage(registeredMask, 0, 0);
-            celCtx.globalCompositeOperation = 'source-over';
-            // Replace the face plate: do not leave the old neutral eyes under
-            // semi-transparent artwork or move a neutral face against tilt hair.
-            faceCtx.globalCompositeOperation = 'destination-out';faceCtx.drawImage(registeredMask,0,0);
-            faceCtx.globalCompositeOperation = 'lighter';faceCtx.drawImage(celCanvas,0,0);
-            faceCtx.globalCompositeOperation = 'source-over';
-            currentFeatures=target;
+          if(eyeFile!==neutralFile){
+            // A single authored face plate also owns eyebrows and cheek marks.
+            // Swapping it during the brief blink is preferable to dissolving
+            // mismatched brows/eyes into a translucent second face.
+            celCtx.clearRect(0,0,size,size);celCtx.drawImage(withoutFeatures(eyeFile),0,0,size,size);
+            celCtx.globalCompositeOperation='destination-in';celCtx.drawImage(maskCanvas,0,0);celCtx.globalCompositeOperation='source-over';
+            faceCtx.globalCompositeOperation='destination-out';faceCtx.drawImage(maskCanvas,0,0);
+            faceCtx.globalCompositeOperation='lighter';faceCtx.drawImage(celCanvas,0,0);faceCtx.globalCompositeOperation='source-over';
           }
-          // Blend only registered eye/mouth pixels; full pose, hair, clothing and
-          // the authored transition frame keep running during speech/blinks.
+          // One eye drawing per side, never a dissolve of two different eyes.
+          // A blink compresses that single sprite above its opaque underpaint;
+          // the final closed-lash drawing replaces it, not overlays it.
+          for(let i=0;i<2;i++) {
+            const naturallyClosed=featureBounds(eyeFile)[i].h<featureBounds(neutralFile)[i].h*.60;
+            const closing=!naturallyClosed&&blink>=.9;
+            const eye=eyeSprite(closing?manifest.poses.neutral.variants['closed-closed']:eyeFile,i);
+            const aperture=closing||naturallyClosed?1:Math.max(.08,1-blink),b=eye.bounds;
+            const cy=b.y*scale,h=eye.image.height*aperture;
+            faceCtx.drawImage(eye.image,eye.left,cy-h/2,eye.image.width,h);
+          }
           {
             patchCtx.clearRect(0,0,size,size);patchCtx.globalCompositeOperation='source-over';
-            const ranked=[...sourceCels].sort((a,b)=>b.weight-a.weight);
             const apertureFor=f=>clamp((featureBounds(f.file)[2].h-mouthShapes[0].h)/(mouthShapes[2].h-mouthShapes[0].h),0,1);
             const expressionAperture=ranked.reduce((sum,f)=>sum+apertureFor(f)*f.weight,0);
             // One mouth layer owns BOTH emotion and speech, including onset
@@ -564,43 +598,37 @@
             const sprites=[expressive&&closedCel?mouthSprite(closedCel.file):mouthSprites[0],
               expressive&&openCel?mouthSprite(openCel.file):mouthSprites[1],
               expressive&&openCel?mouthSprite(openCel.file):mouthSprites[2]];
-            for(let i=0;i<3;i++) {
-              const weight=[g.closedWeight,g.halfWeight,g.openWeight][i];if(weight<.0001)continue;
+            // At most ONE lip silhouette. Dissolving the smile into an open
+            // cavity made two lip edges even after clearing the source face.
+            const i=value<.16?0:value<1?1:2;
+            {
               const {image,pad,bounds:b}=sprites[i];
               const w=i===0?b.w:g.width,h=i===0?b.h:g.height;
               const x=g.x,y=i===0?mouthShapes[0].y-b.h/2:g.top;
               const px=pad*w/b.w,py=pad*h/b.h;
-              patchCtx.globalAlpha=weight;
               patchCtx.drawImage(image,(x-w/2-px)*scale,(y-py)*scale,(w+px*2)*scale,(h+py*2)*scale);
             }
             patchCtx.globalAlpha=1;patchCtx.globalCompositeOperation='source-over';
-            // The authored tilted lip is not exactly the affine prediction.
-            // Anchor to the PRESENTED base lip, not a guessed head landmark.
-            const anchor=transformFeature(mouthShapes[0],registration),mouthRegistration=[...registration];
-            mouthRegistration[4]+=posedFeatures[2].x-anchor.x;mouthRegistration[5]+=posedFeatures[2].y-anchor.y;
-            registeredDraw(faceCtx,patchCanvas,mouthRegistration);
-          }
-          if(output.blinkAmount > .0001) {
-            const closedFeatures=featureBounds(manifest.poses.neutral.variants['closed-closed']);
-            const eyeTarget=interpolateFeatures(currentFeatures,currentFeatures.map((f,i)=>i<2?transformFeature(closedFeatures[i],registration):f),output.blinkAmount);
-            morphCurrentFace(currentFeatures,eyeTarget);
-            const eyes=warpFeatures(patch('closed-closed','eyes'),closedFeatures,eyeTarget.map(f=>transformFeature(f,inverse)));
-            faceCtx.globalAlpha=output.blinkAmount;registeredDraw(faceCtx,eyes);faceCtx.globalAlpha=1;
+            faceCtx.drawImage(patchCanvas,0,0);
           }
           ctx.save();
           const life=output.life, sx=width/manifest.width, sy=height/manifest.height;
           ctx.translate(width*.55+life.x*sx,height*.84+life.y*sy);ctx.rotate(life.rotation);
           ctx.scale(1+life.scale,1+life.scale);ctx.translate(-width*.55,-height*.84);
-          const body = output.reducedMotion ? null : bodyRenderer?.draw(faceCanvas,bodyPoint,true);
+          let body = output.reducedMotion ? null : bodyRenderer?.draw(faceCanvas,bodyPoint,true);
+          if(!body&&!output.reducedMotion){bodyRenderer?.dispose();bodyRenderer=createCanvasHairRenderer(size,size);body=bodyRenderer?.draw(faceCanvas,bodyPoint,true);}
           ctx.drawImage(body || faceCanvas,0,0,width,height);
-          const renderedHair = output.reducedMotion ? null : hairRenderer?.draw(hairCanvas, (x, y) => {
+          const hairPoint=(x,y)=>{
             const p = controller.hairPoint(x * manifest.width / size, y * manifest.height / size, hairWarpPoint);
             return bodyPoint(p.x * size / manifest.width, p.y * size / manifest.height);
-          },true);
+          };
+          let renderedHair = output.reducedMotion ? null : hairRenderer?.draw(hairCanvas,hairPoint,true);
+          if(!renderedHair&&!output.reducedMotion){hairRenderer?.dispose();hairRenderer=createCanvasHairRenderer(size,size);renderedHair=hairRenderer?.draw(hairCanvas,hairPoint,true);}
           ctx.drawImage(renderedHair || hairCanvas, 0, 0, width, height); ctx.restore(); return true;
         }, dispose, get status() { return output; },
-        get mouthSources() { return [...spriteCache].map(([file,p])=>({file,inkPixels:p.inkPixels})); } };
+        get mouthSources() { return [...spriteCache].map(([file,p])=>({file,inkPixels:p.inkPixels})); },
+        get renderDiagnostics() { return {poseMode:'shared-rigid-head',eyeLayers:2,mouthLayers:1,decodedImages:loaded.size}; } };
     } catch (error) { dispose(); throw error; }
   }
-  return { VARIANTS, STATES, stateForInput, validateManifest, celWeights, landmarkTransform, poseSamples, featureWarp, transformFeature, inverseAffine, mouthGeometry, createController, createPlayer };
+  return { VARIANTS, STATES, stateForInput, validateManifest, celWeights, landmarkTransform, poseSamples, featureWarp, transformFeature, inverseAffine, mouthGeometry, headPoint, createController, createPlayer };
 });

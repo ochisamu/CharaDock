@@ -194,6 +194,30 @@ test('registered local patch landmarks align at the endpoints, intermediate dete
   const [a,b,c,d,e,f] = runtime.landmarkTransform(1);
   assert.ok(Math.abs(a*668+c*730+e-706) < .0001); assert.ok(Math.abs(b*668+d*730+f-718) < .0001);
 });
+test('shared tilted head preserves face distances and area instead of stretching eye/mouth patches',()=>{
+  const points=[[548,630],[764,579],[668,730],[630,690]];
+  for(let angle=-.20;angle<=.02;angle+=.01){
+    const transformed=points.map(([x,y])=>runtime.headPoint(x,y,1254,1254,angle));
+    for(let i=0;i<points.length;i++)for(let j=0;j<i;j++)
+      assert.ok(Math.abs(Math.hypot(transformed[i].x-transformed[j].x,transformed[i].y-transformed[j].y)-Math.hypot(points[i][0]-points[j][0],points[i][1]-points[j][1]))<1e-8);
+    for(let y=0;y<1254;y+=16)for(let x=0;x<1254;x+=32){
+      const p=runtime.headPoint(x,y,1254,1254,angle),px=runtime.headPoint(x+1,y,1254,1254,angle),py=runtime.headPoint(x,y+1,1254,1254,angle);
+      const determinant=(px.x-p.x)*(py.y-p.y)-(py.x-p.x)*(px.y-p.y);
+      assert.ok(determinant>.35,'head/neck mesh must never fold');
+      if(y<790)assert.ok(Math.abs(determinant-1)<1e-8,'face stays rigid');
+    }
+    assert.deepEqual(runtime.headPoint(600,1200,1254,1254,angle),{x:600,y:1200});
+  }
+});
+test('live tilt path uses a single canonical head and never the optical-flow pilot or feature warper',()=>{
+  const source=fs.readFileSync(path.resolve(__dirname,'../../drawn-pose-runtime.js'),'utf8');
+  const render=source.slice(source.indexOf('render(ctx,'));
+  assert.doesNotMatch(render,/poseSamples\(|landmarkTransform\(|warpFeatures\(|morphCurrentFace\(/);
+  assert.match(render,/const i=value<\.16\?0:value<1\?1:2/,'one mouth silhouette, not crossfaded lips');
+  const c=runtime.createController(manifest);c.update(0);c.trigger('curious_tilt',0);
+  const s=c.update(1000,{mouthOpenness:1.4,blinkClosed:true});
+  assert.equal(s.tiltRenderer,'shared-rigid-head');assert.equal(s.transitionFrame,null);assert.ok(s.tilt>.8);
+});
 test('Jev mapping uses supported drawings, silence-only yawn never runs over conversation', () => {
   assert.equal(runtime.stateForInput({ emotion: 'exasperated' }), 'doubtful_side_eye');
   assert.equal(runtime.stateForInput({ emotion: 'happy' }), 'delighted_agreement');

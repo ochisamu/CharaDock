@@ -39,12 +39,15 @@ function difference(a, b, region) {
     previous=png;states.push({frame,...r.state});
   }
   const top=key=>[...metrics].sort((a,b)=>b[key]-a[key]).slice(0,12);
+  fs.writeFileSync(path.join(output,'metrics-pending.json'),JSON.stringify({passed:false,topWhole:top('whole'),topFace:top('face')},null,2));
   const mouthSources=await js('qaPlayer.mouthSources');
   const manifest=JSON.parse(fs.readFileSync(path.join(source,'assets/amber-avatar/authored-motion/manifest.json')));
   const requiredMouthSources=[manifest.poses.neutral.variants['open-closed'],manifest.poses.neutral.variants['open-half'],manifest.poses.neutral.variants['open-open'],
-    manifest.poses.curious_tilt.variants['open-closed'],...manifest.transitions[0].frames.map(f=>f.base),...Object.values(manifest.cels.sequences).flatMap(s=>s.frames)];
+    ...Object.values(manifest.cels.sequences).flatMap(s=>s.frames)];
   assert.ok(requiredMouthSources.every(file=>mouthSources.some(s=>s.file===file)),'every pose frame and cel needs an extracted mouth');
   assert.ok(mouthSources.every(s=>s.inkPixels>0),'no source face may retain its undetected old mouth');
+  const renderDiagnostics=await js('qaPlayer.renderDiagnostics');
+  assert.deepEqual(renderDiagnostics,{poseMode:'shared-rigid-head',eyeLayers:2,mouthLayers:1,decodedImages:20});
   assert.ok(top('whole')[0].whole<9,'large full-character frame discontinuity');
   assert.ok(top('face')[0].face<12,'large facial frame discontinuity');
   assert.ok(states[160].tilt>.8,'expression must not snap the tilted head to neutral');
@@ -52,7 +55,22 @@ function difference(a, b, region) {
   assert.ok(Math.max(...states.slice(0,90).map(s=>s.life.x))-Math.min(...states.slice(0,90).map(s=>s.life.x))>.01,'idle must not be a still frame');
   assert.ok(Math.max(...states.map(s=>s.hair[0]))-Math.min(...states.map(s=>s.hair[0]))>15,'hair needs visible independent follow-through');
   assert.ok(states.some(s=>Math.abs(s.hair[0]-s.hairMiddle[0])>1),'lengths and tips must not move as one rigid sheet');
-  const report={scope:'deterministic Chromium frames; synthetic audio; no real Jev/TTS',passed:true,fps:30,frames:420,metrics,states,mouthSources,topWhole:top('whole'),topFace:top('face')};
+  // Exercise held tilt, repeated eye closures, continuous lip articulation and
+  // interruption separately from the short mixed-expression demonstration.
+  await js("qaPlayer.reset();qaPlayer.update(0,{idleEnabled:false});qaPlayer.trigger('curious_tilt',0,10000);qaPlayer.update(5000,{idleEnabled:false});");
+  const tiltStress=[];
+  for(let f=0;f<180;f++){
+    const now=5500+f*1000/30;
+    const r=await js(`(()=>{${f===120?`qaPlayer.trigger('neutral',${now},10000);`:''}
+      const s=qaPlayer.update(${now},{mouthOpenness:${(1-Math.cos(f*.35))},audioLevel:.25,blinkClosed:${f%45>=28&&f%45<34}});
+      const c=qaCanvas.getContext('2d');c.clearRect(0,0,640,640);qaPlayer.render(c,{width:640,height:640});
+      return{state:s,png:qaCanvas.toDataURL('image/png'),render:qaPlayer.renderDiagnostics};})()`);
+    assert.equal(r.render.eyeLayers,2);assert.equal(r.render.mouthLayers,1);assert.equal(r.state.transitionFrame,null);
+    if(f<120)assert.equal(r.state.tilt,1,'speaking/blinks cannot disturb the held head pose');
+    tiltStress.push({frame:f,...r.state});
+    fs.writeFileSync(path.join(output,'tilt-'+String(f).padStart(4,'0')+'.png'),Buffer.from(r.png.split(',')[1],'base64'));
+  }
+  const report={scope:'deterministic Chromium frames; synthetic audio; no real Jev/TTS',passed:true,fps:30,frames:420,tiltStress,metrics,states,mouthSources,renderDiagnostics,topWhole:top('whole'),topFace:top('face')};
   fs.writeFileSync(path.join(output,'metrics.json'),JSON.stringify(report,null,2));
   console.log(JSON.stringify({topWhole:report.topWhole.slice(0,5),topFace:report.topFace.slice(0,5)}));
   await js('qaPlayer.dispose()');win.destroy();await server.stop();clearTimeout(guard);app.quit();
