@@ -12803,6 +12803,8 @@
         mouthState: frozen ? 0 : mouthState, blinkClosed: !frozen && blinkClosed,
         audioLevel: frozen ? 0 : voiceLevel, interacting: performance.now() < obsExternalInput.expressionUntil,
         reducedMotion: performanceReducedMotion.matches || frozen,
+        idleEnabled: state.idleMotionEnabled, breathStrength: state.breathStrength / 100,
+        rollStrength: state.rollStrength / 100, voiceMotion: pyokoScale(),
       });
       clearCharacterCanvas();
       if (!kohakuMotionPlayer.render(charCtx, { width: CROP.w, height: CROP.h })) return false;

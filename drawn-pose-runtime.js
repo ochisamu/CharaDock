@@ -9,6 +9,36 @@
   'use strict';
   const clamp = (x, lo, hi) => Math.min(hi, Math.max(lo, Number(x) || 0));
   const smooth = x => { x = clamp(x, 0, 1); return x * x * (3 - 2 * x); };
+  function spring(value, velocity, target, dt, omega) {
+    const offset = value - target, c = velocity + omega * offset, decay = Math.exp(-omega * dt);
+    return [target + (offset + c * dt) * decay, (velocity - omega * c * dt) * decay];
+  }
+  function poseSamples(tilt, count) {
+    // Include the full-resolution endpoints in the same continuous sequence.
+    const f = clamp(tilt, 0, 1) * (count + 1), a = Math.floor(f), mix = f - a;
+    return [{ index: a - 1, weight: 1 - mix }, { index: Math.min(count, a), weight: mix }].filter(s => s.weight > .000001);
+  }
+  const FEATURE_REGIONS = [[548,630,105,82],[764,579,95,80],[668,730,82,62],[549,542,76,32],[742,477,78,32]];
+  function featureWarp(x, y, source, target) {
+    let dx=0,dy=0;
+    for(let i=0;i<Math.min(source.length,target.length,FEATURE_REGIONS.length);i++) {
+      const [, ,rx,ry]=FEATURE_REGIONS[i], a=source[i],b=target[i];
+      const cx=(a.x+b.x)/2,cy=(a.y+b.y)/2;
+      const radius=Math.hypot((x-cx)/rx,(y-cy)/ry), w=1-smooth((radius-.58)/.42);
+      if(!w)continue;
+      dx+=w*(b.x-a.x+(x-a.x)*(clamp(b.w/a.w,.4,1.8)-1));
+      dy+=w*(b.y-a.y+(y-a.y)*(clamp(b.h/a.h,.35,1.8)-1));
+    }
+    return {x:x+clamp(dx,-24,24),y:y+clamp(dy,-32,32)};
+  }
+  function transformFeature(f, m) {
+    const [a,b,c,d,e,g]=m;
+    return {x:a*f.x+c*f.y+e,y:b*f.x+d*f.y+g,w:f.w*Math.hypot(a,b),h:f.h*Math.hypot(c,d)};
+  }
+  function inverseAffine(m) {
+    const [a,b,c,d,e,f]=m,det=a*d-b*c;
+    return [d/det,-b/det,-c/det,a/det,(c*f-d*e)/det,(b*e-a*f)/det];
+  }
   const VARIANTS = ['open-closed', 'open-half', 'open-open', 'closed-closed', 'closed-half', 'closed-open'];
   const STATES = ['neutral', 'curious_tilt', 'attentive_listening', 'delighted_agreement', 'doubtful_side_eye', 'sleepy_yawn'];
   function stateForInput(input = {}) {
@@ -60,75 +90,110 @@
     return a[1] === b[1] ? [{ index: a[1], weight: 1 }] : [{ index: a[1], weight: 1 - t }, { index: b[1], weight: t }];
   }
   function createController(manifest) {
-    const budget = validateManifest(manifest), duration = manifest.transitions?.[0]?.durationMs || 1250;
-    let last = null, now = 0, tilt = 0, tiltTarget = 0, tiltOrigin = 0, tiltStarted = 0;
-    let sequence = null, queued = null, deadline = 0, mouth = 0, blink = false, reduced = false;
-    let presentedCels = [], carriedCels = [], fadeStarted = 0;
+    const budget = validateManifest(manifest);
+    let last = null, now = 0, tilt = 0, tiltTarget = 0, tiltVelocity = 0;
+    let sequence = null, deadline = 0, mouth = 0, blink = false, reduced = false;
+    let presentedCels = [], carriedCels = [], fadeStarted = 0, releaseStarted = null;
+    let mouthValue = 0, blinkAmount = 0, blinkVelocity = 0, speechMix = 0, speechMixVelocity = 0;
+    const life = { x: 0, y: 0, rotation: 0, scale: 0, head: 0, chest: 0, accent: 0 };
+    const lifeVelocity = Object.fromEntries(Object.keys(life).map(k => [k, 0]));
     let speechUntil = 0, lastActivity = 0, nextYawn = 90000;
     const hair = [0, 0, 0], velocities = [0, 0, 0];
-    function reset() { last = null; tilt = tiltTarget = tiltOrigin = 0; sequence = queued = null; presentedCels = carriedCels = []; deadline = 0; speechUntil = 0; hair.fill(0); velocities.fill(0); lastActivity = now; nextYawn = now + 90000; }
+    function reset() { last = null; tilt = tiltTarget = tiltVelocity = 0; sequence = null; presentedCels = carriedCels = []; deadline = 0; releaseStarted = null; speechUntil = 0; mouthValue = blinkAmount = blinkVelocity = speechMix = speechMixVelocity = 0; hair.fill(0); velocities.fill(0); for (const k of Object.keys(life)) life[k] = lifeVelocity[k] = 0; lastActivity = now; nextYawn = now + 90000; }
     function retarget(target) {
       if (target === tiltTarget) return;
-      tiltOrigin = tilt; tiltTarget = target; tiltStarted = now;
+      tiltTarget = target; // Keep current position AND velocity on interruption.
     }
     function trigger(name, ms = now, holdMs = 4500) {
       if (!STATES.includes(name)) return false;
       now = Number.isFinite(ms) ? ms : now; lastActivity = now; nextYawn = now + 90000;
-      if (sequence?.name !== name && presentedCels.length) { carriedCels = presentedCels.map(f => ({ ...f })); fadeStarted = now; }
+      if (last === null) last = now;
+      const changing=sequence?.name !== name;
+      const fromExpression=presentedCels.some(f=>f.index>=0)||tilt>.02;
+      if (changing && (presentedCels.length || fromExpression)) {
+        carriedCels = presentedCels.length ? presentedCels.map(f => ({ ...f })) : [{index:-1,weight:1}];
+        fadeStarted = now;
+      }
       deadline = now + clamp(holdMs, 500, 10000);
-      if (name === 'curious_tilt') { sequence = queued = null; retarget(1); }
-      else if (tilt > .001) { queued = name; retarget(0); }
+      releaseStarted = null;
+      if (name === 'curious_tilt') { sequence = null; retarget(1); }
       else {
-        retarget(0); queued = null;
+        retarget(0);
         // Repeated identical decisions do not restart the onset animation.
         if (name === 'neutral') sequence = null;
-        else if (sequence?.name !== name) sequence = { name, started: now };
+        else if (changing) sequence = { name, started: now, startPhase: fromExpression ? .24 : 0 };
       }
       return true;
     }
     function update(ms, input = {}) {
       now = Number.isFinite(ms) ? ms : now;
-      const elapsed = last === null ? 0 : Math.max(0, (now - last) / 1000), dt = Math.min(.05, elapsed); last = now;
+      const elapsed = last === null ? 0 : Math.max(0, (now - last) / 1000), dt = Math.min(.5, elapsed); last = now;
       reduced = Boolean(input.reducedMotion);
       mouth = Math.round(clamp(input.mouthState ?? (input.audioLevel > .28 ? 2 : input.audioLevel > .055 ? 1 : 0), 0, 2));
       blink = Boolean(input.blinkClosed);
+      mouthValue += (mouth - mouthValue) * (1 - Math.exp(-dt * 25));
+      [blinkAmount,blinkVelocity] = spring(blinkAmount,blinkVelocity,blink?1:0,dt,blink?36:24);
       if (mouth || input.audioLevel > .015 || input.speaking) { speechUntil = now + 500; lastActivity = now; }
+      [speechMix, speechMixVelocity] = spring(speechMix, speechMixVelocity, now < speechUntil ? 1 : 0, dt, 14);
       if (input.interacting) lastActivity = now;
-      if (elapsed > .3) { hair.fill(0); velocities.fill(0); }
-      if (deadline && now > deadline) { retarget(0); queued = null; deadline = 0; }
+      if (deadline && now > deadline) { retarget(0); deadline = 0; releaseStarted = now; }
       // Audio and blink never cancel an authored transition or reset its pose.
-      const travel = duration * Math.abs(tiltTarget - tiltOrigin);
-      tilt = reduced ? tiltTarget : travel ? tiltOrigin + (tiltTarget - tiltOrigin) * smooth((now - tiltStarted) / travel) : tiltTarget;
+      if (reduced) { tilt = tiltTarget; tiltVelocity = 0; }
+      else [tilt, tiltVelocity] = spring(tilt, tiltVelocity, tiltTarget, elapsed, 3.4);
+      tilt = clamp(tilt, 0, 1);
       if (Math.abs(tilt - tiltTarget) < .0001) {
-        tilt = tiltTarget;
-        if (tilt === 0 && queued) { sequence = queued === 'neutral' ? null : { name: queued, started: now }; queued = null; }
+        tilt = tiltTarget; tiltVelocity = 0;
       }
       if (!sequence && tilt === 0 && now - lastActivity > 60000 && now > nextYawn && !input.interacting && now > speechUntil && !reduced) {
-        sequence = { name: 'sleepy_yawn', started: now }; nextYawn = now + 90000;
+        sequence = { name: 'sleepy_yawn', started: now }; deadline = now + 2300; releaseStarted = null; nextYawn = now + 90000;
       }
       let celPhase = 0;
       if (sequence) {
-        celPhase = (now - sequence.started) / manifest.cels.sequences[sequence.name].durationMs;
+        // Onset -> peak -> hold. Do not silently revert to neutral mid-sentence.
+        // A change of emotion goes directly to the incoming onset drawing,
+        // not old emotion -> neutral -> new emotion (a visible facial flash).
+        celPhase = releaseStarted === null ? Math.min(.45, (sequence.startPhase || 0) + (now - sequence.started) / 1200) : .55 + (now - releaseStarted) / 1200;
         if (celPhase >= 1) { sequence = null; celPhase = 0; }
       }
       for (let i = 0; i < 3; i++) {
         if (reduced || input.freeze) { hair[i] = velocities[i] = 0; continue; }
-        const omega = 6 + i, target = Math.sin(now / 1000 * 1.45 - i * .7) * (2.4 + i * .8);
+        const omega = 6 + i, target = Math.sin(now / 1000 * 1.45 - i * .7) * (4.5 + i * 1.2) - tiltVelocity * (2 + i) - lifeVelocity.head * 45;
         const off = hair[i] - target, c = velocities[i] + omega * off, decay = Math.exp(-omega * dt);
         hair[i] = target + (off + c * dt) * decay; velocities[i] = (velocities[i] - omega * c * dt) * decay;
       }
       let cels = sequence ? celWeights(reduced ? .45 : celPhase).map(f => ({ ...f, name: sequence.name })) : [];
       if (carriedCels.length) {
-        const mix = reduced ? 1 : smooth((now - fadeStarted) / 220);
+        const mix = reduced ? 1 : smooth((now - fadeStarted) / 260);
         cels = [...carriedCels.map(f => ({ ...f, weight: f.weight * (1 - mix) })),
           ...(cels.length ? cels : [{ index: -1, weight: 1 }]).map(f => ({ ...f, weight: f.weight * mix }))].filter(f => f.weight > .0001);
         if (mix === 1) carriedCels = [];
       }
-      presentedCels = cels;
+      // Bound repeated interruptions to one weight per original drawing.
+      const merged = new Map();
+      for(const f of cels) { const id = `${f.name || ''}:${f.index}`; const old = merged.get(id); merged.set(id, { ...f, weight: f.weight + (old?.weight || 0) }); }
+      cels = [...merged.values()]; presentedCels = cels;
+      const seconds = now / 1000, idle = input.idleEnabled === false ? 0 : 1;
+      const breath = clamp(input.breathStrength ?? .59, 0, 1), roll = clamp(input.rollStrength ?? .42, 0, 1);
+      const voice = clamp(input.audioLevel, 0, 1) * clamp(input.voiceMotion ?? .42, 0, 2);
+      const joy = sequence?.name === 'delighted_agreement' ? 1 : 0;
+      const beat = joy ? Math.sin(Math.PI * clamp((now - sequence.started) / 650, 0, 1)) ** 2 : 0;
+      const targets = {
+        x: idle * (Math.sin(seconds * .83 + .2) * 3.8 + Math.sin(seconds * .37) * 1.6) * breath,
+        y: idle * Math.sin(seconds * 1.13) * 3.5 * breath - voice * 12 - beat * 6,
+        rotation: idle * (Math.sin(seconds * .91) * .013 + Math.sin(seconds * .43 + 1) * .004) * roll,
+        scale: idle * Math.sin(seconds * 1.13) * .005 * breath + voice * .002,
+        head: idle * (Math.sin(seconds * 1.37) * .009 + Math.sin(seconds * .69 + .3) * .005) * roll + beat * .012,
+        chest: idle * Math.sin(seconds * 1.13 - .5) * breath,
+        accent: voice,
+      };
+      for(const k of Object.keys(life)) {
+        if(reduced || input.freeze) { life[k] = lifeVelocity[k] = 0; }
+        else [life[k], lifeVelocity[k]] = spring(life[k], lifeVelocity[k], targets[k], dt, k === 'head' ? 8 : k === 'accent' ? 12 : 6);
+      }
       return { pose: tilt > .001 ? 'curious_tilt' : sequence?.name || 'neutral', tilt,
         transitionFrame: tilt > .001 && tilt < .999 ? Math.round(tilt * ((manifest.transitions?.[0]?.frames.length || 1) - 1)) : null,
-        cels, mouthState: mouth, blinkClosed: blink,
-        speaking: now < speechUntil, reducedMotion: reduced, hair: [...hair], ...budget };
+        cels, mouthState: mouth, blinkClosed: blink, mouthValue, blinkAmount, speechMix,
+        speaking: now < speechUntil, reducedMotion: reduced, hair: [...hair], life: { ...life }, tiltVelocity, ...budget };
     }
     function hairPoint(x, y, externalWarp) {
       if (reduced) return { x, y };
@@ -183,7 +248,7 @@
         triangle(image,[a,c,b],[da,dc,db]);triangle(image,[b,c,d],[db,dc,dd]);
       }return canvas;},dispose(){canvas.width=1;canvas.height=1;}};
   }
-  function createHairRenderer(width, height) {
+  function createHairRenderer(width, height, detail = false) {
     const canvas = document.createElement('canvas'); canvas.width = width; canvas.height = height;
     const gl = canvas.getContext('webgl', {alpha: true, premultipliedAlpha: true, antialias: false, depth: false, preserveDrawingBuffer: true});
     if (!gl) return createCanvasHairRenderer(width,height);
@@ -198,7 +263,7 @@
     gl.linkProgram(program); if (!gl.getProgramParameter(program, gl.LINK_STATUS)) throw new Error('Hair shader linking failed');
     gl.deleteShader(vertex); gl.deleteShader(fragment);
     gl.useProgram(program); gl.uniform2f(gl.getUniformLocation(program,'size'), width,height);
-    const cols = 28, rows = 24, coords = [], indices = [];
+    const cols = detail ? 64 : 28, rows = detail ? 64 : 24, coords = [], indices = [];
     for (let y=0;y<=rows;y++) for(let x=0;x<=cols;x++) coords.push(x/cols,y/rows);
     for(let y=0;y<rows;y++) for(let x=0;x<cols;x++){const a=y*(cols+1)+x,b=a+1,c=a+cols+1,d=c+1;indices.push(a,c,b,b,c,d);}
     const uv = new Float32Array(coords), positions = new Float32Array(coords.length);
@@ -207,9 +272,10 @@
     const indexBuffer=gl.createBuffer(); gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER,indexBuffer);gl.bufferData(gl.ELEMENT_ARRAY_BUFFER,new Uint16Array(indices),gl.STATIC_DRAW);
     const textures=new Map();
     gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL,true);gl.disable(gl.BLEND);
-    return { kind:'webgl', draw(image, warp) {
+    return { kind:'webgl', draw(image, warp, dynamic = false) {
       if(lost) return null;
       let texture=textures.get(image); if(!texture){texture=gl.createTexture();gl.bindTexture(gl.TEXTURE_2D,texture);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,gl.RGBA,gl.UNSIGNED_BYTE,image);textures.set(image,texture);if(textures.size>8){const oldest=textures.keys().next().value;gl.deleteTexture(textures.get(oldest));textures.delete(oldest);}} else gl.bindTexture(gl.TEXTURE_2D,texture);
+      if(dynamic)gl.texSubImage2D(gl.TEXTURE_2D,0,0,0,gl.RGBA,gl.UNSIGNED_BYTE,image);
       for(let i=0;i<coords.length;i+=2){const p=warp(coords[i]*width,coords[i+1]*height);positions[i]=p.x;positions[i+1]=p.y;}
       gl.bindBuffer(gl.ARRAY_BUFFER,positionBuffer);gl.bufferSubData(gl.ARRAY_BUFFER,0,positions);gl.viewport(0,0,width,height);gl.clearColor(0,0,0,0);gl.clear(gl.COLOR_BUFFER_BIT);gl.drawElements(gl.TRIANGLES,indices.length,gl.UNSIGNED_SHORT,0);return canvas;
     }, dispose(){for(const t of textures.values())gl.deleteTexture(t);textures.clear();gl.deleteBuffer(uvBuffer);gl.deleteBuffer(positionBuffer);gl.deleteBuffer(indexBuffer);gl.deleteProgram(program);gl.getExtension('WEBGL_lose_context')?.loseContext();canvas.width=canvas.height=1;} };
@@ -218,7 +284,7 @@
   async function createPlayer({ manifestUrl, signal, canvasOnly = false }) {
     const response = await fetch(manifestUrl, { signal }); if (!response.ok) throw new Error(`Pose manifest ${response.status}`);
     const manifest = await response.json(), controller = createController(manifest), loaded = new Map(), base = new URL(manifestUrl, document.baseURI);
-    let hairRenderer = null, disposed = false, output = null;
+    let hairRenderer = null, bodyRenderer = null, expressionRenderer = null, disposed = false, output = null;
     const load = async (file, width = manifest.width, height = manifest.height) => {
       if (loaded.has(file)) return loaded.get(file);
       const r = await fetch(new URL(file, base), { signal }); if (!r.ok) throw new Error(`Missing pose asset: ${file}`);
@@ -230,7 +296,7 @@
       if (signal?.aborted) { image.close(); throw new Error('Pose loading aborted'); }
       loaded.set(file, image); return image;
     };
-    const dispose = () => { if (disposed) return; disposed = true; hairRenderer?.dispose(); hairRenderer = null; for (const im of loaded.values()) im.close(); loaded.clear(); };
+    const dispose = () => { if (disposed) return; disposed = true; hairRenderer?.dispose(); bodyRenderer?.dispose(); expressionRenderer?.dispose(); hairRenderer = bodyRenderer = expressionRenderer = null; for (const im of loaded.values()) im.close(); loaded.clear(); };
     try {
       for (const pose of Object.values(manifest.poses)) { await load(pose.hair); for (const file of Object.values(pose.variants)) await load(file); }
       for (const clip of manifest.transitions || []) for (const f of clip.frames) { await load(f.base, clip.width, clip.height); await load(f.hair, clip.width, clip.height); }
@@ -238,12 +304,24 @@
       for (const seq of Object.values(manifest.cels.sequences)) for (const file of seq.frames) await load(file);
       const size = manifest.decodeSize, makeCanvas = () => { const c = document.createElement('canvas'); c.width = c.height = size; return c; };
       const faceCanvas = makeCanvas(), faceCtx = faceCanvas.getContext('2d'), celCanvas = makeCanvas(), celCtx = celCanvas.getContext('2d');
+      const hairCanvas = makeCanvas(), hairCtx = hairCanvas.getContext('2d'), patchCanvas = makeCanvas(), patchCtx = patchCanvas.getContext('2d');
+      const registeredMask = makeCanvas(), registeredMaskCtx = registeredMask.getContext('2d');
       const maskCanvas = makeCanvas(), maskCtx = maskCanvas.getContext('2d', { willReadFrequently: true });
       maskCtx.drawImage(loaded.get(manifest.cels.mask), 0, 0, size, size);
       const mask = maskCtx.getImageData(0, 0, size, size);
-      for (let i = 0; i < mask.data.length; i += 4) mask.data[i + 3] = mask.data[i];
+      // Keep the authored jaw/cheek/hair silhouette. Facial artwork must never
+      // replace a moving head outline with a differently registered neutral jaw.
+      const radius=Math.max(1,Math.round(size/manifest.width*20)), horizontal=new Uint8Array(size*size);
+      for(let y=0;y<size;y++)for(let x=0;x<size;x++) {
+        let min=255;for(let d=-radius;d<=radius;d++)min=Math.min(min,x+d>=0&&x+d<size?mask.data[(y*size+x+d)*4]:0);
+        horizontal[y*size+x]=min;
+      }
+      for(let y=0;y<size;y++)for(let x=0;x<size;x++) {
+        let min=255;for(let d=-radius;d<=radius;d++)min=Math.min(min,y+d>=0&&y+d<size?horizontal[(y+d)*size+x]:0);
+        mask.data[(y*size+x)*4+3]=min;
+      }
       maskCtx.putImageData(mask, 0, 0);
-      const patches = new Map(), regions = { mouth: [668, 730, 76, 50], eyes: [[548, 610, 110, 112], [758, 559, 112, 120]] };
+      const patches = new Map(), regions = { mouth: [668, 730, 88, 64], eyes: [[548, 630, 100, 82], [758, 584, 110, 84]] };
       function patch(key, region) {
         const id = `${key}:${region}`; if (patches.has(id)) return patches.get(id);
         const c = makeCanvas(), p = c.getContext('2d'); p.scale(size / manifest.width, size / manifest.height);
@@ -257,44 +335,164 @@
       }
       try { hairRenderer = canvasOnly ? createCanvasHairRenderer(size, size) : createHairRenderer(size, size); }
       catch { hairRenderer = createCanvasHairRenderer(size, size); }
+      try { bodyRenderer = canvasOnly ? createCanvasHairRenderer(size, size) : createHairRenderer(size, size); }
+      catch { bodyRenderer = createCanvasHairRenderer(size, size); }
+      try { expressionRenderer = canvasOnly ? createCanvasHairRenderer(size, size) : createHairRenderer(size, size, true); }
+      catch { expressionRenderer = createCanvasHairRenderer(size, size); }
+      const features = new Map(), featureCanvas=makeCanvas(), featureCtx=featureCanvas.getContext('2d',{willReadFrequently:true});
+      function featureBounds(file) {
+        if(features.has(file))return features.get(file);
+        featureCtx.clearRect(0,0,size,size);featureCtx.drawImage(loaded.get(file),0,0,size,size);
+        const data=featureCtx.getImageData(0,0,size,size).data, scale=size/manifest.width;
+        const boxes=[[480,574,145,108],[702,508,130,122],[610,688,116,70],[480,510,145,62],[675,445,142,62]];
+        const frameIndex=manifest.transitions[0].frames.findIndex(f=>f.base===file);
+        const poseAmount=file===manifest.poses.curious_tilt.variants['open-closed']?1:frameIndex<0?0:(frameIndex+1)/(manifest.transitions[0].frames.length+1);
+        const searchTransform=landmarkTransform(poseAmount),[A,B,C,D,E,F]=searchTransform;
+        const result=boxes.map((box,n)=>{
+          // Follow the posed head when searching. A fixed eyebrow/mouth ROI
+          // can miss the drawing entirely at tilt and invent a neutral anchor.
+          const [bx,by,bw,bh]=box;
+          const corners=[[bx,by],[bx+bw,by],[bx,by+bh],[bx+bw,by+bh]].map(([x,y])=>[A*x+C*y+E,B*x+D*y+F]);
+          const x=Math.min(...corners.map(p=>p[0])),y=Math.min(...corners.map(p=>p[1]));
+          const w=Math.max(...corners.map(p=>p[0]))-x,h=Math.max(...corners.map(p=>p[1]))-y;
+          const left=Math.floor(x*scale),top=Math.floor(y*scale),W=Math.ceil(w*scale),H=Math.ceil(h*scale);
+          const dark=new Uint8Array(W*H),seen=new Uint8Array(W*H), queue=new Int32Array(W*H);
+          for(let yy=0;yy<H;yy++)for(let xx=0;xx<W;xx++) {
+            const i=((top+yy)*size+left+xx)*4;
+            // A mouth includes the warm inner fill, not just its darkest
+            // corner: treating that tiny corner as the whole lip made morphs
+            // pull the open mouth away from the outgoing smile.
+            const ink=n===2?data[i+1]<data[i]*.63&&data[i+2]<data[i]*.56:
+              n>=3?data[i]<210&&data[i+1]<data[i]*.64&&data[i+2]<data[i]*.56:
+              data[i]<115&&data[i+1]<85&&data[i+2]<85;
+            dark[yy*W+xx]=Number(data[i+3]>220&&ink);
+          }
+          let best=null;
+          for(let i=0;i<dark.length;i++)if(dark[i]&&!seen[i]) {
+            let head=0,tail=1,x0=W,y0=H,x1=0,y1=0;queue[0]=i;seen[i]=1;
+            while(head<tail){const p=queue[head++],xx=p%W,yy=Math.floor(p/W);x0=Math.min(x0,xx);x1=Math.max(x1,xx);y0=Math.min(y0,yy);y1=Math.max(y1,yy);
+              for(const [nx,ny] of [[xx-1,yy],[xx+1,yy],[xx,yy-1],[xx,yy+1]])if(nx>=0&&nx<W&&ny>=0&&ny<H){const q=ny*W+nx;if(dark[q]&&!seen[q]){seen[q]=1;queue[tail++]=q;}}
+            }
+            if(!best||tail>best.area)best={area:tail,x0,y0,x1,y1};
+          }
+          if(!best||best.area<5)return transformFeature({x:FEATURE_REGIONS[n][0],y:FEATURE_REGIONS[n][1],w:70,h:25},searchTransform);
+          return{x:(left+(best.x0+best.x1)/2)/scale,y:(top+(best.y0+best.y1)/2)/scale,w:Math.max(12,(best.x1-best.x0+1)/scale),h:Math.max(8,(best.y1-best.y0+1)/scale)};
+        });features.set(file,result);return result;
+      }
+      for(const file of [manifest.poses.neutral.variants['open-closed'],...Object.values(manifest.cels.sequences).flatMap(s=>s.frames)])featureBounds(file);
+      function registeredDraw(ctx, image) {
+        ctx.save(); ctx.scale(size / manifest.width, size / manifest.height);
+        ctx.transform(...landmarkTransform(output.tilt)); ctx.drawImage(image, 0, 0, manifest.width, manifest.height); ctx.restore();
+      }
+      function warpFeatures(image, from, to, dynamic=false) {
+        return output.reducedMotion ? image : expressionRenderer?.draw(image,(x,y)=>{
+          const p=featureWarp(x/size*manifest.width,y/size*manifest.height,from,to);
+          return{x:p.x/manifest.width*size,y:p.y/manifest.height*size};
+        },dynamic) || image;
+      }
+      function morphCurrentFace(from,to) {
+        if(output.reducedMotion)return;
+        const warped=warpFeatures(faceCanvas,from,to,true);
+        if(warped===faceCanvas)return;
+        faceCtx.clearRect(0,0,size,size);faceCtx.drawImage(warped,0,0);
+      }
+      const interpolateFeatures=(from,to,mix)=>from.map((f,i)=>Object.fromEntries(['x','y','w','h'].map(k=>[k,f[k]+(to[i][k]-f[k])*mix])));
+      function bodyPoint(x, y) {
+        if(output.reducedMotion) return { x, y };
+        const nx=x/size, ny=y/size, w=1-smooth((ny-.63)/.18), a=output.life.head*w;
+        const dx=x-.55*size, dy=y-.67*size, chest=smooth((ny-.65)/.18);
+        return { x:.55*size+dx*Math.cos(a)-dy*Math.sin(a)+(nx-.53)*output.life.chest*size*.003*chest,
+          y:.67*size+dx*Math.sin(a)+dy*Math.cos(a)-output.life.chest*size*.0017*chest };
+      }
       return { manifest, trigger: controller.trigger, reset: controller.reset,
         update(now, input) { output = controller.update(now, input); return { ...output, hairRenderer: hairRenderer?.kind || 'rigid-fallback' }; },
         render(ctx, { width = manifest.width, height = manifest.height, hairWarpPoint } = {}) {
           if (disposed || !output) return false;
-          const key = `${output.blinkClosed ? 'closed' : 'open'}-${['closed', 'half', 'open'][output.mouthState]}`;
-          let body, hair;
-          if (output.transitionFrame !== null) {
-            const f = manifest.transitions[0].frames[output.transitionFrame]; body = loaded.get(f.base); hair = loaded.get(f.hair);
-          } else if (output.tilt > .999) { const pose = manifest.poses.curious_tilt; body = loaded.get(pose.variants['open-closed']); hair = loaded.get(pose.hair); }
-          else { body = loaded.get(manifest.poses.neutral.variants[key]); hair = loaded.get(manifest.poses.neutral.hair); }
-          faceCtx.clearRect(0, 0, size, size); faceCtx.drawImage(body, 0, 0, size, size);
+          faceCtx.clearRect(0, 0, size, size); hairCtx.clearRect(0, 0, size, size);
+          faceCtx.globalCompositeOperation = hairCtx.globalCompositeOperation = 'lighter';
+          const frames = manifest.transitions[0].frames;
+          const samples=poseSamples(output.tilt, frames.length), posedFeatures=FEATURE_REGIONS.map(()=>({x:0,y:0,w:0,h:0}));
+          for(const sample of samples) {
+            const pose = sample.index < 0 ? manifest.poses.neutral : sample.index >= frames.length ? manifest.poses.curious_tilt : null;
+            const pair = pose ? {base:pose.variants['open-closed'],hair:pose.hair} : frames[sample.index];
+            faceCtx.globalAlpha = hairCtx.globalAlpha = sample.weight;
+            faceCtx.drawImage(loaded.get(pair.base), 0, 0, size, size); hairCtx.drawImage(loaded.get(pair.hair), 0, 0, size, size);
+            featureBounds(pair.base).forEach((b,i)=>{for(const k of ['x','y','w','h'])posedFeatures[i][k]+=b[k]*sample.weight;});
+          }
+          faceCtx.globalAlpha = hairCtx.globalAlpha = 1;
+          faceCtx.globalCompositeOperation = hairCtx.globalCompositeOperation = 'source-over';
+          let currentFeatures=posedFeatures;
+          const registration=landmarkTransform(output.tilt), inverse=inverseAffine(registration);
           if (output.cels.length) {
             celCtx.clearRect(0, 0, size, size); celCtx.globalCompositeOperation = 'lighter';
-            for (const { index, weight, name } of output.cels) {
+            registeredMaskCtx.clearRect(0,0,size,size); registeredDraw(registeredMaskCtx,maskCanvas);
+            const sourceCels=output.cels.map(f=>({...f,file:f.index===-1?manifest.poses.neutral.variants['open-closed']:manifest.cels.sequences[f.name || output.pose].frames[f.index]}));
+            const target=FEATURE_REGIONS.map((_,i)=>sourceCels.reduce((sum,f)=>{
+              const b=f.index===-1?posedFeatures[i]:transformFeature(featureBounds(f.file)[i],registration);
+              for(const k of ['x','y','w','h'])sum[k]+=b[k]*f.weight;return sum;
+            },{x:0,y:0,w:0,h:0}));
+            for (const { file, weight, index } of sourceCels) {
               celCtx.globalAlpha = weight;
-              const file = index === -1 ? manifest.poses.neutral.variants['open-closed'] : manifest.cels.sequences[name || output.pose].frames[index];
-              celCtx.drawImage(loaded.get(file), 0, 0, size, size);
+              // Both outgoing and incoming features must meet at the same
+              // PRESENTED coordinates. Aligning only the incoming drawing
+              // leaves two eyes/mouths when the current head is still tilted.
+              const image=index===-1?faceCanvas:loaded.get(file);
+              const from=index===-1?posedFeatures:featureBounds(file);
+              const to=index===-1?target:target.map(f=>transformFeature(f,inverse));
+              const warped=warpFeatures(image,from,to,index===-1);
+              if(index===-1)celCtx.drawImage(warped || image,0,0);
+              else registeredDraw(celCtx,warped || image);
             }
-            celCtx.globalAlpha = 1; celCtx.globalCompositeOperation = 'destination-in'; celCtx.drawImage(maskCanvas, 0, 0);
-            celCtx.globalCompositeOperation = 'source-over'; faceCtx.drawImage(celCanvas, 0, 0);
+            celCtx.globalAlpha = 1; celCtx.globalCompositeOperation = 'destination-in'; celCtx.drawImage(registeredMask, 0, 0);
+            celCtx.globalCompositeOperation = 'source-over';
+            // Replace the face plate: do not leave the old neutral eyes under
+            // semi-transparent artwork or move a neutral face against tilt hair.
+            faceCtx.globalCompositeOperation = 'destination-out';faceCtx.drawImage(registeredMask,0,0);
+            faceCtx.globalCompositeOperation = 'lighter';faceCtx.drawImage(celCanvas,0,0);
+            faceCtx.globalCompositeOperation = 'source-over';
+            currentFeatures=target;
           }
           // Blend only registered eye/mouth pixels; full pose, hair, clothing and
           // the authored transition frame keep running during speech/blinks.
-          if (output.tilt > .001 || output.cels.length) {
-            faceCtx.save(); faceCtx.scale(size / manifest.width, size / manifest.height);
-            faceCtx.transform(...landmarkTransform(output.tilt));
-            if (output.speaking) faceCtx.drawImage(patch(key, 'mouth'), 0, 0, manifest.width, manifest.height);
-            if (output.blinkClosed) faceCtx.drawImage(patch(key, 'eyes'), 0, 0, manifest.width, manifest.height);
-            faceCtx.restore();
+          if (output.speechMix > .0001) {
+            patchCtx.clearRect(0,0,size,size);patchCtx.globalCompositeOperation='lighter';
+            const value=clamp(output.mouthValue,0,2), a=Math.floor(value), b=Math.min(2,a+1), mix=value-a;
+            const speechSources=[[a,1-mix],[b,mix]].map(([n,w])=>({key:`open-${['closed','half','open'][n]}`,weight:w}));
+            const speechTarget=FEATURE_REGIONS.map((_,i)=>speechSources.reduce((sum,f)=>{
+              const b=featureBounds(manifest.poses.neutral.variants[f.key])[i];for(const k of ['x','y','w','h'])sum[k]+=b[k]*f.weight;return sum;
+            },{x:0,y:0,w:0,h:0}));
+            const mouthTarget=interpolateFeatures(currentFeatures,currentFeatures.map((f,i)=>i===2?transformFeature(speechTarget[i],registration):f),output.speechMix);
+            morphCurrentFace(currentFeatures,mouthTarget);currentFeatures=mouthTarget;
+            const patchTarget=mouthTarget.map(f=>transformFeature(f,inverse));
+            for(const f of speechSources) {
+              if(f.weight<.0001)continue;
+              const source=featureBounds(manifest.poses.neutral.variants[f.key]), image=patch(f.key,'mouth');
+              const warped=warpFeatures(image,source,patchTarget);
+              patchCtx.globalAlpha=f.weight;patchCtx.drawImage(warped || image,0,0);
+            }
+            patchCtx.globalAlpha=1;patchCtx.globalCompositeOperation='source-over';
+            faceCtx.globalAlpha=output.speechMix;registeredDraw(faceCtx,patchCanvas);faceCtx.globalAlpha=1;
           }
-          ctx.save(); ctx.drawImage(faceCanvas, 0, 0, width, height);
-          const renderedHair = output.reducedMotion ? null : hairRenderer?.draw(hair, (x, y) => {
+          if(output.blinkAmount > .0001) {
+            const closedFeatures=featureBounds(manifest.poses.neutral.variants['closed-closed']);
+            const eyeTarget=interpolateFeatures(currentFeatures,currentFeatures.map((f,i)=>i<2?transformFeature(closedFeatures[i],registration):f),output.blinkAmount);
+            morphCurrentFace(currentFeatures,eyeTarget);
+            const eyes=warpFeatures(patch('closed-closed','eyes'),closedFeatures,eyeTarget.map(f=>transformFeature(f,inverse)));
+            faceCtx.globalAlpha=output.blinkAmount;registeredDraw(faceCtx,eyes);faceCtx.globalAlpha=1;
+          }
+          ctx.save();
+          const life=output.life, sx=width/manifest.width, sy=height/manifest.height;
+          ctx.translate(width*.55+life.x*sx,height*.84+life.y*sy);ctx.rotate(life.rotation);
+          ctx.scale(1+life.scale,1+life.scale);ctx.translate(-width*.55,-height*.84);
+          const body = output.reducedMotion ? null : bodyRenderer?.draw(faceCanvas,bodyPoint,true);
+          ctx.drawImage(body || faceCanvas,0,0,width,height);
+          const renderedHair = output.reducedMotion ? null : hairRenderer?.draw(hairCanvas, (x, y) => {
             const p = controller.hairPoint(x * manifest.width / size, y * manifest.height / size, hairWarpPoint);
-            return { x: p.x * size / manifest.width, y: p.y * size / manifest.height };
-          });
-          ctx.drawImage(renderedHair || hair, 0, 0, width, height); ctx.restore(); return true;
+            return bodyPoint(p.x * size / manifest.width, p.y * size / manifest.height);
+          },true);
+          ctx.drawImage(renderedHair || hairCanvas, 0, 0, width, height); ctx.restore(); return true;
         }, dispose, get status() { return output; } };
     } catch (error) { dispose(); throw error; }
   }
-  return { VARIANTS, STATES, stateForInput, validateManifest, celWeights, landmarkTransform, createController, createPlayer };
+  return { VARIANTS, STATES, stateForInput, validateManifest, celWeights, landmarkTransform, poseSamples, featureWarp, transformFeature, inverseAffine, createController, createPlayer };
 });

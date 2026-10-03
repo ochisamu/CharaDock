@@ -1,0 +1,51 @@
+// SPDX-License-Identifier: Apache-2.0
+// Deterministic real Chromium animation frames, no profile or API access.
+const { app, BrowserWindow } = require('electron');
+const fs = require('node:fs'), path = require('node:path'), assert = require('node:assert/strict');
+const { PNG } = require('pngjs');
+const [source, output] = process.argv.slice(2);
+if (!source || !output || fs.existsSync(output)) throw Error('Supply source and fresh output');
+fs.mkdirSync(output, { recursive: true }); app.setPath('userData', path.join(output, 'profile'));
+const { MascotStaticServer } = require(path.join(source, 'desktop/lib/static-server.cjs'));
+const server = new MascotStaticServer(source);
+const guard = setTimeout(() => app.exit(1), 180000);
+function difference(a, b, region) {
+  let sum = 0, peak = 0, count = 0;
+  for(let y=region[1]; y<region[1]+region[3]; y++) for(let x=region[0]; x<region[0]+region[2]; x++) {
+    const i=(y*a.width+x)*4; let pixel=0;
+    for(let k=0;k<3;k++) pixel+=Math.abs(a.data[i+k]*a.data[i+3]/255-b.data[i+k]*b.data[i+3]/255)/3;
+    pixel+=Math.abs(a.data[i+3]-b.data[i+3])*.25; sum+=pixel; peak=Math.max(peak,pixel);count++;
+  }
+  return {mean:sum/count,peak};
+}
+(async()=>{
+  await app.whenReady(); await server.start();
+  const win=new BrowserWindow({width:700,height:740,show:false,webPreferences:{contextIsolation:true,nodeIntegration:false}});
+  await win.loadURL(server.origin()+'/?mode=obs&desktop=1&kohakuMotion=1');
+  const js=s=>win.webContents.executeJavaScript(s);
+  await js(`(async()=>{window.qaPlayer=await PuruPuruDrawnPoseRuntime.createPlayer({manifestUrl:'./assets/amber-avatar/authored-motion/manifest.json'});window.qaCanvas=document.createElement('canvas');qaCanvas.width=qaCanvas.height=640;})()`);
+  const cues={90:'curious_tilt',160:'delighted_agreement',200:'doubtful_side_eye',235:'attentive_listening',285:'neutral',310:'sleepy_yawn'};
+  let previous=null; const metrics=[], states=[];
+  for(let frame=0;frame<420;frame++) {
+    const now=frame*1000/30,cue=cues[frame];
+    const r=await js(`(()=>{${cue?`qaPlayer.trigger(${JSON.stringify(cue)},${now},4500);`:''}
+      const speaking=${frame>=115&&frame<151||frame>=185&&frame<216};
+      const s=qaPlayer.update(${now},{mouthState:speaking?${frame%9<4?2:0}:0,blinkClosed:${frame>=137&&frame<141},audioLevel:speaking?.3:0});
+      const c=qaCanvas.getContext('2d');c.clearRect(0,0,640,640);qaPlayer.render(c,{width:640,height:640});
+      return {state:s,png:qaCanvas.toDataURL('image/png')};})()`);
+    const bytes=Buffer.from(r.png.split(',')[1],'base64'), png=PNG.sync.read(bytes);
+    fs.writeFileSync(path.join(output,String(frame).padStart(4,'0')+'.png'),bytes);
+    if(previous)metrics.push({frame,whole:difference(png,previous,[0,0,640,640]).mean,face:difference(png,previous,[220,220,235,210]).mean});
+    previous=png;states.push({frame,...r.state});
+  }
+  const top=key=>[...metrics].sort((a,b)=>b[key]-a[key]).slice(0,12);
+  assert.ok(top('whole')[0].whole<9,'large full-character frame discontinuity');
+  assert.ok(top('face')[0].face<12,'large facial frame discontinuity');
+  assert.ok(states[160].tilt>.8,'expression must not snap the tilted head to neutral');
+  assert.ok(states.some(s=>s.blinkAmount>0&&s.blinkAmount<1),'blink needs intermediate presentation');
+  assert.ok(Math.max(...states.slice(0,90).map(s=>s.life.x))-Math.min(...states.slice(0,90).map(s=>s.life.x))>.01,'idle must not be a still frame');
+  const report={scope:'deterministic Chromium frames; synthetic audio; no real Jev/TTS',passed:true,fps:30,frames:420,metrics,states,topWhole:top('whole'),topFace:top('face')};
+  fs.writeFileSync(path.join(output,'metrics.json'),JSON.stringify(report,null,2));
+  console.log(JSON.stringify({topWhole:report.topWhole.slice(0,5),topFace:report.topFace.slice(0,5)}));
+  await js('qaPlayer.dispose()');win.destroy();await server.stop();clearTimeout(guard);app.quit();
+})().catch(e=>{console.error(e.stack);app.exit(1);});
