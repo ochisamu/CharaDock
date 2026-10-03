@@ -10,26 +10,37 @@
   let state = null;
   let companionBusy = false;
   function renderCodexCompanion(snapshot = state?.codexCompanion || {}) {
-    const labels = { idle: "停止中", unknown: "状態未確認", running: "作業中", "needs-input": "入力待ち", completed: "完了", interrupted: "中断", error: "エラー" };
+    const labels = { idle: "待機中", unknown: "状態未確認", running: "作業中", "needs-input": "入力待ち", completed: "完了", interrupted: "中断", error: "エラー" };
     $("#companionBadge").textContent = snapshot.enabled ? snapshot.stale ? "更新待ち" : labels[snapshot.status] || "状態未確認" : "停止中";
     $("#companionTitle").textContent = snapshot.title || "";
-    $("#companionActivity").textContent = snapshot.error || (snapshot.stale ? "更新がありません。現在も動作中かはCodex側で確認してください。" : snapshot.activity || "表示する会話を選択してください。");
-    $("#companionResult").textContent = snapshot.result || "完了した回答がここに表示されます。";
+    $("#companionActivity").textContent = snapshot.error || (snapshot.stale ? "更新がありません。現在も動作中かはCodex側で確認してください。" : snapshot.activity || "開始すると自動で作業を見つけます。");
+    $("#companionScope").textContent = snapshot.enabled ? `${snapshot.watchingMode === "pinned" ? "会話を固定中" : "自動見守り"} · ${snapshot.watchedCount || 0}件` : "";
+    $("#companionResult").textContent = snapshot.result || snapshot.lastResult?.text || "完了した回答がここに表示されます。";
+    $("#companionResultSource").textContent = snapshot.result ? snapshot.title || "" : snapshot.lastResult ? `直近の表示結果 · ${snapshot.lastResult.title}` : "";
     $("#companionUpdated").textContent = snapshot.updatedAt ? `最終イベント: ${new Date(snapshot.updatedAt).toLocaleString()}` : "";
     const events = $("#companionEvents"); events.replaceChildren();
     for (const event of snapshot.events || []) { const li = document.createElement("li"); li.textContent = event.text; events.append(li); }
-    $("#companionStart").disabled = companionBusy || !$("#companionThread").value || snapshot.enabled;
+    $("#companionStart").disabled = companionBusy || snapshot.enabled;
+    $("#companionStart").textContent = $("#companionThread").value ? "固定して見守りを開始" : "自動見守りを開始";
     $("#companionStop").disabled = companionBusy || !snapshot.enabled;
     $("#companionChooseRoot").disabled = companionBusy || snapshot.enabled;
     $("#companionRefresh").disabled = companionBusy;
-    $("#companionThread").disabled = companionBusy || snapshot.enabled;
+    $("#companionThread").disabled = companionBusy;
+    if (snapshot.enabled) {
+      const select = $("#companionThread");
+      if (snapshot.pinnedKey && ![...select.options].some(o => o.value === snapshot.pinnedKey)) {
+        const option = document.createElement("option"); option.value = snapshot.pinnedKey;
+        option.textContent = snapshot.title || "固定中の会話（一覧の対象外）"; select.append(option);
+      }
+      select.value = snapshot.pinnedKey || "";
+    }
     $("#chatInput").disabled = snapshot.enabled === true;
     if (snapshot.enabled) $("#sendButton").disabled = true;
     else if (!chatBusy) $("#sendButton").disabled = false;
   }
   function renderCompanionThreads(entries) {
     const select = $("#companionThread"), previous = select.value; select.replaceChildren();
-    const empty = document.createElement("option"); empty.value = ""; empty.textContent = entries.length ? "表示する会話を選択" : "会話が見つかりません。sessionsフォルダーを選んでください。"; select.append(empty);
+    const empty = document.createElement("option"); empty.value = ""; empty.textContent = "自動で見守る（Codex Desktop）"; select.append(empty);
     for (const entry of entries) { const option = document.createElement("option"); option.value = entry.key;
       option.textContent = `${entry.title} · ${new Date(entry.updatedAt).toLocaleString()}`; select.append(option); }
     if (entries.some(e => e.key === previous)) select.value = previous;
@@ -5296,7 +5307,11 @@
     });
     $("#companionRefresh").addEventListener("click", () => companionAction(async () => renderCompanionThreads(await api.listCodexCompanionThreads())));
     $("#companionChooseRoot").addEventListener("click", () => companionAction(async () => { const entries = await api.chooseCodexCompanionRoot(); if (entries) renderCompanionThreads(entries); }));
-    $("#companionThread").addEventListener("change", () => renderCodexCompanion());
+    $("#companionThread").addEventListener("change", () => {
+      const key = $("#companionThread").value;
+      if (state?.codexCompanion?.enabled) companionAction(async () => { state.codexCompanion = await api.pinCodexCompanion(key); });
+      else renderCodexCompanion();
+    });
     $("#companionStart").addEventListener("click", () => companionAction(async () => { state.codexCompanion = await api.startCodexCompanion($("#companionThread").value); }));
     $("#companionStop").addEventListener("click", () => companionAction(async () => { state.codexCompanion = await api.stopCodexCompanion(); }));
     api.onStateChanged?.((nextState) => {

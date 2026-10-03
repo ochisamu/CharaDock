@@ -46,11 +46,18 @@ const timeout = setTimeout(() => { console.error('Companion UI QA timeout'); app
   assert.ok(window, 'Control window loads');
   const js = code => window.webContents.executeJavaScript(code);
   await sleep(800);
-  await js(`document.querySelector('[data-page="companion"]').click(); document.querySelector('#companionRefresh').click()`);
-  for (let i=0; i<30; i++) { if (await js(`document.querySelector('#companionThread').options.length > 1`)) break; await sleep(100); }
-  await js(`const s=document.querySelector('#companionThread');s.selectedIndex=1;s.dispatchEvent(new Event('change'));document.querySelector('#companionStart').click()`);
+  await js(`document.querySelector('[data-page="companion"]').click(); document.querySelector('#companionStart').click()`);
   for (let i=0; i<30; i++) { if ((await js(`document.querySelector('#companionBadge').textContent`)) === '作業中') break; await sleep(100); }
   assert.equal(await js(`document.querySelector('#companionBadge').textContent`), '作業中');
+  assert.match(await js(`document.querySelector('#companionScope').textContent`), /自動見守り/);
+  await js(`document.querySelector('#companionRefresh').click()`);
+  for (let i=0; i<30; i++) { if (await js(`document.querySelector('#companionThread').options.length > 1`)) break; await sleep(100); }
+  await js(`{const s=document.querySelector('#companionThread');s.selectedIndex=1;s.dispatchEvent(new Event('change'));}`);
+  for (let i=0; i<30; i++) { if ((await js(`document.querySelector('#companionScope').textContent`)).includes('固定中')) break; await sleep(100); }
+  assert.match(await js(`document.querySelector('#companionScope').textContent`), /固定中/);
+  await js(`{const s=document.querySelector('#companionThread');s.selectedIndex=0;s.dispatchEvent(new Event('change'));}`);
+  for (let i=0; i<30; i++) { if ((await js(`document.querySelector('#companionScope').textContent`)).includes('自動見守り')) break; await sleep(100); }
+  assert.match(await js(`document.querySelector('#companionScope').textContent`), /自動見守り/);
   assert.equal(await js(`document.querySelector('#chatInput').disabled`), true);
   assert.equal(await js(`window.mascotDesktop.sendChat('must not submit').then(()=>false,e=>e.message.includes('閲覧専用'))`), true);
   window.showInactive();
@@ -71,7 +78,7 @@ const timeout = setTimeout(() => { console.error('Companion UI QA timeout'); app
   assert.equal(await js(`document.querySelector('#companionBadge').textContent`), '停止中');
   assert.equal(await mascot.webContents.executeJavaScript(`document.querySelector('#desktopMascotInput').disabled`), false);
   assert.deepEqual(errors, []);
-  fs.writeFileSync(path.join(output, 'verification.json'), JSON.stringify({ passed: true, scenarios: ['list', 'start', 'read-only', 'progress', 'completion', 'text-not-html', 'mascot', 'stop'], errors }, null, 2));
+  fs.writeFileSync(path.join(output, 'verification.json'), JSON.stringify({ passed: true, scenarios: ['automatic-start-no-selection', 'list', 'pin', 'unpin', 'read-only', 'progress', 'completion', 'text-not-html', 'mascot', 'stop'], errors }, null, 2));
   console.log('PASS: isolated real Companion UI, IPC, character display and read-only role');
   clearTimeout(timeout); app.quit();
 })().catch(error => { console.error(error.stack); app.exit(1); });

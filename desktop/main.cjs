@@ -42,9 +42,9 @@ const codexCompanion = new CodexCompanion({
 function assertConversationRole() {
   if (codexCompanion.state.enabled || companionTransitioning) throw new Error("Codex Companionは閲覧専用です。会話する場合はCompanionを停止してください。");
 }
-async function startCodexCompanion(key) {
+async function startCodexCompanion(key = '') {
   if (companionTransitioning) throw new Error("Companionへ切り替え中です。");
-  if (!codexCompanion.files.has(String(key))) throw new Error("会話一覧を更新し、会話を選択してください。");
+  if (key && !codexCompanion.files.has(String(key))) throw new Error("会話一覧を更新してください。");
   if (activeWorkRunId || activeCodexInteractionClient() || openAIClient?.hasActiveTurn?.()
       || atomEchoCapture || atomEchoRecognizingCapture || turnCoordinator.snapshot().status === "speaking") {
     throw new Error("現在の会話・作業・再生が終了してからCompanionを開始してください。");
@@ -57,7 +57,9 @@ async function startCodexCompanion(key) {
     invalidateEsp32SpeechInput();
     jevExpressionDirector.cancel();
     clearTimeout(mcpPrewarmTimer);
-    const result = await codexCompanion.start(key);
+    let result = await codexCompanion.start('');
+    if (activation !== companionActivation) return codexCompanion.snapshot();
+    if (key) result = await codexCompanion.select(key);
     broadcastAppState();
     return result;
   } finally { companionTransitioning = false; }
@@ -2823,12 +2825,13 @@ function rlcd42SceneSnapshot() {
     const scene = buildRlcd42Scene({ characterName: activeCharacter().name, transport,
       turn: { mode: "chat", status: companion.status === "running" && !companion.stale ? "working"
         : companion.status === "needs-input" && !companion.stale ? "approval"
-        : companion.status === "completed" ? "completed" : "idle" },
+        : companion.status === "completed" ? "completed"
+        : companion.status === "error" ? "error" : "idle" },
       caption: companion.result, captionMode: profile.captionMode,
       activityOverride: companion.error || (companion.stale ? "Codexの状態を確認中（更新なし）" : companion.activity || "Codexの会話を閲覧中"),
       language: interfaceLanguage() });
     return { ...scene, modeLabel: "CODEX", live: false,
-      nextAction: companion.status === "needs-input" ? "Codex側で確認してください" : "" };
+      nextAction: companion.status === "needs-input" && !companion.stale ? "Codex側で確認してください" : "" };
   }
   const currentTurn = turnCoordinator.snapshot();
   const voiceStage = {
@@ -10695,6 +10698,11 @@ function registerIpc() {
   ipcMain.handle("companion:start", async (event, key) => {
     assertTrustedSender(event);
     return startCodexCompanion(key);
+  });
+  ipcMain.handle("companion:pin", async (event, key) => {
+    assertTrustedSender(event);
+    if (companionTransitioning) throw new Error("Companionへ切り替え中です。");
+    return codexCompanion.select(key);
   });
   ipcMain.handle("companion:stop", (event) => {
     assertTrustedSender(event);

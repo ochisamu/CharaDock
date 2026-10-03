@@ -56,17 +56,17 @@
       </aside>
       <section class="page" data-page-panel="companion">
         <header class="page-header"><div><p class="eyebrow">CODEX COMPANION · EXPERIMENTAL</p><h1>Codexの作業を見守る</h1></div><span id="companionBadge" class="remote-status-badge">停止中</span></header>
-        <p class="page-lead">会話するモードとは別の、読み取り専用コンパニオン。選んだ会話の進捗と結果を、キャラクターとRLCDに表示します。</p>
+        <p class="page-lead">会話するモードとは別の、読み取り専用コンパニオン。Codexの作業を自動で見守り、キャラクターとRLCDに表示します。</p>
         <section class="card settings-card">
           <p>実験版はローカルのCodex会話ログを読み取ります。Codexへの送信・再開・承認は行わず、追加のAI利用もありません。内部ログ形式に依存するため、状態の反映が遅れることがあります。</p>
           <div class="companion-actions"><button id="companionRefresh" class="button button-secondary" type="button">会話一覧を更新</button><button id="companionChooseRoot" class="button button-quiet" type="button">sessionsフォルダーを選ぶ</button></div>
-          <label class="field">表示する会話<select id="companionThread" aria-label="表示するCodex会話"><option value="">一覧を更新してください</option></select></label>
-          <p>一覧はフォルダー名・会話ID・最終更新日時で識別します。本文は会話を選んで開始した後だけ読み取ります。Companion中はCharaDockの会話入力を停止し、再起動時はOFFに戻ります。</p>
-          <div class="companion-actions"><button id="companionStart" class="button button-primary" type="button">Companionを開始</button><button id="companionStop" class="button button-secondary" type="button" disabled>停止して会話モードへ</button></div>
+          <label class="field">表示対象（必要なときだけ固定）<select id="companionThread" aria-label="表示するCodex会話"><option value="">自動で見守る（Codex Desktop）</option></select></label>
+          <p>開始すると、このsessionsフォルダー内の最近のCodex Desktop会話（最大20件）の進捗・結果を読み取ります。共有画面に出してよい範囲か確認してください。入力待ち・新しい完了を優先し、前面の会話は判別しません。固定時のみCLI会話も選べます。Companion中は会話入力を停止し、再起動時はOFFに戻ります。</p>
+          <div class="companion-actions"><button id="companionStart" class="button button-primary" type="button">自動見守りを開始</button><button id="companionStop" class="button button-secondary" type="button" disabled>停止して会話モードへ</button></div>
           <p id="companionNotice" class="inline-status" role="status">開始するとPCキャラと接続済みRLCDに反映されます。読み上げは行いません。</p>
         </section>
-        <section class="card settings-card"><h2>いまの作業</h2><p id="companionTitle"></p><p id="companionActivity" aria-live="polite">表示する会話を選択してください。</p><small id="companionUpdated"></small><ol id="companionEvents" class="companion-events"></ol></section>
-        <section class="card settings-card"><h2>結果</h2><p>内容の指示やリンクを自動実行することはありません。操作・承認はCodex側で行ってください。</p><pre id="companionResult" class="companion-result">完了した回答がここに表示されます。</pre></section>
+        <section class="card settings-card"><h2>いまの作業</h2><p id="companionScope"></p><p id="companionTitle"></p><p id="companionActivity" aria-live="polite">開始すると自動で作業を見つけます。</p><small id="companionUpdated"></small><ol id="companionEvents" class="companion-events"></ol></section>
+        <section class="card settings-card"><h2>結果</h2><p id="companionResultSource"></p><p>完了のキャラ表示は30秒で退きます。最新の表示結果はここで確認できます。内容の指示やリンクは自動実行しません。</p><pre id="companionResult" class="companion-result">完了した回答がここに表示されます。</pre></section>
       </section>
       <section class="page is-active" data-page-panel="chat">
         <header class="page-header">

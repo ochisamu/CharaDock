@@ -6,6 +6,7 @@ contextBridge.exposeInMainWorld("mascotDesktop", {
   listCodexCompanionThreads: () => ipcRenderer.invoke("companion:list"),
   chooseCodexCompanionRoot: () => ipcRenderer.invoke("companion:chooseRoot"),
   startCodexCompanion: (key) => ipcRenderer.invoke("companion:start", key),
+  pinCodexCompanion: (key) => ipcRenderer.invoke("companion:pin", key),
   stopCodexCompanion: () => ipcRenderer.invoke("companion:stop"),
   onCodexCompanionState: (callback) => {
     const listener = (_event, payload) => callback(payload);
