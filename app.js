@@ -12801,6 +12801,7 @@
     try {
       kohakuMotionOutput = kohakuMotionPlayer.update(performance.now(), {
         mouthState: frozen ? 0 : mouthState, blinkClosed: !frozen && blinkClosed,
+        mouthOpenness: frozen ? 0 : Number.isInteger(obsExternalInput.forceMouth) ? mouthState : mouthTargetForVoiceLevel(voiceLevel) * 2,
         audioLevel: frozen ? 0 : voiceLevel, interacting: performance.now() < obsExternalInput.expressionUntil,
         reducedMotion: performanceReducedMotion.matches || frozen,
         idleEnabled: state.idleMotionEnabled, breathStrength: state.breathStrength / 100,

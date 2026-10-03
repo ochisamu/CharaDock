@@ -39,6 +39,12 @@ function difference(a, b, region) {
     previous=png;states.push({frame,...r.state});
   }
   const top=key=>[...metrics].sort((a,b)=>b[key]-a[key]).slice(0,12);
+  const mouthSources=await js('qaPlayer.mouthSources');
+  const manifest=JSON.parse(fs.readFileSync(path.join(source,'assets/amber-avatar/authored-motion/manifest.json')));
+  const requiredMouthSources=[manifest.poses.neutral.variants['open-closed'],manifest.poses.neutral.variants['open-half'],manifest.poses.neutral.variants['open-open'],
+    manifest.poses.curious_tilt.variants['open-closed'],...manifest.transitions[0].frames.map(f=>f.base),...Object.values(manifest.cels.sequences).flatMap(s=>s.frames)];
+  assert.ok(requiredMouthSources.every(file=>mouthSources.some(s=>s.file===file)),'every pose frame and cel needs an extracted mouth');
+  assert.ok(mouthSources.every(s=>s.inkPixels>0),'no source face may retain its undetected old mouth');
   assert.ok(top('whole')[0].whole<9,'large full-character frame discontinuity');
   assert.ok(top('face')[0].face<12,'large facial frame discontinuity');
   assert.ok(states[160].tilt>.8,'expression must not snap the tilted head to neutral');
@@ -46,7 +52,7 @@ function difference(a, b, region) {
   assert.ok(Math.max(...states.slice(0,90).map(s=>s.life.x))-Math.min(...states.slice(0,90).map(s=>s.life.x))>.01,'idle must not be a still frame');
   assert.ok(Math.max(...states.map(s=>s.hair[0]))-Math.min(...states.map(s=>s.hair[0]))>15,'hair needs visible independent follow-through');
   assert.ok(states.some(s=>Math.abs(s.hair[0]-s.hairMiddle[0])>1),'lengths and tips must not move as one rigid sheet');
-  const report={scope:'deterministic Chromium frames; synthetic audio; no real Jev/TTS',passed:true,fps:30,frames:420,metrics,states,topWhole:top('whole'),topFace:top('face')};
+  const report={scope:'deterministic Chromium frames; synthetic audio; no real Jev/TTS',passed:true,fps:30,frames:420,metrics,states,mouthSources,topWhole:top('whole'),topFace:top('face')};
   fs.writeFileSync(path.join(output,'metrics.json'),JSON.stringify(report,null,2));
   console.log(JSON.stringify({topWhole:report.topWhole.slice(0,5),topFace:report.topFace.slice(0,5)}));
   await js('qaPlayer.dispose()');win.destroy();await server.stop();clearTimeout(guard);app.quit();

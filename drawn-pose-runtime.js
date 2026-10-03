@@ -48,6 +48,15 @@
     const [a,b,c,d,e,f]=m,det=a*d-b*c;
     return [d/det,-b/det,-c/det,a/det,(c*f-d*e)/det,(b*e-a*f)/det];
   }
+  function mouthGeometry(value, closed, half, open) {
+    // The closed smile is NEVER stretched into an open cavity. Open drawings
+    // articulate below one fixed lip anchor instead of moving with their bbox.
+    const v=clamp(value,0,2), aperture=v/2;
+    const openWeight=smooth(v/.4), roundWeight=smooth(v-1);
+    return {x:closed.x,top:closed.y+(open.y-open.h/2-closed.y)*aperture,
+      width:half.w+(open.w-half.w)*aperture,height:Math.max(3,open.h*aperture),
+      closedWeight:1-openWeight,halfWeight:openWeight*(1-roundWeight),openWeight:openWeight*roundWeight};
+  }
   const VARIANTS = ['open-closed', 'open-half', 'open-open', 'closed-closed', 'closed-half', 'closed-open'];
   const STATES = ['neutral', 'curious_tilt', 'attentive_listening', 'delighted_agreement', 'doubtful_side_eye', 'sleepy_yawn'];
   function stateForInput(input = {}) {
@@ -142,10 +151,11 @@
       reduced = Boolean(input.reducedMotion);
       mouth = Math.round(clamp(input.mouthState ?? (input.audioLevel > .28 ? 2 : input.audioLevel > .055 ? 1 : 0), 0, 2));
       blink = Boolean(input.blinkClosed);
-      mouthValue += (mouth - mouthValue) * (1 - Math.exp(-dt * 25));
+      const mouthTarget=clamp(input.mouthOpenness ?? mouth,0,2);
+      mouthValue += (mouthTarget - mouthValue) * (1 - Math.exp(-dt * (mouthTarget>mouthValue?24:18)));
       [blinkAmount,blinkVelocity] = spring(blinkAmount,blinkVelocity,blink?1:0,dt,blink?36:24);
-      if (mouth || input.audioLevel > .015 || input.speaking) { speechUntil = now + 500; lastActivity = now; }
-      [speechMix, speechMixVelocity] = spring(speechMix, speechMixVelocity, now < speechUntil ? 1 : 0, dt, 14);
+      if (mouthTarget>.015 || input.audioLevel > .015 || input.speaking) { speechUntil = now + 180; lastActivity = now; }
+      [speechMix, speechMixVelocity] = spring(speechMix, speechMixVelocity, now < speechUntil ? 1 : 0, dt, 28);
       if (input.interacting) lastActivity = now;
       if (deadline && now > deadline) { retarget(0); deadline = 0; releaseStarted = now; }
       // Audio and blink never cancel an authored transition or reset its pose.
@@ -183,9 +193,9 @@
       const joy = sequence?.name === 'delighted_agreement' ? 1 : 0;
       const beat = joy ? Math.sin(Math.PI * clamp((now - sequence.started) / 650, 0, 1)) ** 2 : 0;
       const targets = {
-        x: idle * (Math.sin(seconds * .83 + .2) * 3.8 + Math.sin(seconds * .37) * 1.6) * breath,
-        y: idle * Math.sin(seconds * 1.13) * 3.5 * breath - voice * 12 - beat * 6,
-        rotation: idle * (Math.sin(seconds * .91) * .013 + Math.sin(seconds * .43 + 1) * .004) * roll,
+        x: idle * (Math.sin(seconds * .68 + .2) * 6.2 + Math.sin(seconds * .31) * 2.4) * breath,
+        y: idle * Math.sin(seconds * .94) * 5.1 * breath - voice * 12 - beat * 6,
+        rotation: idle * (Math.sin(seconds * .73) * .018 + Math.sin(seconds * .37 + 1) * .005) * roll,
         scale: idle * Math.sin(seconds * 1.13) * .005 * breath + voice * .002,
         head: idle * (Math.sin(seconds * 1.37) * .009 + Math.sin(seconds * .69 + .3) * .005) * roll + beat * .012,
         chest: idle * Math.sin(seconds * 1.13 - .5) * breath,
@@ -199,12 +209,12 @@
       const softness=clamp(input.hairSpring ?? 1,0,2);
       for(let i=0;i<3;i++) {
         if(reduced||frozenHair||hairAmount===0){for(const a of [hair,velocities,hairMiddle,middleVelocities,hairY,yVelocities])a[i]=0;continue;}
-        const wind=idle*(Math.sin(seconds*1.12-i*.56)*(11+i*1.5)+Math.sin(seconds*1.83+i*1.7)*2.4);
+        const wind=idle*(Math.sin(seconds*.86-i*.56)*(19+i*2)+Math.sin(seconds*1.43+i*1.7)*3.4);
         const inertia=-tiltVelocity*(5+i)-lifeVelocity.head*(155+i*30)-lifeVelocity.rotation*80-lifeVelocity.x*.25;
         const target=(wind+inertia)*hairAmount,omega=(5.8-i*.45)/(1+softness*.42);
         [hairMiddle[i],middleVelocities[i]]=spring(hairMiddle[i],middleVelocities[i],target*.7,dt,omega*1.6);
         [hair[i],velocities[i]]=softSpring(hair[i],velocities[i],target,dt,omega,1-Math.min(.24,softness*.22));
-        const lift=(idle*Math.sin(seconds*1.25-i*.8)*(2.7+i*.5)-lifeVelocity.y*.22)*hairAmount;
+        const lift=(idle*Math.sin(seconds*.97-i*.8)*(5+i*.7)-lifeVelocity.y*.22)*hairAmount;
         [hairY[i],yVelocities[i]]=softSpring(hairY[i],yVelocities[i],lift,dt,omega*.9,.84);
       }
       return { pose: tilt > .001 ? 'curious_tilt' : sequence?.name || 'neutral', tilt,
@@ -306,7 +316,7 @@
   async function createPlayer({ manifestUrl, signal, canvasOnly = false }) {
     const response = await fetch(manifestUrl, { signal }); if (!response.ok) throw new Error(`Pose manifest ${response.status}`);
     const manifest = await response.json(), controller = createController(manifest), loaded = new Map(), base = new URL(manifestUrl, document.baseURI);
-    let hairRenderer = null, bodyRenderer = null, expressionRenderer = null, disposed = false, output = null;
+    let hairRenderer = null, bodyRenderer = null, expressionRenderer = null, disposed = false, output = null, releaseMouth = null;
     const load = async (file, width = manifest.width, height = manifest.height) => {
       if (loaded.has(file)) return loaded.get(file);
       const r = await fetch(new URL(file, base), { signal }); if (!r.ok) throw new Error(`Missing pose asset: ${file}`);
@@ -318,7 +328,7 @@
       if (signal?.aborted) { image.close(); throw new Error('Pose loading aborted'); }
       loaded.set(file, image); return image;
     };
-    const dispose = () => { if (disposed) return; disposed = true; hairRenderer?.dispose(); bodyRenderer?.dispose(); expressionRenderer?.dispose(); hairRenderer = bodyRenderer = expressionRenderer = null; for (const im of loaded.values()) im.close(); loaded.clear(); };
+    const dispose = () => { if (disposed) return; disposed = true; hairRenderer?.dispose(); bodyRenderer?.dispose(); expressionRenderer?.dispose(); hairRenderer = bodyRenderer = expressionRenderer = null; releaseMouth?.(); releaseMouth=null; for (const im of loaded.values()) im.close(); loaded.clear(); };
     try {
       for (const pose of Object.values(manifest.poses)) { await load(pose.hair); for (const file of Object.values(pose.variants)) await load(file); }
       for (const clip of manifest.transitions || []) for (const f of clip.frames) { await load(f.base, clip.width, clip.height); await load(f.hair, clip.width, clip.height); }
@@ -343,7 +353,7 @@
         mask.data[(y*size+x)*4+3]=min;
       }
       maskCtx.putImageData(mask, 0, 0);
-      const patches = new Map(), regions = { mouth: [668, 730, 88, 64], eyes: [[548, 630, 100, 82], [758, 584, 110, 84]] };
+      const patches = new Map(), regions = { mouth: [668, 735, 65, 51], eyes: [[548, 630, 100, 82], [758, 584, 110, 84]] };
       function patch(key, region) {
         const id = `${key}:${region}`; if (patches.has(id)) return patches.get(id);
         const c = makeCanvas(), p = c.getContext('2d'); p.scale(size / manifest.width, size / manifest.height);
@@ -361,12 +371,12 @@
       catch { bodyRenderer = createCanvasHairRenderer(size, size); }
       try { expressionRenderer = canvasOnly ? createCanvasHairRenderer(size, size) : createHairRenderer(size, size, true); }
       catch { expressionRenderer = createCanvasHairRenderer(size, size); }
-      const features = new Map(), featureCanvas=makeCanvas(), featureCtx=featureCanvas.getContext('2d',{willReadFrequently:true});
+      const features = new Map(), mouthMasks=new Map(), featureCanvas=makeCanvas(), featureCtx=featureCanvas.getContext('2d',{willReadFrequently:true});
       function featureBounds(file) {
         if(features.has(file))return features.get(file);
         featureCtx.clearRect(0,0,size,size);featureCtx.drawImage(loaded.get(file),0,0,size,size);
         const data=featureCtx.getImageData(0,0,size,size).data, scale=size/manifest.width;
-        const boxes=[[480,574,145,108],[702,508,130,122],[610,688,116,70],[480,510,145,62],[675,445,142,62]];
+        const boxes=[[480,574,145,108],[702,508,130,122],[610,650,116,136],[480,510,145,62],[675,445,142,62]];
         const frameIndex=manifest.transitions[0].frames.findIndex(f=>f.base===file);
         const poseAmount=file===manifest.poses.curious_tilt.variants['open-closed']?1:frameIndex<0?0:(frameIndex+1)/(manifest.transitions[0].frames.length+1);
         const searchTransform=landmarkTransform(poseAmount),[A,B,C,D,E,F]=searchTransform;
@@ -389,22 +399,86 @@
               data[i]<115&&data[i+1]<85&&data[i+2]<85;
             dark[yy*W+xx]=Number(data[i+3]>220&&ink);
           }
-          let best=null;
+          let best=null;const components=[];
           for(let i=0;i<dark.length;i++)if(dark[i]&&!seen[i]) {
             let head=0,tail=1,x0=W,y0=H,x1=0,y1=0;queue[0]=i;seen[i]=1;
             while(head<tail){const p=queue[head++],xx=p%W,yy=Math.floor(p/W);x0=Math.min(x0,xx);x1=Math.max(x1,xx);y0=Math.min(y0,yy);y1=Math.max(y1,yy);
               for(const [nx,ny] of [[xx-1,yy],[xx+1,yy],[xx,yy-1],[xx,yy+1]])if(nx>=0&&nx<W&&ny>=0&&ny<H){const q=ny*W+nx;if(dark[q]&&!seen[q]){seen[q]=1;queue[tail++]=q;}}
             }
+            // Thin closed lips have fewer pixels than the jaw shadow after
+            // downsampling. A component cut by the mouth ROI is not a lip.
+            if(n===2&&(x0===0||x1===W-1||y0===0||y1===H-1))continue;
+            components.push({area:tail,x0,y0,x1,y1,points:n===2?Array.from(queue.subarray(0,tail)):null});
             if(!best||tail>best.area)best={area:tail,x0,y0,x1,y1};
+          }
+          if(n===2&&best) {
+            // The fine smile becomes several disconnected strokes at 640px.
+            // Join nearby lip strokes, rather than erasing only its largest
+            // fragment and leaving the other corner behind the speech mouth.
+            const gap=14*scale;
+            for(let pass=0;pass<components.length;pass++)for(const c of components) {
+              if(c.x0>best.x1+gap||c.x1<best.x0-gap||c.y0>best.y1+gap||c.y1<best.y0-gap)continue;
+              best={...best,x0:Math.min(best.x0,c.x0),x1:Math.max(best.x1,c.x1),y0:Math.min(best.y0,c.y0),y1:Math.max(best.y1,c.y1)};
+            }
+            const pixels=[];
+            for(const c of components)if(c.x0>=best.x0&&c.x1<=best.x1&&c.y0>=best.y0&&c.y1<=best.y1)
+              for(const p of c.points)pixels.push([left+p%W,top+Math.floor(p/W)]);
+            mouthMasks.set(file,pixels);
           }
           if(!best||best.area<5)return transformFeature({x:FEATURE_REGIONS[n][0],y:FEATURE_REGIONS[n][1],w:70,h:25},searchTransform);
           return{x:(left+(best.x0+best.x1)/2)/scale,y:(top+(best.y0+best.y1)/2)/scale,w:Math.max(12,(best.x1-best.x0+1)/scale),h:Math.max(8,(best.y1-best.y0+1)/scale)};
         });features.set(file,result);return result;
       }
       for(const file of [manifest.poses.neutral.variants['open-closed'],...Object.values(manifest.cels.sequences).flatMap(s=>s.frames)])featureBounds(file);
-      function registeredDraw(ctx, image) {
+      // Extract lip pixels once, and remove them from each source BEFORE any
+      // pose/expression blending. A final overlay cannot erase differently
+      // located mouths already blended into the presented face.
+      const mouthShapes=['open-closed','open-half','open-open'].map(key=>featureBounds(manifest.poses.neutral.variants[key])[2]);
+      const spriteCache=new Map();
+      releaseMouth=()=>{for(const p of spriteCache.values()){p.image.width=p.image.height=p.skin.width=p.skin.height=1;}spriteCache.clear();mouthMasks.clear();features.clear();};
+      function mouthSprite(file) {
+        if(spriteCache.has(file))return spriteCache.get(file);
+        const b=featureBounds(file)[2],scale=size/manifest.width,pad=8;
+        const left=Math.floor((b.x-b.w/2-pad)*scale),top=Math.floor((b.y-b.h/2-pad)*scale);
+        const W=Math.ceil((b.w+pad*2)*scale),H=Math.ceil((b.h+pad*2)*scale);
+        featureCtx.clearRect(0,0,size,size);featureCtx.drawImage(loaded.get(file),0,0,size,size);
+        const original=featureCtx.getImageData(left,top,W,H),ink=new Uint8Array(W*H);
+        for(const [x,y] of mouthMasks.get(file)||[]){const px=x-left,py=y-top;if(px>=0&&px<W&&py>=0&&py<H)ink[py*W+px]=1;}
+        // Fill cavities enclosed by the lip (including white teeth), not nose
+        // or jaw pixels that merely share the rectangular search region.
+        const outside=new Uint8Array(W*H),queue=[];
+        const visit=p=>{if(!ink[p]&&!outside[p]){outside[p]=1;queue.push(p);}};
+        for(let x=0;x<W;x++){visit(x);visit((H-1)*W+x);}for(let y=0;y<H;y++){visit(y*W);visit(y*W+W-1);}
+        for(let i=0;i<queue.length;i++){const p=queue[i],x=p%W,y=Math.floor(p/W);if(x>0)visit(p-1);if(x<W-1)visit(p+1);if(y>0)visit(p-W);if(y<H-1)visit(p+W);}
+        for(let p=0;p<ink.length;p++)if(!outside[p])ink[p]=1;
+        const spriteData=featureCtx.createImageData(W,H),skinData=featureCtx.createImageData(W,H);
+        for(let y=0;y<H;y++)for(let x=0;x<W;x++) {
+          let distance=4;
+          for(let dy=-3;dy<=3;dy++)for(let dx=-3;dx<=3;dx++)if(x+dx>=0&&x+dx<W&&y+dy>=0&&y+dy<H&&ink[(y+dy)*W+x+dx])distance=Math.min(distance,Math.hypot(dx,dy));
+          const i=(y*W+x)*4;
+          for(let k=0;k<3;k++) {
+            spriteData.data[i+k]=original.data[i+k];
+            const a=original.data[x*4+k],bottom=original.data[((H-1)*W+x)*4+k];
+            const usableBottom=original.data[((H-1)*W+x)*4+3]>220&&original.data[((H-1)*W+x)*4]>150;
+            skinData.data[i+k]=a+(usableBottom?bottom-a:0)*y/(H-1);
+          }
+          spriteData.data[i+3]=original.data[i+3]*clamp(2-distance,0,1);
+          skinData.data[i+3]=255*clamp(4-distance,0,1);
+        }
+        const c=document.createElement('canvas'),skin=document.createElement('canvas');c.width=skin.width=W;c.height=skin.height=H;
+        c.getContext('2d').putImageData(spriteData,0,0);skin.getContext('2d').putImageData(skinData,0,0);
+        const sprite={image:c,skin,left,top,pad,bounds:b,inkPixels:(mouthMasks.get(file)||[]).length};spriteCache.set(file,sprite);return sprite;
+      }
+      const mouthSprites=['open-closed','open-half','open-open'].map(key=>mouthSprite(manifest.poses.neutral.variants[key]));
+      for(const seq of Object.values(manifest.cels.sequences))for(const file of seq.frames)mouthSprite(file);
+      const scale=size/manifest.width,blankCanvas=makeCanvas(),blankCtx=blankCanvas.getContext('2d');
+      function withoutMouth(file) {
+        const p=mouthSprite(file);blankCtx.clearRect(0,0,size,size);
+        blankCtx.drawImage(loaded.get(file),0,0,size,size);blankCtx.drawImage(p.skin,p.left,p.top);return blankCanvas;
+      }
+      function registeredDraw(ctx, image, matrix=landmarkTransform(output.tilt)) {
         ctx.save(); ctx.scale(size / manifest.width, size / manifest.height);
-        ctx.transform(...landmarkTransform(output.tilt)); ctx.drawImage(image, 0, 0, manifest.width, manifest.height); ctx.restore();
+        ctx.transform(...matrix); ctx.drawImage(image, 0, 0, manifest.width, manifest.height); ctx.restore();
       }
       function warpFeatures(image, from, to, dynamic=false) {
         return output.reducedMotion ? image : expressionRenderer?.draw(image,(x,y)=>{
@@ -438,17 +512,17 @@
             const pose = sample.index < 0 ? manifest.poses.neutral : sample.index >= frames.length ? manifest.poses.curious_tilt : null;
             const pair = pose ? {base:pose.variants['open-closed'],hair:pose.hair} : frames[sample.index];
             faceCtx.globalAlpha = hairCtx.globalAlpha = sample.weight;
-            faceCtx.drawImage(loaded.get(pair.base), 0, 0, size, size); hairCtx.drawImage(loaded.get(pair.hair), 0, 0, size, size);
+            faceCtx.drawImage(withoutMouth(pair.base), 0, 0, size, size); hairCtx.drawImage(loaded.get(pair.hair), 0, 0, size, size);
             featureBounds(pair.base).forEach((b,i)=>{for(const k of ['x','y','w','h'])posedFeatures[i][k]+=b[k]*sample.weight;});
           }
           faceCtx.globalAlpha = hairCtx.globalAlpha = 1;
           faceCtx.globalCompositeOperation = hairCtx.globalCompositeOperation = 'source-over';
-          let currentFeatures=posedFeatures;
+          let currentFeatures=posedFeatures, sourceCels=[];
           const registration=landmarkTransform(output.tilt), inverse=inverseAffine(registration);
           if (output.cels.length) {
             celCtx.clearRect(0, 0, size, size); celCtx.globalCompositeOperation = 'lighter';
             registeredMaskCtx.clearRect(0,0,size,size); registeredDraw(registeredMaskCtx,maskCanvas);
-            const sourceCels=output.cels.map(f=>({...f,file:f.index===-1?manifest.poses.neutral.variants['open-closed']:manifest.cels.sequences[f.name || output.pose].frames[f.index]}));
+            sourceCels=output.cels.map(f=>({...f,file:f.index===-1?manifest.poses.neutral.variants['open-closed']:manifest.cels.sequences[f.name || output.pose].frames[f.index]}));
             const target=FEATURE_REGIONS.map((_,i)=>sourceCels.reduce((sum,f)=>{
               const b=f.index===-1?posedFeatures[i]:transformFeature(featureBounds(f.file)[i],registration);
               for(const k of ['x','y','w','h'])sum[k]+=b[k]*f.weight;return sum;
@@ -458,10 +532,10 @@
               // Both outgoing and incoming features must meet at the same
               // PRESENTED coordinates. Aligning only the incoming drawing
               // leaves two eyes/mouths when the current head is still tilted.
-              const image=index===-1?faceCanvas:loaded.get(file);
+              const image=index===-1?faceCanvas:withoutMouth(file);
               const from=index===-1?posedFeatures:featureBounds(file);
               const to=index===-1?target:target.map(f=>transformFeature(f,inverse));
-              const warped=warpFeatures(image,from,to,index===-1);
+              const warped=warpFeatures(image,from,to,true);
               if(index===-1)celCtx.drawImage(warped || image,0,0);
               else registeredDraw(celCtx,warped || image);
             }
@@ -476,24 +550,35 @@
           }
           // Blend only registered eye/mouth pixels; full pose, hair, clothing and
           // the authored transition frame keep running during speech/blinks.
-          if (output.speechMix > .0001) {
-            patchCtx.clearRect(0,0,size,size);patchCtx.globalCompositeOperation='lighter';
-            const value=clamp(output.mouthValue,0,2), a=Math.floor(value), b=Math.min(2,a+1), mix=value-a;
-            const speechSources=[[a,1-mix],[b,mix]].map(([n,w])=>({key:`open-${['closed','half','open'][n]}`,weight:w}));
-            const speechTarget=FEATURE_REGIONS.map((_,i)=>speechSources.reduce((sum,f)=>{
-              const b=featureBounds(manifest.poses.neutral.variants[f.key])[i];for(const k of ['x','y','w','h'])sum[k]+=b[k]*f.weight;return sum;
-            },{x:0,y:0,w:0,h:0}));
-            const mouthTarget=interpolateFeatures(currentFeatures,currentFeatures.map((f,i)=>i===2?transformFeature(speechTarget[i],registration):f),output.speechMix);
-            morphCurrentFace(currentFeatures,mouthTarget);currentFeatures=mouthTarget;
-            const patchTarget=mouthTarget.map(f=>transformFeature(f,inverse));
-            for(const f of speechSources) {
-              if(f.weight<.0001)continue;
-              const source=featureBounds(manifest.poses.neutral.variants[f.key]), image=patch(f.key,'mouth');
-              const warped=warpFeatures(image,source,patchTarget);
-              patchCtx.globalAlpha=f.weight;patchCtx.drawImage(warped || image,0,0);
+          {
+            patchCtx.clearRect(0,0,size,size);patchCtx.globalCompositeOperation='source-over';
+            const ranked=[...sourceCels].sort((a,b)=>b.weight-a.weight);
+            const apertureFor=f=>clamp((featureBounds(f.file)[2].h-mouthShapes[0].h)/(mouthShapes[2].h-mouthShapes[0].h),0,1);
+            const expressionAperture=ranked.reduce((sum,f)=>sum+apertureFor(f)*f.weight,0);
+            // One mouth layer owns BOTH emotion and speech, including onset
+            // and release. Never dissolve a talk mouth over an intact old lip.
+            const value=expressionAperture*2*(1-output.speechMix)+output.mouthValue*output.speechMix;
+            const g=mouthGeometry(value,...mouthShapes);
+            const closedCel=ranked.find(f=>apertureFor(f)<.2),openCel=ranked.find(f=>apertureFor(f)>=.2);
+            const expressive=output.speechMix<.5;
+            const sprites=[expressive&&closedCel?mouthSprite(closedCel.file):mouthSprites[0],
+              expressive&&openCel?mouthSprite(openCel.file):mouthSprites[1],
+              expressive&&openCel?mouthSprite(openCel.file):mouthSprites[2]];
+            for(let i=0;i<3;i++) {
+              const weight=[g.closedWeight,g.halfWeight,g.openWeight][i];if(weight<.0001)continue;
+              const {image,pad,bounds:b}=sprites[i];
+              const w=i===0?b.w:g.width,h=i===0?b.h:g.height;
+              const x=g.x,y=i===0?mouthShapes[0].y-b.h/2:g.top;
+              const px=pad*w/b.w,py=pad*h/b.h;
+              patchCtx.globalAlpha=weight;
+              patchCtx.drawImage(image,(x-w/2-px)*scale,(y-py)*scale,(w+px*2)*scale,(h+py*2)*scale);
             }
             patchCtx.globalAlpha=1;patchCtx.globalCompositeOperation='source-over';
-            faceCtx.globalAlpha=output.speechMix;registeredDraw(faceCtx,patchCanvas);faceCtx.globalAlpha=1;
+            // The authored tilted lip is not exactly the affine prediction.
+            // Anchor to the PRESENTED base lip, not a guessed head landmark.
+            const anchor=transformFeature(mouthShapes[0],registration),mouthRegistration=[...registration];
+            mouthRegistration[4]+=posedFeatures[2].x-anchor.x;mouthRegistration[5]+=posedFeatures[2].y-anchor.y;
+            registeredDraw(faceCtx,patchCanvas,mouthRegistration);
           }
           if(output.blinkAmount > .0001) {
             const closedFeatures=featureBounds(manifest.poses.neutral.variants['closed-closed']);
@@ -513,8 +598,9 @@
             return bodyPoint(p.x * size / manifest.width, p.y * size / manifest.height);
           },true);
           ctx.drawImage(renderedHair || hairCanvas, 0, 0, width, height); ctx.restore(); return true;
-        }, dispose, get status() { return output; } };
+        }, dispose, get status() { return output; },
+        get mouthSources() { return [...spriteCache].map(([file,p])=>({file,inkPixels:p.inkPixels})); } };
     } catch (error) { dispose(); throw error; }
   }
-  return { VARIANTS, STATES, stateForInput, validateManifest, celWeights, landmarkTransform, poseSamples, featureWarp, transformFeature, inverseAffine, createController, createPlayer };
+  return { VARIANTS, STATES, stateForInput, validateManifest, celWeights, landmarkTransform, poseSamples, featureWarp, transformFeature, inverseAffine, mouthGeometry, createController, createPlayer };
 });

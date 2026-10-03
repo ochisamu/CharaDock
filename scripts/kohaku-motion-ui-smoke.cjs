@@ -19,7 +19,7 @@ const guard = setTimeout(() => { console.error('Kohaku UI QA timeout'); app.exit
     avatarImages: Object.fromEntries(Object.entries(filenames).map(([k,f]) => [k, 'data:image/png;base64,' + fs.readFileSync(path.join(dir,f)).toString('base64')])) };
   snapshot.settings.state.avatarX = 0; snapshot.settings.state.avatarY = 30; server.setSnapshot(snapshot, false);
   const win = new BrowserWindow({ width: 850, height: 900, show: false, transparent: true, webPreferences: { contextIsolation: true, nodeIntegration: false } });
-  win.webContents.on('console-message', (_e, details) => { const m = details?.message || ''; if (/Uncaught|TypeError|ReferenceError|authored.*failed|unavailable/.test(m)) errors.push(m); });
+  win.webContents.on('console-message', (event, details, message) => { const m = event?.message || details?.message || message || ''; if (/Uncaught|TypeError|ReferenceError|authored.*failed|unavailable/.test(m)) errors.push(m); });
   const js = code => win.webContents.executeJavaScript(code);
   await win.loadURL(server.origin() + '/?mode=obs&desktop=1&kohakuMotion=1');
   win.showInactive();

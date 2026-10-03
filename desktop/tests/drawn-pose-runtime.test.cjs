@@ -75,6 +75,26 @@ test('blink and mouth presentation ease through intermediate values, without rep
   const opening=c.update(634,{mouthState:0,blinkClosed:false});
   assert.ok(opening.blinkAmount>=0&&opening.blinkAmount<=1);assert.ok(Number.isFinite(opening.speechMix));
 });
+test('continuous audio mouth does not quantize to PNG states and returns promptly after silence',()=>{
+  const c=runtime.createController(manifest);c.update(0);c.trigger('curious_tilt',0);
+  for(let i=1;i<=60;i++)c.update(i*1000/60,{mouthState:1,mouthOpenness:.8,audioLevel:.2});
+  const a=c.update(1000,{mouthState:1,mouthOpenness:.8});assert.ok(Math.abs(a.mouthValue-.8)<.001);
+  const b=c.update(1017,{mouthState:1,mouthOpenness:1.3});assert.ok(b.mouthValue>.8&&b.mouthValue<1.3);
+  for(let i=1;i<=30;i++)c.update(1017+i*1000/60,{mouthState:0,mouthOpenness:0});
+  const end=c.update(1530);assert.ok(end.mouthValue<.001);assert.ok(end.speechMix<.005);assert.equal(end.pose,'curious_tilt');
+});
+test('mouth articulation keeps a fixed lip anchor and bounded normalized weights',()=>{
+  const closed={x:665,y:720,w:89,h:28},half={x:667,y:730,w:72,h:38},open={x:665,y:737,w:85,h:70};
+  let previous=null;
+  for(let v=0;v<=2;v+=.01){
+    const g=runtime.mouthGeometry(v,closed,half,open);assert.equal(g.x,665);
+    assert.ok(Math.abs(g.closedWeight+g.halfWeight+g.openWeight-1)<1e-9);
+    assert.ok(g.height>=3&&g.height<=70&&g.top>=702&&g.top<=720);
+    if(previous)assert.ok(Math.abs(g.height-previous.height)<.36&&Math.abs(g.top-previous.top)<.1);
+    previous=g;
+  }
+  assert.deepEqual(runtime.mouthGeometry(0,closed,half,open),{x:665,top:720,width:72,height:3,closedWeight:1,halfWeight:0,openWeight:0});
+});
 test('four source cel sequences have real phases, no video background and automatic return', () => {
   for (const name of ['attentive_listening', 'delighted_agreement', 'doubtful_side_eye', 'sleepy_yawn']) {
     const c = runtime.createController(manifest); c.update(0); c.trigger(name, 0);
