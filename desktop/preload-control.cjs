@@ -3,6 +3,15 @@ const { contextBridge, ipcRenderer, webUtils } = require("electron");
 
 contextBridge.exposeInMainWorld("mascotDesktop", {
   getState: () => ipcRenderer.invoke("app:getState"),
+  listCodexCompanionThreads: () => ipcRenderer.invoke("companion:list"),
+  chooseCodexCompanionRoot: () => ipcRenderer.invoke("companion:chooseRoot"),
+  startCodexCompanion: (key) => ipcRenderer.invoke("companion:start", key),
+  stopCodexCompanion: () => ipcRenderer.invoke("companion:stop"),
+  onCodexCompanionState: (callback) => {
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on("companion:state", listener);
+    return () => ipcRenderer.removeListener("companion:state", listener);
+  },
   openExternalUrl: (url) => ipcRenderer.invoke("app:openExternalUrl", url),
   getPathForFile: (file) => webUtils.getPathForFile(file),
   saveSettings: (settings) => ipcRenderer.invoke("settings:save", settings),

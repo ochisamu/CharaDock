@@ -57,6 +57,8 @@ function speechHarness(overrides = {}) {
     setDeviceState: async (state) => { states.push(state); },
   };
   const ctx = vm.createContext({
+    codexCompanion: { state: { enabled: false } },
+    companionTransitioning: false,
     ...require("../lib/atom-echo-conversation-route.cjs"),
     atomEchoCapture: null, atomEchoRecognizingCapture: null,
     atomEchoTurnGeneration: 0, atomEchoReplyGeneration: 0,
@@ -199,6 +201,7 @@ test("interrupt targets the active client, not an idle browser/computer client",
 test("MCP prewarm never replaces the client of an active conversation", async () => {
   let callback, replacements = 0;
   const ctx = vm.createContext({
+    codexCompanion: { state: { enabled: false } }, companionTransitioning: false,
     mcpPrewarmTimer: null, clearTimeout: () => {}, setTimeout: (fn) => { callback = fn; },
     preferences: { data: { backend: "codex", interactionMode: "chat" } }, codexCommand: "codex",
     effectiveMcpServerIds: () => ["test"], quitting: false, activeWorkRunId: null,
@@ -214,6 +217,9 @@ test("MCP prewarm never replaces the client of an active conversation", async ()
   ctx.scheduleMcpPrewarm();
   await callback();
   assert.equal(replacements, 1);
+  ctx.codexCompanion.state.enabled = true;
+  await callback();
+  assert.equal(replacements, 1, "Companion must not prewarm a second client");
 });
 
 test("playback failure is distinct from recognition failure and retains the reply", async () => {

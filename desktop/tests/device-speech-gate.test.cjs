@@ -11,6 +11,7 @@ test("main routes both devices through independent gates and cancels pending mod
   const events = [];
   let detectors = 0;
   const ctx = vm.createContext({ DeviceSpeechGate,
+    codexCompanion: { state: { enabled: false } },
     embeddedSherpaVad: { ensureModel: async () => {}, baseDirectory: "." },
     EmbeddedSherpaVad: class {
       constructor() { detectors++; }

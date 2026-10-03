@@ -48,7 +48,7 @@ test("interface symbols use individually licensed SVG assets", () => {
   assert.ok(icons.length >= 18);
   for (const icon of icons) {
     const svg = fs.readFileSync(path.join(iconDirectory, icon), "utf8");
-    assert.match(svg, ["chip.svg", "device-link.svg"].includes(icon)
+    assert.match(svg, ["chip.svg", "device-link.svg", "companion.svg"].includes(icon)
       ? /SPDX-License-Identifier: Apache-2.0/ : /@license Lucide/);
     assert.match(svg, /viewBox="0 0 24 24"/);
   }
@@ -599,7 +599,7 @@ test("user-facing interaction modes are consistently named Chat and Work", () =>
   assert.match(html, /id="interactionModeBadge">Chat<\/span>/);
   assert.match(html, /id="conversationHistoryTab"[^>]*>Chat履歴<\/button>/);
   assert.match(html, /id="workHistoryTab"[^>]*>Work履歴<\/button>/);
-  assert.match(control, /interactionModeBadge"\)\.textContent = state\.interactionMode === "work" \? "Work" : "Chat"/);
+  assert.match(control, /interactionModeBadge"\)\.textContent = state\.companionEnabled \? "Companion" : state\.interactionMode === "work" \? "Work" : "Chat"/);
   assert.match(mascot, /desktopMascotModeButton[\s\S]*?>Chat<\/button>/);
   assert.match(mascot, /modeButton\.textContent = workMode \? "Work" : "Chat"/);
 });

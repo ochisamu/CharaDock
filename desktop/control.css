@@ -64,6 +64,10 @@
 .ui-symbol-connection { -webkit-mask-image: url("../assets/ui/icons/connection.svg"); mask-image: url("../assets/ui/icons/connection.svg"); }
 .ui-symbol-mcp { -webkit-mask-image: url("../assets/ui/icons/mcp.svg"); mask-image: url("../assets/ui/icons/mcp.svg"); }
 .ui-symbol-desktop { -webkit-mask-image: url("../assets/ui/icons/desktop.svg"); mask-image: url("../assets/ui/icons/desktop.svg"); }
+.ui-symbol-companion { -webkit-mask-image: url("../assets/ui/icons/companion.svg"); mask-image: url("../assets/ui/icons/companion.svg"); }
+.companion-actions { display: flex; flex-wrap: wrap; gap: 10px; margin: 16px 0; }
+.companion-events { padding-left: 22px; line-height: 1.8; color: var(--text-secondary); }
+.companion-result { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; line-height: 1.8; max-height: 55vh; overflow: auto; }
 .ui-symbol-settings { -webkit-mask-image: url("../assets/ui/icons/settings.svg"); mask-image: url("../assets/ui/icons/settings.svg"); }
 .ui-symbol-sparkle { -webkit-mask-image: url("../assets/ui/icons/sparkle.svg"); mask-image: url("../assets/ui/icons/sparkle.svg"); }
 .ui-symbol-send { -webkit-mask-image: url("../assets/ui/icons/send.svg"); mask-image: url("../assets/ui/icons/send.svg"); }

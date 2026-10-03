@@ -996,6 +996,11 @@ window.addEventListener("DOMContentLoaded", () => {
     const workMode = state.interactionMode === "work";
     document.body.classList.toggle("is-work-mode", workMode);
     modeButton.textContent = workMode ? "Work" : "Chat";
+    if (state.companionEnabled) modeButton.textContent = "Codex";
+    input.disabled = state.companionEnabled === true;
+    modeButton.disabled = sending || state.companionEnabled === true;
+    micButton.disabled = state.companionEnabled === true;
+    sendButton.disabled = state.companionEnabled === true;
     modeButton.setAttribute("aria-pressed", String(workMode));
     modeButton.title = workMode ? "Chatへ戻す" : "Workへ切り替える";
     workTarget.textContent = `作業先 · ${state.workDirectoryName || "未選択"}`;
@@ -2584,6 +2589,7 @@ window.addEventListener("DOMContentLoaded", () => {
   };
 
   const startVadListening = async (provider) => {
+    if (appState?.companionEnabled) return;
     if (vadActive) return;
     if (!["streaming-local", "sherpa-onnx", "openai"].includes(provider)) throw new Error("この音声入力方式ではVADを利用できません");
     if (provider === "sherpa-onnx" && !appState?.sherpaModel?.installed) {
@@ -3163,6 +3169,7 @@ window.addEventListener("DOMContentLoaded", () => {
   };
 
   const toggleVoiceInput = async () => {
+    if (appState?.companionEnabled) { setStatus("Companionは閲覧専用です。設定から停止すると会話できます", 5000); return; }
     if (vadActive || vadStream) {
       stopVadListening();
       setStatus("音声待機を終了しました");
@@ -3291,6 +3298,7 @@ window.addEventListener("DOMContentLoaded", () => {
     if (workPanel.classList.contains("is-open") && appState?.interactionMode !== "work") renderConversationHistory(chatHistoryState);
   });
   ipcRenderer.on("mascot:stream", (_event, payload) => {
+    if (appState?.companionEnabled) return;
     if (payload?.phase === "follow-up") {
       streamWorkMode = payload?.mode === "work";
       detachedRealtimeWorkBusy = streamWorkMode;
@@ -3525,6 +3533,30 @@ window.addEventListener("DOMContentLoaded", () => {
     renderMascotSelectedSkills();
     if (!addPopover.hidden) renderMascotSkillPicker();
   });
+  const applyCompanionSnapshot = (snapshot) => {
+    const wasEnabled = appState?.companionEnabled;
+    appState = { ...appState, companionEnabled: snapshot.enabled === true };
+    if (snapshot.enabled) {
+      if (!wasEnabled) {
+        stopVadListening(); clearAutoSendCountdown(); stopTtsPlayback(); closeRealtime();
+        speechRecognition?.abort?.();
+        stopManualStreamingSpeech({ cancel: true }).catch(() => {});
+      }
+      input.disabled = true; modeButton.disabled = true; micButton.disabled = true; sendButton.disabled = true;
+      const detail = snapshot.error || (snapshot.stale ? "Codexの更新を待っています" : snapshot.activity || "Codexの会話を閲覧中");
+      setWorkActivity(`Codex · ${detail}`, { trackElapsed: false });
+      if (snapshot.result) {
+        streamFullText = normalizeDisplayText(snapshot.result);
+        bubbleText.textContent = streamFullText; bubblePersistent = true;
+        bubble.classList.add("is-visible"); syncBubbleOverflow();
+      } else { streamFullText = ""; bubbleText.textContent = ""; bubble.classList.remove("is-visible"); }
+    } else if (wasEnabled) {
+      input.disabled = false; modeButton.disabled = sending; micButton.disabled = false; sendButton.disabled = false;
+      setWorkActivity(""); streamFullText = ""; bubbleText.textContent = ""; bubble.classList.remove("is-visible");
+      setStatus("Companionを停止しました。会話モードに戻りました", 4000);
+    }
+  };
+  ipcRenderer.on("mascot:companion", (_event, snapshot) => applyCompanionSnapshot(snapshot));
   ipcRenderer.on("audio:realtimeTurnSkills", (_event, payload = {}) => {
     mascotSelectedSkillIds = Array.isArray(payload.selectedSkillIds) ? payload.selectedSkillIds : [];
     mascotSelectedMcpServerIds = Array.isArray(payload.selectedMcpServerIds) ? payload.selectedMcpServerIds : [];
@@ -3580,6 +3612,7 @@ window.addEventListener("DOMContentLoaded", () => {
     applyInterfaceLanguage(state.language);
     applyInteractionMode(state);
     applyCharacter(state.characters?.find((character) => character.id === state.characterId));
+    if (state.codexCompanion?.enabled) applyCompanionSnapshot(state.codexCompanion);
     applyWindowSettings(state);
     applyPointerState({ mode: state.mascotPointerMode, autoHidden: false });
     renderMascotSelectedSkills();

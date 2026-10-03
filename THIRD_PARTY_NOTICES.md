@@ -84,6 +84,8 @@ SOFTWARE.
 The `chip.svg` and `device-link.svg` icons are original CharaDock artwork under
 the project's Apache-2.0 license, not Lucide assets.
 
+The original `companion.svg` interface icon is licensed under Apache-2.0.
+
 Selected SVG interface icons are vendored under `assets/ui/icons/` and retain a
 license marker in each file. Permission to use, copy, modify, and/or distribute
 this software for any purpose with or without fee is hereby granted, provided

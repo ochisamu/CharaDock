@@ -8,6 +8,39 @@
   const $$ = (selector) => [...document.querySelectorAll(selector)];
   const localized = (japanese, english) => state?.language === "en" ? english : japanese;
   let state = null;
+  let companionBusy = false;
+  function renderCodexCompanion(snapshot = state?.codexCompanion || {}) {
+    const labels = { idle: "停止中", unknown: "状態未確認", running: "作業中", "needs-input": "入力待ち", completed: "完了", interrupted: "中断", error: "エラー" };
+    $("#companionBadge").textContent = snapshot.enabled ? snapshot.stale ? "更新待ち" : labels[snapshot.status] || "状態未確認" : "停止中";
+    $("#companionTitle").textContent = snapshot.title || "";
+    $("#companionActivity").textContent = snapshot.error || (snapshot.stale ? "更新がありません。現在も動作中かはCodex側で確認してください。" : snapshot.activity || "表示する会話を選択してください。");
+    $("#companionResult").textContent = snapshot.result || "完了した回答がここに表示されます。";
+    $("#companionUpdated").textContent = snapshot.updatedAt ? `最終イベント: ${new Date(snapshot.updatedAt).toLocaleString()}` : "";
+    const events = $("#companionEvents"); events.replaceChildren();
+    for (const event of snapshot.events || []) { const li = document.createElement("li"); li.textContent = event.text; events.append(li); }
+    $("#companionStart").disabled = companionBusy || !$("#companionThread").value || snapshot.enabled;
+    $("#companionStop").disabled = companionBusy || !snapshot.enabled;
+    $("#companionChooseRoot").disabled = companionBusy || snapshot.enabled;
+    $("#companionRefresh").disabled = companionBusy;
+    $("#companionThread").disabled = companionBusy || snapshot.enabled;
+    $("#chatInput").disabled = snapshot.enabled === true;
+    if (snapshot.enabled) $("#sendButton").disabled = true;
+    else if (!chatBusy) $("#sendButton").disabled = false;
+  }
+  function renderCompanionThreads(entries) {
+    const select = $("#companionThread"), previous = select.value; select.replaceChildren();
+    const empty = document.createElement("option"); empty.value = ""; empty.textContent = entries.length ? "表示する会話を選択" : "会話が見つかりません。sessionsフォルダーを選んでください。"; select.append(empty);
+    for (const entry of entries) { const option = document.createElement("option"); option.value = entry.key;
+      option.textContent = `${entry.title} · ${new Date(entry.updatedAt).toLocaleString()}`; select.append(option); }
+    if (entries.some(e => e.key === previous)) select.value = previous;
+  }
+  async function companionAction(action) {
+    if (companionBusy) return;
+    companionBusy = true; renderCodexCompanion();
+    try { await action(); $("#companionNotice").textContent = "閲覧専用です。操作・承認はCodex側で行ってください。"; }
+    catch (error) { $("#companionNotice").textContent = error.message; }
+    finally { companionBusy = false; renderCodexCompanion(); }
+  }
   let jevBusy = false;
   let atomEchoPorts = [];
   let rlcd42Ports = [];
@@ -3973,6 +4006,7 @@
   function syncUi() {
     i18n?.setLanguage(state.language || "ja");
     syncJevUi();
+    renderCodexCompanion();
     document.documentElement.dataset.character = state.characterId || "amber-avatar";
     const sidebarCharacter = currentCharacter();
     if (sidebarCharacter) {
@@ -3987,13 +4021,15 @@
       renderConversationHistory(state.conversationHistory);
     }
     workHistoryState = state.workHistory && Array.isArray(state.workHistory.runs) ? state.workHistory : workHistoryState;
-    $("#interactionModeBadge").textContent = state.interactionMode === "work" ? "Work" : "Chat";
+    $("#interactionModeBadge").textContent = state.companionEnabled ? "Companion" : state.interactionMode === "work" ? "Work" : "Chat";
     renderCharacterWorkspace();
     syncRemoteUi();
     syncAtomEchoUi();
     syncRlcd42Ui();
     $("#openChatWorkDirectoryButton").disabled = !state.hasWorkDirectory;
-    $("#chatComposerHint").textContent = state.interactionMode === "work"
+    $("#chatComposerHint").textContent = state.companionEnabled
+      ? localized("Companionは閲覧専用 · 会話するにはCompanionを停止", "Companion is read-only · Stop it to chat")
+      : state.interactionMode === "work"
       ? localized("Work · 選択フォルダー内へ書き込みできます", "Work · Can write inside the selected folder")
       : localized("設定画面では文字入力のみ", "Text input only in Settings");
     if (chatHistoryView === "work") renderWorkHistory(workHistoryState);
@@ -5254,9 +5290,19 @@
   }
 
   function bindEvents() {
+    api.onCodexCompanionState?.((snapshot) => {
+      if (state) state.codexCompanion = snapshot;
+      renderCodexCompanion(snapshot);
+    });
+    $("#companionRefresh").addEventListener("click", () => companionAction(async () => renderCompanionThreads(await api.listCodexCompanionThreads())));
+    $("#companionChooseRoot").addEventListener("click", () => companionAction(async () => { const entries = await api.chooseCodexCompanionRoot(); if (entries) renderCompanionThreads(entries); }));
+    $("#companionThread").addEventListener("change", () => renderCodexCompanion());
+    $("#companionStart").addEventListener("click", () => companionAction(async () => { state.codexCompanion = await api.startCodexCompanion($("#companionThread").value); }));
+    $("#companionStop").addEventListener("click", () => companionAction(async () => { state.codexCompanion = await api.stopCodexCompanion(); }));
     api.onStateChanged?.((nextState) => {
       const previousProvider = state?.speechInputProvider;
       state = nextState;
+      if (state?.companionEnabled) closeRealtimeAudio();
       if (previousProvider === "realtime" && state?.speechInputProvider !== "realtime") closeRealtimeAudio();
       syncUi();
     });

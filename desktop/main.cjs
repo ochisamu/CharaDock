@@ -26,6 +26,42 @@ const {
 } = require("electron");
 
 const { CodexAppServerClient, isOfficialComputerUseSkill } = require("./backend/codex-client.cjs");
+const { CodexCompanion } = require("./lib/codex-companion.cjs");
+let companionTransitioning = false;
+let companionActivation = 0;
+const codexCompanion = new CodexCompanion({
+  root: path.join(process.env.CODEX_HOME || path.join(os.homedir(), ".codex"), "sessions"),
+  onChange: (snapshot) => {
+    controlWindow?.webContents.send("companion:state", snapshot);
+    mascotWindow?.webContents.send("mascot:companion", snapshot);
+    if (localServer) pushMascotExpression({ reaction: snapshot.enabled && snapshot.status === "running" && !snapshot.stale ? "thinking"
+      : snapshot.enabled && snapshot.status === "completed" ? "happy" : "neutral", durationMs: 1800 });
+    if (preferences) scheduleRlcd42SceneSync();
+  },
+});
+function assertConversationRole() {
+  if (codexCompanion.state.enabled || companionTransitioning) throw new Error("Codex Companionは閲覧専用です。会話する場合はCompanionを停止してください。");
+}
+async function startCodexCompanion(key) {
+  if (companionTransitioning) throw new Error("Companionへ切り替え中です。");
+  if (!codexCompanion.files.has(String(key))) throw new Error("会話一覧を更新し、会話を選択してください。");
+  if (activeWorkRunId || activeCodexInteractionClient() || openAIClient?.hasActiveTurn?.()
+      || atomEchoCapture || atomEchoRecognizingCapture || turnCoordinator.snapshot().status === "speaking") {
+    throw new Error("現在の会話・作業・再生が終了してからCompanionを開始してください。");
+  }
+  companionTransitioning = true;
+  const activation = ++companionActivation;
+  try {
+    await stopActiveRealtime();
+    if (activation !== companionActivation) return codexCompanion.snapshot();
+    invalidateEsp32SpeechInput();
+    jevExpressionDirector.cancel();
+    clearTimeout(mcpPrewarmTimer);
+    const result = await codexCompanion.start(key);
+    broadcastAppState();
+    return result;
+  } finally { companionTransitioning = false; }
+}
 const { PNG } = require("pngjs");
 const { OpenAIClient } = require("./backend/openai-client.cjs");
 const { MEDIA_DYNAMIC_TOOLS, MEDIA_TOOL_INSTRUCTIONS, createMediaController } = require("./lib/media-control.cjs");
@@ -2150,6 +2186,7 @@ async function sendRemoteMessage(payload = {}) {
 }
 
 async function startRemoteRealtime(payload = {}) {
+  assertConversationRole();
   if (preferences.data.remoteResponseMode !== "live") {
     throw new Error(mainText("応答音声をGPT-Liveへ変更してください。", "Change the response voice to GPT-Live first."));
   }
@@ -2781,6 +2818,18 @@ function publicRlcd42State() {
 function rlcd42SceneSnapshot() {
   const profile = rlcd42Profile();
   const transport = rlcd42Gateway?.status().transport || "usb";
+  const companion = codexCompanion.snapshot();
+  if (companion.enabled) {
+    const scene = buildRlcd42Scene({ characterName: activeCharacter().name, transport,
+      turn: { mode: "chat", status: companion.status === "running" && !companion.stale ? "working"
+        : companion.status === "needs-input" && !companion.stale ? "approval"
+        : companion.status === "completed" ? "completed" : "idle" },
+      caption: companion.result, captionMode: profile.captionMode,
+      activityOverride: companion.error || (companion.stale ? "Codexの状態を確認中（更新なし）" : companion.activity || "Codexの会話を閲覧中"),
+      language: interfaceLanguage() });
+    return { ...scene, modeLabel: "CODEX", live: false,
+      nextAction: companion.status === "needs-input" ? "Codex側で確認してください" : "" };
+  }
   const currentTurn = turnCoordinator.snapshot();
   const voiceStage = {
     listening: { status: "listening", activity: mainText("聞いています…", "Listening…") },
@@ -3176,7 +3225,7 @@ function esp32InputGate(deviceKind) {
       await vad.start("normal");
       return vad;
     },
-    suppress: () => Boolean(esp32SpeechOutput.count) || Date.now() < (esp32SpeechOutput.until || 0),
+    suppress: () => codexCompanion.state.enabled || Boolean(esp32SpeechOutput.count) || Date.now() < (esp32SpeechOutput.until || 0),
     onStart: async (options) => {
       diagnosticLog?.write("info", "esp32-silero-accepted", { deviceKind });
       await esp32PttStart(deviceKind, options);
@@ -3211,6 +3260,7 @@ function pcm16Samples(bytes) {
 }
 
 async function esp32PttStart(deviceKind = "atom-echo", { handsfree = false } = {}) {
+  if (codexCompanion.state.enabled || companionTransitioning) return false;
   const gateway = esp32VoiceGateway(deviceKind);
   const label = esp32VoiceLabel(deviceKind);
   if (!gateway?.status().connected) throw new Error(`${label}が接続されていません。`);
@@ -4162,6 +4212,8 @@ function publicAppState() {
   const sbv2Selection = validSbv2VoiceSelection(sbv2Model, characterTts.sbv2SpeakerId, characterTts.sbv2StyleId);
   return {
     ...preferences.publicState(),
+    codexCompanion: codexCompanion.snapshot(),
+    companionEnabled: codexCompanion.state.enabled,
     remote: remoteServerStatus(),
     atomEcho: publicAtomEchoState(),
     rlcd42: publicRlcd42State(),
@@ -4542,9 +4594,11 @@ function ensureConversationCodexClient(selectedMcpServerIds = []) {
 
 function scheduleMcpPrewarm(delayMs = 500) {
   clearTimeout(mcpPrewarmTimer);
+  if (codexCompanion.state.enabled || companionTransitioning) return;
   if (!preferences || preferences.data.backend !== "codex" || !codexCommand) return;
   if (!effectiveMcpServerIds().length) return;
   mcpPrewarmTimer = setTimeout(async () => {
+    if (codexCompanion.state.enabled || companionTransitioning) return;
     if (quitting || activeWorkRunId || activeCodexInteractionClient()
         || activeRealtimeStarting || currentRealtimeClient()) return;
     const startedAt = Date.now();
@@ -5479,12 +5533,13 @@ function broadcastAppState() {
     hasWorkDirectory: state.hasWorkDirectory,
     workDirectoryName: state.workDirectoryName,
     skills: state.skills,
+    companionEnabled: codexCompanion.state.enabled,
   });
   mascotWindow?.webContents.send("mascot:voiceInputSettings", {
     speechInputProvider: state.speechInputProvider,
     realtimeAutoStartOnText: state.realtimeAutoStartOnText,
     realtimeAutoStartOnPet: state.realtimeAutoStartOnPet,
-    voiceActivationMode: state.voiceActivationMode,
+    voiceActivationMode: codexCompanion.state.enabled ? "manual" : state.voiceActivationMode,
     vadSensitivity: state.vadSensitivity,
     voiceAutoSend: state.voiceAutoSend,
     voiceAutoSendCountdown: state.voiceAutoSendCountdown,
@@ -7985,6 +8040,7 @@ async function generateStartupContinuationMessage(summary, character) {
 }
 
 async function maybeOfferStartupContinuation({ allowInSmoke = false, skipGeneration = false, ttsEnabled = preferences.data.ttsEnabled } = {}) {
+  if (codexCompanion.state.enabled || companionTransitioning) return false;
   if ((process.argv.includes("--smoke-test") && !allowInSmoke) || preferences.data.continuationStartupSpeechEnabled === false || !preferences.data.onboardingComplete) return false;
   const character = activeCharacter();
   const scope = currentContinuationScope(character.id);
@@ -8908,6 +8964,7 @@ async function remoteCharacterPet(payload = {}) {
 }
 
 async function startCodexRealtimeVoice(payload, target = "control") {
+  assertConversationRole();
   if (preferences.data.backend !== "codex") throw new Error("GPT-Live / Codex VoiceはCodex app-server接続時のみ利用できます。");
   const sdp = String(payload?.sdp || "");
   if (!sdp.startsWith("v=0") || sdp.length > 300_000) throw new Error("音声接続情報が正しくありません。");
@@ -10624,6 +10681,27 @@ function registerIpc() {
   ipcMain.handle("app:getState", (event) => {
     assertTrustedSender(event);
     return publicAppState();
+  });
+  ipcMain.handle("companion:list", async (event) => {
+    assertTrustedSender(event);
+    return codexCompanion.list();
+  });
+  ipcMain.handle("companion:chooseRoot", async (event) => {
+    assertTrustedSender(event);
+    if (codexCompanion.state.enabled || companionTransitioning) throw new Error("先にCompanionを停止してください。");
+    const result = await dialog.showOpenDialog(controlWindow, { title: "Codexのsessionsフォルダーを選択", properties: ["openDirectory"] });
+    return result.canceled ? null : codexCompanion.list(result.filePaths[0]);
+  });
+  ipcMain.handle("companion:start", async (event, key) => {
+    assertTrustedSender(event);
+    return startCodexCompanion(key);
+  });
+  ipcMain.handle("companion:stop", (event) => {
+    assertTrustedSender(event);
+    companionActivation++;
+    codexCompanion.stop();
+    broadcastAppState();
+    return codexCompanion.snapshot();
   });
   ipcMain.handle("remote:getStatus", (event) => {
     assertTrustedSender(event);
@@ -13052,6 +13130,7 @@ async function sendChatMessage(message, {
   capturedSubmitRoute = "",
 } = {}) {
   const text = String(message || "").trim().slice(0, 12_000);
+  assertConversationRole();
   if (!text && !localAttachments.length) throw new Error("メッセージを入力してください。");
   const requestText = text || mainText("添付したファイルを確認してください。", "Please review the attached files.");
   const requestedInteractionMode = forceWork ? "work" : forceChat ? "chat"
@@ -14073,6 +14152,7 @@ else {
 app.on("window-all-closed", () => {});
 app.on("activate", showControlWindow);
 app.on("before-quit", () => {
+  codexCompanion.stop(false);
   rlcd42NowPlaying.stop();
   clearTimeout(appUpdateCheckTimer);
   clearTimeout(mcpPrewarmTimer);

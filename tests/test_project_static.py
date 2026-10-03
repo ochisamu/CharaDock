@@ -1125,7 +1125,7 @@ class ProjectStaticTests(unittest.TestCase):
         self.assertIn("function itemLayerRenderedCenter(layer)", app)
         self.assertIn("function itemLayerDeformFollowSpec(layer)", app)
         self.assertIn("function drawDeformedItemLayer(targetCtx, layer, deformSpec)", app)
-        self.assertIn("function faceRigidFollowPoint(x, y)", app)
+        self.assertIn("function faceRigidFollowPoint(x, y, includePerformance = true)", app)
         self.assertIn("function frontHairRigidFollowPoint(x, y)", app)
         self.assertIn('followed = faceRigidFollowPoint(center.x, center.y)', app)
         self.assertIn('followed = frontHairRigidFollowPoint(center.x, center.y)', app)
