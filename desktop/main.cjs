@@ -1627,6 +1627,8 @@ function buildAvatarSnapshot(characterId, motionOverride = null) {
     avatarImages[key] = fileToDataUrl(path.join(directory, filename));
   }
   for (const [key, filename] of Object.entries(OPTIONAL_AVATAR_IMAGE_FILES)) {
+    // v9 authored motion replaces the legacy Kohaku hand-pose atlas only.
+    if (key.startsWith("performance") && character.id === "amber-avatar") continue;
     if (key.startsWith("performance") && !nikePerformanceEnabled(character.id)) continue;
     const imagePath = path.join(directory, filename);
     if (fs.existsSync(imagePath)) avatarImages[key] = fileToDataUrl(imagePath);
@@ -1642,6 +1644,7 @@ function buildAvatarSnapshot(characterId, motionOverride = null) {
     version: 1,
     createdAt: new Date().toISOString(),
     characterId: character.id,
+    kohakuMotionEnabled: character.id === "amber-avatar" && nikePerformanceEnabled(character.id),
     settings,
     avatarImages,
   };

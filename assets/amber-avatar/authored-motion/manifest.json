@@ -1,0 +1,304 @@
+{
+  "schema": "charadock-drawn-pose-v1",
+  "name": "Kohaku v9 authored conversation motion",
+  "width": 1254,
+  "height": 1254,
+  "productionReady": false,
+  "poses": {
+    "neutral": {
+      "hair": "neutral/front-hair.png",
+      "variants": {
+        "open-closed": "neutral/eyes-open-mouth-closed.png",
+        "open-half": "neutral/eyes-open-mouth-half.png",
+        "open-open": "neutral/eyes-open-mouth-open.png",
+        "closed-closed": "neutral/eyes-closed-mouth-closed.png",
+        "closed-half": "neutral/eyes-closed-mouth-half.png",
+        "closed-open": "neutral/eyes-closed-mouth-open.png"
+      },
+      "coverage": "six registered canonical face variants"
+    },
+    "curious_tilt": {
+      "hair": "curious_tilt/front-hair.png",
+      "variants": {
+        "open-closed": "curious_tilt/eyes-open-mouth-closed.png"
+      },
+      "coverage": "Authored base/hair endpoint with registered local eye/mouth overlays",
+      "ornamentLock": {
+        "center": [
+          931,
+          266
+        ],
+        "radius": [
+          155,
+          156
+        ]
+      }
+    }
+  },
+  "transitions": [
+    {
+      "id": "neutral_curious_tilt_pilot",
+      "from": "neutral",
+      "to": "curious_tilt",
+      "width": 512,
+      "height": 512,
+      "durationMs": 1250,
+      "coverage": "two-key technical pilot; open-eyes closed-mouth only",
+      "interruptPolicy": "Retain current authored frame; registered local eye/mouth overlays",
+      "frames": [
+        {
+          "base": "transition/base/0000.png",
+          "hair": "transition/hair/0000.png"
+        },
+        {
+          "base": "transition/base/0001.png",
+          "hair": "transition/hair/0001.png"
+        },
+        {
+          "base": "transition/base/0002.png",
+          "hair": "transition/hair/0002.png"
+        },
+        {
+          "base": "transition/base/0003.png",
+          "hair": "transition/hair/0003.png"
+        },
+        {
+          "base": "transition/base/0004.png",
+          "hair": "transition/hair/0004.png"
+        },
+        {
+          "base": "transition/base/0005.png",
+          "hair": "transition/hair/0005.png"
+        },
+        {
+          "base": "transition/base/0006.png",
+          "hair": "transition/hair/0006.png"
+        },
+        {
+          "base": "transition/base/0007.png",
+          "hair": "transition/hair/0007.png"
+        },
+        {
+          "base": "transition/base/0008.png",
+          "hair": "transition/hair/0008.png"
+        },
+        {
+          "base": "transition/base/0009.png",
+          "hair": "transition/hair/0009.png"
+        },
+        {
+          "base": "transition/base/0010.png",
+          "hair": "transition/hair/0010.png"
+        },
+        {
+          "base": "transition/base/0011.png",
+          "hair": "transition/hair/0011.png"
+        },
+        {
+          "base": "transition/base/0012.png",
+          "hair": "transition/hair/0012.png"
+        },
+        {
+          "base": "transition/base/0013.png",
+          "hair": "transition/hair/0013.png"
+        },
+        {
+          "base": "transition/base/0014.png",
+          "hair": "transition/hair/0014.png"
+        },
+        {
+          "base": "transition/base/0015.png",
+          "hair": "transition/hair/0015.png"
+        },
+        {
+          "base": "transition/base/0016.png",
+          "hair": "transition/hair/0016.png"
+        },
+        {
+          "base": "transition/base/0017.png",
+          "hair": "transition/hair/0017.png"
+        },
+        {
+          "base": "transition/base/0018.png",
+          "hair": "transition/hair/0018.png"
+        },
+        {
+          "base": "transition/base/0019.png",
+          "hair": "transition/hair/0019.png"
+        },
+        {
+          "base": "transition/base/0020.png",
+          "hair": "transition/hair/0020.png"
+        },
+        {
+          "base": "transition/base/0021.png",
+          "hair": "transition/hair/0021.png"
+        },
+        {
+          "base": "transition/base/0022.png",
+          "hair": "transition/hair/0022.png"
+        },
+        {
+          "base": "transition/base/0023.png",
+          "hair": "transition/hair/0023.png"
+        },
+        {
+          "base": "transition/base/0024.png",
+          "hair": "transition/hair/0024.png"
+        },
+        {
+          "base": "transition/base/0025.png",
+          "hair": "transition/hair/0025.png"
+        },
+        {
+          "base": "transition/base/0026.png",
+          "hair": "transition/hair/0026.png"
+        },
+        {
+          "base": "transition/base/0027.png",
+          "hair": "transition/hair/0027.png"
+        },
+        {
+          "base": "transition/base/0028.png",
+          "hair": "transition/hair/0028.png"
+        },
+        {
+          "base": "transition/base/0029.png",
+          "hair": "transition/hair/0029.png"
+        },
+        {
+          "base": "transition/base/0030.png",
+          "hair": "transition/hair/0030.png"
+        },
+        {
+          "base": "transition/base/0031.png",
+          "hair": "transition/hair/0031.png"
+        },
+        {
+          "base": "transition/base/0032.png",
+          "hair": "transition/hair/0032.png"
+        },
+        {
+          "base": "transition/base/0033.png",
+          "hair": "transition/hair/0033.png"
+        },
+        {
+          "base": "transition/base/0034.png",
+          "hair": "transition/hair/0034.png"
+        },
+        {
+          "base": "transition/base/0035.png",
+          "hair": "transition/hair/0035.png"
+        },
+        {
+          "base": "transition/base/0036.png",
+          "hair": "transition/hair/0036.png"
+        },
+        {
+          "base": "transition/base/0037.png",
+          "hair": "transition/hair/0037.png"
+        },
+        {
+          "base": "transition/base/0038.png",
+          "hair": "transition/hair/0038.png"
+        },
+        {
+          "base": "transition/base/0039.png",
+          "hair": "transition/hair/0039.png"
+        },
+        {
+          "base": "transition/base/0040.png",
+          "hair": "transition/hair/0040.png"
+        },
+        {
+          "base": "transition/base/0041.png",
+          "hair": "transition/hair/0041.png"
+        },
+        {
+          "base": "transition/base/0042.png",
+          "hair": "transition/hair/0042.png"
+        },
+        {
+          "base": "transition/base/0043.png",
+          "hair": "transition/hair/0043.png"
+        },
+        {
+          "base": "transition/base/0044.png",
+          "hair": "transition/hair/0044.png"
+        },
+        {
+          "base": "transition/base/0045.png",
+          "hair": "transition/hair/0045.png"
+        },
+        {
+          "base": "transition/base/0046.png",
+          "hair": "transition/hair/0046.png"
+        },
+        {
+          "base": "transition/base/0047.png",
+          "hair": "transition/hair/0047.png"
+        }
+      ]
+    }
+  ],
+  "limitations": [
+    "This is a transparent two-endpoint pilot, not the complete four-key v8 tilt path.",
+    "Tilt/transition have no authored speech or blink variants; these inputs interrupt to neutral and may visibly change pose.",
+    "All other v8/v9 variations remain flattened preview assets, excluded from live renderer.",
+    "Real Electron/WebGL visual/performance QA not run in this environment."
+  ],
+  "performance": {
+    "decodedBudgetMiB": 160,
+    "decodedAtlasMiB": 96,
+    "gpuHairTextureCacheLimit": 8,
+    "mesh": [
+      28,
+      24
+    ],
+    "cpuFallbackMesh": [
+      12,
+      14
+    ],
+    "noFrameNetworkCalls": true
+  },
+  "stateBindings": {},
+  "variationCatalog": "variations.json",
+  "decodeSize": 640,
+  "cels": {
+    "mask": "cels/face-region-mask.png",
+    "sequences": {
+      "attentive_listening": {
+        "durationMs": 3500,
+        "frames": [
+          "cels/09_attentive_listening/01_onset.png",
+          "cels/09_attentive_listening/02_peak.png",
+          "cels/09_attentive_listening/03_settle.png"
+        ]
+      },
+      "delighted_agreement": {
+        "durationMs": 3500,
+        "frames": [
+          "cels/10_delighted_agreement/01_onset.png",
+          "cels/10_delighted_agreement/02_peak.png",
+          "cels/10_delighted_agreement/03_settle.png"
+        ]
+      },
+      "doubtful_side_eye": {
+        "durationMs": 3500,
+        "frames": [
+          "cels/11_doubtful_side_eye/01_onset.png",
+          "cels/11_doubtful_side_eye/02_peak.png",
+          "cels/11_doubtful_side_eye/03_settle.png"
+        ]
+      },
+      "sleepy_yawn": {
+        "durationMs": 4000,
+        "frames": [
+          "cels/12_sleepy_yawn/01_onset.png",
+          "cels/12_sleepy_yawn/02_peak.png",
+          "cels/12_sleepy_yawn/03_settle.png"
+        ]
+      }
+    }
+  }
+}

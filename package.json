@@ -45,6 +45,7 @@
     "files": [
       "app.js",
       "motion-runtime.js",
+      "drawn-pose-runtime.js",
       "index.html",
       "styles.css",
       "app-icon.ico",
@@ -79,6 +80,7 @@
       "files": [
         "app.js",
         "motion-runtime.js",
+        "drawn-pose-runtime.js",
         "index.html",
         "styles.css",
         "app-icon.ico",
@@ -125,6 +127,7 @@
       "files": [
         "app.js",
         "motion-runtime.js",
+        "drawn-pose-runtime.js",
         "index.html",
         "styles.css",
         "app-icon.ico",

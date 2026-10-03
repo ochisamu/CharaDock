@@ -30,6 +30,8 @@
     chin: 152,
   };
   const URL_PARAMS = new URLSearchParams(window.location.search);
+  const KOHAKU_MOTION_PREVIEW = URL_PARAMS.get("kohakuMotion") === "1";
+  const KOHAKU_MOTION_MANIFEST_URL = "./assets/amber-avatar/authored-motion/manifest.json";
   const FACE_TRACKING_DELEGATE_QUERY = String(URL_PARAMS.get("faceDelegate") || URL_PARAMS.get("face-delegate") || "").trim().toUpperCase();
   const FACE_TRACKING_PREFERRED_DELEGATE =
     FACE_TRACKING_DELEGATE_QUERY === "GPU" ? "GPU" : FACE_TRACKING_CONFIG.defaultDelegate;
@@ -908,6 +910,12 @@
   const nikePerformance = createPerformanceController();
   let nikePerformanceOutput = nikePerformance.update(0);
   let obsPerformanceCharacter = "";
+  let kohakuMotionEnabled = false;
+  let kohakuMotionPlayer = null;
+  let kohakuMotionLoad = null;
+  let kohakuMotionOutput = null;
+  let kohakuMotionError = "";
+  let kohakuMotionPendingInput = null;
   const performanceReducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
   let reactionMotionOutput = reactionMotion.update(0);
   let voiceLevel = 0;
@@ -3804,6 +3812,7 @@
     if (typeof reference !== "string" || !reference.endsWith("eyes-open-mouth-closed.png")) return;
     const directory = reference.slice(0, -"eyes-open-mouth-closed.png".length);
     await Promise.all(Object.entries(OPTIONAL_AVATAR_EXPRESSION_ASSETS).map(async ([key, filename]) => {
+      if (directory === "assets/amber-avatar/" && key.startsWith("performance")) return;
       if (loaded[key]) return;
       try {
         const image = await loadImage(directory + filename.replace(/^avatar\//, ""));
@@ -6982,8 +6991,15 @@
         try {
           obsLastEventId = Math.max(obsLastEventId, Math.round(Number(event.lastEventId) || 0));
           const data = sanitizeImportedJsonValue(JSON.parse(event.data));
+          if (kohakuMotionEnabled && ["nikePerformance", "emotion", "reaction"].some(key => Object.hasOwn(data, key))) {
+            kohakuMotionPendingInput = { ...data, receivedAt: performance.now() };
+            if (kohakuMotionPlayer) {
+              kohakuMotionPlayer.trigger(window.PuruPuruDrawnPoseRuntime.stateForInput(data), performance.now(), data.durationMs);
+              kohakuMotionPendingInput = null;
+            }
+          }
           if (Object.hasOwn(data, "nikePerformance")) {
-            const allowed = ["nike-avatar", "amber-avatar"].includes(obsPerformanceCharacter)
+            const allowed = obsPerformanceCharacter === "nike-avatar"
               && Boolean(images.performanceExplainEyesOpenMouthClosed);
             nikePerformance.trigger(allowed ? data.nikePerformance : "none", performance.now());
           }
@@ -7173,6 +7189,7 @@
       nikePerformanceOutput = nikePerformance.update(performance.now());
     }
     obsPerformanceCharacter = String(snapshot?.characterId || "");
+    setKohakuMotionEnabled(obsPerformanceCharacter === "amber-avatar" && snapshot?.kohakuMotionEnabled === true);
     nikePerformance.trigger("none", performance.now());
     if (!snapshot || snapshot.type !== "purupuru-obs-snapshot") return false;
     if (snapshot.avatarImages && typeof snapshot.avatarImages === "object") {
@@ -12750,10 +12767,71 @@
     return true;
   }
 
+  function setKohakuMotionEnabled(enabled) {
+    const next = Boolean(enabled);
+    if (next === kohakuMotionEnabled && (kohakuMotionPlayer || kohakuMotionLoad || kohakuMotionError)) return;
+    kohakuMotionEnabled = next;
+    kohakuMotionLoad?.abort(); kohakuMotionLoad = null;
+    kohakuMotionPlayer?.dispose(); kohakuMotionPlayer = null;
+    kohakuMotionOutput = null; kohakuMotionPendingInput = null; kohakuMotionError = "";
+    if (!next) return;
+    const request = new AbortController(); kohakuMotionLoad = request;
+    window.PuruPuruDrawnPoseRuntime.createPlayer({ manifestUrl: KOHAKU_MOTION_MANIFEST_URL, signal: request.signal })
+      .then(player => {
+        if (request.signal.aborted || kohakuMotionLoad !== request || !kohakuMotionEnabled) { player.dispose(); return; }
+        kohakuMotionPlayer = player; kohakuMotionLoad = null;
+        if (kohakuMotionPendingInput) {
+          const remaining = (Number(kohakuMotionPendingInput.durationMs) || 4500) - (performance.now() - kohakuMotionPendingInput.receivedAt);
+          if (remaining > 0) player.trigger(window.PuruPuruDrawnPoseRuntime.stateForInput(kohakuMotionPendingInput), performance.now(), remaining);
+          kohakuMotionPendingInput = null;
+        }
+      })
+      .catch(error => {
+        if (request.signal.aborted || kohakuMotionLoad !== request) return;
+        kohakuMotionLoad = null; kohakuMotionError = String(error.message || error);
+        console.warn("Kohaku authored motion unavailable; retaining standard renderer", error);
+      });
+  }
+
+  function drawKohakuAuthoredMotion() {
+    if (!kohakuMotionEnabled || !kohakuMotionPlayer || !imagesReady || CROP.w !== 1254 || CROP.h !== 1254) return false;
+    if (OBS_MODE && obsPerformanceCharacter !== "amber-avatar") return false;
+    if (!OBS_MODE && activeCharacterId !== "amber-avatar") return false;
+    const frozen = shouldFreezeCharacterMotion();
+    try {
+      kohakuMotionOutput = kohakuMotionPlayer.update(performance.now(), {
+        mouthState: frozen ? 0 : mouthState, blinkClosed: !frozen && blinkClosed,
+        audioLevel: frozen ? 0 : voiceLevel, interacting: performance.now() < obsExternalInput.expressionUntil,
+        reducedMotion: performanceReducedMotion.matches || frozen,
+      });
+      clearCharacterCanvas();
+      if (!kohakuMotionPlayer.render(charCtx, { width: CROP.w, height: CROP.h })) return false;
+    } catch (error) {
+      kohakuMotionError = String(error.message || error); kohakuMotionPlayer.dispose(); kohakuMotionPlayer = null;
+      console.warn("Kohaku authored renderer failed; retaining standard renderer", error); return false;
+    }
+    // Authored frames own the pose. Do not add the legacy yaw/bob/hand warp.
+    const fit = Math.min(stage.w / (CROP.w + 50), stage.h / (CROP.h * .76));
+    const scale = fit * state.avatarSize / 100;
+    const centerX = stage.w * .5 + (DESKTOP_MASCOT_MODE ? 0 : state.avatarX), centerY = stage.h * .5 + state.avatarY;
+    lastCharacterTransform = { centerX, centerY, anchorX: centerX, anchorY: centerY,
+      pivotX: CROP.w / 2, pivotY: CROP.h / 2, scaleX: scale, scaleY: scale, rotation: 0,
+      drawW: CROP.w * scale, drawH: CROP.h * scale, pyokoVoice: 0, frozenSetup: frozen };
+    syncDesktopMascotTouchBounds(lastCharacterTransform);
+    if (!OBS_TRANSPARENT) drawShadow(centerX, centerY + CROP.h * scale * .43, CROP.w * scale * .34, 0);
+    drawCharacterAnchoredItemLayers("characterBack"); drawCharacterAnchoredItemLayers("faceBack");
+    drawCharacterCanvasToStage();
+    drawCharacterAnchoredItemLayers("faceFront"); drawCharacterAnchoredItemLayers("frontHairFront");
+    drawItemLayers(ctx, "stageFront");
+    if (!OBS_MODE) drawItemSelectionOverlay();
+    return true;
+  }
+
   function render() {
     resizeCanvas();
     drawBackground();
     drawItemLayers(ctx, "stageBack");
+    if (drawKohakuAuthoredMotion()) return;
     if (!imagesReady) {
       drawLoading();
       return;
@@ -13335,8 +13413,8 @@
       animationSeconds += delta;
       reactionMotionOutput = reactionMotion.update(timestamp);
       nikePerformanceOutput = nikePerformance.update(timestamp, performanceReducedMotion.matches || setupActive, {
-        enabled: ["nike-avatar", "amber-avatar"].includes(obsPerformanceCharacter) && Boolean(images.performanceExplainEyesOpenMouthClosed),
-        smoothIdle: obsPerformanceCharacter === "amber-avatar",
+        enabled: obsPerformanceCharacter === "nike-avatar" && Boolean(images.performanceExplainEyesOpenMouthClosed),
+        smoothIdle: false,
         speakingLevel: voiceLevel,
       });
 
@@ -14618,10 +14696,18 @@
     meshRenderer = null;
   }
   scheduleBlink();
+  if (KOHAKU_MOTION_PREVIEW) {
+    Object.defineProperty(window, "PuruPuruKohakuMotionPreview", { value: Object.freeze({
+      getStatus: () => ({ ready: Boolean(kohakuMotionPlayer), enabled: kohakuMotionEnabled, error: kohakuMotionError, output: kohakuMotionOutput }),
+      trigger: name => kohakuMotionPlayer?.trigger(name, performance.now()) || false,
+      reset: () => kohakuMotionPlayer?.reset(),
+    }) });
+  }
   loadAssets()
     .then(async () => {
       await new Promise((resolve) => requestAnimationFrame(resolve));
       if (!OBS_MODE) await initializeCharacterLibraryAfterAssetsReady();
+      if (KOHAKU_MOTION_PREVIEW && !OBS_MODE && activeCharacterId === "amber-avatar") setKohakuMotionEnabled(true);
       return Promise.all([loadObsSnapshotIfAvailable(), loadObsConfigIfAvailable()]);
     })
     .catch((error) => {
