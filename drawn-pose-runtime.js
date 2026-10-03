@@ -64,6 +64,104 @@
     const cx=width*.54,cy=height*.69,dx=x-cx,dy=y-cy;
     return {x:cx+dx*Math.cos(a)-dy*Math.sin(a),y:cy+dx*Math.sin(a)+dy*Math.cos(a)};
   }
+  function createFaceSwitcher(initial) {
+    let file=initial,pending=initial,started=null,closedAt=null,committedAt=null;
+    return {reset(){file=pending=initial;started=closedAt=committedAt=null;},
+      update(now,wanted,blink=0,reduced=false) {
+        pending=wanted;blink=clamp(blink,0,1);let changed=false,phase='idle';
+        if(reduced){changed=file!==pending;file=pending;started=closedAt=committedAt=null;}
+        else {
+          if(started===null&&file!==pending){
+            if(blink>=.995){file=pending;changed=true;}
+            else started=now;
+          }
+          if(started!==null){
+            if(closedAt===null){
+              const age=Math.max(0,now-started);phase='closing';
+              blink=Math.max(blink,smooth(age/150));
+              if(age>=150){closedAt=now;blink=1;phase='closed';}
+            } else if(committedAt===null){
+              blink=1;phase='closed';
+              // Present a fully closed frame before swapping. Do not combine
+              // the last eyelid movement, eyebrow change and face colour jump
+              // on one frame. New requests during reopening stay queued.
+              if(now-closedAt>=70){changed=file!==pending;file=pending;committedAt=now;}
+            } else {
+              const age=Math.max(0,now-committedAt);phase=age<40?'closed':'opening';
+              blink=Math.max(blink,1-smooth((age-40)/140));
+              if(age>=180){started=closedAt=committedAt=null;phase='idle';}
+            }
+          }
+        }
+        return{file,pending,blink,changed,phase};
+      }};
+  }
+  function eyeMask(data,width,height,center,allowed) {
+    // Segment connected eye ink/white/iris, NOT the rectangular skin crop.
+    // Border-connected hair/ears must never shrink with the eyelid.
+    const candidate=new Uint8Array(width*height),seen=new Uint8Array(candidate.length),queue=new Int32Array(candidate.length);
+    for(let y=0;y<height;y++)for(let x=0;x<width;x++){
+      const i=(y*width+x)*4,r=data[i],g=data[i+1],b=data[i+2];
+      candidate[y*width+x]=Number((!allowed||allowed[y*width+x])&&data[i+3]>220&&(
+        (r<115&&g<95&&b<95)||(r>140&&g>r*.90&&b>r*.80)||
+        (r<238&&g>r*.28&&g<r*.73&&b<r*.43)||
+        (r<250&&g<r*.70&&b<r*.65)));
+    }
+    let best=null;
+    for(let p=0;p<candidate.length;p++)if(candidate[p]&&!seen[p]){
+      let head=0,tail=1,x0=width,y0=height,x1=0,y1=0;queue[0]=p;seen[p]=1;
+      while(head<tail){const q=queue[head++],x=q%width,y=Math.floor(q/width);x0=Math.min(x0,x);y0=Math.min(y0,y);x1=Math.max(x1,x);y1=Math.max(y1,y);
+        for(let dy=-1;dy<=1;dy++)for(let dx=-1;dx<=1;dx++){
+          const nx=x+dx,ny=y+dy;if(nx<0||ny<0||nx>=width||ny>=height)continue;
+          const k=ny*width+nx;if(candidate[k]&&!seen[k]){seen[k]=1;queue[tail++]=k;}
+        }
+      }
+      if(tail<3||(!allowed&&(x0===0||y0===0||x1===width-1||y1===height-1)))continue;
+      const distance=Math.hypot(((x0+x1)/2-center.x)/width,((y0+y1)/2-center.y)/height);
+      const score=tail/(1+distance*10);
+      if(!best||score>best.score)best={score,points:Array.from(queue.subarray(0,tail)),x0,y0,x1,y1};
+    }
+    const mask=new Uint8Array(candidate.length);
+    if(best){
+      for(const p of best.points)mask[p]=1;
+      // Restore tiny gaps in antialiased lashes and enclose the eye's fill.
+      for(let y=best.y0;y<=best.y1;y++){
+        let left=width,right=-1;for(let x=best.x0;x<=best.x1;x++)if(mask[y*width+x]){left=Math.min(left,x);right=x;}
+        for(let x=left;x<=right;x++)mask[y*width+x]=1;
+      }
+    }
+    return mask;
+  }
+  function blinkPixels(source,closed,amount,result=new Uint8ClampedArray(source.pixels.length)) {
+    // Warp eye ink toward the artist's curved closed lid, not a flat slit.
+    // Bilinear premultiplied sampling avoids strip seams and transparent RGB
+    // fringes. Cheek/skin pixels do not exist in this raster at all.
+    const t=clamp(amount,0,1),lerp=(a,b)=>a+(b-a)*t;
+    const left=lerp(source.x0,closed.x0),right=lerp(source.x1,closed.x1);
+    result.fill(0);
+    const profile=(s,x)=>{
+      const a=Math.max(0,Math.min(s.width-1,Math.floor(x))),b=Math.min(s.width-1,a+1),f=x-a;
+      return [s.columns[a][0]*(1-f)+s.columns[b][0]*f,s.columns[a][1]*(1-f)+s.columns[b][1]*f];
+    };
+    for(let x=Math.max(0,Math.floor(left)-1);x<=Math.min(source.width-1,Math.ceil(right)+1);x++){
+      const u=(x-left)/Math.max(1,right-left),sx=source.x0+u*(source.x1-source.x0),cx=closed.x0+u*(closed.x1-closed.x0);
+      if(sx<0||sx>=source.width-1)continue;
+      const [s0,s1]=profile(source,sx),[c0,c1]=profile(closed,cx),top=lerp(s0,c0),bottom=lerp(s1,c1);
+      const stretch=Math.max(1,bottom-top)/Math.max(1,s1-s0);
+      for(let y=Math.max(0,Math.floor(top)-2);y<=Math.min(source.height-1,Math.ceil(bottom)+2);y++){
+        const sy=s0+(y-top)/stretch;if(sy<0||sy>=source.height-1)continue;
+        const x0=Math.floor(sx),y0=Math.floor(sy),fx=sx-x0,fy=sy-y0;
+        let alpha=0;const rgb=[0,0,0];
+        for(let dy=0;dy<=1;dy++)for(let dx=0;dx<=1;dx++){
+          const i=((y0+dy)*source.width+x0+dx)*4,w=(dx?fx:1-fx)*(dy?fy:1-fy),a=source.pixels[i+3]*w;
+          alpha+=a;for(let k=0;k<3;k++)rgb[k]+=source.pixels[i+k]*a;
+        }
+        const i=(y*source.width+x)*4;result[i+3]=alpha;
+        if(alpha>0)for(let k=0;k<3;k++)result[i+k]=rgb[k]/alpha;
+      }
+    }
+    return result;
+  }
   const VARIANTS = ['open-closed', 'open-half', 'open-open', 'closed-closed', 'closed-half', 'closed-open'];
   const STATES = ['neutral', 'curious_tilt', 'attentive_listening', 'delighted_agreement', 'doubtful_side_eye', 'sleepy_yawn'];
   function stateForInput(input = {}) {
@@ -360,6 +458,18 @@
         let min=255;for(let d=-radius;d<=radius;d++)min=Math.min(min,y+d>=0&&y+d<size?horizontal[(y+d)*size+x]:0);
         mask.data[(y*size+x)*4+3]=min;
       }
+      // The supplied mask stops between some high and low eyebrow drawings.
+      // Own BOTH registered brow regions, otherwise an old brow survives
+      // outside the face plate and becomes a second eyebrow after a swap.
+      faceCtx.drawImage(loaded.get(neutral.variants['open-closed']),0,0,size,size);
+      const neutralPixels=faceCtx.getImageData(0,0,size,size);faceCtx.clearRect(0,0,size,size);
+      for(const [x,y,w,h]of [[442,490,190,83],[642,418,190,105]]){
+        const scale=size/manifest.width,left=Math.floor(x*scale),top=Math.floor(y*scale),right=Math.ceil((x+w)*scale),bottom=Math.ceil((y+h)*scale);
+        for(let yy=top;yy<bottom;yy++)for(let xx=left;xx<right;xx++){
+          const i=(yy*size+xx)*4,edge=Math.min(xx-left,yy-top,right-1-xx,bottom-1-yy);
+          mask.data[i+3]=Math.max(mask.data[i+3],neutralPixels.data[i+3]*smooth(edge/Math.max(1,8*scale)));
+        }
+      }
       maskCtx.putImageData(mask, 0, 0);
       try { hairRenderer = canvasOnly ? createCanvasHairRenderer(size, size) : createHairRenderer(size, size); }
       catch { hairRenderer = createCanvasHairRenderer(size, size); }
@@ -471,69 +581,109 @@
       const mouthSprites=['open-closed','open-half','open-open'].map(key=>mouthSprite(manifest.poses.neutral.variants[key]));
       for(const seq of Object.values(manifest.cels.sequences))for(const file of seq.frames)mouthSprite(file);
       const scale=size/manifest.width,blankCanvas=makeCanvas(),blankCtx=blankCanvas.getContext('2d');
-      const eyeCache=new Map(),eyeSkinCache=[],releaseLips=releaseMouth;
-      releaseMouth=()=>{releaseLips();for(const p of eyeCache.values())p.image.width=p.image.height=p.skin.width=p.skin.height=1;eyeCache.clear();eyeSkinCache.length=0;};
+      const eyeCache=new Map(),eyeRegions=[],blinkCanvases=[],releaseLips=releaseMouth;
+      releaseMouth=()=>{releaseLips();for(const p of eyeCache.values())p.image.width=p.image.height=p.skin.width=p.skin.height=1;eyeCache.clear();eyeRegions.length=0;for(const c of blinkCanvases)c.image.width=c.image.height=1;blinkCanvases.length=0;};
       function eyeSprite(file,index) {
         const key=file+':'+index;if(eyeCache.has(key))return eyeCache.get(key);
-        // Dark-pixel bounds omit the white sclera and amber lower iris.
-        // Use the complete registered eye region, not only the dark component.
         const [x,y,w,h]=index===0?[445,558,174,140]:[680,498,178,151];
-        const b={x:x+w/2,y:y+h/2,w,h},pad=8,left=Math.floor((b.x-b.w/2-pad)*scale),top=Math.floor((b.y-b.h/2-pad)*scale);
-        const W=Math.ceil((b.w+pad*2)*scale),H=Math.ceil((b.h+pad*2)*scale);
+        const pad=8,left=Math.floor((x-pad)*scale),top=Math.floor((y-pad)*scale);
+        const W=Math.ceil((w+pad*2)*scale),H=Math.ceil((h+pad*2)*scale);
         featureCtx.clearRect(0,0,size,size);featureCtx.drawImage(loaded.get(file),0,0,size,size);
-        const data=featureCtx.getImageData(left,top,W,H),skinData=featureCtx.createImageData(W,H);
-        // An opaque underpaint owns the whole eye (including white), not only
-        // detected dark pixels. Scaling an iris over the old eye causes ghosts.
-        const skinColors=[];
-        for(let yy=0;yy<H;yy++)for(let xx=0;xx<W;xx++)if(xx<3||xx>W-4||yy<3||yy>H-4) {
-          const i=(yy*W+xx)*4,r=data.data[i],g=data.data[i+1],bl=data.data[i+2];
-          if(data.data[i+3]>240&&r>180&&g>r*.6&&g<r*.88&&bl>r*.43&&bl<r*.82)skinColors.push([r,g,bl]);
-        }
-        const color=[0,1,2].map(k=>skinColors.length?[...skinColors].map(c=>c[k]).sort((a,b)=>a-b)[Math.floor(skinColors.length/2)]:[255,190,146][k]);
-        if(!eyeSkinCache[index]){
-          // Borrow the artist's CLOSED-eye skin, including blush/soft shading.
-          // Remove only the thin lashes, not a large flat skin rectangle.
-          featureCtx.clearRect(0,0,size,size);featureCtx.drawImage(loaded.get(manifest.poses.neutral.variants['closed-closed']),0,0,size,size);
-          const original=featureCtx.getImageData(left,top,W,H).data,clean=new Uint8ClampedArray(original);
-          const valid=i=>original[i+3]>220&&original[i]>180&&original[i+1]>original[i]*.6&&original[i+2]>original[i]*.43;
+        const original=featureCtx.getImageData(left,top,W,H),data=featureCtx.createImageData(W,H),skinData=featureCtx.createImageData(W,H);
+        if(!eyeRegions[index]){
+          // Registered open/closed art differs at the eye but not at the ear
+          // or hair. Its difference is a spatial guard against a lash joined
+          // to dark side hair being mistaken for the entire eye component.
+          const refs=['open-closed','closed-closed'].map(key=>{
+            featureCtx.clearRect(0,0,size,size);featureCtx.drawImage(loaded.get(manifest.poses.neutral.variants[key]),0,0,size,size);
+            return featureCtx.getImageData(left,top,W,H).data;
+          });
+          const region=new Uint8Array(W*H),r=5;
           for(let yy=0;yy<H;yy++)for(let xx=0;xx<W;xx++){
-            let ink=false;
-            for(let dy=-2;dy<=2&&!ink;dy++)for(let dx=-2;dx<=2;dx++){
-              const x=xx+dx,y=yy+dy;if(x<0||x>=W||y<0||y>=H)continue;
-              const i=(y*W+x)*4;if(original[i+3]>220&&original[i]<180)ink=true;
-            }
-            if(!ink)continue;
-            let a=-1,b=-1;
-            for(let d=1;d<=25;d++){
-              if(a<0&&yy-d>=0&&valid(((yy-d)*W+xx)*4))a=((yy-d)*W+xx)*4;
-              if(b<0&&yy+d<H&&valid(((yy+d)*W+xx)*4))b=((yy+d)*W+xx)*4;
-              if(a>=0&&b>=0)break;
-            }
             const i=(yy*W+xx)*4;
-            for(let k=0;k<3;k++)clean[i+k]=a>=0&&b>=0?(original[a+k]+original[b+k])/2:a>=0?original[a+k]:b>=0?original[b+k]:color[k];
+            if(refs[0][i+3]<220||refs[1][i+3]<220||Math.max(...[0,1,2].map(k=>Math.abs(refs[0][i+k]-refs[1][i+k])))<15)continue;
+            for(let dy=-r;dy<=r;dy++)for(let dx=-r;dx<=r;dx++){
+              const nx=xx+dx,ny=yy+dy;if(nx>=0&&nx<W&&ny>=0&&ny<H)region[ny*W+nx]=1;
+            }
           }
-          eyeSkinCache[index]=clean;
+          eyeRegions[index]=region;
         }
-        const cleanSkin=eyeSkinCache[index];
-        for(let y=0;y<H;y++)for(let x=0;x<W;x++) {
-          const i=(y*W+x)*4,edge=Math.min(x,y,W-1-x,H-1-y);
-          const r=data.data[i],g=data.data[i+1],bl=data.data[i+2];
-          const ink=r<170||g>r*.90||(g<r*.65&&bl<r*.46);
-          // Feather the artist's blush/skin, but keep every lash, white and
-          // iris pixel fully owned. Feathering ink would leave the old eye.
-          const alpha=ink?1:smooth(edge/Math.max(1,pad*scale*2));
-          for(let k=0;k<3;k++)skinData.data[i+k]=cleanSkin[i+k];
-          skinData.data[i+3]=cleanSkin[i+3]*alpha;data.data[i+3]*=alpha;
-          if(file===manifest.poses.neutral.variants['closed-closed']) {
-            // Closed lashes are ink-only. Restoring their entire skin rectangle
-            // at the last blink frame causes a large colour/shape flash.
-            data.data[i+3]*=1-smooth((data.data[i]-110)/100);
+        const feature=featureBounds(file)[index],mask=eyeMask(original.data,W,H,{x:feature.x*scale-left,y:feature.y*scale-top},eyeRegions[index]);
+        let x0=W,y0=H,x1=-1,y1=-1,inkPixels=0,scleraPixels=0;
+        const distance=new Float32Array(mask.length);distance.fill(4);
+        for(let yy=0;yy<H;yy++)for(let xx=0;xx<W;xx++)if(mask[yy*W+xx]){
+          x0=Math.min(x0,xx);y0=Math.min(y0,yy);x1=Math.max(x1,xx);y1=Math.max(y1,yy);inkPixels++;
+          const i=(yy*W+xx)*4;if(original.data[i]>140&&original.data[i+1]>original.data[i]*.90&&original.data[i+2]>original.data[i]*.80)scleraPixels++;
+          for(let dy=-3;dy<=3;dy++)for(let dx=-3;dx<=3;dx++){
+            const nx=xx+dx,ny=yy+dy;if(nx>=0&&nx<W&&ny>=0&&ny<H){const p=ny*W+nx;distance[p]=Math.min(distance[p],Math.hypot(dx,dy));}
           }
         }
+        if(!inkPixels)throw new Error('Authored eye could not be isolated: '+key);
+        const valid=p=>distance[p]>=3&&original.data[p*4+3]>220&&original.data[p*4]>180&&original.data[p*4+1]>original.data[p*4]*.55;
+        for(let yy=0;yy<H;yy++)for(let xx=0;xx<W;xx++) {
+          const p=yy*W+xx,i=p*4,d=distance[p];
+          if(d>=3)continue;
+          let above=-1,below=-1;
+          for(let dy=1;dy<H;dy++){
+            if(above<0&&yy-dy>=0&&valid((yy-dy)*W+xx))above=(yy-dy)*W+xx;
+            if(below<0&&yy+dy<H&&valid((yy+dy)*W+xx))below=(yy+dy)*W+xx;
+            if(above>=0&&below>=0)break;
+          }
+          const t=above>=0&&below>=0?(p-above)/(below-above):0;
+          for(let k=0;k<3;k++){
+            data.data[i+k]=original.data[i+k];
+            skinData.data[i+k]=above>=0&&below>=0?original.data[above*4+k]*(1-t)+original.data[below*4+k]*t:
+              above>=0?original.data[above*4+k]:below>=0?original.data[below*4+k]:[255,190,146][k];
+          }
+          // Only a 1px antialias fringe travels with the eye. Blush, eyelid
+          // skin, ears and hair stay in their original, unscaled face plate.
+          data.data[i+3]=original.data[i+3]*clamp(2-d,0,1);
+          skinData.data[i+3]=original.data[i+3]*clamp(3-d,0,1);
+        }
+        // Harmonic inpainting diffuses neighbouring skin in TWO dimensions.
+        // Column-only interpolation pulled the crease down into vertical
+        // streaks. Keep all unmasked pixels, including cheek/blush, unchanged.
+        const closedFile=manifest.poses.neutral.variants['closed-closed'];
+        let clean=new Float32Array(original.data),next=new Float32Array(clean);
+        for(let p=0;p<mask.length;p++)if(distance[p]<3)for(let k=0;k<3;k++)clean[p*4+k]=skinData.data[p*4+k];
+        if(file===closedFile)for(let pass=0;pass<100;pass++){
+          next.set(clean);
+          for(let yy=1;yy<H-1;yy++)for(let xx=1;xx<W-1;xx++){
+            const p=yy*W+xx;if(distance[p]>=3)continue;
+            for(let k=0;k<3;k++)next[p*4+k]=(clean[(p-1)*4+k]+clean[(p+1)*4+k]+clean[(p-W)*4+k]+clean[(p+W)*4+k])/4;
+          }
+          [clean,next]=[next,clean];
+        }
+        if(file!==closedFile){
+          // The registered closed-eye painting already contains real skin in
+          // place of the large iris. Repair only its thin lashes, rather than
+          // diffusing ear/hair colour across a much larger open-eye cavity.
+          const closed=eyeSprite(closedFile,index),offset=[0,0,0];let count=0;
+          for(let p=0;p<mask.length;p++)if(distance[p]>=3&&distance[p]<4&&valid(p)&&closed.original[p*4]>180){
+            for(let k=0;k<3;k++)offset[k]+=original.data[p*4+k]-closed.original[p*4+k];count++;
+          }
+          for(let p=0;p<mask.length;p++)if(distance[p]<3)for(let k=0;k<3;k++)
+            clean[p*4+k]=clamp(closed.clean[p*4+k]+clamp(count?offset[k]/count:0,-18,18),0,255);
+        }
+        for(let p=0;p<mask.length;p++)if(distance[p]<3)for(let k=0;k<3;k++)skinData.data[p*4+k]=clean[p*4+k];
+        const b={x:(left+(x0+x1)/2)/scale,y:(top+(y0+y1)/2)/scale,w:(x1-x0+1)/scale,h:(y1-y0+1)/scale};
         const image=document.createElement('canvas'),skin=document.createElement('canvas');image.width=skin.width=W;image.height=skin.height=H;
         image.getContext('2d').putImageData(data,0,0);skin.getContext('2d').putImageData(skinData,0,0);
-        const p={image,skin,left,top,bounds:b};eyeCache.set(key,p);return p;
+        const columns=Array.from({length:W},(_,xx)=>{
+          let min=H,max=-1;for(let yy=0;yy<H;yy++)if(data.data[(yy*W+xx)*4+3]>5){min=Math.min(min,yy);max=yy;}
+          return max>=min?[min,max]:null;
+        });
+        for(let xx=0;xx<W;xx++)if(!columns[xx]){
+          for(let d=1;d<W;d++){const found=columns[xx-d]||columns[xx+d];if(found){columns[xx]=[...found];break;}}
+        }
+        const p={image,skin,left,top,bounds:b,inkPixels,scleraPixels,
+          clean:file===closedFile?clean:null,original:file===closedFile?original.data:null,
+          pixels:data.data,columns,width:W,height:H,x0,x1};eyeCache.set(key,p);return p;
       }
+      // Cache every expression before presentation, so its first blink cannot
+      // stall the render loop while preparing a new skin/eye extraction.
+      for(const file of [manifest.poses.neutral.variants['open-closed'],manifest.poses.neutral.variants['closed-closed'],
+        ...Object.values(manifest.cels.sequences).flatMap(s=>s.frames)])for(let i=0;i<2;i++)eyeSprite(file,i);
       function withoutFeatures(file) {
         const p=mouthSprite(file);blankCtx.clearRect(0,0,size,size);
         blankCtx.drawImage(loaded.get(file),0,0,size,size);blankCtx.drawImage(p.skin,p.left,p.top);
@@ -545,8 +695,8 @@
         const p=headPoint(x,y,size,size,-output.tilt*.18+output.life.head);
         return{x:p.x+(nx-.53)*output.life.chest*size*.003*chest,y:p.y-output.life.chest*size*.0017*chest};
       }
-      let eyeFile=manifest.poses.neutral.variants['open-closed'],eyePending=eyeFile,eyeSwapStarted=null;
-      return { manifest, trigger: controller.trigger, reset() {controller.reset();eyeFile=eyePending=manifest.poses.neutral.variants['open-closed'];eyeSwapStarted=null;},
+      const faceSwitcher=createFaceSwitcher(manifest.poses.neutral.variants['open-closed']);let presentation=null;
+      return { manifest, trigger: controller.trigger, reset() {controller.reset();faceSwitcher.reset();presentation=null;},
         update(now, input) { output = controller.update(now, input); return { ...output, hairRenderer: hairRenderer?.kind || 'rigid-fallback' }; },
         render(ctx, { width = manifest.width, height = manifest.height, hairWarpPoint } = {}) {
           if (disposed || !output) return false;
@@ -556,15 +706,8 @@
           hairCtx.drawImage(loaded.get(manifest.poses.neutral.hair),0,0,size,size);
           const sourceCels=output.cels.map(f=>({...f,file:f.index===-1?neutralFile:manifest.cels.sequences[f.name || output.pose].frames[f.index]}));
           const ranked=[...sourceCels].sort((a,b)=>b.weight-a.weight);
-          const wantedEyeFile=ranked[0]?.file || neutralFile;
-          if(wantedEyeFile!==eyePending){eyePending=wantedEyeFile;if(eyeSwapStarted===null)eyeSwapStarted=output.now;}
-          let blink=output.blinkAmount;
-          if(output.reducedMotion){eyeFile=eyePending;eyeSwapStarted=null;}
-          else if(eyeSwapStarted!==null){
-            const age=Math.max(0,output.now-eyeSwapStarted);
-            if(age<180)blink=Math.max(blink,smooth(age/180));
-            else {eyeFile=eyePending;blink=Math.max(blink,1-smooth((age-180)/150));if(age>=330)eyeSwapStarted=null;}
-          }
+          presentation=faceSwitcher.update(output.now,ranked[0]?.file || neutralFile,output.blinkAmount,output.reducedMotion);
+          const eyeFile=presentation.file,blink=presentation.blink;
           if(eyeFile!==neutralFile){
             // A single authored face plate also owns eyebrows and cheek marks.
             // Swapping it during the brief blink is preferable to dissolving
@@ -574,16 +717,19 @@
             faceCtx.globalCompositeOperation='destination-out';faceCtx.drawImage(maskCanvas,0,0);
             faceCtx.globalCompositeOperation='lighter';faceCtx.drawImage(celCanvas,0,0);faceCtx.globalCompositeOperation='source-over';
           }
-          // One eye drawing per side, never a dissolve of two different eyes.
-          // A blink compresses that single sprite above its opaque underpaint;
-          // the final closed-lash drawing replaces it, not overlays it.
+          // One eye drawing per side. Only its isolated ink follows the curved
+          // closed lid; skin is stationary and no second eye is crossfaded.
           for(let i=0;i<2;i++) {
-            const naturallyClosed=featureBounds(eyeFile)[i].h<featureBounds(neutralFile)[i].h*.60;
-            const closing=!naturallyClosed&&blink>=.9;
-            const eye=eyeSprite(closing?manifest.poses.neutral.variants['closed-closed']:eyeFile,i);
-            const aperture=closing||naturallyClosed?1:Math.max(.08,1-blink),b=eye.bounds;
-            const cy=b.y*scale,h=eye.image.height*aperture;
-            faceCtx.drawImage(eye.image,eye.left,cy-h/2,eye.image.width,h);
+            const source=eyeSprite(eyeFile,i),closed=eyeSprite(manifest.poses.neutral.variants['closed-closed'],i);
+            const naturallyClosed=source.scleraPixels<eyeSprite(neutralFile,i).scleraPixels*.07;
+            const closing=!naturallyClosed&&blink>=.98;
+            if(closing)faceCtx.drawImage(closed.image,closed.left,closed.top);
+            else if(naturallyClosed||blink<.001)faceCtx.drawImage(source.image,source.left,source.top);
+            else {
+              if(!blinkCanvases[i]){const image=document.createElement('canvas');image.width=source.width;image.height=source.height;const ctx=image.getContext('2d');blinkCanvases[i]={image,ctx,data:ctx.createImageData(source.width,source.height)};}
+              const raster=blinkCanvases[i];blinkPixels(source,closed,blink,raster.data.data);raster.ctx.putImageData(raster.data,0,0);
+              faceCtx.drawImage(raster.image,source.left,source.top);
+            }
           }
           {
             patchCtx.clearRect(0,0,size,size);patchCtx.globalCompositeOperation='source-over';
@@ -627,8 +773,10 @@
           ctx.drawImage(renderedHair || hairCanvas, 0, 0, width, height); ctx.restore(); return true;
         }, dispose, get status() { return output; },
         get mouthSources() { return [...spriteCache].map(([file,p])=>({file,inkPixels:p.inkPixels})); },
+        get eyeSources() { return [...eyeCache].map(([key,p])=>({key,inkPixels:p.inkPixels,scleraPixels:p.scleraPixels,bounds:p.bounds})); },
+        get facePresentation() { return presentation&&{...presentation}; },
         get renderDiagnostics() { return {poseMode:'shared-rigid-head',eyeLayers:2,mouthLayers:1,decodedImages:loaded.size}; } };
     } catch (error) { dispose(); throw error; }
   }
-  return { VARIANTS, STATES, stateForInput, validateManifest, celWeights, landmarkTransform, poseSamples, featureWarp, transformFeature, inverseAffine, mouthGeometry, headPoint, createController, createPlayer };
+  return { VARIANTS, STATES, stateForInput, validateManifest, celWeights, landmarkTransform, poseSamples, featureWarp, transformFeature, inverseAffine, mouthGeometry, headPoint, createFaceSwitcher, eyeMask, blinkPixels, createController, createPlayer };
 });

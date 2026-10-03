@@ -75,6 +75,59 @@ test('blink and mouth presentation ease through intermediate values, without rep
   const opening=c.update(634,{mouthState:0,blinkClosed:false});
   assert.ok(opening.blinkAmount>=0&&opening.blinkAmount<=1);assert.ok(Number.isFinite(opening.speechMix));
 });
+test('face commits at full closure once; new expressions cannot swap during reopening',()=>{
+  const s=runtime.createFaceSwitcher('neutral');s.update(0,'neutral');
+  assert.equal(s.update(10,'happy').file,'neutral');
+  const firstClosed=s.update(160,'happy');assert.equal(firstClosed.file,'neutral');assert.equal(firstClosed.blink,1);
+  assert.equal(s.update(200,'happy').file,'neutral','hold the closed drawing before replacement');
+  const closed=s.update(230,'happy');assert.equal(closed.file,'happy');assert.equal(closed.blink,1);assert.equal(closed.changed,true);
+  for(const time of [245,280,330,380,410]){
+    const opening=s.update(time,'doubt');assert.equal(opening.file,'happy');assert.equal(opening.changed,false);
+  }
+  s.update(411,'doubt');assert.equal(s.update(520,'listen').file,'happy');
+  assert.equal(s.update(561,'listen').file,'happy');
+  const next=s.update(631,'listen');assert.equal(next.file,'listen');assert.equal(next.blink,1);
+  s.reset();assert.equal(s.update(632,'neutral').file,'neutral');
+});
+test('rapid cue changes, natural blinks and long suspension never reveal a mid-open face swap',()=>{
+  for(const fps of [15,30,60,144]){
+    const s=runtime.createFaceSwitcher('neutral');
+    for(let f=0;f<fps*3;f++){
+      const r=s.update(f*1000/fps,['neutral','happy','doubt','listen'][Math.floor(f/3)%4],f%23>20?1:0);
+      if(r.changed)assert.equal(r.blink,1,'only commit while hidden by closed lids');
+    }
+  }
+  const s=runtime.createFaceSwitcher('neutral');s.update(0,'happy');
+  const resumed=s.update(600000,'doubt');assert.equal(resumed.file,'neutral');assert.equal(resumed.blink,1);
+  const committed=s.update(600070,'doubt');assert.equal(committed.file,'doubt');assert.equal(committed.blink,1);
+  assert.equal(s.update(600071,'listen').file,'doubt');
+  const staticFace=s.update(600072,'listen',0,true);assert.equal(staticFace.file,'listen');assert.equal(staticFace.phase,'idle');
+});
+test('eye segmentation keeps iris/white/lashes, not a skin rectangle or connected side hair',()=>{
+  const W=40,H=30,data=new Uint8ClampedArray(W*H*4),allowed=new Uint8Array(W*H);
+  const paint=(x,y,r,g,b)=>data.set([r,g,b,255],(y*W+x)*4);
+  for(let y=0;y<H;y++)for(let x=0;x<W;x++){paint(x,y,255,195,155);if(x>=9&&x<32&&y>=7&&y<24)allowed[y*W+x]=1;}
+  for(let y=9;y<22;y++)for(let x=10;x<30;x++)paint(x,y,250,248,245);
+  for(let y=10;y<21;y++)for(let x=18;x<24;x++)paint(x,y,215,125,50);
+  for(let x=0;x<29;x++)paint(x,9,30,20,15); // Side hair connects to a lash.
+  const mask=runtime.eyeMask(data,W,H,{x:20,y:15},allowed);
+  assert.equal(mask[15*W+15],1,'white sclera');assert.equal(mask[15*W+20],1,'amber iris');assert.equal(mask[9*W+20],1,'lash');
+  assert.equal(mask[9*W+3],0,'attached side hair stays still');assert.equal(mask[25*W+20],0,'cheek stays still');
+  assert.ok(mask.reduce((a,b)=>a+b,0)<W*H*.4,'never an opaque rectangular crop');
+});
+test('blink raster follows a curved closed lid without mixing two eyes or filling transparent skin',()=>{
+  const W=32,H=32,pixels=new Uint8ClampedArray(W*H*4),columns=[],closedColumns=[];
+  for(let x=0;x<W;x++){
+    const curve=12+Math.round(Math.pow((x-16)/8,2));columns.push([4,24]);closedColumns.push([curve,curve+3]);
+    for(let y=4;y<=24;y++)if(x>=4&&x<=27)pixels.set([80,55,30,255],(y*W+x)*4);
+  }
+  const source={width:W,height:H,pixels,columns,x0:4,x1:27},closed={...source,columns:closedColumns};
+  const result=runtime.blinkPixels(source,closed,.95);
+  const top=x=>{for(let y=0;y<H;y++)if(result[(y*W+x)*4+3]>100)return y;return H;};
+  assert.ok(top(7)>top(16),'keep the lash arch instead of crushing it to a straight slit');
+  assert.equal(result[(30*W+16)*4+3],0,'cheek area stays transparent');
+  for(let p=0;p<result.length;p+=4)if(result[p+3]>0)assert.deepEqual(Array.from(result.subarray(p,p+3)),[80,55,30],'premultiplied sampling keeps ink colour');
+});
 test('continuous audio mouth does not quantize to PNG states and returns promptly after silence',()=>{
   const c=runtime.createController(manifest);c.update(0);c.trigger('curious_tilt',0);
   for(let i=1;i<=60;i++)c.update(i*1000/60,{mouthState:1,mouthOpenness:.8,audioLevel:.2});
