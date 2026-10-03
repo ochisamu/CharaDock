@@ -12805,6 +12805,7 @@
         reducedMotion: performanceReducedMotion.matches || frozen,
         idleEnabled: state.idleMotionEnabled, breathStrength: state.breathStrength / 100,
         rollStrength: state.rollStrength / 100, voiceMotion: pyokoScale(),
+        hairStrength: state.hairWarp / 38, hairSpring: state.hairSpring / 142,
       });
       clearCharacterCanvas();
       if (!kohakuMotionPlayer.render(charCtx, { width: CROP.w, height: CROP.h })) return false;

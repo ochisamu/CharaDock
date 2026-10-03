@@ -123,6 +123,52 @@ test('hair root pinned, extremes bounded, reduced motion static, long resume fin
     c.update(100000, { reducedMotion: true }); assert.deepEqual(c.hairPoint(500, 1000), { x: 500, y: 1000 });
   }
 });
+test('soft hair has visible XY tip motion, depth bending, pinned ornament and working controls',()=>{
+  const c=runtime.createController(manifest),samples=[];
+  for(let i=0;i<600;i++){
+    const s=c.update(i*1000/60),p=c.hairPoint(380,950);samples.push(p);
+    assert.ok(s.hair.every(Number.isFinite)&&s.hairY.every(Number.isFinite));
+    assert.deepEqual(c.hairPoint(.73*1254,.235*1254),{x:.73*1254,y:.235*1254});
+    assert.ok(Math.abs(p.x-380)<=22&&Math.abs(p.y-950)<=9);
+  }
+  assert.ok(Math.max(...samples.map(p=>p.x))-Math.min(...samples.map(p=>p.x))>15);
+  assert.ok(Math.max(...samples.map(p=>p.y))-Math.min(...samples.map(p=>p.y))>3);
+  c.update(10001,{hairStrength:0});assert.deepEqual(c.hairPoint(380,950),{x:380,y:950});
+  c.update(10020,{freeze:true});assert.deepEqual(c.hairPoint(380,950),{x:380,y:950});
+  const off=runtime.createController(manifest);off.update(10000,{idleEnabled:false});assert.deepEqual(off.hairPoint(380,950),{x:380,y:950});
+});
+test('soft hair retains its position during reversal and follows head momentum in both directions',()=>{
+  const c=runtime.createController(manifest);c.update(0,{idleEnabled:false});c.trigger('curious_tilt',0,10000);
+  const samples=[];
+  for(let i=1;i<=300;i++){
+    const t=i*1000/60;
+    if(i===30){const before=c.update(t,{idleEnabled:false});c.trigger('neutral',t);assert.deepEqual(c.update(t,{idleEnabled:false}).hair,before.hair);}
+    samples.push(c.update(t,{idleEnabled:false}).hair[0]);
+  }
+  assert.ok(Math.min(...samples)<-1&&Math.max(...samples)>1,'move behind and softly return after the head reverses');
+});
+test('soft hair is stable at different frame rates and after long suspension',()=>{
+  const positions=[];
+  for(const fps of [30,60,144]){
+    const c=runtime.createController(manifest);
+    for(let i=0;i<=fps*6;i++)c.update(i*1000/fps);
+    positions.push(c.hairPoint(380,950));
+    c.update(600000);const p=c.hairPoint(380,950);assert.ok(Number.isFinite(p.x)&&Number.isFinite(p.y));
+    assert.ok(Math.abs(p.x-380)<=22&&Math.abs(p.y-950)<=9);
+  }
+  assert.ok(Math.max(...positions.map(p=>p.x))-Math.min(...positions.map(p=>p.x))<1);
+  assert.ok(Math.max(...positions.map(p=>p.y))-Math.min(...positions.map(p=>p.y))<1);
+});
+test('hair softness changes follow-through and even maximum strength does not fold the mesh',()=>{
+  const firm=runtime.createController(manifest),soft=runtime.createController(manifest);
+  for(let i=0;i<=360;i++){firm.update(i*1000/60,{hairSpring:0});soft.update(i*1000/60,{hairSpring:2,hairStrength:2});}
+  assert.ok(Math.abs(firm.hairPoint(380,950).x-soft.hairPoint(380,950).x)>1);
+  for(let y=0;y<1254;y+=40)for(let x=0;x<1254;x+=40){
+    const p=soft.hairPoint(x,y),px=soft.hairPoint(x+2,y),py=soft.hairPoint(x,y+2);
+    const determinant=((px.x-p.x)*(py.y-p.y)-(py.x-p.x)*(px.y-p.y))/4;
+    assert.ok(determinant>.3,'no flipped hair triangles at high strength');
+  }
+});
 test('registered local patch landmarks align at the endpoints, intermediate determinant stays positive', () => {
   for (let t = 0; t <= 1; t += .05) { const [a,b,c,d] = runtime.landmarkTransform(t); assert.ok(a*d-b*c > .5); }
   const [a,b,c,d,e,f] = runtime.landmarkTransform(1);

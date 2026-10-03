@@ -44,6 +44,8 @@ function difference(a, b, region) {
   assert.ok(states[160].tilt>.8,'expression must not snap the tilted head to neutral');
   assert.ok(states.some(s=>s.blinkAmount>0&&s.blinkAmount<1),'blink needs intermediate presentation');
   assert.ok(Math.max(...states.slice(0,90).map(s=>s.life.x))-Math.min(...states.slice(0,90).map(s=>s.life.x))>.01,'idle must not be a still frame');
+  assert.ok(Math.max(...states.map(s=>s.hair[0]))-Math.min(...states.map(s=>s.hair[0]))>15,'hair needs visible independent follow-through');
+  assert.ok(states.some(s=>Math.abs(s.hair[0]-s.hairMiddle[0])>1),'lengths and tips must not move as one rigid sheet');
   const report={scope:'deterministic Chromium frames; synthetic audio; no real Jev/TTS',passed:true,fps:30,frames:420,metrics,states,topWhole:top('whole'),topFace:top('face')};
   fs.writeFileSync(path.join(output,'metrics.json'),JSON.stringify(report,null,2));
   console.log(JSON.stringify({topWhole:report.topWhole.slice(0,5),topFace:report.topFace.slice(0,5)}));

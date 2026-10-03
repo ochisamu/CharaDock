@@ -13,6 +13,15 @@
     const offset = value - target, c = velocity + omega * offset, decay = Math.exp(-omega * dt);
     return [target + (offset + c * dt) * decay, (velocity - omega * c * dt) * decay];
   }
+  function softSpring(value, velocity, target, dt, omega, damping) {
+    // Exact damped solution: frame-rate independent, with a small, decaying
+    // return after head movement. No fixed-duration/reset animation.
+    if(damping>=.999)return spring(value,velocity,target,dt,omega);
+    const offset=value-target,alpha=damping*omega,wd=omega*Math.sqrt(1-damping*damping);
+    const s=Math.sin(wd*dt),c=Math.cos(wd*dt),decay=Math.exp(-alpha*dt);
+    return [target+decay*(offset*c+(velocity+alpha*offset)/wd*s),
+      decay*(velocity*c-(alpha*velocity+omega*omega*offset)/wd*s)];
+  }
   function poseSamples(tilt, count) {
     // Include the full-resolution endpoints in the same continuous sequence.
     const f = clamp(tilt, 0, 1) * (count + 1), a = Math.floor(f), mix = f - a;
@@ -99,7 +108,9 @@
     const lifeVelocity = Object.fromEntries(Object.keys(life).map(k => [k, 0]));
     let speechUntil = 0, lastActivity = 0, nextYawn = 90000;
     const hair = [0, 0, 0], velocities = [0, 0, 0];
-    function reset() { last = null; tilt = tiltTarget = tiltVelocity = 0; sequence = null; presentedCels = carriedCels = []; deadline = 0; releaseStarted = null; speechUntil = 0; mouthValue = blinkAmount = blinkVelocity = speechMix = speechMixVelocity = 0; hair.fill(0); velocities.fill(0); for (const k of Object.keys(life)) life[k] = lifeVelocity[k] = 0; lastActivity = now; nextYawn = now + 90000; }
+    const hairMiddle=[0,0,0],middleVelocities=[0,0,0],hairY=[0,0,0],yVelocities=[0,0,0];
+    let hairAmount=1,frozenHair=false;
+    function reset() { last = null; tilt = tiltTarget = tiltVelocity = 0; sequence = null; presentedCels = carriedCels = []; deadline = 0; releaseStarted = null; speechUntil = 0; mouthValue = blinkAmount = blinkVelocity = speechMix = speechMixVelocity = 0; for(const a of [hair,velocities,hairMiddle,middleVelocities,hairY,yVelocities])a.fill(0);hairAmount=1;frozenHair=false; for (const k of Object.keys(life)) life[k] = lifeVelocity[k] = 0; lastActivity = now; nextYawn = now + 90000; }
     function retarget(target) {
       if (target === tiltTarget) return;
       tiltTarget = target; // Keep current position AND velocity on interruption.
@@ -155,12 +166,6 @@
         celPhase = releaseStarted === null ? Math.min(.45, (sequence.startPhase || 0) + (now - sequence.started) / 1200) : .55 + (now - releaseStarted) / 1200;
         if (celPhase >= 1) { sequence = null; celPhase = 0; }
       }
-      for (let i = 0; i < 3; i++) {
-        if (reduced || input.freeze) { hair[i] = velocities[i] = 0; continue; }
-        const omega = 6 + i, target = Math.sin(now / 1000 * 1.45 - i * .7) * (4.5 + i * 1.2) - tiltVelocity * (2 + i) - lifeVelocity.head * 45;
-        const off = hair[i] - target, c = velocities[i] + omega * off, decay = Math.exp(-omega * dt);
-        hair[i] = target + (off + c * dt) * decay; velocities[i] = (velocities[i] - omega * c * dt) * decay;
-      }
       let cels = sequence ? celWeights(reduced ? .45 : celPhase).map(f => ({ ...f, name: sequence.name })) : [];
       if (carriedCels.length) {
         const mix = reduced ? 1 : smooth((now - fadeStarted) / 260);
@@ -190,18 +195,35 @@
         if(reduced || input.freeze) { life[k] = lifeVelocity[k] = 0; }
         else [life[k], lifeVelocity[k]] = spring(life[k], lifeVelocity[k], targets[k], dt, k === 'head' ? 8 : k === 'accent' ? 12 : 6);
       }
+      hairAmount=clamp(input.hairStrength ?? 1,0,2);frozenHair=Boolean(input.freeze);
+      const softness=clamp(input.hairSpring ?? 1,0,2);
+      for(let i=0;i<3;i++) {
+        if(reduced||frozenHair||hairAmount===0){for(const a of [hair,velocities,hairMiddle,middleVelocities,hairY,yVelocities])a[i]=0;continue;}
+        const wind=idle*(Math.sin(seconds*1.12-i*.56)*(11+i*1.5)+Math.sin(seconds*1.83+i*1.7)*2.4);
+        const inertia=-tiltVelocity*(5+i)-lifeVelocity.head*(155+i*30)-lifeVelocity.rotation*80-lifeVelocity.x*.25;
+        const target=(wind+inertia)*hairAmount,omega=(5.8-i*.45)/(1+softness*.42);
+        [hairMiddle[i],middleVelocities[i]]=spring(hairMiddle[i],middleVelocities[i],target*.7,dt,omega*1.6);
+        [hair[i],velocities[i]]=softSpring(hair[i],velocities[i],target,dt,omega,1-Math.min(.24,softness*.22));
+        const lift=(idle*Math.sin(seconds*1.25-i*.8)*(2.7+i*.5)-lifeVelocity.y*.22)*hairAmount;
+        [hairY[i],yVelocities[i]]=softSpring(hairY[i],yVelocities[i],lift,dt,omega*.9,.84);
+      }
       return { pose: tilt > .001 ? 'curious_tilt' : sequence?.name || 'neutral', tilt,
         transitionFrame: tilt > .001 && tilt < .999 ? Math.round(tilt * ((manifest.transitions?.[0]?.frames.length || 1) - 1)) : null,
         cels, mouthState: mouth, blinkClosed: blink, mouthValue, blinkAmount, speechMix,
-        speaking: now < speechUntil, reducedMotion: reduced, hair: [...hair], life: { ...life }, tiltVelocity, ...budget };
+        speaking: now < speechUntil, reducedMotion: reduced, hair: [...hair], hairMiddle:[...hairMiddle],hairY:[...hairY],life: { ...life }, tiltVelocity, ...budget };
     }
     function hairPoint(x, y, externalWarp) {
-      if (reduced) return { x, y };
-      const nx = x / manifest.width, ny = y / manifest.height, weight = smooth((ny - .24) / .49);
+      if (reduced||frozenHair||hairAmount===0) return { x, y };
+      const nx = x / manifest.width, ny = y / manifest.height,u=clamp((ny-.24)/.49,0,1),weight=smooth(u);
       const center = [(.73 + tilt * .012) * manifest.width, (.235 - tilt * .023) * manifest.height];
       const accessory = 1 - smooth((Math.hypot((x - center[0]) / (.18 * manifest.width), (y - center[1]) / (.17 * manifest.height)) - .8) / .35);
       const f = clamp(nx * 2, 0, 2), a = Math.floor(f), b = Math.min(2, a + 1);
-      let dx = hair[a] * (1 - (f - a)) + hair[b] * (f - a), dy = Math.sin(now / 1000 * 1.25 + nx * 3) * .6;
+      const sample=values=>values[a]*(1-(f-a))+values[b]*(f-a),tip=sample(hair),middle=sample(hairMiddle);
+      // Upper lengths follow sooner, tips continue floating. The depth blend
+      // produces a bend rather than translating the entire hair as one sheet.
+      let dx=middle*(1-u*u)+tip*u*u+(tip-middle)*Math.sin(u*Math.PI)*.35;
+      let dy=sample(hairY)*u-Math.abs(dx)*.09*Math.sin(u*Math.PI);
+      dx=22*Math.tanh(dx/22);dy=9*Math.tanh(dy/9);
       if (externalWarp) { const p = externalWarp(x, y); if (Number.isFinite(p?.x) && Number.isFinite(p?.y)) { dx = clamp(p.x - x, -7, 7); dy = clamp(p.y - y, -3, 3); } }
       return { x: x + dx * weight * (1 - accessory), y: y + dy * weight * (1 - accessory) };
     }
