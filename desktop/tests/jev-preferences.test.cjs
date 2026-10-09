@@ -107,3 +107,24 @@ test("switching to session storage removes the previous persisted Jev key", (t) 
   assert.equal(prefs.getJevApiKey(), "new-key");
   assert.equal(new Preferences(file, secureStorage).getJevApiKey(), "");
 });
+
+
+test("decision provider defaults to JEV and persists switching without copying keys", t => {
+  const { file, prefs } = fixture(t);
+  assert.equal(prefs.data.decisionProvider,'jev');
+  prefs.setApiKey('openai-secret'); prefs.setJevApiKey('jev-secret');
+  const openai = prefs.data.encryptedApiKey, jev = prefs.data.encryptedJevApiKey;
+  prefs.patch({decisionProvider:'decisions'});
+  const loaded = new Preferences(file,secureStorage);
+  assert.equal(loaded.publicState().decisionProvider,'decisions');
+  assert.equal(loaded.data.encryptedApiKey,openai);
+  assert.equal(loaded.data.encryptedJevApiKey,jev);
+  for (const invalid of ['other','',null,{},true]) {
+    loaded.patch({decisionProvider:invalid});
+    assert.equal(loaded.data.decisionProvider,'decisions');
+  }
+  loaded.patch({decisionProvider:'jev'});
+  assert.equal(new Preferences(file,secureStorage).data.decisionProvider,'jev');
+  fs.writeFileSync(file,JSON.stringify({decisionProvider:'other'}));
+  assert.equal(new Preferences(file).data.decisionProvider,'jev');
+});

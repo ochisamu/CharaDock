@@ -6,6 +6,9 @@ const [source, output] = process.argv.slice(2);
 if (!source || !output || fs.existsSync(path.join(output, 'profile'))) throw new Error('Supply SOURCE and fresh OUTPUT');
 fs.mkdirSync(output, { recursive: true }); app.setPath('userData', path.join(output, 'profile'));
 const { MascotStaticServer } = require(path.join(source, 'desktop/lib/static-server.cjs'));
+const { JevClient } = require(path.join(source, 'desktop/lib/jev-client.cjs'));
+const { JevExpressionDirector } = require(path.join(source, 'desktop/lib/jev-expression-director.cjs'));
+const { KOHAKU_EMOTIONS } = require(path.join(source, 'desktop/lib/expressive-character.cjs'));
 const server = new MascotStaticServer(source), errors = [];
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const guard = setTimeout(() => { console.error('Kohaku UI QA timeout'); app.exit(1); }, 120000);
@@ -32,6 +35,32 @@ const guard = setTimeout(() => { console.error('Kohaku UI QA timeout'); app.exit
     assert.equal(states[state].pose, state);
     fs.writeFileSync(path.join(output, state+'.png'), (await win.capturePage()).toPNG());
   }
+  // Exercise the production Jev parser -> director -> SSE input -> app.js
+  // route, not the preview trigger. Deterministic provider fixtures: no key,
+  // network call or assertion about the quality of the live classifier.
+  let fixtureEmotion='neutral',classifications=0;
+  const client=new JevClient();client.ask=async()=>{
+    classifications++;const selected=value=>({type:'choice',choice:value,probabilities:{[value]:1}});
+    return{emotion:selected(fixtureEmotion),gesture:selected('neutral'),performance:selected('none')};
+  };
+  const director=new JevExpressionDirector({enabled:()=>true,context:()=> 'amber-avatar',
+    classify:(text,options)=>client.expression(text,{...options,nikePerformance:true,allowedEmotions:KOHAKU_EMOTIONS}),
+    apply:expression=>server.pushInput({...expression,voiceRaw:0})});
+  const expected={neutral:'neutral',happy:'delighted_agreement',thinking:'curious_tilt',
+    surprised:'curious_tilt',soft:'attentive_listening',exasperated:'doubtful_side_eye'},jevStates={};
+  for(const emotion of KOHAKU_EMOTIONS){
+    await js('window.PuruPuruKohakuMotionPreview.reset()');fixtureEmotion=emotion;
+    const id=await director.prepare('Synthetic '+emotion);assert.ok(id);assert.equal(director.activate(id),true);
+    await sleep(1200);
+    // Voice/cursor packets must not reset the chosen Jev expression.
+    for(let i=0;i<4;i++){server.pushInput({voiceRaw:.4,targetX:.2,targetY:0});await sleep(100);}
+    const state=await js('window.PuruPuruKohakuMotionPreview.getStatus().output');
+    assert.equal(state.pose,expected[emotion],emotion+' must reach authored drawing through SSE');
+    assert.equal(state.speaking,true,'Jev must leave mouth ownership to the voice stream');
+    jevStates[emotion]={pose:state.pose,speaking:state.speaking};
+    fs.writeFileSync(path.join(output,'jev-'+emotion+'.png'),(await win.capturePage()).toPNG());
+  }
+  assert.equal(classifications,KOHAKU_EMOTIONS.length);director.cancel();server.pushInput({voiceRaw:0});
   await js(`window.PuruPuruKohakuMotionPreview.reset();window.PuruPuruKohakuMotionPreview.trigger('curious_tilt')`); await sleep(1400);
   for (let i=0;i<5;i++) { server.pushInput({ voiceRaw: .7, forceMouth: 2, forceEyesClosed: true, durationMs: 1800 }); await sleep(100); }
   const speaking = await js('window.PuruPuruKohakuMotionPreview.getStatus().output');
@@ -49,6 +78,6 @@ const guard = setTimeout(() => { console.error('Kohaku UI QA timeout'); app.exit
   server.setSnapshot({...snapshot,kohakuMotionEnabled:false}); await sleep(1000);
   assert.equal(await js('window.PuruPuruKohakuMotionPreview.getStatus().ready'), false);
   assert.deepEqual(errors, []);
-  fs.writeFileSync(path.join(output, 'verification.json'), JSON.stringify({passed:true,states,speaking,canvas,frameStats,errors,scope:'real isolated Electron renderer; synthetic speech input; not microphone/TTS QA'},null,2));
+  fs.writeFileSync(path.join(output, 'verification.json'), JSON.stringify({passed:true,states,jevStates,speaking,canvas,frameStats,errors,scope:'real isolated Electron renderer; synthetic speech and Jev provider fixtures; not live API/microphone/TTS QA'},null,2));
   clearTimeout(guard); win.destroy(); await server.stop(); console.log('PASS: Kohaku v9 real Electron rendering, states, speech/blink, fallback, character switch'); app.quit();
 })().catch(error => { console.error(error.stack); app.exit(1); });

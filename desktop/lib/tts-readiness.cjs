@@ -22,6 +22,12 @@ function ttsSetupGuidance(provider, status = {}, language = "ja") {
   if (!name) return "";
   const english = language === "en";
 
+  if (selected === "piper-plus" && status.referenceEnabled && status.referenceIssue) {
+    return english
+      ? "Piper Plus reference audio requires the v2 Rust runtime, a compatible voice model, its speaker encoder, and a 1–30 second WAV. Complete these in Settings → Voice → Character voice, or turn off reference audio."
+      : `${status.referenceIssue} 設定 → 音声 → キャラの声で設定するか、参照音声の使用をオフにしてください。`;
+  }
+
   if (selected === "irodori-webgpu" && status.webgpuAvailable === false) {
     return english
       ? "Irodori TTS cannot use WebGPU on this PC. Update the GPU driver or choose another voice method in Settings → Desktop → Character voice."

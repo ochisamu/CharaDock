@@ -31,8 +31,9 @@ function jsonResponse(response, status, value) {
 }
 
 class MascotStaticServer {
-  constructor(rootDir) {
+  constructor(rootDir, { onInput } = {}) {
     this.rootDir = path.resolve(rootDir);
+    this.onInput = onInput;
     this.server = null;
     this.port = 0;
     this.eventId = 0;
@@ -80,6 +81,7 @@ class MascotStaticServer {
       if (Object.prototype.hasOwnProperty.call(values, key)) outgoing[key] = values[key];
     }
     this.publish("input", outgoing);
+    this.onInput?.(outgoing);
   }
 
   publish(type, payload) {

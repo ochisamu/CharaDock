@@ -8,6 +8,8 @@ const { PNG } = require('pngjs');
 const { expressiveCharacterEnabled, KOHAKU_EMOTIONS } = require('../lib/expressive-character.cjs');
 const { JevClient } = require('../lib/jev-client.cjs');
 const { Preferences } = require('../lib/preferences.cjs');
+const { JevExpressionDirector } = require('../lib/jev-expression-director.cjs');
+const drawn = require('../../drawn-pose-runtime.js');
 const { createPerformanceController, performanceWarpPoint } = require('../../motion-runtime.js');
 test('Kohaku opt-in never enables Nike or custom characters',()=>{
   const p={jevKohakuPerformanceEnabled:true};
@@ -33,6 +35,40 @@ test('Jev only selects Kohaku artwork that exists, while keeping speech audio-ow
   assert.deepEqual(Object.keys(questions.emotion.criteria),KOHAKU_EMOTIONS);
   assert.match(questions.emotion.instructions,/LISTENER/);
   assert.equal(r.emotion,null);assert.equal(r.nikePerformance,'explain');assert.equal(r.forceMouth,null);assert.equal(r.forceEyesClosed,null);
+});
+test('every Jev Kohaku emotion reaches authored motion at playback without extra classification',async()=>{
+  const expected={neutral:'neutral',happy:'delighted_agreement',thinking:'curious_tilt',
+    surprised:'curious_tilt',soft:'attentive_listening',exasperated:'doubtful_side_eye'};
+  const manifest=require('../../assets/amber-avatar/authored-motion/manifest.json');
+  for(const emotion of KOHAKU_EMOTIONS){
+    const selected=value=>({type:'choice',choice:value,probabilities:{[value]:1}});
+    let calls=0,applied=0;
+    const c=new JevClient({getApiKey:()=> 'synthetic-test-key',fetchImpl:async(_url,request)=>{
+      calls++;const body=JSON.parse(request.body);
+      assert.deepEqual(Object.keys(body.questions.emotion.criteria),KOHAKU_EMOTIONS);
+      return{ok:true,text:async()=>JSON.stringify({answers:{emotion:selected(emotion),gesture:selected('neutral'),performance:selected('none')}})};
+    }});
+    const motion=drawn.createController(manifest);motion.update(0);
+    const d=new JevExpressionDirector({enabled:()=>true,context:()=> 'amber-avatar',
+      classify:(text,options)=>c.expression(text,{...options,nikePerformance:true,allowedEmotions:KOHAKU_EMOTIONS}),
+      apply:expression=>{applied++;assert.equal(expression.forceMouth,null);assert.equal(expression.forceEyesClosed,null);
+        motion.trigger(drawn.stateForInput(expression),0,expression.durationMs);}});
+    const id=await d.prepare('synthetic response');assert.equal(applied,0);
+    assert.equal(d.activate(id),true);assert.equal(applied,1);assert.equal(calls,1);
+    const state=motion.update(1600,{mouthState:2,blinkClosed:true,audioLevel:.3});
+    assert.equal(state.pose,expected[emotion],emotion);assert.equal(state.mouthState,2);assert.equal(state.blinkClosed,true);
+    assert.equal(d.activate(id),false);assert.equal(calls,1);
+  }
+});
+test('Jev gesture-only and reaction-only inputs map to artwork without overriding a confident face',()=>{
+  for(const gesture of ['ponder','explain','recoil'])assert.equal(drawn.stateForInput({nikePerformance:gesture}),'curious_tilt');
+  for(const reaction of ['thinking','surprised'])assert.equal(drawn.stateForInput({emotion:'neutral',reaction}),'curious_tilt');
+  assert.equal(drawn.stateForInput({reaction:'happy'}),'delighted_agreement');
+  assert.equal(drawn.stateForInput({reaction:'sad'}),'attentive_listening');
+  assert.equal(drawn.stateForInput({emotion:'thinking',nikePerformance:'nod'}),'curious_tilt');
+  assert.equal(drawn.stateForInput({emotion:'exasperated',nikePerformance:'celebrate'}),'doubtful_side_eye');
+  assert.equal(drawn.stateForInput({emotion:'neutral',reaction:'neutral',nikePerformance:'none'}),'neutral');
+  assert.equal(drawn.stateForInput({emotion:'__proto__',nikePerformance:'constructor'}),'neutral');
 });
 test('smooth idle is opt-in, bounded, frame-rate stable and settles with reduced motion',()=>{
   const run=fps=>{const c=createPerformanceController();let out;for(let i=0;i<=fps*4;i++)out=c.update(i*1000/fps,false,{enabled:true,smoothIdle:true});return {c,out};};

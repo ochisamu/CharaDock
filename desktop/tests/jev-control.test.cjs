@@ -38,7 +38,7 @@ function renderer(api = {}) {
     syncUi: () => {},
   });
   const source = fs.readFileSync(path.join(root, "control.js"), "utf8");
-  vm.runInContext(source.slice(source.indexOf("  function syncJevUi()"), source.indexOf("  function syncUi()")), context);
+  vm.runInContext(source.slice(source.indexOf("  function decisionKeyConfigured()"), source.indexOf("  function syncUi()")), context);
   context.syncJevUi();
   return { context, $ };
 }
@@ -53,7 +53,7 @@ test("Jev UI gates features and tests behind opt-in and saves flags without draf
   $("#jevApiKeyInput").value = "draft-secret";
   $("#jevEnabledToggle").checked = true;
   await context.saveJevConfig();
-  assert.deepEqual(JSON.parse(JSON.stringify(payload)), { enabled: true, mediaEnabled: true, expressionEnabled: true, nikePerformanceEnabled: false, kohakuPerformanceEnabled: false, addressMode: "off" });
+  assert.deepEqual(JSON.parse(JSON.stringify(payload)), { provider: "jev", enabled: true, mediaEnabled: true, expressionEnabled: true, nikePerformanceEnabled: false, kohakuPerformanceEnabled: false, addressMode: "off" });
   assert.equal($("#jevMediaEnabledToggle").disabled, false);
   assert.equal($("#testJevConnectionButton").disabled, true);
 });
@@ -101,6 +101,32 @@ test("failed IPC clears the submitted secret and restores saved settings", async
 test("Jev settings provide a password field and bilingual opt-in consent", () => {
   const html = fs.readFileSync(path.join(root, "control.html"), "utf8");
   assert.match(html, /id="jevApiKeyInput" type="password" autocomplete="new-password"/);
-  assert.match(html, /data-jev-en="Only when enabled, the minimum necessary recognized instruction and response text is sent to TypeSafe\."/);
-  assert.match(html, /有効な場合のみ、認識した指示・応答の必要最小限のテキストをTypeSafeに送信します。/);
+  assert.match(html, /data-jev-en="Only when enabled, the minimum necessary recognized instruction and response text is sent to the selected service\."/);
+  assert.match(html, /有効な場合のみ、認識した指示・応答の必要最小限のテキストを選択したサービスへ送信します。/);
+});
+
+
+test("Decisions UI uses only the profile key, preserves JEV draft and switches back", async () => {
+  let calls = 0, payload;
+  const { context, $ } = renderer({ testJevConnection: async () => { calls++; return {ok:true}; },
+    setJevConfig: async value => { payload = value; return { ...context.state, decisionProvider: value.provider }; } });
+  context.state = {decisionProvider:'decisions',jevEnabled:true,hasApiKey:true,jevApiKeyConfigured:false};
+  $('#jevApiKeyInput').value = 'unsaved-jev-key';
+  context.syncJevUi();
+  assert.equal($('#decisionJevKeySettings').hidden,true);
+  assert.equal($('#decisionOpenAIKeyNote').hidden,false);
+  assert.equal($('#testJevConnectionButton').disabled,false);
+  await context.testJevConnection();
+  assert.equal(calls,1);
+  context.state.hasApiKey = false;
+  context.syncJevUi();
+  assert.equal($('#testJevConnectionButton').disabled,true);
+  await context.testJevConnection();
+  assert.equal(calls,1);
+  $('#decisionProviderSelect').value = 'jev';
+  await context.saveJevConfig();
+  assert.equal(payload.provider,'jev');
+  assert.equal(Object.hasOwn(payload,'apiKey'),false);
+  assert.equal($('#jevApiKeyInput').value,'unsaved-jev-key');
+  assert.equal($('#decisionJevKeySettings').hidden,false);
 });

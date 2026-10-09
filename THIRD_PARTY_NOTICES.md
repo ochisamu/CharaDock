@@ -206,9 +206,9 @@ no response text is sent to an additional service.
 - License: MIT License
 
 piper-plus's MIT-licensed multilingual WebAssembly G2P runtime is bundled for
-Japanese phonemization. The native piper-plus executable and voice models are
+Japanese phonemization (`piper-plus` npm 0.8.0). The native piper-plus executable and voice models are
 not bundled. On Windows, the user may choose to download the pinned official
-`piper-windows-x64.zip` runtime and Tsukuyomi-chan FP16 model from their original
+v2.0.0 `piper-plus-rs-cli-win-x64.zip` runtime (Rust CLI 0.5.2) and Tsukuyomi-chan FP16 model from their original
 distribution servers. Each file is verified against a fixed SHA-256 digest and
 stored in the app user-data directory. A separately obtained compatible runtime
 and voice model can still be selected manually.

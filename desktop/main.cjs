@@ -68,14 +68,20 @@ const { PNG } = require("pngjs");
 const { OpenAIClient } = require("./backend/openai-client.cjs");
 const { MEDIA_DYNAMIC_TOOLS, MEDIA_TOOL_INSTRUCTIONS, createMediaController } = require("./lib/media-control.cjs");
 const mediaController = createMediaController();
-const { JevClient } = require("./lib/jev-client.cjs");
+const { DecisionClient } = require("./lib/decision-client.cjs");
 const { expressiveCharacterEnabled, KOHAKU_EMOTIONS } = require("./lib/expressive-character.cjs");
 const { JevAddressGate } = require("./lib/jev-address-gate.cjs");
 const { JevMediaGate } = require("./lib/jev-media-gate.cjs");
 const { JevExpressionDirector } = require("./lib/jev-expression-director.cjs");
 const { createJevDebug, jevFailureReason } = require("./lib/jev-debug.cjs");
-const debugJev = createJevDebug({ isPackaged: () => app.isPackaged });
-const jevClient = new JevClient({ getApiKey: () => preferences.getJevApiKey() });
+const debugJev = createJevDebug({ isPackaged: () => app.isPackaged,
+  getProvider: () => preferences?.data?.decisionProvider || "jev" });
+const jevClient = new DecisionClient({
+  observe: debugJev,
+  getProvider: () => preferences.data.decisionProvider,
+  getJevApiKey: () => preferences.getJevApiKey(),
+  getOpenAIApiKey: () => preferences.getApiKey(),
+});
 const jevAddressGate = new JevAddressGate({
   classify: (text, options) => jevClient.address(text, options),
   enabled: () => jevEnabled("jevEnabled"),
@@ -99,7 +105,7 @@ function nikePerformanceEnabled(characterId = activeCharacter().id) {
 }
 function jevEnabled(feature) {
   return preferences.data.jevEnabled === true && preferences.data[feature] !== false
-    && Boolean(preferences.getJevApiKey());
+    && jevClient.isConfigured();
 }
 function requestJevExpression(text, options) {
   jevExpressionDirector.request(text, options);
@@ -267,6 +273,7 @@ const {
   resolveBeatriceHostExecutable,
 } = require("./lib/beatrice-v2.cjs");
 const { MascotStaticServer } = require("./lib/static-server.cjs");
+const { kohakuPackage, remoteExpression, remoteTtsWithExpression } = require("./lib/remote-kohaku.cjs");
 const { RemoteCompanionServer, isPrivateIpv4 } = require("./lib/remote-server.cjs");
 const { AtomEchoHub } = require("./lib/atom-echo-hub.cjs");
 const { AtomEchoLiveAudioRoute } = require("./lib/atom-echo-live-audio.cjs");
@@ -290,6 +297,7 @@ const {
   synthesizePiperPlus,
   validatePiperPlusExecutable,
   validatePiperPlusModel,
+  validatePiperPlusReference,
 } = require("./lib/piper-plus.cjs");
 const { EmbeddedSherpaOnnx } = require("./lib/sherpa-embedded.cjs");
 const { EmbeddedSherpaVad, SILERO_VAD_PROFILES } = require("./lib/sherpa-vad.cjs");
@@ -1026,6 +1034,7 @@ function characterTtsSettings(characterId = preferences.data.characterId) {
   return {
     provider: TTS_PROVIDERS.has(stored.provider) ? stored.provider
       : TTS_PROVIDERS.has(preferences.data.ttsProvider) ? preferences.data.ttsProvider : "system",
+    piperPlusReferenceEnabled: stored.piperPlusReferenceEnabled === true,
     styleBertVits2ModelId: Math.min(9999, Math.max(0, Math.round(Number(stored.styleBertVits2ModelId ?? preferences.data.styleBertVits2ModelId) || 0))),
     realtimeVoice: normalizeRealtimeVoice(stored.realtimeVoice, normalizeRealtimeVoice(preferences.data.realtimeVoice)),
     realtimeVoiceConversion: normalizeBeatriceMode(stored.realtimeVoiceConversion),
@@ -1112,6 +1121,18 @@ function validSbv2VoiceSelection(model, speakerId, styleId) {
   return { speakerId: speaker?.localId ?? 0, styleId: style?.localId ?? 0 };
 }
 
+function activePiperPlusOptions(characterId = preferences.data.characterId) {
+  const profile = preferences.data.characterTtsProfiles?.[characterId] || {};
+  return {
+    executablePath: preferences.data.piperPlusExecutablePath,
+    modelPath: preferences.data.piperPlusModelPath,
+    speed: preferences.data.piperPlusSpeed,
+    referenceEnabled: profile.piperPlusReferenceEnabled === true,
+    referenceAudioPath: String(profile.piperPlusReferenceAudioPath || ""),
+    speakerEncoderPath: preferences.data.piperPlusSpeakerEncoderPath,
+  };
+}
+
 function activeIrodoriVoice(characterId = preferences.data.characterId) {
   const settings = characterTtsSettings(characterId);
   return irodoriVoiceLibrary?.selectedVoice(preferences.data.irodoriVoices, settings.irodoriVoiceId) || null;
@@ -1152,7 +1173,7 @@ function decodeWaveDataUrl(value) {
 
 function updatedCharacterTtsProfiles(characterId, patch) {
   const profiles = { ...(preferences.data.characterTtsProfiles || {}) };
-  profiles[characterId] = { ...characterTtsSettings(characterId), ...patch };
+  profiles[characterId] = { ...profiles[characterId], ...characterTtsSettings(characterId), ...patch };
   return profiles;
 }
 
@@ -1771,7 +1792,7 @@ function remoteTtsProviderOptions(characterId = preferences.data.characterId) {
     try {
       if (provider === "system") return { available: true, phone: false };
       if (provider === "style-bert-vits2") return { available: provider === selected, phone: true };
-      if (provider === "piper-plus") return { available: piperPlusStatus({ executablePath: preferences.data.piperPlusExecutablePath, modelPath: preferences.data.piperPlusModelPath }).ready, phone: true };
+      if (provider === "piper-plus") return { available: piperPlusStatus(activePiperPlusOptions(characterId)).ready, phone: true };
       if (provider === "supertonic-3") return { available: supertonicStatus(preferences.data.supertonicModelDirectory).ready, phone: true };
       if (provider === "irodori-webgpu") {
         const settings = characterTtsSettings(characterId);
@@ -1827,11 +1848,14 @@ function remoteTtsModelSettings(characterId = preferences.data.characterId) {
     };
   }
   if (settings.provider === "piper-plus") {
-    const status = piperPlusStatus({ executablePath: preferences.data.piperPlusExecutablePath, modelPath: preferences.data.piperPlusModelPath });
+    const status = piperPlusStatus(activePiperPlusOptions(characterId));
     return {
       provider: settings.provider,
       hint: mainText("Piper Plusモデルの追加・変更はPC版の設定から行えます。", "Add or change Piper Plus models in the desktop settings."),
-      fields: [{ key: "piperPlusModel", label: mainText("使用中のモデル", "Active model"), type: "display", value: status.modelName || mainText("未選択", "Not selected") }],
+      fields: [
+        { key: "piperPlusModel", label: mainText("使用中のモデル", "Active model"), type: "display", value: status.modelName || mainText("未選択", "Not selected") },
+        { key: "piperPlusReference", label: mainText("参照音声", "Reference audio"), type: "display", value: status.referenceEnabled ? status.referenceIssue || status.referenceName : mainText("使用しない", "Off") },
+      ],
     };
   }
   if (settings.provider === "supertonic-3") {
@@ -1920,6 +1944,26 @@ function remoteAvatarAssetKeys() {
   return [...Object.entries({ ...AVATAR_IMAGE_FILES, ...OPTIONAL_AVATAR_IMAGE_FILES })]
     .filter(([, filename]) => fs.existsSync(path.join(directory, filename)))
     .map(([key]) => key);
+}
+
+function remoteKohakuDescriptor(character) {
+  if (character.id !== 'amber-avatar' || !nikePerformanceEnabled(character.id)) return null;
+  try { return { manifestUrl: '/api/authored/manifest.json', version: kohakuPackage(projectRoot).version }; }
+  catch { return null; } // Keep the standard Link avatar available on asset failure.
+}
+
+async function classifyRemoteKohakuTts(text) {
+  const started = Date.now();
+  debugJev('expression-started', { source: 'remote-tts' });
+  try {
+    const expression = await jevClient.expression(text, { nikePerformance: true, allowedEmotions: KOHAKU_EMOTIONS });
+    debugJev('expression-classified', { source: 'remote-tts', emotion: expression.emotion,
+      reaction: expression.reaction, nikePerformance: expression.nikePerformance, latencyMs: Date.now() - started });
+    return expression;
+  } catch (error) {
+    debugJev('expression-failed', { source: 'remote-tts', reason: jevFailureReason(error), latencyMs: Date.now() - started });
+    return null;
+  }
 }
 
 function remoteAvatarAssetVersion() {
@@ -2050,6 +2094,7 @@ function publicRemoteState(context = {}) {
       assetVersion: remoteAvatarAssetVersion(),
       motion: sanitizedMotion(character.motion, characterMotionDefaults(character)),
       touchHeadRatio: character.touchHeadRatio,
+      authoredMotion: remoteKohakuDescriptor(character),
     },
     characters: allCharacters().map((item) => {
       const effective = effectiveCharacter(item);
@@ -2446,6 +2491,7 @@ function createRemoteServer(address, sessionMinutes = preferences.data.remoteSes
     trustedDevices: preferences.data.remoteTrustedDevices,
     callbacks: {
       getState: publicRemoteState,
+      getAuthoredAsset: (file) => remoteKohakuDescriptor(activeCharacter()) ? kohakuPackage(projectRoot).read(file) : null,
       getAvatarAsset: (key) => {
         const filename = AVATAR_IMAGE_FILES[key] || OPTIONAL_AVATAR_IMAGE_FILES[key];
         if (!filename) return null;
@@ -2481,7 +2527,13 @@ function createRemoteServer(address, sessionMinutes = preferences.data.remoteSes
       interrupt: interruptActiveInteraction,
       synthesizeTts: (text) => {
         if (preferences.data.remoteTtsEnabled === false) throw new Error(mainText("スマートフォン音声は設定で無効です。", "Phone audio is disabled in Settings."));
-        return synthesizeConfiguredTts(String(text || "").slice(0, 4000), REMOTE_TTS_OWNER_ID, { enabled: true });
+        const characterId = activeCharacter().id;
+        return remoteTtsWithExpression(String(text || '').slice(0, 4000), { characterId,
+          synthesize: value => synthesizeConfiguredTts(value, REMOTE_TTS_OWNER_ID, { enabled: true }),
+          classify: characterId === 'amber-avatar' && nikePerformanceEnabled(characterId)
+            ? classifyRemoteKohakuTts : null,
+          isCurrent: () => activeCharacter().id === characterId && nikePerformanceEnabled(characterId),
+        });
       },
       nextTtsChunk: (streamId) => nextIrodoriTtsChunk(streamId, REMOTE_TTS_OWNER_ID),
       cancelTts: (streamId) => ({ cancelled: cancelIrodoriTtsStream(streamId, REMOTE_TTS_OWNER_ID) }),
@@ -4302,10 +4354,7 @@ function publicAppState() {
     sherpaModel: embeddedSherpaOnnx?.status() || { installed: false, downloading: false, progress: null },
     streamingSpeechModel: streamingSpeechRecognition?.status() || { installed: false, downloading: false, progress: null, models: [] },
     piperPlus: {
-      ...piperPlusStatus({
-        executablePath: preferences.data.piperPlusExecutablePath,
-        modelPath: preferences.data.piperPlusModelPath,
-      }),
+      ...piperPlusStatus(activePiperPlusOptions()),
       sampleModel: embeddedTtsModels?.status("piper-plus") || null,
     },
     supertonic: {
@@ -8410,7 +8459,7 @@ function synthesizeConfiguredTts(text, ownerId = 0, { enabled = preferences.data
   const spokenText = configuredSpeechText(text);
   if (!spokenText) return Promise.resolve({ audioDataUrls: [] });
   const setupStatus = characterTts.provider === "piper-plus"
-    ? piperPlusStatus({ executablePath: preferences.data.piperPlusExecutablePath, modelPath: preferences.data.piperPlusModelPath })
+    ? piperPlusStatus(activePiperPlusOptions())
     : characterTts.provider === "supertonic-3"
       ? supertonicStatus(preferences.data.supertonicModelDirectory)
       : characterTts.provider === "irodori-webgpu"
@@ -8425,9 +8474,7 @@ function synthesizeConfiguredTts(text, ownerId = 0, { enabled = preferences.data
   if (characterTts.provider === "piper-plus") {
     return synthesizePiperPlus({
       text: spokenText,
-      executablePath: preferences.data.piperPlusExecutablePath,
-      modelPath: preferences.data.piperPlusModelPath,
-      speed: preferences.data.piperPlusSpeed,
+      ...activePiperPlusOptions(),
     });
   }
   if (characterTts.provider === "supertonic-3") {
@@ -10752,12 +10799,17 @@ function registerIpc() {
     for (const [input, key] of [["enabled", "jevEnabled"], ["mediaEnabled", "jevMediaEnabled"], ["expressionEnabled", "jevExpressionEnabled"], ["nikePerformanceEnabled", "jevNikePerformanceEnabled"], ["kohakuPerformanceEnabled", "jevKohakuPerformanceEnabled"]]) {
       if (typeof patch[input] === "boolean") values[key] = patch[input];
     }
+    if (Object.hasOwn(patch, "provider")) {
+      if (!["jev", "decisions"].includes(patch.provider)) throw new Error("Invalid decision provider");
+      values.decisionProvider = patch.provider;
+    }
     if (["off", "standard", "strict", "living"].includes(patch.addressMode)) values.jevAddressMode = patch.addressMode;
     if (Object.hasOwn(patch, "apiKey")) {
       if (typeof patch.apiKey !== "string" || patch.apiKey.length > 4096) throw new Error("Invalid Jev API key");
       preferences.setJevApiKey(patch.apiKey.trim());
     }
     preferences.patch(values);
+    jevClient.invalidate();
     jevAddressGate.reset();
     jevExpressionDirector.cancel();
     localServer.pushInput({ ...currentCursorInput(), nikePerformance: "none" });
@@ -11019,6 +11071,7 @@ function registerIpc() {
       ? Math.max(0, Math.min(2, Number(patch.sbv2StyleWeight))) : 1;
     const characterTtsProfiles = updatedCharacterTtsProfiles(activeCharacterId, {
       provider: ttsProvider,
+      piperPlusReferenceEnabled: typeof patch?.piperPlusReferenceEnabled === "boolean" ? patch.piperPlusReferenceEnabled : characterTtsSettings(activeCharacterId).piperPlusReferenceEnabled,
       styleBertVits2ModelId: Math.min(9999, Math.max(0, Math.round(Number(patch?.styleBertVits2ModelId ?? characterTtsSettings(activeCharacterId).styleBertVits2ModelId) || 0))),
       realtimeVoice,
       realtimeVoiceConversion,
@@ -11325,6 +11378,40 @@ function registerIpc() {
     preferences.patch({ piperPlusModelPath: modelPath });
     return publicAppState();
   });
+  ipcMain.handle("tts:piperChooseReference", async (event) => {
+    assertTrustedSender(event);
+    const characterId = preferences.data.characterId;
+    const result = await dialog.showOpenDialog(controlWindow, {
+      title: mainText("参照音声を選択", "Choose reference audio"),
+      properties: ["openFile"], filters: [{ name: "WAV", extensions: ["wav"] }],
+    });
+    if (result.canceled || !result.filePaths[0]) return publicAppState();
+    const referenceAudioPath = validatePiperPlusReference(result.filePaths[0]);
+    preferences.patch({ characterTtsProfiles: updatedCharacterTtsProfiles(characterId, { piperPlusReferenceAudioPath: referenceAudioPath }) });
+    broadcastAppState();
+    return publicAppState();
+  });
+  ipcMain.handle("tts:piperClearReference", async (event) => {
+    assertTrustedSender(event);
+    preferences.patch({ characterTtsProfiles: updatedCharacterTtsProfiles(preferences.data.characterId, {
+      piperPlusReferenceAudioPath: "", piperPlusReferenceEnabled: false,
+    }) });
+    broadcastAppState();
+    return publicAppState();
+  });
+  ipcMain.handle("tts:piperChooseEncoder", async (event) => {
+    assertTrustedSender(event);
+    const result = await dialog.showOpenDialog(controlWindow, {
+      title: mainText("話者エンコーダーを選択", "Choose speaker encoder"),
+      properties: ["openFile"], filters: [{ name: "ONNX", extensions: ["onnx"] }],
+    });
+    if (result.canceled || !result.filePaths[0]) return publicAppState();
+    const encoderPath = result.filePaths[0];
+    if (path.extname(encoderPath).toLowerCase() !== ".onnx" || !fs.statSync(encoderPath).isFile()) throw new Error("話者エンコーダーのONNXファイルを選んでください。");
+    preferences.patch({ piperPlusSpeakerEncoderPath: encoderPath });
+    broadcastAppState();
+    return publicAppState();
+  });
   ipcMain.handle("tts:supertonicChooseModel", async (event) => {
     assertTrustedSender(event);
     const result = await dialog.showOpenDialog(controlWindow, {
@@ -11565,6 +11652,11 @@ function registerIpc() {
   ipcMain.handle("settings:setApiKey", (event, key) => {
     assertTrustedSender(event);
     preferences.setApiKey(String(key || "").slice(0, 512));
+    if (preferences.data.decisionProvider === "decisions") {
+      jevClient.invalidate();
+      jevAddressGate.reset();
+      jevExpressionDirector.cancel();
+    }
     openAIClient.reset();
     return publicAppState();
   });
@@ -14007,6 +14099,11 @@ async function boot() {
     }, 800);
   }
   embeddedTtsModels = new EmbeddedTtsModels(path.join(app.getPath("userData"), "tts-models"));
+  const piperUpgrade = embeddedTtsModels.upgradedPiperPlusPaths({
+    executablePath: preferences.data.piperPlusExecutablePath, modelPath: preferences.data.piperPlusModelPath,
+  });
+  if (Object.keys(piperUpgrade).length) preferences.patch(piperUpgrade);
+
   const localMfDirectory = path.join(app.getPath("userData"), "tts-models", "irodori-v41-mf-webgpu");
   if (!preferences.data.irodoriMfModelDirectory && irodoriModelStatus(localMfDirectory, "", null, { version: "v4-mf", mode: "design" }).modelReady) {
     preferences.patch({ irodoriMfModelDirectory: localMfDirectory });
@@ -14021,7 +14118,10 @@ async function boot() {
   });
   cleanupStaleTemporaryInputs();
   if (process.argv.includes("--smoke-test")) preferences.patch({ onboardingComplete: false });
-  localServer = new MascotStaticServer(projectRoot);
+  localServer = new MascotStaticServer(projectRoot, { onInput: input => {
+    const expression = remoteExpression(input, activeCharacter().id);
+    if (expression) remoteServer?.publish("expression", expression);
+  } });
   await localServer.start();
   localServer.setSnapshot(buildAvatarSnapshot(preferences.data.characterId), false);
   if (preferences.data.remoteAccessEnabled

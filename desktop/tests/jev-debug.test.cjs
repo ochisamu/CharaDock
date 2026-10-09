@@ -33,3 +33,36 @@ test("expression logs distinguish applied, stale, duplicate and failure without 
   assert.ok(events.some(e => e.event === "expression-failed"));
   assert.doesNotMatch(JSON.stringify(events), /PRIVATE|SECOND|THIRD|SECRET|private-id/);
 });
+
+
+test('debug label follows selection while request logs retain the actual dispatched provider', async () => {
+  const { DecisionClient } = require('../lib/decision-client.cjs');
+  let provider = 'decisions', resolve;
+  const logs = [], requests = [];
+  const log = createJevDebug({ isPackaged: () => false, getProvider: () => provider, write: (...args) => logs.push(args) });
+  const client = new DecisionClient({ getProvider: () => provider, getOpenAIApiKey: () => 'synthetic-secret', getJevApiKey: () => 'synthetic-jev', observe: log,
+    fetchImpl: (url) => { requests.push(url); return new Promise(done => { resolve = done; }); } });
+  log('expression-started', { text: 'PRIVATE', apiKey: 'synthetic-secret' });
+  assert.equal(logs[0][0], '[Decisions] expression-started');
+  const pending = client.test();
+  assert.equal(requests[0], 'https://api.openai.com/v1/decisions');
+  provider = 'jev'; client.invalidate();
+  resolve({ok:true,text:async()=>JSON.stringify({answers:[{name:'ready',type:'predicate',probability:1}]})});
+  await assert.rejects(pending, /superseded/);
+  assert.equal(logs[1][0], '[Decisions] request-started');
+  assert.equal(logs[2][0], '[Decisions] request-failed');
+  assert.equal(logs[2][1].provider, 'decisions');
+  assert.equal(logs[2][1].reason, 'superseded');
+  log('expression-started');
+  assert.equal(logs[3][0], '[Jev] expression-started');
+  log('request-started', {provider:'SECRET',text:'PRIVATE'});
+  assert.equal(logs[4][0], '[Jev] request-started');
+  assert.doesNotMatch(JSON.stringify(logs), /synthetic-secret|PRIVATE|SECRET/);
+});
+
+test('diagnostic observer failure cannot break a classification', async () => {
+  const { DecisionClient } = require('../lib/decision-client.cjs');
+  const client = new DecisionClient({getProvider:()=> 'decisions',getOpenAIApiKey:()=> 'synthetic-key',observe:()=>{throw Error('EPIPE');},
+    fetchImpl:async()=>({ok:true,text:async()=>JSON.stringify({answers:[{name:'ready',type:'predicate',probability:1}]})})});
+  assert.equal((await client.test()).ok,true);
+});

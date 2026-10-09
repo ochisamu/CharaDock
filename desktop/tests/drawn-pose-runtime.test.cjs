@@ -202,7 +202,7 @@ test('soft hair has visible XY tip motion, depth bending, pinned ornament and wo
     const s=c.update(i*1000/60),p=c.hairPoint(380,950);samples.push(p);
     assert.ok(s.hair.every(Number.isFinite)&&s.hairY.every(Number.isFinite));
     assert.deepEqual(c.hairPoint(.73*1254,.235*1254),{x:.73*1254,y:.235*1254});
-    assert.ok(Math.abs(p.x-380)<=22&&Math.abs(p.y-950)<=9);
+    assert.ok(Math.abs(p.x-380)<=48&&Math.abs(p.y-950)<=20);
   }
   assert.ok(Math.max(...samples.map(p=>p.x))-Math.min(...samples.map(p=>p.x))>15);
   assert.ok(Math.max(...samples.map(p=>p.y))-Math.min(...samples.map(p=>p.y))>3);
@@ -227,7 +227,7 @@ test('soft hair is stable at different frame rates and after long suspension',()
     for(let i=0;i<=fps*6;i++)c.update(i*1000/fps);
     positions.push(c.hairPoint(380,950));
     c.update(600000);const p=c.hairPoint(380,950);assert.ok(Number.isFinite(p.x)&&Number.isFinite(p.y));
-    assert.ok(Math.abs(p.x-380)<=22&&Math.abs(p.y-950)<=9);
+    assert.ok(Math.abs(p.x-380)<=48&&Math.abs(p.y-950)<=20);
   }
   assert.ok(Math.max(...positions.map(p=>p.x))-Math.min(...positions.map(p=>p.x))<1);
   assert.ok(Math.max(...positions.map(p=>p.y))-Math.min(...positions.map(p=>p.y))<1);
@@ -240,6 +240,36 @@ test('hair softness changes follow-through and even maximum strength does not fo
     const p=soft.hairPoint(x,y),px=soft.hairPoint(x+2,y),py=soft.hairPoint(x,y+2);
     const determinant=((px.x-p.x)*(py.y-p.y)-(py.x-p.x)*(px.y-p.y))/4;
     assert.ok(determinant>.3,'no flipped hair triangles at high strength');
+  }
+});
+test('Kohaku desktop drift and hair remain visible after downscaling, without changing the rigid face',()=>{
+  const c=runtime.createController(manifest),samples=[];
+  for(let i=0;i<=1200;i++){
+    const s=c.update(i*1000/60),p=c.hairPoint(380,950);
+    samples.push({x:s.life.x,y:s.life.y,scale:s.life.scale,rotation:s.life.rotation,hairX:p.x-380,hairY:p.y-950});
+  }
+  const span=k=>Math.max(...samples.map(s=>s[k]))-Math.min(...samples.map(s=>s[k]));
+  assert.ok(span('x')>29&&span('y')>16,'body should not look still at mascot size');
+  assert.ok(span('hairX')>65&&span('hairY')>21,'tips visibly float in both directions');
+  assert.ok(span('scale')>.016,'visible but gentle breathing');
+  assert.ok(samples.every(s=>Math.abs(s.rotation)<.02&&Math.abs(s.scale)<.01),'no excessive whole-body roll or breathing');
+  c.update(20001,{reducedMotion:true});assert.deepEqual(Object.values(c.update(20002,{reducedMotion:true}).life),[0,0,0,0,0,0,0]);
+});
+test('stronger Kohaku hair stays continuous and its mesh never folds across a full sway cycle',()=>{
+  const c=runtime.createController(manifest);let previous=null;
+  for(let i=0;i<=1200;i++){
+    const now=i*1000/60;
+    if(i===150||i===330)c.trigger(i===150?'curious_tilt':'neutral',now,10000);
+    c.update(now,{hairStrength:2,hairSpring:2,breathStrength:1,rollStrength:1});
+    const sample=c.hairPoint(380,950);
+    if(previous)assert.ok(Math.hypot(sample.x-previous.x,sample.y-previous.y)<2,'no frame-to-frame hair jump');
+    previous=sample;
+    if(i%30)continue;
+    for(let y=0;y<1254;y+=32)for(let x=0;x<1254;x+=32){
+      const p=c.hairPoint(x,y),px=c.hairPoint(x+2,y),py=c.hairPoint(x,y+2);
+      const determinant=((px.x-p.x)*(py.y-p.y)-(py.x-p.x)*(px.y-p.y))/4;
+      assert.ok(determinant>.3,'no flipped hair triangles, even beside the pinned ornament');
+    }
   }
 });
 test('registered local patch landmarks align at the endpoints, intermediate determinant stays positive', () => {

@@ -165,10 +165,19 @@
   const VARIANTS = ['open-closed', 'open-half', 'open-open', 'closed-closed', 'closed-half', 'closed-open'];
   const STATES = ['neutral', 'curious_tilt', 'attentive_listening', 'delighted_agreement', 'doubtful_side_eye', 'sleepy_yawn'];
   function stateForInput(input = {}) {
-    if (input.emotion === 'exasperated') return 'doubtful_side_eye';
-    if (['happy', 'joy'].includes(input.emotion) || ['celebrate', 'nod'].includes(input.nikePerformance)) return 'delighted_agreement';
-    if (input.reaction === 'listening' || input.emotion === 'soft' || input.nikePerformance === 'reassure') return 'attentive_listening';
-    if (input.emotion === 'thinking' || ['ponder', 'explain', 'recoil'].includes(input.nikePerformance)) return 'curious_tilt';
+    // Every Jev Kohaku emotion has an authored destination. There is no
+    // surprised drawing in this pack: use a curious tilt, not a manufactured
+    // facial warp or an accidental neutral reset. Explicit faces win gestures.
+    const faces={happy:'delighted_agreement',joy:'delighted_agreement',
+      thinking:'curious_tilt',surprised:'curious_tilt',soft:'attentive_listening',
+      worried:'attentive_listening',exasperated:'doubtful_side_eye'};
+    const gestures={celebrate:'delighted_agreement',nod:'delighted_agreement',
+      ponder:'curious_tilt',explain:'curious_tilt',recoil:'curious_tilt',reassure:'attentive_listening'};
+    const reactions={happy:'delighted_agreement',thinking:'curious_tilt',surprised:'curious_tilt',
+      listening:'attentive_listening',soft:'attentive_listening',sad:'attentive_listening'};
+    if(Object.hasOwn(faces,input.emotion))return faces[input.emotion];
+    if(Object.hasOwn(gestures,input.nikePerformance))return gestures[input.nikePerformance];
+    if(Object.hasOwn(reactions,input.reaction))return reactions[input.reaction];
     return 'neutral';
   }
   function validateManifest(m) {
@@ -298,11 +307,14 @@
       const joy = sequence?.name === 'delighted_agreement' ? 1 : 0;
       const beat = joy ? Math.sin(Math.PI * clamp((now - sequence.started) / 650, 0, 1)) ** 2 : 0;
       const targets = {
-        x: idle * (Math.sin(seconds * .68 + .2) * 6.2 + Math.sin(seconds * .31) * 2.4) * breath,
-        y: idle * Math.sin(seconds * .94) * 5.1 * breath - voice * 12 - beat * 6,
-        rotation: idle * (Math.sin(seconds * .73) * .018 + Math.sin(seconds * .37 + 1) * .005) * roll,
-        scale: idle * Math.sin(seconds * 1.13) * .005 * breath + voice * .002,
-        head: idle * (Math.sin(seconds * 1.37) * .009 + Math.sin(seconds * .69 + .3) * .005) * roll + beat * .012,
+        // The 1254px painting is scaled down for the desktop mascot: tiny
+        // source-space offsets disappeared at that size. Use visible, slow
+        // XY drift and breathing, keeping the entire face on one rigid head.
+        x: idle * (Math.sin(seconds * .68 + .2) * 20 + Math.sin(seconds * .31) * 7.2) * breath,
+        y: idle * Math.sin(seconds * .94) * 14.8 * breath - voice * 12 - beat * 6,
+        rotation: idle * (Math.sin(seconds * .73) * .034 + Math.sin(seconds * .37 + 1) * .009) * roll,
+        scale: idle * Math.sin(seconds * 1.13) * .015 * breath + voice * .002,
+        head: idle * (Math.sin(seconds * 1.37) * .012 + Math.sin(seconds * .69 + .3) * .007) * roll + beat * .012,
         chest: idle * Math.sin(seconds * 1.13 - .5) * breath,
         accent: voice,
       };
@@ -314,12 +326,12 @@
       const softness=clamp(input.hairSpring ?? 1,0,2);
       for(let i=0;i<3;i++) {
         if(reduced||frozenHair||hairAmount===0){for(const a of [hair,velocities,hairMiddle,middleVelocities,hairY,yVelocities])a[i]=0;continue;}
-        const wind=idle*(Math.sin(seconds*.86-i*.56)*(19+i*2)+Math.sin(seconds*1.43+i*1.7)*3.4);
-        const inertia=-tiltVelocity*(5+i)-lifeVelocity.head*(155+i*30)-lifeVelocity.rotation*80-lifeVelocity.x*.25;
-        const target=(wind+inertia)*hairAmount,omega=(5.8-i*.45)/(1+softness*.42);
+        const wind=idle*(Math.sin(seconds*.86-i*.56)*(43+i*3.5)+Math.sin(seconds*1.43+i*1.7)*6.5);
+        const inertia=-tiltVelocity*(6.5+i*1.3)-lifeVelocity.head*(185+i*35)-lifeVelocity.rotation*100-lifeVelocity.x*.35;
+        const target=(wind+inertia)*hairAmount,omega=(5.4-i*.45)/(1+softness*.46);
         [hairMiddle[i],middleVelocities[i]]=spring(hairMiddle[i],middleVelocities[i],target*.7,dt,omega*1.6);
         [hair[i],velocities[i]]=softSpring(hair[i],velocities[i],target,dt,omega,1-Math.min(.24,softness*.22));
-        const lift=(idle*Math.sin(seconds*.97-i*.8)*(5+i*.7)-lifeVelocity.y*.22)*hairAmount;
+        const lift=(idle*Math.sin(seconds*.97-i*.8)*(12.5+i*1.5)-lifeVelocity.y*.28)*hairAmount;
         [hairY[i],yVelocities[i]]=softSpring(hairY[i],yVelocities[i],lift,dt,omega*.9,.84);
       }
       return { pose: tilt > .001 ? 'curious_tilt' : sequence?.name || 'neutral', tilt, now,
@@ -338,7 +350,7 @@
       // produces a bend rather than translating the entire hair as one sheet.
       let dx=middle*(1-u*u)+tip*u*u+(tip-middle)*Math.sin(u*Math.PI)*.35;
       let dy=sample(hairY)*u-Math.abs(dx)*.09*Math.sin(u*Math.PI);
-      dx=22*Math.tanh(dx/22);dy=9*Math.tanh(dy/9);
+      dx=48*Math.tanh(dx/48);dy=20*Math.tanh(dy/20);
       if (externalWarp) { const p = externalWarp(x, y); if (Number.isFinite(p?.x) && Number.isFinite(p?.y)) { dx = clamp(p.x - x, -7, 7); dy = clamp(p.y - y, -3, 3); } }
       return { x: x + dx * weight * (1 - accessory), y: y + dy * weight * (1 - accessory) };
     }

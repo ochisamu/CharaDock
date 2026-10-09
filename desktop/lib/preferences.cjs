@@ -32,6 +32,7 @@ const DEFAULT_CHARACTER_TTS_PROFILES = Object.freeze({
 const DEFAULTS = Object.freeze({
   language: "ja",
   backend: "codex",
+  decisionProvider: "jev",
   jevEnabled: false,
   jevMediaEnabled: true,
   jevExpressionEnabled: true,
@@ -59,6 +60,7 @@ const DEFAULTS = Object.freeze({
   styleBertVits2Speed: 1,
   piperPlusExecutablePath: "",
   piperPlusModelPath: "",
+  piperPlusSpeakerEncoderPath: "",
   piperPlusSpeed: .8,
   supertonicModelDirectory: "",
   supertonicVoice: "F1",
@@ -399,6 +401,7 @@ class Preferences {
       if (typeof this.data.realtimeAutoStartOnPet !== "boolean") this.data.realtimeAutoStartOnPet = false;
       if (typeof this.data.workNetworkAccess !== "boolean") this.data.workNetworkAccess = false;
       if (!["ja", "en"].includes(this.data.language)) this.data.language = "ja";
+      if (!["jev", "decisions"].includes(this.data.decisionProvider)) this.data.decisionProvider = "jev";
       if (!["off", "standard", "strict", "living"].includes(this.data.jevAddressMode)) this.data.jevAddressMode = "off";
       if (!["manual", "vad"].includes(this.data.voiceActivationMode)) this.data.voiceActivationMode = "vad";
       if (!["low", "normal", "high"].includes(this.data.vadSensitivity)) this.data.vadSensitivity = "normal";
@@ -460,6 +463,7 @@ class Preferences {
       if (typeof this.data.piperPlusModelPath !== "string") this.data.piperPlusModelPath = "";
       this.data.piperPlusExecutablePath = this.data.piperPlusExecutablePath.slice(0, 1000);
       this.data.piperPlusModelPath = this.data.piperPlusModelPath.slice(0, 1000);
+      this.data.piperPlusSpeakerEncoderPath = String(this.data.piperPlusSpeakerEncoderPath || "").slice(0, 1000);
       this.data.piperPlusSpeed = Math.min(2, Math.max(.5, Number(this.data.piperPlusSpeed) || 1));
       if (typeof this.data.supertonicModelDirectory !== "string") this.data.supertonicModelDirectory = "";
       this.data.supertonicModelDirectory = this.data.supertonicModelDirectory.slice(0, 1000);
@@ -585,6 +589,8 @@ class Preferences {
           ? profile.provider : "system";
         return [[id, {
           provider,
+          piperPlusReferenceEnabled: profile.piperPlusReferenceEnabled === true,
+          piperPlusReferenceAudioPath: String(profile.piperPlusReferenceAudioPath || "").slice(0, 1000),
           styleBertVits2ModelId: Math.min(9999, Math.max(0, Math.round(Number(profile.styleBertVits2ModelId ?? this.data.styleBertVits2ModelId) || 0))),
           realtimeVoice: normalizeRealtimeVoice(profile.realtimeVoice, normalizeRealtimeVoice(this.data.realtimeVoice)),
           realtimeVoiceConversion: profile.realtimeVoiceConversion === "beatrice-v2" ? "beatrice-v2" : "none",
@@ -680,7 +686,7 @@ class Preferences {
   publicState() {
     const state = {};
     for (const key of PUBLIC_KEYS) {
-      if (!["customCharacters", "workDirectory", "piperPlusExecutablePath", "piperPlusModelPath", "supertonicModelDirectory", "irodoriModelDirectory", "irodoriV4ModelDirectory", "irodoriV4Int4ModelDirectory", "irodoriV41AnimeModelDirectory", "irodoriMfModelDirectory", "irodoriReferenceAudioPath", "irodoriVoices", "kokoroModelDirectory", "sbv2Models", "beatriceVstPath", "beatriceModelPath", "beatriceModels", "characterTtsProfiles", "conversationHistories", "characterMemories", "characterWorkspaces", "continuationSummaries", "managedSkills", "skillAssignments", "mcpServers", "mcpAssignments", "webPreviewRuntimes", "workHistory", "remoteTrustedDevices"].includes(key)) state[key] = this.data[key];
+      if (!["customCharacters", "workDirectory", "piperPlusExecutablePath", "piperPlusModelPath", "piperPlusSpeakerEncoderPath", "supertonicModelDirectory", "irodoriModelDirectory", "irodoriV4ModelDirectory", "irodoriV4Int4ModelDirectory", "irodoriV41AnimeModelDirectory", "irodoriMfModelDirectory", "irodoriReferenceAudioPath", "irodoriVoices", "kokoroModelDirectory", "sbv2Models", "beatriceVstPath", "beatriceModelPath", "beatriceModels", "characterTtsProfiles", "conversationHistories", "characterMemories", "characterWorkspaces", "continuationSummaries", "managedSkills", "skillAssignments", "mcpServers", "mcpAssignments", "webPreviewRuntimes", "workHistory", "remoteTrustedDevices"].includes(key)) state[key] = this.data[key];
     }
     state.hasWorkDirectory = Boolean(this.data.workDirectory);
     state.workDirectoryName = this.data.workDirectory ? path.basename(this.data.workDirectory) : "";
@@ -701,6 +707,7 @@ class Preferences {
     for (const key of PUBLIC_KEYS) {
       if (key === "mcpServers" || key === "mcpAssignments") continue;
       if (Object.prototype.hasOwnProperty.call(values, key)) {
+        if (key === "decisionProvider" && !["jev", "decisions"].includes(values[key])) continue;
         if (key === "jevAddressMode" && !["off", "standard", "strict", "living"].includes(values[key])) continue;
         if (["jevEnabled", "jevMediaEnabled", "jevExpressionEnabled", "jevNikePerformanceEnabled", "jevKohakuPerformanceEnabled"].includes(key) && typeof values[key] !== "boolean") continue;
         this.data[key] = key === "deviceProfiles" ? normalizeDeviceProfiles(values[key]) : values[key];

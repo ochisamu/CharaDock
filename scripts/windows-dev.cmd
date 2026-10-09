@@ -11,7 +11,7 @@ if not exist "%CHARADOCK_NODE%" (
   for /f "delims=" %%N in ('where node 2^>nul') do if not defined CHARADOCK_NODE set "CHARADOCK_NODE=%%N"
 )
 if not defined CHARADOCK_NODE (
-  echo Windows node.exe was not found. Install Node.js 22 or later. 1>&2
+  echo Windows node.exe was not found. Install Node.js 24 or later. 1>&2
   popd
   exit /b 1
 )
@@ -59,7 +59,7 @@ if not exist "%CHARADOCK_NPM%" (
   for /f "delims=" %%N in ('where npm.cmd 2^>nul') do if not defined CHARADOCK_NPM set "CHARADOCK_NPM=%%N"
 )
 if not defined CHARADOCK_NPM (
-  echo Windows npm.cmd was not found. Install Node.js 22 or later. 1>&2
+  echo Windows npm.cmd was not found. Install Node.js 24 or later. 1>&2
   popd
   exit /b 1
 )

@@ -23,18 +23,35 @@ const TTS_MODELS = Object.freeze({
     id: "piper-plus",
     label: "piper-plus · つくよみちゃん FP16",
     description: "日本語向けの軽量サンプル音声。公式Windowsランタイムも一緒に導入します。",
-    directoryName: "piper-plus-tsukuyomi-v1.13.0",
-    downloadBytes: 72_120_860,
+    directoryName: "piper-plus-tsukuyomi-v2.0.0",
+    obsoleteDirectoryNames: Object.freeze(["piper-plus-tsukuyomi-v1.13.0"]),
+    incrementalDownloadBytes: 37_791_149,
+    downloadBytes: 77_450_767,
     platforms: Object.freeze(["win32"]),
     sourceUrl: "https://github.com/ayutaz/piper-plus",
     licenseUrl: "https://tyc.rei-yumesaki.net/material/corpus/#terms3",
     runtime: Object.freeze({
-      archiveName: "piper-windows-x64.zip",
-      url: "https://github.com/ayutaz/piper-plus/releases/download/v1.13.0/piper-windows-x64.zip",
-      bytes: 32_461_242,
-      sha256: "d8b6237a546d996a65009bd88f2eb845fad876505952cce98eb3fedaf99fa3d7",
+      archiveName: "piper-plus-rs-cli-win-x64.zip",
+      url: "https://github.com/ayutaz/piper-plus/releases/download/v2.0.0/piper-plus-rs-cli-win-x64.zip",
+      bytes: 31_365_506,
+      sha256: "a1bbcbedb02b2b49a171de59de8143536d97215fe97a612001fd244c76989361",
     }),
     files: Object.freeze([
+      Object.freeze({
+        name: "cmudict_data.json", relativePath: "runtime/cmudict_data.json",
+        url: "https://raw.githubusercontent.com/ayutaz/piper-plus/v2.0.0/src/rust/piper-plus-g2p/data/cmudict_data.json",
+        bytes: 3748042, sha256: "f78ed3bfa40146b70b9de78a7c67ef3be6b6c11671bb2a050442f232252a3f01",
+      }),
+      Object.freeze({
+        name: "pinyin_single.json", relativePath: "runtime/pinyin_single.json",
+        url: "https://raw.githubusercontent.com/ayutaz/piper-plus/v2.0.0/src/rust/piper-plus-g2p/data/pinyin_single.json",
+        bytes: 704934, sha256: "88a00ff6d9ca7a3b013b7d30c48aa32bbab55bc5a326faee4c0df3a081c78da8",
+      }),
+      Object.freeze({
+        name: "pinyin_phrases.json", relativePath: "runtime/pinyin_phrases.json",
+        url: "https://raw.githubusercontent.com/ayutaz/piper-plus/v2.0.0/src/rust/piper-plus-g2p/data/pinyin_phrases.json",
+        bytes: 1972667, sha256: "2de9b448c5571213ee54f5ab80456dd1c0b03cb8465a779189ef654f9654cd05",
+      }),
       Object.freeze({
         name: "tsukuyomi-chan-6lang-fp16.onnx",
         relativePath: "models/tsukuyomi-chan-6lang-fp16.onnx",
@@ -241,9 +258,8 @@ function isFile(filePath) {
 
 function requiredPaths(model, directory) {
   if (model.id === "piper-plus") return [
-    path.join(directory, "piper", "bin", "piper.exe"),
-    path.join(directory, "models", "tsukuyomi-chan-6lang-fp16.onnx"),
-    path.join(directory, "models", "tsukuyomi-chan-6lang-fp16.onnx.json"),
+    path.join(directory, "runtime", "piper-plus-cli.exe"),
+    ...model.files.map((file) => path.join(directory, file.relativePath)),
   ];
   if (model.id === "supertonic-3") return [
     "duration_predictor.int8.onnx", "text_encoder.int8.onnx", "vector_estimator.int8.onnx",
@@ -422,7 +438,14 @@ class EmbeddedTtsModels {
   obsoleteInstallations(model) {
     return managedSourceDirectories(this.baseDirectory, model)
       .filter((directory) => directory !== this.directoryFor(model))
-      .filter((directory) => requiredPaths(model, directory).every(isFile));
+      .filter((directory) => {
+        const required = requiredPaths(model, directory);
+        if (model.id === "piper-plus") return [
+          path.join(directory, "piper", "bin", "piper.exe"),
+          ...model.files.filter((file) => file.relativePath.startsWith("models/")).map((file) => path.join(directory, file.relativePath)),
+        ].every(isFile);
+        return required.every(isFile);
+      });
   }
 
   installedPaths(provider) {
@@ -433,10 +456,24 @@ class EmbeddedTtsModels {
       : this.obsoleteInstallations(model)[0];
     if (!directory) return {};
     if (provider === "piper-plus") return {
-      executablePath: path.join(directory, "piper", "bin", "piper.exe"),
+      executablePath: this.isInstalled(provider) ? path.join(directory, "runtime", "piper-plus-cli.exe") : path.join(directory, "piper", "bin", "piper.exe"),
       modelPath: path.join(directory, "models", "tsukuyomi-chan-6lang-fp16.onnx"),
     };
     return { modelDirectory: directory };
+  }
+
+  upgradedPiperPlusPaths({ executablePath = "", modelPath = "" } = {}) {
+    if (!this.isInstalled("piper-plus")) return {};
+    const model = this.modelForId("piper-plus");
+    const current = this.installedPaths("piper-plus");
+    const normalize = (value) => this.platform === "win32" ? path.resolve(value).toLowerCase() : path.resolve(value);
+    const patch = {};
+    for (const directory of managedSourceDirectories(this.baseDirectory, model)) {
+      if (directory === this.directoryFor(model)) continue;
+      if (executablePath && normalize(executablePath) === normalize(path.join(directory, "piper", "bin", "piper.exe"))) patch.piperPlusExecutablePath = current.executablePath;
+      if (modelPath && normalize(modelPath) === normalize(path.join(directory, "models", "tsukuyomi-chan-6lang-fp16.onnx"))) patch.piperPlusModelPath = current.modelPath;
+    }
+    return patch;
   }
 
   async cleanupObsoleteVersions(model) {
@@ -549,8 +586,9 @@ class EmbeddedTtsModels {
           ? ["-xf", archivePath, "-C", extracted]
           : ["-q", archivePath, "-d", extracted]);
         await fsp.rm(archivePath, { force: true });
+        await fsp.mkdir(path.join(temporaryDirectory, "ready"), { recursive: true });
+        await fsp.rename(extracted, path.join(temporaryDirectory, "ready", "runtime"));
         for (const file of model.files) await installFile(file, path.join(temporaryDirectory, "ready", file.relativePath));
-        await fsp.rename(path.join(extracted, "piper"), path.join(temporaryDirectory, "ready", "piper"));
       } else if (model.archive) {
         const archivePath = path.join(temporaryDirectory, model.archive.archiveName);
         await downloadFile({ ...model.archive, name: model.archive.archiveName }, archivePath);

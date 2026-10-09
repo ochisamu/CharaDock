@@ -55,6 +55,30 @@ The key never enters a renderer window. When Electron's `safeStorage` is
 available it is encrypted with the operating system credential store; otherwise
 it remains in memory for the current app session only.
 
+## Decision assist
+
+AI接続画面の **判断アシスト → 判断サービス** で **JEV · TypeSafe** と
+**OpenAI Decisions** を切り替えられます。有効化と各機能の設定は共通です。
+Decisionsは既存のOpenAI APIキーを使い、会話の応答エンジンとは独立して選べます。
+JEVは専用のアプリAPIキーを使います。既存プロフィールの既定はJEVです。
+
+対象はメディア操作、表情・身振り、通常TTSのハンズフリー呼びかけ判定です。
+PC・設定チャット・Link・ATOM Echo・RLCDから同じ判断クライアントを使います。
+切り替え中の古い判定は無効化し、接続失敗時に別サービスへ自動送信しません。
+
+Decisionsは `POST https://api.openai.com/v1/decisions` / `gpt-6-luna` を使います。
+既存の候補選択を `choice`、明示的な操作の確率判定を `predicate` に変換し、
+候補別の確率へ既存のしきい値を適用します（`confidence` とは区別します）。
+参照: [OpenAI Decisions guide](https://developers.openai.com/api/docs/guides/decisions)。
+
+`npm run desktop:win:dev:profile` は通常版と共通の
+`%APPDATA%\charadock` プロフィールを使います。APIキーを更新したら保存後に
+判断アシストの接続テストを実行してください。
+
+検証スクリプト:
+- `scripts/decisions-ui-smoke.cjs`: 隔離プロフィール、合成キー・API応答で実Windows設定画面とIPCを検証。
+- `scripts/verify-decisions-profile.cjs`: Windows Electronで指定プロフィールの暗号化キーを読み、実APIを検証。引数は `SOURCE PROFILE FRESH_OUTPUT`。元プロフィールは変更しません。
+
 ## Voice and animation
 
 - **Mic link** continuously measures microphone volume locally and sends only a
@@ -121,3 +145,26 @@ npm run dist:win
 ```
 
 `dist:win` はWineなしでも生成できるWindows用フォルダ版です。Windows上でNSISインストーラー／単体portable版を生成する場合は `npm run dist:win:installer` を使います。
+
+### Piper Plus v2.0.0
+
+The Windows sample download installs the official v2.0.0 Rust CLI 0.5.2,
+Tsukuyomi-chan FP16, and the upstream English/Chinese phonemizer dictionaries.
+Existing v1.13.0 models are SHA-256 verified and reused during the upgrade.
+The bundled Japanese G2P dependency is independently versioned at npm 0.8.0.
+
+Settings → Voice → Character voice → Piper Plus has an optional reference
+WAV setting, saved per character. It requires the Rust CLI, an ONNX
+model with a `speaker_embedding` input, and that model's compatible speaker
+encoder ONNX. Select the model under manual files, select the encoder, and
+choose a 1–30 second WAV. The sample has speaker embedding inputs, but voice
+cloning quality depends on the model training and a compatible encoder.
+Incomplete reference settings stop synthesis with setup guidance; they never
+silently substitute the sample voice. Desktop and remote read-aloud use
+the same main-process synthesis route. Full local reference paths stay private.
+
+The default Tsukuyomi sample requires a 256-dimensional speaker embedding;
+the publicly tested CAM++ encoder emits 192 dimensions, so that pair cannot
+synthesize reference-conditioned speech. A matching zero-shot model and encoder
+must be obtained separately. Reference-conditioned end-to-end synthesis has
+not been validated; the settings UI alone does not establish voice cloning.

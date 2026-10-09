@@ -194,7 +194,7 @@
     "cmu-pronouncing-dictionary": "3.0.0",
     "js-yaml": "4.3.1",
     "onnxruntime-web": "1.27.0",
-    "piper-plus": "0.6.0",
+    "piper-plus": "0.8.0",
     "pngjs": "^7.0.0",
     "qrcode": "1.5.4",
     "serialport": "^13.0.0",

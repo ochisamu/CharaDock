@@ -210,7 +210,7 @@ test("managed model status only reports complete installations", (t) => {
     assert.equal(models.status(model.id).supported, true);
   }
   const piperPaths = models.installedPaths("piper-plus");
-  assert.equal(path.basename(piperPaths.executablePath), "piper.exe");
+  assert.equal(path.basename(piperPaths.executablePath), "piper-plus-cli.exe");
   assert.equal(path.extname(piperPaths.modelPath), ".onnx");
 });
 
@@ -305,4 +305,39 @@ test("stale managed downloads are cleaned without touching other folders", (t) =
   assert.equal(fs.existsSync(stale), false);
   assert.equal(fs.existsSync(staleInt4), false);
   assert.equal(fs.existsSync(unrelated), true);
+});
+
+test("Piper v1 installation remains available until a complete v2 runtime and dictionaries exist", (t) => {
+  const directory = temporaryDirectory();
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const model = TTS_MODELS["piper-plus"];
+  const old = path.join(directory, model.obsoleteDirectoryNames[0]);
+  const oldPaths = [path.join(old, "piper", "bin", "piper.exe"),
+    ...model.files.filter(file => file.relativePath.startsWith("models/")).map(file => path.join(old, file.relativePath))];
+  for (const file of oldPaths) { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, "old"); }
+  const models = new EmbeddedTtsModels(directory, { platform: "win32" });
+  assert.equal(models.status("piper-plus").upgradeAvailable, true);
+  assert.equal(models.installedPaths("piper-plus").executablePath, oldPaths[0]);
+  const current = path.join(directory, model.directoryName);
+  for (const file of requiredPaths(model, current)) { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, "new"); }
+  assert.equal(models.status("piper-plus").installed, true);
+  assert.equal(path.basename(models.installedPaths("piper-plus").executablePath), "piper-plus-cli.exe");
+  fs.rmSync(path.join(current, "runtime", "cmudict_data.json"));
+  assert.equal(models.status("piper-plus").installed, false);
+  assert.equal(models.status("piper-plus").upgradeAvailable, true);
+});
+
+test("Piper restart migration updates only old managed paths and preserves custom models", (t) => {
+  const directory = temporaryDirectory();
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const model = TTS_MODELS["piper-plus"];
+  const models = new EmbeddedTtsModels(directory, { platform: "win32" });
+  const old = path.join(directory, model.obsoleteDirectoryNames[0]);
+  const oldOptions = { executablePath: path.join(old, "piper", "bin", "piper.exe"), modelPath: path.join(old, "models", "tsukuyomi-chan-6lang-fp16.onnx") };
+  assert.deepEqual(models.upgradedPiperPlusPaths(oldOptions), {});
+  for (const file of requiredPaths(model, path.join(directory, model.directoryName))) { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, "new"); }
+  const current = models.installedPaths("piper-plus");
+  assert.deepEqual(models.upgradedPiperPlusPaths(oldOptions), { piperPlusExecutablePath: current.executablePath, piperPlusModelPath: current.modelPath });
+  assert.deepEqual(models.upgradedPiperPlusPaths({ ...oldOptions, modelPath: path.join(directory, "my-own-model.onnx") }), { piperPlusExecutablePath: current.executablePath });
+  assert.deepEqual(models.upgradedPiperPlusPaths({ executablePath: path.join(directory, "my-piper.exe"), modelPath: path.join(directory, "my.onnx") }), {});
 });

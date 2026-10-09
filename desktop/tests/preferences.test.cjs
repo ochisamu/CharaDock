@@ -857,3 +857,20 @@ test("preferences expose only the work folder name to renderer windows", () => {
   assert.equal(state.workDirectoryName, "private-project");
   assert.equal(Object.prototype.hasOwnProperty.call(state, "workDirectory"), false);
 });
+
+test("Piper references persist independently per character and local paths stay private", (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "charadock-piper-prefs-"));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const file = path.join(directory, "preferences.json");
+  const prefs = new Preferences(file);
+  prefs.patch({ piperPlusSpeakerEncoderPath: "/private/encoder.onnx", characterTtsProfiles: {
+    amber: { provider: "piper-plus", piperPlusReferenceEnabled: true, piperPlusReferenceAudioPath: "/private/amber.wav" },
+    sage: { provider: "piper-plus", piperPlusReferenceEnabled: false, piperPlusReferenceAudioPath: "/private/sage.wav" },
+  } });
+  const restored = new Preferences(file);
+  assert.equal(restored.data.characterTtsProfiles.amber.piperPlusReferenceEnabled, true);
+  assert.equal(restored.data.characterTtsProfiles.sage.piperPlusReferenceEnabled, false);
+  assert.equal(restored.data.characterTtsProfiles.amber.piperPlusReferenceAudioPath, "/private/amber.wav");
+  assert.equal(restored.data.piperPlusSpeakerEncoderPath, "/private/encoder.onnx");
+  assert.equal(JSON.stringify(restored.publicState()).includes("/private/"), false);
+});

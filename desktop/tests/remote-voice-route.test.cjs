@@ -50,7 +50,8 @@ test("remote renderer routes normal TTS and Live audio through the shared mouth 
 test("main process keeps phone synthesis independent while preserving desktop audio policy", () => {
   const source = fs.readFileSync(path.join(__dirname, "..", "main.cjs"), "utf8");
   assert.match(source, /mobileTtsAllowed: mobileTtsAvailable\(/);
-  assert.match(source, /synthesizeConfiguredTts\(String\(text \|\| ""\)\.slice\(0, 4000\), REMOTE_TTS_OWNER_ID, \{ enabled: true \}\)/);
+  assert.match(source, /remoteTtsWithExpression\(String\(text \|\| ''\)\.slice\(0, 4000\)/);
+  assert.match(source, /synthesize: value => synthesizeConfiguredTts\(value, REMOTE_TTS_OWNER_ID, \{ enabled: true \}\)/);
   assert.match(source, /const remoteTtsEnabled = remoteTurnTtsEnabled\(/);
   assert.match(source, /const pcTtsEnabled = Boolean\(result\.ttsEnabled\)/);
 });

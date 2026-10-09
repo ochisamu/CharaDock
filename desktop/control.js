@@ -1074,7 +1074,9 @@
       progress.value = 0;
       if (model.supported === false) setStatus(status, "このサンプルの自動導入はWindows版で利用できます。");
       else if (model.installed) setStatus(status, `${model.label || "サンプルモデル"} · 導入済み`);
-      else if (model.upgradeAvailable) setStatus(status, localized("旧V4モデルが導入されています。V4.1へ差分更新できます。", "An older V4 model is installed. You can update it to V4.1."));
+      else if (model.upgradeAvailable) setStatus(status, model.provider === "piper-plus"
+        ? localized("旧版が導入されています。Piper Plus v2.0.0へ更新できます。", "An older runtime is installed. Update to Piper Plus v2.0.0.")
+        : localized("旧V4モデルが導入されています。V4.1へ差分更新できます。", "An older V4 model is installed. You can update it to V4.1."));
       else setStatus(status, "サンプルモデルはまだダウンロードされていません。");
     }
     download.hidden = Boolean(model.installed);
@@ -1082,8 +1084,9 @@
     remove.hidden = !model.installed && !model.upgradeAvailable;
     remove.disabled = Boolean(model.downloading);
     const incrementalSize = downloadSizeLabel(model.incrementalDownloadBytes);
+    const upgradeVersion = model.provider === "piper-plus" ? "v2.0.0" : "V4.1";
     download.textContent = model.upgradeAvailable
-      ? localized(`V4.1へ更新（通常約${incrementalSize}）`, `Update to V4.1 (usually about ${incrementalSize})`)
+      ? localized(`${upgradeVersion}へ更新（通常約${incrementalSize}）`, `Update to ${upgradeVersion} (usually about ${incrementalSize})`)
       : `ダウンロード（約${size}）`;
     hint.textContent = model.upgradeAvailable
       ? localized(`${model.description || "ローカル音声合成モデル"} 変更のない大容量ファイルはSHA-256検証後に再利用し、差分だけ取得します。`, `${model.description || "Local speech model"} Unchanged large files are reused after SHA-256 verification, and only the update is downloaded.`)
@@ -3147,11 +3150,17 @@
   function syncPiperPlusUi(info = state?.piperPlus || {}) {
     $("#piperPlusExecutableName").textContent = info.runtimeName || "未選択";
     $("#piperPlusModelName").textContent = info.modelName || "未選択";
+    $("#piperPlusReferenceName").textContent = info.referenceName || "未選択";
+    $("#piperPlusEncoderName").textContent = info.encoderName || "未選択";
+    $("#piperPlusReferenceEnabledInput").checked = info.referenceEnabled === true;
+    $("#piperPlusReferenceSettings").hidden = info.referenceEnabled !== true;
+    $("#piperPlusReferenceClearButton").disabled = !info.referenceName;
     const status = $("#piperPlusStatus");
     if (!info.runtimeReady) setStatus(status, "piper-plusの実行ファイルを選択してください。");
     else if (!info.modelReady) setStatus(status, "音声モデルは未導入です。後から選択できます。");
     else if (!info.configReady) setStatus(status, "モデルの設定JSONが同じフォルダーに見つかりません。", true);
-    else setStatus(status, "ローカル音声合成の準備ができています。");
+    else if (info.referenceIssue) setStatus(status, info.referenceIssue, true);
+    else setStatus(status, info.referenceEnabled ? "参照音声を使う準備ができています。" : "ローカル音声合成の準備ができています。");
     syncTtsSampleModelUi("piperPlus", info.sampleModel);
   }
 
@@ -3930,10 +3939,19 @@
     }
   }
 
+  function decisionKeyConfigured() {
+    return state?.decisionProvider === "decisions" ? state?.hasApiKey === true : state?.jevApiKeyConfigured === true;
+  }
+
   function syncJevUi() {
     for (const element of $$("#jevSettings [data-jev-ja]")) {
       element.textContent = localized(element.dataset.jevJa, element.dataset.jevEn);
     }
+    const decisions = state?.decisionProvider === "decisions";
+    $("#decisionProviderSelect").value = decisions ? "decisions" : "jev";
+    $("#decisionProviderSelect").disabled = jevBusy;
+    $("#decisionJevKeySettings").hidden = decisions;
+    $("#decisionOpenAIKeyNote").hidden = !decisions;
     const enabled = state?.jevEnabled === true;
     $("#jevEnabledToggle").checked = enabled;
     $("#jevEnabledToggle").disabled = jevBusy;
@@ -3948,7 +3966,7 @@
     const kohaku = state?.characterId === "amber-avatar";
     const performanceOn = kohaku ? state?.jevKohakuPerformanceEnabled === true
       : state?.characterId === "nike-avatar" && state?.jevNikePerformanceEnabled === true;
-    for (const button of $$("[data-jev-preview]")) button.disabled = jevBusy || !enabled || !state?.jevApiKeyConfigured
+    for (const button of $$("[data-jev-preview]")) button.disabled = jevBusy || !enabled || !decisionKeyConfigured()
       || state?.jevExpressionEnabled === false || !performanceOn
       || (kohaku && ["joy", "worried", "proud", "exasperated"].includes(button.dataset.jevPreview));
     $("#jevMediaEnabledToggle").disabled = jevBusy || !enabled;
@@ -3956,8 +3974,11 @@
     $("#jevApiKeyInput").disabled = jevBusy;
     $("#saveJevApiKeyButton").disabled = jevBusy || !$("#jevApiKeyInput").value.trim();
     $("#clearJevApiKeyButton").disabled = jevBusy || !state?.jevApiKeyConfigured;
-    $("#testJevConnectionButton").disabled = jevBusy || !enabled || !state?.jevApiKeyConfigured || Boolean($("#jevApiKeyInput").value.trim());
-    $("#jevApiKeyState").textContent = !state?.jevApiKeyConfigured
+    $("#testJevConnectionButton").disabled = jevBusy || !enabled || !decisionKeyConfigured() || (!decisions && Boolean($("#jevApiKeyInput").value.trim()));
+    $("#jevApiKeyState").textContent = decisions
+      ? state?.hasApiKey ? localized("プロフィールのOpenAI APIキー設定済み", "Profile OpenAI API key configured")
+        : localized("プロフィールでOpenAI APIキーを設定してください", "Set an OpenAI API key in Profile")
+      : !state?.jevApiKeyConfigured
       ? localized("APIキー未設定", "API key not configured")
       : state.jevApiKeyPersistence === "encrypted"
         ? localized("APIキー設定済み（暗号化保存）", "API key configured (encrypted storage)")
@@ -3967,6 +3988,7 @@
   async function saveJevConfig(keyAction) {
     if (jevBusy) return;
     const payload = {
+      provider: $("#decisionProviderSelect").value,
       enabled: $("#jevEnabledToggle").checked,
       mediaEnabled: $("#jevMediaEnabledToggle").checked,
       expressionEnabled: $("#jevExpressionEnabledToggle").checked,
@@ -3985,9 +4007,9 @@
     try {
       state = await api.setJevConfig(payload);
       syncUi();
-      setStatus($("#jevStatus"), localized("Jev設定を保存しました。", "Jev settings saved."));
+      setStatus($("#jevStatus"), localized("判断アシスト設定を保存しました。", "Decision assist settings saved."));
     } catch {
-      setStatus($("#jevStatus"), localized("Jev設定を保存できませんでした。", "Could not save Jev settings."), true);
+      setStatus($("#jevStatus"), localized("判断アシスト設定を保存できませんでした。", "Could not save decision assist settings."), true);
     } finally {
       jevBusy = false;
       syncJevUi();
@@ -3995,7 +4017,8 @@
   }
 
   async function testJevConnection() {
-    if (jevBusy || !state?.jevEnabled || !state?.jevApiKeyConfigured || $("#jevApiKeyInput").value.trim()) return;
+    if (jevBusy || !state?.jevEnabled || !decisionKeyConfigured()
+      || (state?.decisionProvider !== "decisions" && $("#jevApiKeyInput").value.trim())) return;
     jevBusy = true;
     syncJevUi();
     setStatus($("#jevStatus"), localized("接続を確認しています…", "Testing connection…"));
@@ -4258,6 +4281,7 @@
       styleBertVits2Url: $("#styleBertVits2UrlInput").value.trim(),
       styleBertVits2ModelId: Number($("#styleBertVits2ModelIdInput").value),
       styleBertVits2Speed: Number($("#styleBertVits2SpeedInput").value),
+      piperPlusReferenceEnabled: $("#piperPlusReferenceEnabledInput").checked,
       piperPlusSpeed: Number($("#piperPlusSpeedInput").value),
       supertonicVoice: $("#supertonicVoiceSelect").value,
       supertonicSpeed: Number($("#supertonicSpeedInput").value),
@@ -6284,6 +6308,16 @@
         setStatus($("#beatriceLibraryStatus"), error.message, true);
       }
     });
+    for (const [selector, method] of [
+      ["#piperPlusReferenceButton", "choosePiperPlusReference"],
+      ["#piperPlusReferenceClearButton", "clearPiperPlusReference"],
+      ["#piperPlusEncoderButton", "choosePiperPlusEncoder"],
+    ]) {
+      $(selector).addEventListener("click", async () => {
+        try { state = await api[method](); syncUi(); }
+        catch (error) { setStatus($("#piperPlusStatus"), error.message, true); }
+      });
+    }
     $("#piperPlusExecutableButton").addEventListener("click", async () => {
       try {
         state = await api.choosePiperPlusExecutable();
@@ -6536,7 +6570,7 @@
         setStatus($("#connectionStatus"), error.message, true);
       }
     });
-    ["#styleBertVits2UrlInput", "#styleBertVits2ModelIdInput", "#styleBertVits2SpeedInput", "#sbv2ModelSelect", "#sbv2StyleSelect", "#sbv2StyleWeightInput", "#sbv2SpeedInput", "#sbv2DeviceSelect", "#piperPlusSpeedInput", "#supertonicVoiceSelect", "#supertonicSpeedInput", "#supertonicStepsInput", "#kokoroVoiceSelect", "#kokoroSpeedInput", "#kokoroDeviceSelect", "#irodoriSpeedInput", "#irodoriSamplingModeSelect", "#irodoriStepsInput", "#irodoriSeedInput", "#irodoriCaptionInput", "#irodoriAutoEmotionToggle", "#irodoriEmotionStrengthSelect", "#englishPronunciationDictionaryInput"]
+    ["#styleBertVits2UrlInput", "#styleBertVits2ModelIdInput", "#styleBertVits2SpeedInput", "#sbv2ModelSelect", "#sbv2StyleSelect", "#sbv2StyleWeightInput", "#sbv2SpeedInput", "#sbv2DeviceSelect", "#piperPlusSpeedInput", "#piperPlusReferenceEnabledInput", "#supertonicVoiceSelect", "#supertonicSpeedInput", "#supertonicStepsInput", "#kokoroVoiceSelect", "#kokoroSpeedInput", "#kokoroDeviceSelect", "#irodoriSpeedInput", "#irodoriSamplingModeSelect", "#irodoriStepsInput", "#irodoriSeedInput", "#irodoriCaptionInput", "#irodoriAutoEmotionToggle", "#irodoriEmotionStrengthSelect", "#englishPronunciationDictionaryInput"]
       .forEach((selector) => $(selector).addEventListener("change", () => {
         if (selector === "#irodoriAutoEmotionToggle") syncIrodoriUi();
         saveSettings().catch((error) => setStatus($("#ttsStatus"), error.message, true));
@@ -6574,12 +6608,12 @@
     for (const button of $$("[data-jev-preview]")) button.addEventListener("click", async () => {
       try {
         await api.previewJevPerformance(button.dataset.jevPreview);
-        setStatus($("#jevStatus"), localized("例文をJevで判定しています（音声なし）。", "Classifying a sample with Jev (no audio)."));
+        setStatus($("#jevStatus"), localized("例文を選択したサービスで判定しています（音声なし）。", "Classifying a sample with the selected service (no audio)."));
       } catch {
         setStatus($("#jevStatus"), localized("標準AIニケちゃんを選び、表現拡張とAPIキーを確認してください。", "Select built-in AI Nike and check performance settings and the API key."), true);
       }
     });
-    for (const selector of ["#jevEnabledToggle", "#jevMediaEnabledToggle", "#jevExpressionEnabledToggle", "#jevNikePerformanceEnabledToggle", "#jevKohakuPerformanceEnabledToggle", "#jevAddressModeSelect"]) {
+    for (const selector of ["#decisionProviderSelect", "#jevEnabledToggle", "#jevMediaEnabledToggle", "#jevExpressionEnabledToggle", "#jevNikePerformanceEnabledToggle", "#jevKohakuPerformanceEnabledToggle", "#jevAddressModeSelect"]) {
       $(selector).addEventListener("change", () => saveJevConfig());
     }
     $("#jevApiKeyInput").addEventListener("input", () => {

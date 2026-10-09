@@ -20,6 +20,11 @@
   let avatarSpeakingReleaseTimer = 0;
   const remoteMouthTracker = window.CharaDockAudioEnvelope.createThreeStageMouthTracker({ minimumHoldMs: 64 });
   let avatarAssets = new Map();
+  let avatarSyncGeneration = 0;
+  const authoredAvatar = window.CharaDockRemoteAuthoredAvatar.create({
+    canvas: $('#avatarAuthored'), shell: $('#avatarMotion'), runtime: window.PuruPuruDrawnPoseRuntime,
+    onError: () => console.warn('Link authored avatar unavailable; using standard avatar'),
+  });
   let petRequestInFlight = false;
   let mobileSpeechToken = 0;
   let mobileSpeechPending = false;
@@ -30,6 +35,7 @@
   let mobileStreamSpeechFullText = "";
   let mobileStreamSpeechDraining = false;
   let mobileStreamSpeechSignal = null;
+  const speechCaption = window.CharaDockRemoteSpeechCaption.create(renderSpeechCaption);
   let settingsSaving = false;
   let settingsStatusTimer = 0;
   let composerHintErrorTimer = 0;
@@ -294,13 +300,28 @@
     chip.querySelector("b").textContent = label || (connected ? text("接続中", "Connected") : text("未接続", "Offline"));
   }
 
-  function setResponseText(value) {
-    const normalized = String(value || "").trim();
-    if (!normalized) return;
-    $("#responseText").textContent = normalized;
-    $("#historyCurrentText").textContent = normalized;
-    const lines = normalized.split(/\r?\n/).length;
-    $("#bubbleExpandButton").hidden = normalized.length < 74 && lines < 4;
+  function setResponseText(value) { speechCaption.text(value); }
+
+  function renderSpeechCaption({ visibleText, fullText, captions, reading }) {
+    const display = $("#responseText");
+    display.replaceChildren();
+    for (let index = 0; index < captions.length; index++) {
+      if (index) display.appendChild(document.createTextNode("\n"));
+      const span = document.createElement("span");
+      span.className = index === captions.length - 1 ? "caption-current" : "caption-previous";
+      span.textContent = captions[index];
+      display.appendChild(span);
+    }
+    if (!captions.length) display.textContent = visibleText;
+    $("#responseBubble").classList.toggle("has-speech-caption", Boolean(captions.length));
+    $("#responseBubble").classList.toggle("is-reading", reading && Boolean(captions.length));
+    $("#historyCurrentText").textContent = fullText || visibleText;
+    const lines = visibleText.split(/\r?\n/).length;
+    $("#bubbleExpandButton").hidden = fullText === visibleText && visibleText.length < 74 && lines < 4;
+    // Prefer the beginning of the actual current audio chunk if two captions
+    // overflow the bubble. Never jump to the end of an unread long answer.
+    const current = display.querySelector(".caption-current");
+    display.scrollTop = current ? Math.max(0, current.offsetTop - display.offsetTop - 23) : 0;
   }
 
   function cleanRemoteErrorMessage(error) {
@@ -383,6 +404,7 @@
   }
 
   function showFace(key) {
+    authoredAvatar.blink(key.startsWith('eyesClosed'));
     if (!appState?.character?.assetKeys?.includes(key)) key = "eyesOpenMouthClosed";
     const source = avatarAssets.get(key);
     const face = $("#avatarFace");
@@ -418,12 +440,14 @@
       showFace(faceKey(true));
     }
     setAvatarSpeaking(next.speaking);
+    authoredAvatar.audio(currentMouth, rawRms);
     return next;
   }
 
   function resetRemoteMouth({ keepSpeaking = false } = {}) {
     remoteMouthTracker.reset();
     currentMouth = "closed";
+    authoredAvatar.audio('closed', 0);
     showFace(faceKey(true));
     if (!keepSpeaking) setAvatarSpeaking(false, 0);
   }
@@ -450,8 +474,10 @@
   function scheduleBlink() {
     clearTimeout(blinkTimer);
     blinkTimer = setTimeout(() => {
+      if (document.hidden) { scheduleBlink(); return; }
+      const generation = avatarSyncGeneration;
       showFace(faceKey(false));
-      setTimeout(() => showFace(faceKey(true)), 115);
+      setTimeout(() => { if (generation === avatarSyncGeneration) showFace(faceKey(true)); }, 115);
       scheduleBlink();
     }, 2800 + Math.random() * 2800);
   }
@@ -474,7 +500,8 @@
     const shell = $("#avatarReactionShell");
     for (const name of ["happy", "soft", "surprised"]) shell.classList.remove(`is-reacting-${name}`);
     void shell.offsetWidth;
-    shell.classList.add(`is-reacting-${emotion}`);
+    if (!authoredAvatar.status().ready) shell.classList.add(`is-reacting-${emotion}`);
+    authoredAvatar.expression({ ...payload, emotion, characterId: appState?.character?.id });
     currentEmotion = emotion;
     showFace(faceKey(true));
     reactionTimer = setTimeout(() => {
@@ -487,16 +514,22 @@
   async function syncAvatar() {
     const character = appState?.character;
     if (!character) return;
+    const generation = ++avatarSyncGeneration;
+    authoredAvatar.sync(character);
     clearTimeout(reactionTimer);
     currentEmotion = "";
     for (const name of ["happy", "soft", "surprised"]) $("#avatarReactionShell").classList.remove(`is-reacting-${name}`);
     for (const value of avatarAssets.values()) URL.revokeObjectURL(value);
     avatarAssets = new Map();
+    const nextAssets = new Map();
     await Promise.all(character.assetKeys.map(async (key) => {
       const response = await fetch(`/api/avatar/${encodeURIComponent(key)}?v=${encodeURIComponent(character.assetVersion || "1")}`, { cache: "force-cache" });
-      if (response.ok) avatarAssets.set(key, URL.createObjectURL(await response.blob()));
+      if (response.ok) nextAssets.set(key, URL.createObjectURL(await response.blob()));
     }));
+    if (generation !== avatarSyncGeneration) { for (const value of nextAssets.values()) URL.revokeObjectURL(value); return; }
+    avatarAssets = nextAssets;
     await decodeAvatarAssets();
+    if (generation !== avatarSyncGeneration) return;
     $("#responseSpeaker").textContent = character.name;
     $("#avatarFace").alt = character.name;
     $("#avatarTapTarget").setAttribute("aria-label", text(`${character.name}に触れる`, `Tap ${character.name}`));
@@ -522,7 +555,8 @@
 
   function renderHistory() {
     const list = $("#historyList");
-    $("#historyCurrentText").textContent = $("#responseText").textContent;
+    const caption = speechCaption.state();
+    $("#historyCurrentText").textContent = caption.fullText || $("#responseText").textContent;
     list.replaceChildren();
     for (const item of safeHistory()) {
       const row = document.createElement("article");
@@ -763,7 +797,7 @@
     if (!pendingLiveBeatriceCaption) return;
     const caption = pendingLiveBeatriceCaption;
     pendingLiveBeatriceCaption = "";
-    setResponseText(caption);
+    speechCaption.live(caption);
   }
 
   function stopLiveBeatricePipeline({ restoreRaw = false } = {}) {
@@ -784,7 +818,7 @@
     liveBeatriceUploading = false;
     liveBeatriceNextPlaybackTime = 0;
     liveBeatriceCaptionReady = false;
-    if (pendingLiveBeatriceCaption) setResponseText(pendingLiveBeatriceCaption);
+    if (pendingLiveBeatriceCaption) speechCaption.live(pendingLiveBeatriceCaption);
     pendingLiveBeatriceCaption = "";
     clearTimeout(liveBeatriceMouthCloseTimer);
     liveBeatriceMouthCloseTimer = 0;
@@ -1331,8 +1365,13 @@
     if (dictationArmed && nextState?.voice?.responseMode === "live") stopDictation();
     if (streamingSpeechContext && nextState?.voice?.inputProvider !== "streaming-local") stopDictation();
     const changedCharacter = appState?.character?.id !== nextState.character?.id || appState?.character?.assetVersion !== nextState.character?.assetVersion;
+    if (appState && appState.character?.id !== nextState.character?.id) {
+      stopMobileSpeech({ resumeDictation: false });
+      speechCaption.reset();
+    }
     observeStateTransitions(nextState);
     appState = nextState;
+    authoredAvatar.sync(appState.character);
     if (!modeInitialized || appState?.voice?.liveConnected) {
       currentMode = appState.interactionMode === "work" && appState.workAllowed ? "work" : "chat";
       modeInitialized = true;
@@ -1345,7 +1384,7 @@
     setMode(currentMode);
     if (changedCharacter) syncAvatar().catch(() => {});
     else syncAvatarMotion();
-    if (appState.lastDisplayText) setResponseText(appState.lastDisplayText);
+    if (appState.lastDisplayText) speechCaption.snapshot(appState.lastDisplayText);
     const startupGreeting = appState.startupGreeting;
     if (startupGreeting?.id && startupGreeting.id !== seenStartupGreetingId) {
       seenStartupGreetingId = startupGreeting.id;
@@ -1388,6 +1427,7 @@
     eventSource?.close();
     eventSource = new EventSource("/api/events");
     eventSource.addEventListener("state", (event) => applyState(JSON.parse(event.data)));
+    eventSource.addEventListener('expression', event => authoredAvatar.expression(JSON.parse(event.data)));
     eventSource.addEventListener("stream", (event) => handleStream(JSON.parse(event.data)));
     eventSource.addEventListener("history", (event) => {
       if (!appState) return;
@@ -1442,6 +1482,8 @@
   }
 
   function showPairing(message = "") {
+    avatarSyncGeneration++;
+    authoredAvatar.dispose();
     eventSource?.close();
     closeRemoteLivePeer();
     $("#companionView").hidden = true;
@@ -1865,7 +1907,8 @@
       if (value && payload.phase === "realtime-caption" && liveBeatriceActive && !liveBeatriceCaptionReady) {
         pendingLiveBeatriceCaption = String(value);
       } else if (value && (!mobileStreamSpeechTurnId || (!queued && payload.phase === "realtime-caption"))) {
-        setResponseText(value);
+        if (payload.phase === "realtime-caption") speechCaption.live(value);
+        else setResponseText(value);
       }
       if (payload.phase === "realtime-caption") setBusy(true);
       return;
@@ -1873,7 +1916,10 @@
     if (payload.phase === "done") {
       const value = payload.displayText || payload.text || text("完了したよ。", "Done.");
       const queued = audioRoute === "mobile-tts" && queueMobileStreamSpeech(payload, { finished: true });
-      if (!payload.deferDisplayToRealtime && !mobileStreamSpeechTurnId && !queued) setResponseText(value);
+      if (!payload.deferDisplayToRealtime && !mobileStreamSpeechTurnId && !queued) {
+        if (audioRoute === "live") speechCaption.live(value);
+        else setResponseText(value);
+      }
       renderArtifacts(payload.artifacts, payload.workRunId);
       if (!payload.realtimeSpeechPending) setBusy(false);
       setTimeout(refreshState, 80);
@@ -1972,6 +2018,7 @@
     mobileStreamSpeechTurnId = "";
     mobileStreamSpeechFinished = false;
     mobileStreamSpeechFullText = "";
+    speechCaption.cancel();
     mobileStreamSpeechSignal?.();
     mobileStreamSpeechSignal = null;
     if (activeMobileTtsStreamId) {
@@ -1992,15 +2039,17 @@
     if (token !== mobileSpeechToken) return false;
     let activated = false;
     let played = false;
-    const activate = () => {
-      if (activated) return;
-      activated = true;
-      onStart?.();
+    const activate = (caption) => {
+      if (!activated) {
+        activated = true;
+        if (result?.expression) authoredAvatar.expression(result.expression);
+      }
+      onStart?.(caption);
     };
     activeMobileTtsStreamId = result?.streamId || "";
-    for (const audioUrl of result?.audioDataUrls || []) {
+    for (const chunk of window.CharaDockRemoteSpeechCaption.audioChunks(result, normalized)) {
       if (token !== mobileSpeechToken) return false;
-      await playAudioUrl(audioUrl, result.playbackRate, activate, () => token === mobileSpeechToken);
+      await playAudioUrl(chunk.url, result.playbackRate, () => activate(chunk.text), () => token === mobileSpeechToken);
       if (token !== mobileSpeechToken) return false;
       played = true;
     }
@@ -2008,9 +2057,9 @@
     while (streamId && token === mobileSpeechToken) {
       const next = await request("/api/tts/next", { method: "POST", body: JSON.stringify({ streamId }) });
       if (token !== mobileSpeechToken) return false;
-      for (const audioUrl of next?.audioDataUrls || []) {
+      for (const chunk of window.CharaDockRemoteSpeechCaption.audioChunks(next, normalized)) {
         if (token !== mobileSpeechToken) return false;
-        await playAudioUrl(audioUrl, next.playbackRate || result.playbackRate, activate, () => token === mobileSpeechToken);
+        await playAudioUrl(chunk.url, next.playbackRate || result.playbackRate, () => activate(chunk.text), () => token === mobileSpeechToken);
         if (token !== mobileSpeechToken) return false;
         played = true;
       }
@@ -2027,6 +2076,7 @@
     mobileStreamSpeechTurnId = String(turnId || "");
     mobileStreamSpeechFinished = false;
     mobileStreamSpeechFullText = "";
+    speechCaption.begin();
     mobileSpeechPending = true;
     if (speechRecognition) stopDictation({ keepArmed: true });
     drainMobileStreamSpeech();
@@ -2042,6 +2092,7 @@
     });
     mobileStreamSpeechQueue.push(...segments);
     if (payload?.displayText || payload?.text) mobileStreamSpeechFullText = String(payload.displayText || payload.text);
+    speechCaption.full(mobileStreamSpeechFullText);
     if (finished) mobileStreamSpeechFinished = true;
     mobileStreamSpeechSignal?.();
     mobileStreamSpeechSignal = null;
@@ -2060,19 +2111,23 @@
       while (token === mobileSpeechToken && mobileStreamSpeechTurnId) {
         const segment = mobileStreamSpeechQueue.shift();
         if (segment) {
-          await playMobileTtsValue(segment.spokenText, token, () => setResponseText(segment.caption));
+          await playMobileTtsValue(segment.spokenText, token, caption => speechCaption.audio(caption || segment.caption));
           continue;
         }
         if (mobileStreamSpeechFinished) break;
         await new Promise((resolve) => { mobileStreamSpeechSignal = resolve; });
       }
     } catch {
-      resetRemoteMouth();
+      if (token === mobileSpeechToken) {
+        stopMobileSpeech();
+        setComposerHint(text("音声を再生できませんでした。「全文」から回答を確認できます", "Audio could not play. Open the full reply to read the answer"), { error: true });
+      }
     } finally {
       mobileStreamSpeechDraining = false;
       if (token === mobileSpeechToken) {
         if (mobileStreamSpeechFinished && !mobileStreamSpeechQueue.length) {
-          if (mobileStreamSpeechFullText) setResponseText(mobileStreamSpeechFullText);
+          if (mobileStreamSpeechFullText) speechCaption.full(mobileStreamSpeechFullText);
+          speechCaption.finish();
           mobileStreamSpeechTurnId = "";
           mobileStreamSpeechFinished = false;
           mobileStreamSpeechFullText = "";
@@ -2093,16 +2148,18 @@
     stopMobileSpeech({ resumeDictation: false });
     const token = mobileSpeechToken;
     mobileSpeechPending = true;
+    speechCaption.begin(value);
     let completed = false;
     try {
       audioContext ||= new AudioContext({ latencyHint: "interactive" });
       await audioContext.resume();
       if (audioContext.state !== "running") throw new Error("Audio output is waiting for a user gesture.");
-      completed = await playMobileTtsValue(value, token);
+      completed = await playMobileTtsValue(value, token, caption => speechCaption.audio(caption || value));
     } catch {
       resetRemoteMouth();
     } finally {
       if (token === mobileSpeechToken) {
+        speechCaption.finish();
         mobileSpeechPending = false;
         activeMobileTtsStreamId = "";
         resetRemoteMouth();
@@ -2120,7 +2177,23 @@
     return played;
   }
 
+  function isCharacterPointerEvent(event) {
+    const target = $("#avatarTapTarget");
+    if (!target.contains(event.target) || document.querySelector("dialog[open]")) return false;
+    // Keyboard activation has no screen coordinates; keep the accessible
+    // character button usable without giving it priority over other controls.
+    if (event.type === "click" && event.detail === 0) return true;
+    const inside = (rect) => event.clientX >= rect.left && event.clientX < rect.right
+      && event.clientY >= rect.top && event.clientY < rect.bottom;
+    // The visual can extend below its stage on short screens. Its rectangular
+    // button must never steal a touch from the fixed dock (including padding),
+    // even if a browser compositor supplies a stale avatar hit target.
+    return inside($(".avatar-stage").getBoundingClientRect())
+      && !inside($(".control-dock").getBoundingClientRect());
+  }
+
   async function tapCharacter(event) {
+    if (!isCharacterPointerEvent(event)) return;
     if (petRequestInFlight) return;
     primeAudioOutput().catch(() => {});
     const speaking = Boolean(mobileSpeechPending || activeAudioSource || $("#avatarMotion").classList.contains("is-speaking"));
@@ -2271,6 +2344,7 @@
   $("#messageForm").addEventListener("submit", sendMessage);
   $("#avatarTapTarget").addEventListener("pointerdown", (event) => {
     if (!event.isPrimary || (event.pointerType === "mouse" && event.button !== 0)) return;
+    if (!isCharacterPointerEvent(event)) return;
     $("#avatarTapTarget").classList.add("is-pressed");
     showTouchSpark(event);
     navigator.vibrate?.(8);
@@ -2370,6 +2444,7 @@
     setSettingsStatus(text("ホーム画面へ追加しました", "Installed on the Home Screen"), "success");
   });
   document.addEventListener("visibilitychange", () => {
+    authoredAvatar.visibility();
     syncWakeLock();
     if (document.visibilityState !== "visible") stopDictation();
   });
@@ -2387,6 +2462,7 @@
     }
   });
   window.addEventListener("pagehide", () => {
+    authoredAvatar.dispose();
     clearInterval(approvalCountdownTimer);
     clearInterval(workElapsedTimer);
     if (streamingSpeechContext || streamingSpeechStream) stopStreamingDictation();

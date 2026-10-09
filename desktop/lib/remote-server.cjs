@@ -501,7 +501,15 @@ class RemoteCompanionServer {
     this.enforceRateLimit(request, liveAudioRequest ? "live-audio" : streamingSpeechChunkRequest ? "streaming-speech" : "all", liveAudioRequest || streamingSpeechChunkRequest ? 1200 : 180);
     if (request.method === "GET" && url.pathname === "/") return this.sendStatic(response, "index.html", "text/html; charset=utf-8");
     if (request.method === "GET" && url.pathname === "/remote.css") return this.sendStatic(response, "remote.css", "text/css; charset=utf-8");
+    if (request.method === "GET" && url.pathname === "/remote-speech-caption.js") return this.sendStatic(response, "remote-speech-caption.js", "text/javascript; charset=utf-8");
     if (request.method === "GET" && url.pathname === "/remote.js") return this.sendStatic(response, "remote.js", "text/javascript; charset=utf-8");
+    if (request.method === "GET" && url.pathname === "/remote-authored-avatar.js") return this.sendStatic(response, "remote-authored-avatar.js", "text/javascript; charset=utf-8");
+    if (request.method === "GET" && url.pathname === "/drawn-pose-runtime.js") {
+      const body = fs.readFileSync(path.resolve(this.rootDir, '..', '..', 'drawn-pose-runtime.js'));
+      response.writeHead(200, { ...securityHeaders('text/javascript; charset=utf-8'), 'Content-Security-Policy': "default-src 'none'" });
+      response.end(body);
+      return;
+    }
     if (request.method === "GET" && url.pathname === "/mcp-app-host.js") {
       const body = fs.readFileSync(path.resolve(this.rootDir, "..", "mcp-app-host.js"));
       response.writeHead(200, { ...securityHeaders("text/javascript; charset=utf-8"), "Content-Security-Policy": "default-src 'none'" });
@@ -586,6 +594,19 @@ class RemoteCompanionServer {
       const asset = await this.callbacks.getAvatarAsset?.(key);
       if (!asset?.body) throw Object.assign(new Error("Avatar asset not found."), { statusCode: 404 });
       response.writeHead(200, { ...securityHeaders(asset.contentType || "image/png"), "Content-Security-Policy": "default-src 'none'" });
+      response.end(asset.body);
+      return;
+    }
+
+    if (request.method === 'GET' && url.pathname.startsWith('/api/authored/')) {
+      this.authenticate(request);
+      const file = decodeURIComponent(url.pathname.slice('/api/authored/'.length));
+      if (!/^[a-zA-Z0-9_./-]+\.(png|json)$/.test(file) || file.includes('..') || file.startsWith('/')) {
+        throw Object.assign(new Error('Authored asset not found.'), { statusCode: 404 });
+      }
+      const asset = await this.callbacks.getAuthoredAsset?.(file);
+      if (!asset?.body) throw Object.assign(new Error('Authored asset not found.'), { statusCode: 404 });
+      response.writeHead(200, { ...securityHeaders(asset.contentType), 'Content-Security-Policy': "default-src 'none'" });
       response.end(asset.body);
       return;
     }
