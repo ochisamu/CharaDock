@@ -27,7 +27,9 @@ function boundedPhrases(values, limit = 32) {
   return [...new Set(values.filter(value => typeof value === 'string').map(value => value.trim()))]
     .filter(value => value.length > 0 && value.length <= 80 && !/[\r\n\x00-\x1f<>]|https?:\/\//iu.test(value)).slice(0, limit);
 }
-function fillerCandidates(character = {}, { language = 'ja' } = {}) {
+function fillerCandidates(character = {}, { language = 'ja', generated = [] } = {}) {
+  const prepared = boundedPhrases(generated, 24);
+  if (prepared.length >= 12) return prepared;
   return boundedPhrases([
     ...boundedPhrases(character.thinkingFillers, 10),
     ...COMMON_PHRASES[language === 'en' ? 'en' : 'ja'],

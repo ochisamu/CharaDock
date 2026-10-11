@@ -60,6 +60,10 @@ module.exports.verification = {
   busy: () => Boolean(activeCodexInteractionClient() || activeWorkRunId || currentRealtimeClient()),
   get decisions() { return jevClient; },
   get character() { return activeCharacter(); },
+  fillerProfile: () => characterFillerProfile(activeCharacter()),
+  ensureFillers: () => getCharacterFillerLibrary().ensure(characterFillerProfile(activeCharacter())),
+  generateFillers: profile => generateCharacterFillerCandidates(profile),
+  fillerCandidates: () => fillerCandidates(activeCharacter(), { language: interfaceLanguage(), generated: getCharacterFillerLibrary().get(characterFillerProfile(activeCharacter())) }),
   resetFillerCooldown: () => { lastThinkingFillerAt = 0; },
 };`, filename);
 const qa = entry.exports.verification;
@@ -86,6 +90,23 @@ const keys = ['interactionMode', 'characterMemories', 'conversationHistories', '
     await wait(() => levels.some(item => item.at >= since && item.level > .02), 90000);
     await wait(() => levels.at(-1).level <= .01 && Date.now() - levels.at(-1).at > 700, 90000);
   };
+  report.stage = 'generated-fillers'; write();
+  const { CharacterFillerLibrary } = require(path.join(source, 'desktop/lib/character-filler-library.cjs'));
+  const prepared = await qa.ensureFillers();
+  assert.ok(prepared.length >= 12, 'Current character has generated vocabulary');
+  const reloaded = new CharacterFillerLibrary({ file: path.join(profile, 'character-filler-candidates.json'), generate: () => assert.fail('Persisted vocabulary must be reused') });
+  assert.deepEqual(reloaded.get(qa.fillerProfile()), prepared);
+  assert.deepEqual(qa.fillerCandidates(), prepared, 'Prepared vocabulary replaces stock list');
+  const fixture = new CharacterFillerLibrary({ file: path.join(output, 'custom-filler-library.json'), generate: qa.generateFillers });
+  const custom = { id: 'qa-scholar', language: 'ja', name: 'シオン', personality: '古風な学者', persona: '穏やかな学者。一人称はわし、語尾は「のう」「じゃ」。対等な友人として短く話す。', examples: [] };
+  const customPhrases = await fixture.ensure(custom);
+  assert.ok(customPhrases.length >= 12 && customPhrases.some(text => /のう|じゃ/.test(text)));
+  const revised = { ...custom, persona: '穏やかな学者。一人称は私。です・ますの自然な敬語で話す。古風な語尾や「のう」「じゃ」は使わない。' };
+  const revisedPhrases = await fixture.ensure(revised);
+  assert.ok(revisedPhrases.length >= 12 && revisedPhrases.some(text => /です|ます/.test(text)));
+  assert.deepEqual(fixture.get(custom), []);
+  report.checks.generatedFillers = { passed: true, persistedAndReloaded: true, currentCount: prepared.length,
+    customCount: customPhrases.length, revisedCount: revisedPhrases.length, samples: [customPhrases[0], revisedPhrases[0]], staleProfileExcluded: true }; write();
   report.stage = 'greeting'; write();
   const started = Date.now(), turnOffset = turns.length;
   const greeting = await send('こんにちは'); const replyMs = Date.now() - started; assert.ok(greeting.text);
@@ -116,7 +137,7 @@ const keys = ['interactionMode', 'characterMemories', 'conversationHistories', '
   fs.writeFileSync(path.join(output, 'recent-memory.png'), (await control.capturePage()).toPNG());
   report.stage = 'filler'; write();
   const { decideFiller } = require(path.join(source, 'desktop/lib/turn-policy.cjs'));
-  const decision = await decideFiller(qa.decisions, '旅行計画について、鉄道と車と飛行機それぞれの長所と短所をじっくり比較してほしい。', { character: qa.character });
+  const decision = await decideFiller(qa.decisions, '旅行計画について、鉄道と車と飛行機それぞれの長所と短所をじっくり比較してほしい。', { character: qa.character, candidates: qa.fillerCandidates() });
   assert.equal(typeof decision.text, 'string');
   // Controlled slow backend start tests the waiting branch without replacing
   // either the real decision provider or the real answer/TTS providers.

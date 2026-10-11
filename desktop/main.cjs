@@ -216,7 +216,8 @@ const { discoverWorkArtifacts, fileChangeCandidates, isArtifactInsideWorkspace }
 const { boundedConversationHistory, scopedWorkHistory, searchContinuityEntries, sharedContinuityContext, unfinishedWorkContext } = require("./lib/conversation-context.cjs");
 const { clearCharacterMemories, removeCharacterMemory, saveCharacterMemory, updateCharacterMemory, activeCharacterMemories } = require("./lib/character-memory.cjs");
 const { selectStartupTopic, markStartupOffered } = require("./lib/startup-topic.cjs");
-const { isFastSocialTurn, decideFiller, fastReasoningEffort, PendingFiller } = require("./lib/turn-policy.cjs");
+const { CharacterFillerLibrary, OUTPUT_SCHEMA: FILLER_OUTPUT_SCHEMA, GENERATION_INSTRUCTIONS: FILLER_GENERATION_INSTRUCTIONS } = require("./lib/character-filler-library.cjs");
+const { isFastSocialTurn, decideFiller, fillerCandidates, fastReasoningEffort, PendingFiller } = require("./lib/turn-policy.cjs");
 const {
   COMMON_SCOPE_KEY,
   HOME_SCOPE_KEY,
@@ -611,6 +612,8 @@ let pendingBrowserUse = null;
 let pendingComputerUse = null;
 let conversationHistory = [];
 const appSessionStartedAt = Date.now();
+let characterFillerLibrary = null;
+let fillerGenerationClient = null;
 const recentThinkingFillers = new Map();
 let lastThinkingFillerAt = 0;
 const turnCoordinator = new TurnCoordinator();
@@ -5674,6 +5677,7 @@ async function steerActiveInteraction(message, {
 }
 
 function broadcastAppState() {
+  warmCharacterFillers();
   const state = publicAppState();
   controlWindow?.webContents.send("app:stateChanged", state);
   mascotWindow?.webContents.send("mascot:mode", {
@@ -8108,6 +8112,52 @@ function rememberAssistantAnnouncement(text) {
   return true;
 }
 
+function characterFillerProfile(character, language = interfaceLanguage()) {
+  return { id: character.id, language, name: character.name, personality: character.personality,
+    persona: buildCharacterPersona(character, language), examples: character.thinkingFillers || [] };
+}
+
+function getCharacterFillerLibrary() {
+  if (!characterFillerLibrary) characterFillerLibrary = new CharacterFillerLibrary({
+    file: path.join(app.getPath("userData"), "character-filler-candidates.json"),
+    generate: generateCharacterFillerCandidates,
+  });
+  return characterFillerLibrary;
+}
+
+function warmCharacterFillers(character = activeCharacter()) {
+  if (!preferences || !codexCommand || preferences.data.backend !== "codex" || quitting
+    || preferences.data.thinkingFillerEnabled !== true || !jevEnabled("thinkingFillerEnabled")) return;
+  void getCharacterFillerLibrary().ensure(characterFillerProfile(character));
+}
+
+async function generateCharacterFillerCandidates(profile) {
+  if (quitting || !codexCommand || !jevEnabled("thinkingFillerEnabled") || preferences.data.thinkingFillerEnabled !== true) return "";
+  const directory = path.join(app.getPath("userData"), "filler-runtime");
+  fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+  const client = new CodexAppServerClient({ cwd: directory, command: codexCommand,
+    ...conversationCodexSettings(), ...codexAuthenticationOptions(),
+    reasoningEffort: fastReasoningEffort(conversationCodexSettings().model) || "low",
+    developerInstructions: FILLER_GENERATION_INSTRUCTIONS,
+    sandbox: "read-only", approvalPolicy: "never", rejectInteractiveRequests: true,
+    serviceName: "charadock_filler_vocabulary", webSearchMode: "disabled",
+  });
+  fillerGenerationClient = client;
+  let timer;
+  try {
+    const deadline = new Promise((_, reject) => { timer = setTimeout(() => {
+      client.stop(); reject(new Error("Filler generation timed out"));
+    }, 45000); });
+    const result = await Promise.race([client.sendMessage(JSON.stringify(profile), {
+      outputSchema: FILLER_OUTPUT_SCHEMA, timeoutMs: 45000,
+    }), deadline]);
+    return result.text;
+  } finally {
+    clearTimeout(timer); client.stop();
+    if (fillerGenerationClient === client) fillerGenerationClient = null;
+  }
+}
+
 async function generateStartupContinuationMessage(summary, character, topic = null) {
   const backend = preferences.data.backend;
   if (!codexCommand) return "";
@@ -10067,6 +10117,7 @@ async function setCharacter(characterId) {
   preferences.patch({ characterId: character.id, characterTtsProfiles });
   jevAddressGate.reset();
   const configured = effectiveCharacter(character);
+  warmCharacterFillers(configured);
   ensureCharacterHome(configured);
   repairCharacterWorkspaceSelection(configured);
   preferences.patch({ workDirectory: selectedWorkspaceDirectory(configured) });
@@ -10140,6 +10191,7 @@ async function removeGeneratedCharacter(characterId) {
   characterTouchHeadRatioCache.delete(plan.directory);
   lastPetPhraseIndex.delete(characterId);
   recentThinkingFillers.delete(characterId);
+  characterFillerLibrary?.remove(characterId);
   return broadcastAppState();
 }
 
@@ -12094,6 +12146,7 @@ function registerIpc() {
       };
     }
     preferences.patch({ characterProfiles: profiles });
+    warmCharacterFillers(effectiveCharacter(character));
     if (preferences.data.characterId === character.id) await setCharacter(character.id);
     return publicAppState();
   });
@@ -12124,6 +12177,7 @@ function registerIpc() {
       profiles[character.id] = next;
     }
     preferences.patch({ characterProfiles: profiles });
+    warmCharacterFillers(effectiveCharacter(character));
     if (preferences.data.characterId === character.id) await setCharacter(character.id);
     return publicAppState();
   });
@@ -13579,7 +13633,11 @@ async function sendChatMessage(message, {
     const characterId = character.id;
     const language = interfaceLanguage();
     const turnId = turnCoordinator.snapshot().id;
-    const decision = decideFiller(jevClient, requestText, { previousReply, character, language,
+    warmCharacterFillers(character);
+    const candidates = fillerCandidates(character, { language,
+      generated: getCharacterFillerLibrary().get(characterFillerProfile(character, language)),
+    });
+    const decision = decideFiller(jevClient, requestText, { previousReply, character, language, candidates,
       recentFillers: recentThinkingFillers.get(characterId) || [],
     }).catch(() => ({ text: "" }));
     thinkingFiller = new PendingFiller({ decision,
@@ -14320,6 +14378,7 @@ async function boot() {
       broadcastAppState();
     } });
   codexCommand = await resolveCodexCommand({ cacheDirectory: path.join(app.getPath("userData"), "codex-bin") });
+  warmCharacterFillers();
   wslCodexCommand = await resolveInstalledWslCodexCommand({ cacheDirectory: path.join(app.getPath("userData"), "codex-bin") });
   codexClient = createConversationCodexClient();
   atomEchoGateway = createAtomEchoGateway();
@@ -14438,6 +14497,8 @@ else {
 app.on("window-all-closed", () => {});
 app.on("activate", showControlWindow);
 app.on("before-quit", () => {
+  characterFillerLibrary?.close();
+  fillerGenerationClient?.stop();
   codexCompanion.stop(false);
   rlcd42NowPlaying.stop();
   clearTimeout(appUpdateCheckTimer);
