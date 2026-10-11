@@ -93,6 +93,7 @@
   let realtimeOutputSuppressed = false;
   let realtimeUnavailable = false;
   let speechPulseTimer = null;
+  let pcmSpeechPlayback = null;
   let speechAudio = null;
   let speechAudioContext = null;
   let speechAudioAnalyser = null;
@@ -141,6 +142,8 @@
   let generatorFile = null;
   let generatorBusy = false;
   let codexAccount = null;
+  let liveAccount = null;
+  let loginPollEpoch = 0;
   let codexModels = [];
   let realtimeVoices = { voices: [], defaultVoice: "cove", loaded: false };
   const realtimeVoiceProfiles = Object.freeze({
@@ -175,6 +178,7 @@
     { page: "remote", target: "#remoteAccessCard", ja: "リモートアクセス", en: "Remote access", detailJa: "同じWi-FiからChatとWorkを操作", detailEn: "Use Chat and Work from the same Wi-Fi", keywords: "remote mobile lan qr smartphone スマホ リモート", popular: true },
     { page: "esp32", target: "#atomEchoCard", ja: "ESP32デバイス", en: "ESP32 devices", detailJa: "ATOM Echoなどの専用デバイスを管理", detailEn: "Manage ATOM Echo and other companion devices", keywords: "atom echo stackchan rlcd wifi device voice satellite ハンズフリー", popular: true },
     { page: "character", target: "#characterLibraryTitle", ja: "キャラクター一覧", en: "Character library", detailJa: "使うキャラクターを切り替える", detailEn: "Switch the active character", keywords: "avatar select library キャラ", popular: true },
+    { page: "character", target: "#characterAppearanceTitle", ja: "見た目・Mesh Avatarの読み込み", en: "Appearance and Mesh Avatar import", detailJa: "同じキャラの見た目を切り替える", detailEn: "Switch this character’s appearance", keywords: "mesh avatar studio import appearance 見た目 素材 インポート 読み込み" },
     { page: "character", target: "#characterProfileCard", ja: "名前・性格・メモリ", en: "Name, personality, and memory", detailJa: "選択中のキャラクターを編集", detailEn: "Edit the selected character", keywords: "profile persona memory bubble 名前 性格 記憶 吹き出し" },
     { page: "character", target: "#characterContinuation", ja: "キャラクター継続モード", en: "Character Continuation", detailJa: "前回の目的と次の一手を確認・編集", detailEn: "Review and edit the previous goal and next step", keywords: "continuation resume summary 継続 再開 前回 次の一手", popular: true },
     { page: "character", target: "#motionEditorTitle", ja: "キャラクターの動き", en: "Character motion", detailJa: "サイズ、追従、呼吸、髪揺れ", detailEn: "Size, tracking, breathing, and hair motion", keywords: "motion animation lip sync hair blink マウス リップシンク", popular: true },
@@ -186,10 +190,10 @@
     { page: "voice", target: "#realtimeVoiceSettings", ja: "Realtimeの声", en: "Realtime voice", detailJa: "GPT-Liveの声と声変換", detailEn: "GPT-Live voice and conversion", keywords: "codex live openai beatrice" },
     { page: "voice", target: "#beatriceLibraryCard", ja: "Beatrice 2", en: "Beatrice 2", detailJa: "公式本体と変換モデルを参照", detailEn: "Link the official runtime and models", keywords: "vst voice conversion 声変換 model" },
     { page: "voice", target: "#standardTtsSettings", ja: "通常TTSと音声モデル", en: "Standard TTS and voice models", detailJa: "Irodori、SBV2、Kokoroなど", detailEn: "Irodori, SBV2, Kokoro, and more", keywords: "irodori sbv2 kokoro piper supertonic style bert model" },
-    { page: "connection", target: ".backend-grid", ja: "AI接続方式", en: "AI connection method", detailJa: "CodexまたはOpenAI APIを選択", detailEn: "Choose Codex or OpenAI API", keywords: "backend provider login api", popular: true },
+    { page: "connection", target: ".backend-grid", ja: "AI接続方式", en: "AI connection method", detailJa: "ChatGPT専用接続またはCodexログイン", detailEn: "CharaDock ChatGPT connection or Codex sign-in", keywords: "backend provider login api", popular: true },
     { page: "connection", target: "#codexSettings", ja: "Codexのモデルと推論", en: "Codex model and reasoning", detailJa: "会話・作業ごとに設定", detailEn: "Configure chat and work separately", keywords: "app server model effort thinking 推論" },
     { page: "mcp", target: "#mcpAssignmentCard", ja: "MCP連携", en: "MCP connections", detailJa: "全キャラまたはキャラごとにChat・Work・Liveへ外部ツールを割り当てる", detailEn: "Assign external tools to Chat, Work, and Live globally or per character", keywords: "mcp model context protocol streamable http api key ツール 接続 server 割り当て", popular: true },
-    { page: "connection", target: "#openaiSettings", ja: "OpenAI API", en: "OpenAI API", detailJa: "APIキーと応答モデル", detailEn: "API key and response model", keywords: "key responses transcription" },
+    { page: "connection", target: "#jevSettings", ja: "判断アシストのAPIキー", en: "Decision assist API key", detailJa: "Decisions専用のOpenAI APIキー", detailEn: "OpenAI API key for Decisions only", keywords: "key decisions 判断" },
     { page: "desktop", target: "#languageSettingsCard", ja: "表示言語", en: "Display language", detailJa: "日本語とEnglishを切り替える", detailEn: "Switch between Japanese and English", keywords: "language english japanese 日本語 英語" },
     { page: "desktop", target: "#windowSettingsCard", ja: "キャラクターの操作", en: "Character interaction", detailJa: "自動退避、クリック透過、最前面", detailEn: "Auto-hide, click-through, and always-on-top", keywords: "auto hide pointer click through lock window 透過 固定", popular: true },
     { page: "desktop", target: "#mascotWindowCard", ja: "ウィンドウの位置とサイズ", en: "Window position and size", detailJa: "モニター、表示、位置を調整", detailEn: "Adjust display, visibility, and position", keywords: "monitor display size position モニター" },
@@ -1106,7 +1110,7 @@
     }
     // Older Codex installations may omit newly released models from model/list.
     // Keep the explicit ID selectable without silently changing saved defaults.
-    for (const [id, label] of Object.entries(knownModels)) {
+    for (const [id, label] of Object.entries(state?.codexAuthMode === "chatgpt" ? {} : knownModels)) {
       if ([...select.options].some((option) => option.value === id)) continue;
       const option = new Option(label, id);
       option.title = localized("利用にはCodex側のモデルアクセス権が必要です。", "Requires model access in your Codex account.");
@@ -1373,7 +1377,7 @@
       "piper-plus": "piper-plus",
       "supertonic-3": "Supertonic 3",
       kokoro: "Kokoro",
-      "irodori-webgpu": "Irodori TTS",
+      "irodori-webgpu": "Irodori TTS", "speech-cpp": "Irodori TTS · speech.cpp",
       "sbv2-jp-extra": "Style-Bert-VITS2 JP-Extra",
     };
     $("#voiceRoutingBadge").textContent = live ? "LIVE" : "通常TTS";
@@ -2284,6 +2288,14 @@
     if (!character) return;
     $("#characterNameInput").value = character.name || "";
     $("#characterPersonalityInput").value = character.personality || "";
+    $("#characterAppearanceTitle").textContent = localized("見た目", "Appearance");
+    $("#characterAppearanceLabel").textContent = localized("表示するアバター", "Avatar appearance");
+    $("#importMeshAvatarButton").textContent = localized("Mesh Avatarを読み込む", "Import Mesh Avatar");
+    $("#characterAppearanceHint").textContent = localized("Mesh Avatar Studioのプロジェクトフォルダーを選びます。見た目を切り替えても、このキャラの名前・性格・声・会話は共通です。", "Select a Mesh Avatar Studio project folder. All appearances share this character’s name, personality, voice and conversations.");
+    const appearanceSelect = $("#characterAppearanceSelect");
+    appearanceSelect.replaceChildren();
+    for (const option of state.avatarAppearance?.options || [{id:"standard",label:localized("標準の見た目","Original appearance")}]) appearanceSelect.add(new Option(option.label,option.id));
+    appearanceSelect.value = state.avatarAppearance?.selected || "standard";
     const director = character.director || {};
     $("#characterDirectorRoleSummary").textContent = director.role || localized("役割はまだ設定されていません。", "No role has been set yet.");
     $("#characterDirectorCustomizationBadge").textContent = director.customized
@@ -2925,7 +2937,7 @@
   function syncOnboardingDelivery() {
     const liveInput = $("input[name='onboardingDelivery'][value='live']");
     if (!liveInput) return;
-    const liveAvailable = Boolean(state?.codexAvailable && codexAccount?.signedIn);
+    const liveAvailable = Boolean(state?.codexAvailable && liveAccount?.signedIn);
     liveInput.disabled = !liveAvailable;
     if (!liveAvailable && liveInput.checked) {
       const textInput = $("input[name='onboardingDelivery'][value='text']");
@@ -2964,8 +2976,8 @@
     } else if (available) {
       $("#onboardingAccountState").textContent = localized("Codexを確認しました", "Codex detected");
       detail.textContent = localized("続けるにはChatGPTへログインしてください。", "Sign in to ChatGPT to continue.");
-      button.textContent = localized("ChatGPTでログイン", "Sign in with ChatGPT");
-      button.disabled = false;
+      button.textContent = state.codexAuthMode === "chatgpt" ? "Continue with ChatGPT" : localized("ChatGPTでログイン", "Sign in with ChatGPT");
+      button.disabled = Boolean(codexAccount?.pending);
     } else {
       $("#onboardingAccountState").textContent = localized("Codexが見つかりません", "Codex was not found");
       detail.textContent = localized("下から公式アプリまたはCLIを導入し、再確認してください。", "Install the official app or CLI below, then check again.");
@@ -2983,7 +2995,6 @@
       "streaming-local": localized("ストリーミング音声認識", "Streaming speech recognition"),
       "sherpa-onnx": "sherpa-onnx",
       browser: localized("端末音声認識", "System speech recognition"),
-      openai: localized("OpenAI文字起こし", "OpenAI transcription"),
     };
     const ttsNames = {
       system: localized("Windows標準", "Windows system voice"),
@@ -2991,12 +3002,10 @@
       "piper-plus": "piper-plus",
       "supertonic-3": "Supertonic 3",
       kokoro: "Kokoro",
-      "irodori-webgpu": "Irodori TTS",
+      "irodori-webgpu": "Irodori TTS", "speech-cpp": "Irodori TTS · speech.cpp",
       "sbv2-jp-extra": "Style-Bert-VITS2 JP-Extra",
     };
-    $("#supportBackendSummary").textContent = state.backend === "codex"
-      ? codexAccount?.signedIn ? localized("Codex · ChatGPT接続済み", "Codex · ChatGPT connected") : localized("Codex app-server", "Codex app-server")
-      : state.hasApiKey ? localized("OpenAI API設定済み", "OpenAI API configured") : localized("OpenAI API · キー未設定", "OpenAI API · key missing");
+    $("#supportBackendSummary").textContent = `${state.codexAuthMode === "chatgpt" ? "ChatGPT" : "Codex"} · ${codexAccount?.signedIn ? localized("接続済み", "Connected") : localized("未接続", "Disconnected")}`;
     $("#supportInputSummary").textContent = inputNames[state.speechInputProvider] || state.speechInputProvider || localized("未選択", "Not selected");
     $("#supportTtsSummary").textContent = state.ttsEnabled ? (ttsNames[state.ttsProvider] || state.ttsProvider) : localized("読み上げOFF", "Read-aloud off");
   }
@@ -3186,13 +3195,28 @@
     syncTtsSampleModelUi("kokoro", info.sampleModel);
   }
 
+  function selectedSpeechCppProvider() { return $("#speechCppModelSelect").value === "small" ? "speech-cpp-small" : "speech-cpp"; }
+
   function syncIrodoriUi(info = state?.irodori || {}) {
-    const version = ["500m-v3", "v4-anime", "v4-mf"].includes($("#irodoriVersionSelect").value) ? $("#irodoriVersionSelect").value : "v4-small";
+    const native = $("#ttsProviderSelect").value === "speech-cpp";
+    if (native) info = { ...info, ...state.speechCpp, webgpuAvailable: null, modelOutdated: false };
+    $("#speechCppSettings").hidden = !native;
+    $("#irodoriVersionSelect").parentElement.hidden = native;
+    $("#irodoriPrecisionSelect").parentElement.hidden = native;
+    $("#irodoriV4Title").parentElement.hidden = native;
+    $("#irodoriV4GenerationProfile").hidden = native;
+    $("#irodoriModelButton").closest("details").hidden = native;
+    const nativeSmall = $("#speechCppModelSelect").value === "small";
+    syncTtsSampleModelUi("speechCpp", state.speechCpp?.[nativeSmall ? "smallSampleModel" : "mfSampleModel"] || state.speechCpp?.sampleModel);
+    $("#speechCppStepsHint").textContent = nativeSmall
+      ? localized("Smallの初期値は16。増やすと生成に時間がかかります。モデルごとに保存します。", "Small defaults to 16 steps. More steps take longer. Saved separately for each model.")
+      : localized("MFの初期値は6。少ないStep数では余計な発話や音の乱れが出る場合があります。モデルごとに保存します。", "MF defaults to 6 steps. Low step counts can produce extra speech or unstable audio. Saved separately for each model.");
+    const version = native ? (nativeSmall ? "v4-small" : "v4-mf") : ["500m-v3", "v4-anime", "v4-mf"].includes($("#irodoriVersionSelect").value) ? $("#irodoriVersionSelect").value : "v4-small";
     const legacy = version === "500m-v3";
     const anime = version === "v4-anime";
     const mf = version === "v4-mf";
     if (anime) $("#irodoriPrecisionSelect").value = "int4";
-    if (mf) $("#irodoriPrecisionSelect").value = "fp16";
+    if (mf && !native) $("#irodoriPrecisionSelect").value = "fp16";
     $("#irodoriPrecisionSelect").disabled = anime || mf;
     $("#irodoriPrecisionSelect option[value=int4]").textContent = anime
       ? localized("INT4（軽量・約854MB）", "INT4 (lightweight, about 854 MB)")
@@ -3203,7 +3227,7 @@
       ? localized("MF専用モデルを4ステップで生成します。読み間違いや音質の乱れが出る場合があります。", "Uses the dedicated MF model with 4 steps. Pronunciation or audio quality may be unstable.")
       : localized("FP16とINT4は、末尾の余分な発話を抑えるため検証済みの設定で生成します。", "FP16 and INT4 use validated settings to reduce extra trailing speech.");
     $("#irodoriV4GenerationProfile b").textContent = mf ? localized("Linear・4ステップ固定", "Linear · Fixed 4 steps") : localized("Linear・16ステップ以上・逐次処理", "Linear · At least 16 steps · Sequential");
-    const precision = $("#irodoriPrecisionSelect").value === "int4" ? "int4" : "fp16";
+    const precision = native ? "fp16" : $("#irodoriPrecisionSelect").value === "int4" ? "int4" : "fp16";
     const quantized = !legacy && precision === "int4";
     const generationMode = $("#irodoriSamplingModeSelect");
     const generationSteps = $("#irodoriStepsInput");
@@ -3241,6 +3265,7 @@
     else if (!info.modelReady) setStatus(status, `${legacy ? "Irodori TTS 500M-v3 FP16" : `Irodori TTS v4.1 Small ${quantized ? "INT4" : "FP16"}`}モデルを導入または選択してください。`);
     else if (!legacy && info.modelOutdated) setStatus(status, localized("旧V4モデルを使用中です。末尾発話を改善したV4.1へ更新してください。", "An older V4 model is in use. Update to V4.1 for the trailing-speech fix."));
     else if (info.referenceRequired && !info.referenceReady) setStatus(status, "本人の許可がある参照音声を追加してください。");
+    else if (native) setStatus(status, localized(`${nativeSmall ? "Small" : "Small MF"}モデルの準備ができています。初回はエンジンを起動します。`, `The ${nativeSmall ? "Small" : "Small MF"} model is ready. The engine starts on first use.`));
     else if (mf) setStatus(status, localized("MFを4ステップで使用します。実験用のため、読み間違いや音質の乱れが出る場合があります。", "MF uses 4 steps. Experimental: pronunciation or audio quality may be unstable."));
     else if (info.webgpuAvailable === true) setStatus(status, `${legacy ? "Irodori TTS 500M-v3" : "Irodori TTS v4.1 Small"}のWebGPU音声合成を利用できます。`);
     else setStatus(status, `${legacy ? "500M-v3" : "V4"}モデルと音声設定を確認しました。初回生成時にWebGPUを確認します。`);
@@ -3249,7 +3274,7 @@
     $("#irodoriEmotionStrengthSelect").disabled = !$("#irodoriAutoEmotionToggle").checked;
     const selectedV4Model = anime ? info.animeSampleModel : quantized ? info.int4SampleModel : info.fp16SampleModel;
     syncTtsSampleModelUi("irodori", selectedV4Model || info.sampleModel);
-    $("#irodoriModelDownloadButton").closest(".local-model-download").hidden = mf;
+    $("#irodoriModelDownloadButton").closest(".local-model-download").hidden = native || mf;
     $("#irodoriModelDownloadHint").textContent = anime
       ? localized("アニメ調の声で学習した約854MBのINT4モデル。声の説明・感情指定の効き方はSmallと異なる場合があります。", "An approximately 854 MB INT4 model trained on anime-style speech. Voice descriptions and emotion controls may behave differently from Small.")
       : quantized
@@ -3951,7 +3976,10 @@
     $("#decisionProviderSelect").value = decisions ? "decisions" : "jev";
     $("#decisionProviderSelect").disabled = jevBusy;
     $("#decisionJevKeySettings").hidden = decisions;
-    $("#decisionOpenAIKeyNote").hidden = !decisions;
+    $("#decisionOpenAIKeySettings").hidden = !decisions;
+    $("#apiKeyInput").disabled = jevBusy;
+    $("#saveApiKeyButton").disabled = jevBusy || !$("#apiKeyInput").value.trim();
+    $("#clearApiKeyButton").disabled = jevBusy || !state?.hasApiKey;
     const enabled = state?.jevEnabled === true;
     $("#jevEnabledToggle").checked = enabled;
     $("#jevEnabledToggle").disabled = jevBusy;
@@ -3976,8 +4004,8 @@
     $("#clearJevApiKeyButton").disabled = jevBusy || !state?.jevApiKeyConfigured;
     $("#testJevConnectionButton").disabled = jevBusy || !enabled || !decisionKeyConfigured() || (!decisions && Boolean($("#jevApiKeyInput").value.trim()));
     $("#jevApiKeyState").textContent = decisions
-      ? state?.hasApiKey ? localized("プロフィールのOpenAI APIキー設定済み", "Profile OpenAI API key configured")
-        : localized("プロフィールでOpenAI APIキーを設定してください", "Set an OpenAI API key in Profile")
+      ? state?.hasApiKey ? localized("Decisions APIキー設定済み", "Decisions API key configured")
+        : localized("下の欄でOpenAI APIキーを設定してください", "Set an OpenAI API key below")
       : !state?.jevApiKeyConfigured
       ? localized("APIキー未設定", "API key not configured")
       : state.jevApiKeyPersistence === "encrypted"
@@ -4074,10 +4102,9 @@
     renderChatSelectedSkills();
     if (!$("#chatAddPopover").hidden) renderChatSkillPicker();
     syncGeneratorUi();
-    const backend = $(`input[name="backend"][value="${state.backend}"]`);
-    if (backend) backend.checked = true;
-    $("#openaiModelInput").value = state.openaiModel || "";
-    $("#transcriptionModelInput").value = state.transcriptionModel || "";
+    const auth = $(`input[name="codexAuthMode"][value="${state.codexAuthMode}"]`);
+    if (auth) auth.checked = true;
+    for (const input of $$('input[name="codexAuthMode"]')) input.disabled = Boolean(chatBusy || workHistoryState.activeWorkRunId || realtimePeerConnection || realtimeStarting);
     setCodexModelOptions($("#codexChatModelInput"), state.codexChatModel || state.codexModel || "");
     $("#codexChatReasoningEffortSelect").value = state.codexChatReasoningEffort || "";
     setCodexModelOptions($("#codexWorkModelInput"), state.codexWorkModel || state.codexModel || "");
@@ -4118,6 +4145,8 @@
     $("#kokoroDeviceSelect").value = state.kokoroDevice || "auto";
     $("#kokoroSettings").hidden = $("#ttsProviderSelect").value !== "kokoro";
     syncKokoroUi();
+    $("#speechCppModelSelect").value = state.speechCppModelVariant === "small" ? "small" : "mf";
+    $("#speechCppStepsInput").value = $("#speechCppModelSelect").value === "small" ? state.speechCppSmallSteps || 16 : state.speechCppMfSteps || 6;
     $("#irodoriSpeedInput").value = Number(state.irodoriSpeed) || 1;
     $("#irodoriVersionSelect").value = ["500m-v3", "v4-anime", "v4-mf"].includes(state.irodoriVersion) ? state.irodoriVersion : "v4-small";
     $("#irodoriPrecisionSelect").value = state.irodoriPrecision === "int4" ? "int4" : "fp16";
@@ -4129,7 +4158,7 @@
     $("#irodoriSamplingModeSelect").value = state.irodoriSamplingMode || "sway";
     $("#irodoriStepsInput").value = Number(state.irodoriSteps) || 8;
     $("#irodoriSeedInput").value = Number(state.irodoriSeed) || 0;
-    $("#irodoriSettings").hidden = $("#ttsProviderSelect").value !== "irodori-webgpu";
+    $("#irodoriSettings").hidden = !["irodori-webgpu", "speech-cpp"].includes($("#ttsProviderSelect").value);
     syncIrodoriUi();
     $("#englishPronunciationToggle").checked = state.englishPronunciationEnabled !== false;
     $("#englishPronunciationDictionaryInput").value = state.englishPronunciationDictionary || "";
@@ -4138,7 +4167,7 @@
     $("#realtimeAutoStartOnPetToggle").checked = state.realtimeAutoStartOnPet === true;
     $("#sherpaOnnxSettings").hidden = $("#speechInputProviderSelect").value !== "sherpa-onnx";
     $("#streamingSpeechSettings").hidden = $("#speechInputProviderSelect").value !== "streaming-local";
-    const recordedSpeechSelected = ["streaming-local", "sherpa-onnx", "openai"].includes($("#speechInputProviderSelect").value);
+    const recordedSpeechSelected = ["streaming-local", "sherpa-onnx"].includes($("#speechInputProviderSelect").value);
     $("#voiceActivationSettings").hidden = !recordedSpeechSelected;
     $("#voiceActivationModeSelect").value = state.voiceActivationMode || "vad";
     $("#vadSensitivitySelect").value = state.vadSensitivity || "normal";
@@ -4162,100 +4191,79 @@
     $("#apiKeyState").textContent = state.hasApiKey
       ? `APIキー設定済み（${state.apiKeyPersistence === "encrypted" ? "暗号化保存" : "今回のみ"}）`
       : "APIキー未設定";
-    $("#connectionLabel").textContent = state.backend === "codex" && codexAccount?.signedIn ? "Codex · ChatGPT" : state.backend === "codex" ? "Codex app-server" : "OpenAI API";
-    $("#connectionDetail").textContent = state.backend === "codex" && codexAccount?.signedIn
-      ? `ログイン済み${codexAccount.planType ? ` · ${codexAccount.planType}` : ""}`
-      : state.backend === "codex" ? "アカウント確認中" : state.hasApiKey ? "APIキー設定済み" : "APIキー未設定";
-    $("#connectionPill").classList.toggle("is-error", state.backend === "openai" && !state.hasApiKey);
-    const chatStatus = $("#chatStatus");
-    const replaceableConnectionStatuses = new Set([
-      "", "Codex app-serverを使用します。", "OpenAI Responses APIを使用します。",
-      "Using Codex app-server.", "Using OpenAI Responses API.",
-    ]);
-    if (!chatBusy && replaceableConnectionStatuses.has(chatStatus.textContent.trim())) {
-      chatStatus.textContent = state.backend === "codex"
-        ? localized("Codex app-serverを使用します。", "Using Codex app-server.")
-        : localized("OpenAI Responses APIを使用します。", "Using OpenAI Responses API.");
-    }
+    $("#connectionLabel").textContent = state.codexAuthMode === "chatgpt" ? "ChatGPT" : "Codex · ChatGPT";
+    $("#connectionDetail").textContent = codexAccount?.signedIn ? localized("接続済み", "Connected") : localized("ログインしてください", "Sign in to connect");
+    $("#connectionPill").classList.toggle("is-error", Boolean(codexAccount && !codexAccount.signedIn));
     syncUpdateUi();
     syncOnboarding();
   }
 
   async function refreshCodexAccount() {
-    const label = $("#codexAccountState");
-    const button = $("#codexLoginButton");
-    const onboardingLabel = $("#onboardingAccountState");
-    const onboardingButton = $("#onboardingLoginButton");
+    const mode = state.codexAuthMode;
+    const button = $("#codexLoginButton"), onboardingButton = $("#onboardingLoginButton");
     button.disabled = true;
-    onboardingButton.disabled = true;
     try {
       const account = await api.getCodexAccount();
+      if (mode !== state.codexAuthMode) return false;
       codexAccount = account;
       if (typeof account.available === "boolean") state.codexAvailable = account.available;
-      button.dataset.action = account.signedIn ? "logout" : "login";
-      button.textContent = account.signedIn ? "ChatGPTからログアウト" : "ChatGPTでログイン";
+      button.dataset.action = account.signedIn || account.pending ? "logout" : "login";
+      button.textContent = account.pending ? localized("ログインを中止", "Cancel sign-in") : account.signedIn
+        ? localized("接続を解除", "Disconnect") : mode === "chatgpt" ? "Continue with ChatGPT" : localized("Codex用にログイン", "Sign in for Codex");
       button.classList.toggle("button-secondary", !account.signedIn);
       button.classList.toggle("button-quiet", account.signedIn);
-      if (account.type === "chatgpt") {
-        label.textContent = `ChatGPTログイン済み（${account.planType || "プラン不明"}）`;
-        onboardingLabel.textContent = `ChatGPTログイン済み（${account.planType || "プラン不明"}）`;
-        onboardingButton.textContent = "接続済み";
-        if (state.backend === "codex") {
-          $("#connectionLabel").textContent = "Codex · ChatGPT";
-          $("#connectionDetail").textContent = `ログイン済み${account.planType ? ` · ${account.planType}` : ""}`;
-        }
-        return true;
-      }
-      if (account.signedIn) {
-        label.textContent = `${account.type || "Codex"} でログイン済み`;
-        onboardingLabel.textContent = `${account.type || "Codex"} でログイン済み`;
-        onboardingButton.textContent = "接続済み";
-        if (state.backend === "codex") {
-          $("#connectionLabel").textContent = "Codex app-server";
-          $("#connectionDetail").textContent = "ログイン済み";
-        }
-        return true;
-      }
-      label.textContent = "ChatGPTにログインしていません。";
-      onboardingLabel.textContent = "ChatGPTにログインしていません。";
-      onboardingButton.textContent = "ChatGPTでログイン";
-      if (state.backend === "codex") $("#connectionDetail").textContent = "ChatGPT未ログイン";
-      return false;
+      const message = account.pending ? localized("ブラウザでログインと利用許可を完了してください。", "Complete sign-in and authorization in your browser.")
+        : account.signedIn ? localized("ChatGPTに接続済み", "Connected to ChatGPT")
+        : account.error ? localized("もう一度ChatGPTでサインインしてください。", "Sign in to ChatGPT again.")
+        : localized("ChatGPTに接続していません。", "Not connected to ChatGPT.");
+      $("#codexAccountState").textContent = message;
+      $("#onboardingAccountState").textContent = message;
+      $("#connectionLabel").textContent = mode === "chatgpt" ? "ChatGPT" : "Codex · ChatGPT";
+      $("#connectionDetail").textContent = message;
+      $("#connectionPill").classList.toggle("is-error", !account.signedIn && !account.pending);
+      return account.signedIn;
     } catch (error) {
       codexAccount = null;
-      button.dataset.action = "login";
-      button.textContent = "ChatGPTでログイン";
-      label.textContent = `Codex CLIを確認できません: ${error.message}`;
-      onboardingLabel.textContent = `Codex CLIを確認できません: ${error.message}`;
-      onboardingButton.textContent = "再確認";
-      if (state.backend === "codex") $("#connectionDetail").textContent = "接続を確認できません";
+      $("#codexAccountState").textContent = error.message;
       return false;
     } finally {
-      button.disabled = false;
-      onboardingButton.disabled = Boolean(codexAccount?.signedIn);
+      button.disabled = Boolean(chatBusy || workHistoryState.activeWorkRunId || realtimePeerConnection || realtimeStarting);
+      onboardingButton.disabled = Boolean(codexAccount?.signedIn || codexAccount?.pending);
       syncOnboardingReadiness();
     }
   }
 
+  async function refreshLiveAccount() {
+    try {
+      liveAccount = await api.getLiveAccount();
+      $("#codexLiveAccountState").textContent = liveAccount.signedIn ? localized("Live用のCodexログイン済み", "Signed in to Codex for Live") : localized("Live用にCodexへのログインが必要です。", "Sign in to Codex to use Live.");
+      $("#codexLiveLoginButton").disabled = Boolean(liveAccount.signedIn || chatBusy || workHistoryState.activeWorkRunId || realtimePeerConnection || realtimeStarting);
+      syncOnboardingDelivery();
+      return liveAccount.signedIn;
+    } catch (error) { $("#codexLiveAccountState").textContent = error.message; return false; }
+  }
+
   async function waitForCodexLogin() {
-    for (let attempt = 0; attempt < 60; attempt += 1) {
+    const epoch = ++loginPollEpoch, mode = state.codexAuthMode;
+    for (let attempt = 0; attempt < 300; attempt += 1) {
       await new Promise((resolve) => setTimeout(resolve, 2000));
+      if (epoch !== loginPollEpoch || mode !== state.codexAuthMode) return;
       if (await refreshCodexAccount()) {
         await refreshCodexModels();
-        await refreshRealtimeVoices();
-        setStatus($("#connectionStatus"), "ChatGPTログインを確認しました。");
+        await refreshLiveAccount();
+        setStatus($("#connectionStatus"), localized("ChatGPTへの接続を確認しました。", "Connected to ChatGPT."));
         return;
       }
+      if (mode === "chatgpt" && !codexAccount?.pending) return;
     }
-    setStatus($("#connectionStatus"), "ログイン確認が時間切れになりました。接続テストでも再確認できます。", true);
+    setStatus($("#connectionStatus"), localized("ログインを再開してください。", "Start sign-in again."), true);
   }
 
   async function saveSettings() {
     state = await api.saveSettings({
       language: $("#languageSelect").value,
-      backend: $("input[name='backend']:checked")?.value || "codex",
-      openaiModel: $("#openaiModelInput").value.trim(),
-      transcriptionModel: $("#transcriptionModelInput").value.trim(),
+      backend: "codex",
+      codexAuthMode: $("input[name='codexAuthMode']:checked")?.value || state.codexAuthMode,
       codexChatModel: $("#codexChatModelInput").value.trim(),
       codexChatReasoningEffort: $("#codexChatReasoningEffortSelect").value,
       codexWorkModel: $("#codexWorkModelInput").value.trim(),
@@ -4286,6 +4294,9 @@
       supertonicVoice: $("#supertonicVoiceSelect").value,
       supertonicSpeed: Number($("#supertonicSpeedInput").value),
       supertonicSteps: Number($("#supertonicStepsInput").value),
+      speechCppModelVariant: $("#speechCppModelSelect").value,
+      speechCppMfSteps: $("#speechCppModelSelect").value === "mf" ? Number($("#speechCppStepsInput").value) : state.speechCppMfSteps,
+      speechCppSmallSteps: $("#speechCppModelSelect").value === "small" ? Number($("#speechCppStepsInput").value) : state.speechCppSmallSteps,
       kokoroVoice: $("#kokoroVoiceSelect").value,
       kokoroSpeed: Number($("#kokoroSpeedInput").value),
       kokoroDevice: $("#kokoroDeviceSelect").value,
@@ -4742,7 +4753,7 @@
     }
   }
 
-  async function toggleRecordedSpeechInput(provider = "openai") {
+  async function toggleRecordedSpeechInput(provider = "sherpa-onnx") {
     if (mediaRecorder?.state === "recording") {
       mediaRecorder.stop();
       return;
@@ -4758,14 +4769,8 @@
       try {
         const blob = new Blob(chunks, { type: recorder.mimeType || "audio/webm" });
         let transcript;
-        if (provider === "sherpa-onnx") {
-          setStatus($("#chatStatus"), "sherpa-onnxで音声を文字にしています…");
-          transcript = await transcribeWithSherpaOnnx(blob);
-        } else {
-          setStatus($("#chatStatus"), "OpenAIで音声を文字にしています…");
-          const bytes = new Uint8Array(await blob.arrayBuffer());
-          transcript = await api.transcribe({ bytes, mimeType: blob.type });
-        }
+        setStatus($("#chatStatus"), "sherpa-onnxで音声を文字にしています…");
+        transcript = await transcribeWithSherpaOnnx(blob);
         if (mediaRecorder !== recorder) return;
         $("#chatInput").value = transcript;
         setStatus($("#chatStatus"), "音声を入力欄へ追加しました。");
@@ -4894,10 +4899,6 @@
       await toggleStreamingSpeechInput();
       return;
     }
-    if (provider === "openai") {
-      await toggleRecordedSpeechInput("openai");
-      return;
-    }
     if (provider === "realtime" && state.backend !== "codex") {
       setStatus($("#chatStatus"), "Codex RealtimeはCodex app-server接続時のみ利用できます。", true);
       return;
@@ -4964,6 +4965,8 @@
 
   function stopSpeechPlayback() {
     speechPlaybackToken += 1;
+    pcmSpeechPlayback?.stop(); pcmSpeechPlayback = null;
+    api.cancelTtsStream("speech-cpp-pending").catch(() => {});
     api.stopRlcd42Speaker?.().catch(() => {});
     if (speechTtsStreamId) api.cancelTtsStream(speechTtsStreamId).catch(() => {});
     speechTtsStreamId = "";
@@ -4999,6 +5002,18 @@
   }
 
   async function playGeneratedResult(result, token) {
+    if (result?.pcmChunk) {
+      if (token !== speechPlaybackToken) { if (result.streamId) await api.cancelTtsStream(result.streamId); return; }
+      speechAudioContext ||= new AudioContext();
+      const player = window.CharaDockPcmSpeech.create({ context: speechAudioContext,
+        next: id => api.nextTtsChunk(id), cancel: () => result.streamId ? api.cancelTtsStream(result.streamId) : undefined,
+        isCurrent: () => token === speechPlaybackToken,
+        onLevel: level => api.sendVoiceLevel(level).catch(() => {}),
+      });
+      pcmSpeechPlayback = player;
+      try { await player.play(result); } finally { if (pcmSpeechPlayback === player) pcmSpeechPlayback = null; }
+      return;
+    }
     let sources = Array.isArray(result?.audioDataUrls) ? result.audioDataUrls : [];
     let streamId = String(result?.streamId || "");
     speechTtsStreamId = streamId;
@@ -5025,9 +5040,9 @@
     if (!state.ttsEnabled) return;
     stopSpeechPlayback();
     const token = speechPlaybackToken;
-    if (["style-bert-vits2", "piper-plus", "supertonic-3", "irodori-webgpu", "kokoro", "sbv2-jp-extra"].includes(state.ttsProvider)) {
+    if (["style-bert-vits2", "piper-plus", "supertonic-3", "irodori-webgpu", "speech-cpp", "kokoro", "sbv2-jp-extra"].includes(state.ttsProvider)) {
       try {
-        const providerName = { "piper-plus": "piper-plus", "supertonic-3": "Supertonic 3", "irodori-webgpu": "Irodori TTS", kokoro: "Kokoro", "style-bert-vits2": "Style-Bert-VITS2", "sbv2-jp-extra": "Style-Bert-VITS2 JP-Extra" }[state.ttsProvider];
+        const providerName = { "piper-plus": "piper-plus", "supertonic-3": "Supertonic 3", "irodori-webgpu": "Irodori TTS", "speech-cpp": "Irodori TTS · speech.cpp", kokoro: "Kokoro", "style-bert-vits2": "Style-Bert-VITS2", "sbv2-jp-extra": "Style-Bert-VITS2 JP-Extra" }[state.ttsProvider];
         setStatus($("#ttsStatus"), `${providerName}で生成しています…`);
         const result = await api.synthesizeTts(text);
         if (result?.error) throw new Error(result.error);
@@ -5291,7 +5306,7 @@
       }
       const resultMode = result?.mode === "work" ? "work" : "chat";
       if (resultMode !== requestedMode) setChatHistoryView(historyViewForMode(resultMode));
-      setStatus($("#chatStatus"), result.provider === "codex" ? "Codexから応答しました。" : "OpenAI APIから応答しました。");
+      setStatus($("#chatStatus"), localized("応答を受け取りました。", "Response received."));
     } catch (error) {
       const interrupted = /interrupt|cancel|abort|中断/i.test(String(error.message || ""));
       if (!interrupted) {
@@ -5340,7 +5355,9 @@
     $("#companionStop").addEventListener("click", () => companionAction(async () => { state.codexCompanion = await api.stopCodexCompanion(); }));
     api.onStateChanged?.((nextState) => {
       const previousProvider = state?.speechInputProvider;
+      const previousAuth = JSON.stringify(state?.chatgptConnection);
       state = nextState;
+      if (state.codexAuthMode === "chatgpt" && previousAuth !== JSON.stringify(state.chatgptConnection)) refreshCodexAccount();
       if (state?.companionEnabled) closeRealtimeAudio();
       if (previousProvider === "realtime" && state?.speechInputProvider !== "realtime") closeRealtimeAudio();
       syncUi();
@@ -6016,6 +6033,18 @@
         setStatus($("#characterProfileStatus"), error.message, true);
       }
     });
+    $("#importMeshAvatarButton").addEventListener("click", async () => {
+      const button = $("#importMeshAvatarButton"); button.disabled = true;
+      try { const previous = state.avatarAppearance?.selected; state = await api.importMeshAvatar(); syncUi(); if (state.avatarAppearance?.selected !== previous) setStatus($("#characterAppearanceStatus"),localized("見た目を読み込みました。標準の見た目にも戻せます。","Appearance loaded. You can switch back to the original.")); }
+      catch (error) { setStatus($("#characterAppearanceStatus"),error.message,true); }
+      finally { button.disabled = false; }
+    });
+    $("#characterAppearanceSelect").addEventListener("change", async event => {
+      const select = event.target; select.disabled = true;
+      try { state = await api.setCharacterAppearance(select.value); syncUi(); setStatus($("#characterAppearanceStatus"),localized("見た目を切り替えました。","Appearance changed.")); }
+      catch (error) { syncUi(); setStatus($("#characterAppearanceStatus"),error.message,true); }
+      finally { select.disabled = false; }
+    });
     $("#resetCharacterProfileButton").addEventListener("click", async () => {
       try {
         state = await api.configureCharacter({ id: currentCharacter().id, reset: true });
@@ -6129,9 +6158,15 @@
         setStatus($("#characterProfileStatus"), error.message, true);
       }
     });
-    $$('input[name="backend"]').forEach((input) => input.addEventListener("change", async () => {
-      if (input.checked && input.value !== "codex") await stopCodexRealtimeVoice({ quiet: true });
-      await saveSettings();
+    $$('input[name="codexAuthMode"]').forEach((input) => input.addEventListener("change", async () => {
+      try {
+        await saveSettings();
+        ++loginPollEpoch;
+        codexModels = [];
+        await refreshCodexAccount();
+        await refreshCodexModels();
+        await refreshLiveAccount();
+      } catch (error) { syncUi(); setStatus($("#connectionStatus"), error.message, true); }
     }));
     ["#languageSelect", "#alwaysOnTopToggle", "#launchAtLoginToggle", "#ttsToggle", "#englishPronunciationToggle", "#positionLockedToggle", "#edgeSnapToggle"]
       .forEach((selector) => $(selector).addEventListener("change", saveSettings));
@@ -6168,7 +6203,7 @@
       $("#piperPlusSettings").hidden = $("#ttsProviderSelect").value !== "piper-plus";
       $("#supertonicSettings").hidden = $("#ttsProviderSelect").value !== "supertonic-3";
       $("#kokoroSettings").hidden = $("#ttsProviderSelect").value !== "kokoro";
-      $("#irodoriSettings").hidden = $("#ttsProviderSelect").value !== "irodori-webgpu";
+      $("#irodoriSettings").hidden = !["irodori-webgpu", "speech-cpp"].includes($("#ttsProviderSelect").value);
       if ($("#ttsProviderSelect").value !== "system") {
         setTimeout(() => {
           const scroller = $(".main-panel");
@@ -6370,6 +6405,11 @@
       $("#irodoriReferenceSettings").hidden = $("#irodoriVersionSelect").value !== "500m-v3" && $("#irodoriModeSelect").value === "design";
       saveSettings().catch((error) => setStatus($("#irodoriStatus"), error.message, true));
     });
+    $("#speechCppModelSelect").addEventListener("change", async () => {
+      $("#speechCppStepsInput").value = $("#speechCppModelSelect").value === "small" ? state.speechCppSmallSteps || 16 : state.speechCppMfSteps || 6;
+      syncIrodoriUi();
+      try { await saveSettings(); } catch (error) { syncUi(); setStatus($("#ttsStatus"), error.message, true); }
+    });
     $("#irodoriVersionSelect").addEventListener("change", async () => {
       try {
         syncIrodoriUi(state.irodori);
@@ -6447,6 +6487,7 @@
       }
     });
     for (const { prefix, provider } of [
+      { prefix: "speechCpp", provider: "speech-cpp" },
       { prefix: "piperPlus", provider: "piper-plus" },
       { prefix: "supertonic", provider: "supertonic-3" },
       { prefix: "kokoro", provider: "kokoro" },
@@ -6454,7 +6495,7 @@
       { prefix: "irodoriV3", provider: "irodori-500m-v3" },
     ]) {
       $(`#${prefix}ModelDownloadButton`).addEventListener("click", async () => {
-        const selectedProvider = prefix === "irodori" && $("#irodoriVersionSelect").value === "v4-anime" ? "irodori-anime-int4" : prefix === "irodori" && $("#irodoriPrecisionSelect").value === "int4"
+        const selectedProvider = prefix === "speechCpp" ? selectedSpeechCppProvider() : prefix === "irodori" && $("#irodoriVersionSelect").value === "v4-anime" ? "irodori-anime-int4" : prefix === "irodori" && $("#irodoriPrecisionSelect").value === "int4"
           ? "irodori-webgpu-int4" : provider;
         try {
           if (selectedProvider === "piper-plus" && !window.confirm(localized(
@@ -6465,10 +6506,11 @@
             "Irodori TTSの利用条件を守り、本人の明示的な同意がある音声だけを参照に使いますか？",
             "Will you follow the Irodori TTS terms and only use reference voices with the speaker's explicit consent?",
           ))) return;
-          const stateKey = { "piper-plus": "piperPlus", "supertonic-3": "supertonic", "irodori-webgpu": "irodori", "irodori-anime-int4": "irodori", "irodori-webgpu-int4": "irodori", "irodori-500m-v3": "irodori", kokoro: "kokoro" }[selectedProvider];
+          const stateKey = { "speech-cpp": "speechCpp", "speech-cpp-small": "speechCpp", "piper-plus": "piperPlus", "supertonic-3": "supertonic", "irodori-webgpu": "irodori", "irodori-anime-int4": "irodori", "irodori-webgpu-int4": "irodori", "irodori-500m-v3": "irodori", kokoro: "kokoro" }[selectedProvider];
           const sampleKey = selectedProvider === "irodori-anime-int4" ? "animeSampleModel" : selectedProvider === "irodori-500m-v3" ? "v3SampleModel"
             : selectedProvider === "irodori-webgpu-int4" ? "int4SampleModel"
-              : selectedProvider === "irodori-webgpu" ? "fp16SampleModel" : "sampleModel";
+              : selectedProvider === "irodori-webgpu" ? "fp16SampleModel"
+                : selectedProvider === "speech-cpp-small" ? "smallSampleModel" : selectedProvider === "speech-cpp" ? "mfSampleModel" : "sampleModel";
           syncTtsSampleModelUi(prefix, {
             ...(state[stateKey]?.[sampleKey] || {}),
             downloading: true,
@@ -6482,12 +6524,13 @@
         }
       });
       $(`#${prefix}ModelRemoveButton`).addEventListener("click", async () => {
-        const selectedProvider = prefix === "irodori" && $("#irodoriVersionSelect").value === "v4-anime" ? "irodori-anime-int4" : prefix === "irodori" && $("#irodoriPrecisionSelect").value === "int4"
+        const selectedProvider = prefix === "speechCpp" ? selectedSpeechCppProvider() : prefix === "irodori" && $("#irodoriVersionSelect").value === "v4-anime" ? "irodori-anime-int4" : prefix === "irodori" && $("#irodoriPrecisionSelect").value === "int4"
           ? "irodori-webgpu-int4" : provider;
-        const stateKey = { "piper-plus": "piperPlus", "supertonic-3": "supertonic", "irodori-webgpu": "irodori", "irodori-anime-int4": "irodori", "irodori-webgpu-int4": "irodori", "irodori-500m-v3": "irodori", kokoro: "kokoro" }[selectedProvider];
+        const stateKey = { "speech-cpp": "speechCpp", "speech-cpp-small": "speechCpp", "piper-plus": "piperPlus", "supertonic-3": "supertonic", "irodori-webgpu": "irodori", "irodori-anime-int4": "irodori", "irodori-webgpu-int4": "irodori", "irodori-500m-v3": "irodori", kokoro: "kokoro" }[selectedProvider];
         const sampleKey = selectedProvider === "irodori-anime-int4" ? "animeSampleModel" : selectedProvider === "irodori-500m-v3" ? "v3SampleModel"
           : selectedProvider === "irodori-webgpu-int4" ? "int4SampleModel"
-            : selectedProvider === "irodori-webgpu" ? "fp16SampleModel" : "sampleModel";
+            : selectedProvider === "irodori-webgpu" ? "fp16SampleModel"
+                : selectedProvider === "speech-cpp-small" ? "smallSampleModel" : selectedProvider === "speech-cpp" ? "mfSampleModel" : "sampleModel";
         const label = state[stateKey]?.[sampleKey]?.label || "ダウンロード済みモデル";
         if (!window.confirm(localized(`${label}を端末から削除しますか？`, `Delete ${label} from this device?`))) return;
         try {
@@ -6501,7 +6544,7 @@
     $("#speechInputProviderSelect").addEventListener("change", async () => {
       $("#sherpaOnnxSettings").hidden = $("#speechInputProviderSelect").value !== "sherpa-onnx";
       $("#streamingSpeechSettings").hidden = $("#speechInputProviderSelect").value !== "streaming-local";
-      $("#voiceActivationSettings").hidden = !["streaming-local", "sherpa-onnx", "openai"].includes($("#speechInputProviderSelect").value);
+      $("#voiceActivationSettings").hidden = !["streaming-local", "sherpa-onnx"].includes($("#speechInputProviderSelect").value);
       try {
         if ($("#speechInputProviderSelect").value !== "streaming-local" && streamingSpeechSessionId) {
           await stopStreamingSpeechInput({ cancel: true });
@@ -6570,7 +6613,7 @@
         setStatus($("#connectionStatus"), error.message, true);
       }
     });
-    ["#styleBertVits2UrlInput", "#styleBertVits2ModelIdInput", "#styleBertVits2SpeedInput", "#sbv2ModelSelect", "#sbv2StyleSelect", "#sbv2StyleWeightInput", "#sbv2SpeedInput", "#sbv2DeviceSelect", "#piperPlusSpeedInput", "#piperPlusReferenceEnabledInput", "#supertonicVoiceSelect", "#supertonicSpeedInput", "#supertonicStepsInput", "#kokoroVoiceSelect", "#kokoroSpeedInput", "#kokoroDeviceSelect", "#irodoriSpeedInput", "#irodoriSamplingModeSelect", "#irodoriStepsInput", "#irodoriSeedInput", "#irodoriCaptionInput", "#irodoriAutoEmotionToggle", "#irodoriEmotionStrengthSelect", "#englishPronunciationDictionaryInput"]
+    ["#speechCppStepsInput", "#styleBertVits2UrlInput", "#styleBertVits2ModelIdInput", "#styleBertVits2SpeedInput", "#sbv2ModelSelect", "#sbv2StyleSelect", "#sbv2StyleWeightInput", "#sbv2SpeedInput", "#sbv2DeviceSelect", "#piperPlusSpeedInput", "#piperPlusReferenceEnabledInput", "#supertonicVoiceSelect", "#supertonicSpeedInput", "#supertonicStepsInput", "#kokoroVoiceSelect", "#kokoroSpeedInput", "#kokoroDeviceSelect", "#irodoriSpeedInput", "#irodoriSamplingModeSelect", "#irodoriStepsInput", "#irodoriSeedInput", "#irodoriCaptionInput", "#irodoriAutoEmotionToggle", "#irodoriEmotionStrengthSelect", "#englishPronunciationDictionaryInput"]
       .forEach((selector) => $(selector).addEventListener("change", () => {
         if (selector === "#irodoriAutoEmotionToggle") syncIrodoriUi();
         saveSettings().catch((error) => setStatus($("#ttsStatus"), error.message, true));
@@ -6587,7 +6630,7 @@
       sessionStorage.setItem("charadock.activePage", "character");
       saveSettings().catch((error) => setStatus($("#characterProfileStatus"), error.message, true));
     });
-    ["#openaiModelInput", "#transcriptionModelInput", "#codexChatModelInput", "#codexChatReasoningEffortSelect", "#codexWorkModelInput", "#codexWorkReasoningEffortSelect", "#codexWorkNetworkAccessToggle"]
+    ["#codexChatModelInput", "#codexChatReasoningEffortSelect", "#codexWorkModelInput", "#codexWorkReasoningEffortSelect", "#codexWorkNetworkAccessToggle"]
       .forEach((selector) => $(selector).addEventListener("change", saveSettings));
     $("#displaySelect").addEventListener("change", saveSettings);
     motionFields.forEach((key) => $(`#${key}Input`).addEventListener("input", () => {
@@ -6595,15 +6638,30 @@
       previewCharacterMotion();
       setStatus($("#characterProfileStatus"), "プレビュー中。保存すると次回起動後も反映されます。");
     }));
-    $("#saveApiKeyButton").addEventListener("click", async () => {
+    async function saveDecisionKey(clear = false) {
+      jevBusy = true; syncJevUi();
       try {
-        state = await api.setApiKey($("#apiKeyInput").value);
+        state = await api.setDecisionApiKey(clear ? "" : $("#apiKeyInput").value);
         $("#apiKeyInput").value = "";
         syncUi();
-        setStatus($("#connectionStatus"), "APIキーを保存しました。");
-      } catch (error) {
-        setStatus($("#connectionStatus"), error.message, true);
-      }
+        setStatus($("#jevStatus"), clear ? localized("Decisions APIキーを削除しました。", "Decisions API key cleared.") : localized("Decisions APIキーを保存しました。", "Decisions API key saved."));
+      } catch (error) { setStatus($("#jevStatus"), error.message, true); }
+      finally { jevBusy = false; syncJevUi(); }
+    }
+    $("#apiKeyInput").addEventListener("input", syncJevUi);
+    $("#saveApiKeyButton").addEventListener("click", () => saveDecisionKey());
+    $("#clearApiKeyButton").addEventListener("click", () => saveDecisionKey(true));
+    $("#codexLiveLoginButton").addEventListener("click", async () => {
+      try {
+        $("#codexLiveLoginButton").disabled = true;
+        await api.startLiveLogin();
+        $("#codexLiveAccountState").textContent = localized("ブラウザでログインしてください。", "Complete sign-in in your browser.");
+        for (let attempt = 0; attempt < 150; attempt++) {
+          await new Promise(resolve => setTimeout(resolve, 2000));
+          if (await refreshLiveAccount()) { if (state.codexAuthMode === "codex") await refreshCodexAccount(); return; }
+        }
+      } catch (error) { $("#codexLiveAccountState").textContent = error.message; }
+      finally { $("#codexLiveLoginButton").disabled = Boolean(liveAccount?.signedIn); }
     });
     for (const button of $$("[data-jev-preview]")) button.addEventListener("click", async () => {
       try {
@@ -6624,7 +6682,7 @@
     $("#clearJevApiKeyButton").addEventListener("click", () => saveJevConfig("clear"));
     $("#testJevConnectionButton").addEventListener("click", testJevConnection);
     $("#testBackendButton").addEventListener("click", async () => {
-      const backend = $("input[name='backend']:checked")?.value || state.backend;
+      const backend = "codex";
       try {
         await saveSettings();
         setStatus($("#connectionStatus"), "接続を確認しています…");
@@ -6642,15 +6700,17 @@
     $("#codexLoginButton").addEventListener("click", async () => {
       try {
         if ($("#codexLoginButton").dataset.action === "logout") {
-          if (!window.confirm(localized(
+          if (state.codexAuthMode !== "chatgpt" && !window.confirm(localized(
             "ChatGPTからログアウトします。Codex CLI全体のログインも解除されます。続けますか？",
             "Sign out of ChatGPT? This also signs the entire Codex CLI out. Continue?",
           ))) return;
           $("#codexLoginButton").disabled = true;
           setStatus($("#connectionStatus"), "ChatGPTからログアウトしています…");
+          ++loginPollEpoch;
           await api.logoutCodex();
           await refreshCodexAccount();
-          setStatus($("#connectionStatus"), "ChatGPTからログアウトしました。");
+          await refreshLiveAccount();
+          setStatus($("#connectionStatus"), localized("接続を解除しました。", "Disconnected."));
           return;
         }
         setStatus($("#connectionStatus"), "ChatGPTログインをブラウザで開いています…");
@@ -6817,6 +6877,8 @@
         "piper-plus": ["piperPlus", "piperPlus"],
         "supertonic-3": ["supertonic", "supertonic"],
         kokoro: ["kokoro", "kokoro"],
+        "speech-cpp": ["speechCpp", "speechCpp"],
+        "speech-cpp-small": ["speechCpp", "speechCpp"],
         "irodori-webgpu": ["irodori", "irodori"],
         "irodori-anime-int4": ["irodori", "irodori"], "irodori-webgpu-int4": ["irodori", "irodori"],
         "irodori-500m-v3": ["irodori", "irodoriV3"],
@@ -6825,7 +6887,8 @@
       state[mapping[0]] ||= {};
       const sampleKey = model?.provider === "irodori-anime-int4" ? "animeSampleModel" : model?.provider === "irodori-500m-v3" ? "v3SampleModel"
         : model?.provider === "irodori-webgpu-int4" ? "int4SampleModel"
-          : model?.provider === "irodori-webgpu" ? "fp16SampleModel" : "sampleModel";
+          : model?.provider === "irodori-webgpu" ? "fp16SampleModel"
+            : model?.provider === "speech-cpp-small" ? "smallSampleModel" : model?.provider === "speech-cpp" ? "mfSampleModel" : "sampleModel";
       state[mapping[0]][sampleKey] = model;
       if (model?.provider === (state.irodoriVersion === "v4-anime" ? "irodori-anime-int4" : state.irodoriPrecision === "int4" ? "irodori-webgpu-int4" : "irodori-webgpu")) {
         state[mapping[0]].sampleModel = model;
@@ -6833,7 +6896,9 @@
       const selectedIrodoriProvider = $("#irodoriVersionSelect").value === "v4-anime"
         ? "irodori-anime-int4"
         : $("#irodoriPrecisionSelect").value === "int4" ? "irodori-webgpu-int4" : "irodori-webgpu";
-      if (mapping[1] !== "irodori" || model.provider === selectedIrodoriProvider) {
+      if (mapping[1] === "speechCpp") {
+        if (model.provider === selectedSpeechCppProvider()) { state.speechCpp.sampleModel = model; syncTtsSampleModelUi("speechCpp", model); }
+      } else if (mapping[1] !== "irodori" || model.provider === selectedIrodoriProvider) {
         syncTtsSampleModelUi(mapping[1], model);
       }
     });
@@ -6851,6 +6916,7 @@
     if (page === "support") refreshSupportDiagnostics();
     if (page === "skills") queueMicrotask(() => loadTrustedSkills());
     refreshCodexAccount();
+    refreshLiveAccount();
     refreshCodexModels();
     refreshRealtimeVoices();
   }

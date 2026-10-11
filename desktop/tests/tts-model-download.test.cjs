@@ -62,7 +62,7 @@ function incrementalFixtureModel() {
 }
 
 test("TTS model manifests have fixed sizes and SHA-256 values", () => {
-  assert.deepEqual(Object.keys(TTS_MODELS), ["piper-plus", "supertonic-3", "kokoro", "irodori-webgpu", "irodori-webgpu-int4", "irodori-anime-int4", "irodori-500m-v3"]);
+  assert.deepEqual(Object.keys(TTS_MODELS), ["speech-cpp", "speech-cpp-small", "piper-plus", "supertonic-3", "kokoro", "irodori-webgpu", "irodori-webgpu-int4", "irodori-anime-int4", "irodori-500m-v3"]);
   for (const model of Object.values(TTS_MODELS)) {
     const files = [model.runtime, model.archive, ...(model.files || [])].filter(Boolean);
     assert.equal(files.reduce((sum, file) => sum + file.bytes, 0), model.downloadBytes);

@@ -3,6 +3,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { DEFAULT_REALTIME_VOICE, normalizeRealtimeVoice } = require("./realtime-voice.cjs");
 const { normalizeCharacterMemories } = require("./character-memory.cjs");
+const { normalizeStartupOffers } = require("./startup-topic.cjs");
 const { BUNDLED_IRODORI_VOICES } = require("./irodori-voices.cjs");
 const { normalizeIrodoriEmotionStrength } = require("./irodori-caption.cjs");
 const { describeBeatriceModel } = require("./beatrice-v2.cjs");
@@ -20,6 +21,8 @@ const {
   validateMcpServerInput,
 } = require("./mcp-servers.cjs");
 
+const { normalizeSpeechCppSettings, speechCppSteps, speechCppVariant } = require("./speech-cpp-settings.cjs");
+
 const DEFAULT_IRODORI_VOICES = Object.freeze(BUNDLED_IRODORI_VOICES.map(({ sourceFileName: _sourceFileName, ...voice }) => Object.freeze({ ...voice })));
 const DEFAULT_CHARACTER_TTS_PROFILES = Object.freeze({
   "amber-avatar": Object.freeze({ provider: "irodori-webgpu", realtimeVoice: "maple", realtimeVoiceConversion: "none", beatriceModelId: "", beatriceVoiceId: 0, beatricePitchShift: 0, beatriceFormantShift: 0, beatriceInputGain: 0, beatriceOutputGain: 0, beatriceIntonation: 1, beatricePitchCorrection: 0, beatricePitchCorrectionType: 0, irodoriVoiceId: "builtin-kohaku", irodoriVersion: "500m-v3", irodoriPrecision: "fp16", irodoriCaption: "明るく自然な日本語。好奇心と親しみを感じる軽やかな口調で、感嘆を強くしすぎずに話す。", supertonicVoice: "F5", kokoroVoice: "jf_alpha", sbv2ModelId: "", sbv2SpeakerId: 0, sbv2StyleId: 0, sbv2StyleWeight: 1 }),
@@ -32,7 +35,9 @@ const DEFAULT_CHARACTER_TTS_PROFILES = Object.freeze({
 const DEFAULTS = Object.freeze({
   language: "ja",
   backend: "codex",
+  codexAuthMode: "chatgpt",
   decisionProvider: "jev",
+  characterAvatarSelections: {},
   jevEnabled: false,
   jevMediaEnabled: true,
   jevExpressionEnabled: true,
@@ -40,8 +45,6 @@ const DEFAULTS = Object.freeze({
   jevKohakuPerformanceEnabled: false,
   jevAddressMode: "off",
   characterId: "amber-avatar",
-  openaiModel: "gpt-5.6-luna",
-  transcriptionModel: "gpt-4o-mini-transcribe",
   codexModel: "",
   codexChatModel: "gpt-6-astra",
   codexChatReasoningEffort: "",
@@ -58,6 +61,12 @@ const DEFAULTS = Object.freeze({
   styleBertVits2Url: "http://localhost:5000",
   styleBertVits2ModelId: 0,
   styleBertVits2Speed: 1,
+  speechCppExecutablePath: "",
+  speechCppModelPath: "",
+  speechCppSmallModelPath: "",
+  speechCppModelVariant: "mf",
+  speechCppMfSteps: 6,
+  speechCppSmallSteps: 16,
   piperPlusExecutablePath: "",
   piperPlusModelPath: "",
   piperPlusSpeakerEncoderPath: "",
@@ -146,6 +155,7 @@ const DEFAULTS = Object.freeze({
   interactionMode: "chat",
   continuationStartupSpeechEnabled: true,
   continuationSummaries: {},
+  startupTopicOffers: {},
   managedSkills: [],
   skillAssignments: { all: [], characters: {} },
   mcpServers: [],
@@ -385,6 +395,11 @@ class Preferences {
       for (const key of PUBLIC_KEYS) {
         if (Object.prototype.hasOwnProperty.call(parsed, key)) this.data[key] = parsed[key];
       }
+      // Keep existing Codex sessions usable until the user explicitly connects
+      // CharaDock. API keys remain encrypted and are now Decisions-only.
+      this.data.backend = "codex";
+      this.data.codexAuthMode = ["chatgpt", "codex"].includes(parsed.codexAuthMode) ? parsed.codexAuthMode
+        : parsed.backend === "openai" ? "chatgpt" : "codex";
       // Migrate the former single Codex model setting without discarding it.
       for (const key of ["jevEnabled", "jevMediaEnabled", "jevExpressionEnabled", "jevNikePerformanceEnabled", "jevKohakuPerformanceEnabled"]) {
         if (typeof this.data[key] !== "boolean") this.data[key] = DEFAULTS[key];
@@ -401,6 +416,7 @@ class Preferences {
       if (typeof this.data.realtimeAutoStartOnPet !== "boolean") this.data.realtimeAutoStartOnPet = false;
       if (typeof this.data.workNetworkAccess !== "boolean") this.data.workNetworkAccess = false;
       if (!["ja", "en"].includes(this.data.language)) this.data.language = "ja";
+      this.data.characterAvatarSelections = Object.fromEntries(Object.entries(this.data.characterAvatarSelections || {}).filter(([id,value]) => /^[a-zA-Z0-9_-]{1,100}$/.test(id) && (value === "standard" || typeof value === "string" && /^[a-f0-9-]{36}$/.test(value))));
       if (!["jev", "decisions"].includes(this.data.decisionProvider)) this.data.decisionProvider = "jev";
       if (!["off", "standard", "strict", "living"].includes(this.data.jevAddressMode)) this.data.jevAddressMode = "off";
       if (!["manual", "vad"].includes(this.data.voiceActivationMode)) this.data.voiceActivationMode = "vad";
@@ -459,6 +475,8 @@ class Preferences {
       if (typeof this.data.englishPronunciationEnabled !== "boolean") this.data.englishPronunciationEnabled = true;
       if (typeof this.data.englishPronunciationDictionary !== "string") this.data.englishPronunciationDictionary = "";
       this.data.englishPronunciationDictionary = this.data.englishPronunciationDictionary.slice(0, 12_000);
+      Object.assign(this.data, normalizeSpeechCppSettings(this.data));
+      for (const key of ["speechCppExecutablePath", "speechCppModelPath", "speechCppSmallModelPath"]) this.data[key] = typeof this.data[key] === "string" ? this.data[key].slice(0,1000) : "";
       if (typeof this.data.piperPlusExecutablePath !== "string") this.data.piperPlusExecutablePath = "";
       if (typeof this.data.piperPlusModelPath !== "string") this.data.piperPlusModelPath = "";
       this.data.piperPlusExecutablePath = this.data.piperPlusExecutablePath.slice(0, 1000);
@@ -585,7 +603,7 @@ class Preferences {
         const id = String(characterId || "").slice(0, 120);
         if (!id || !profile || typeof profile !== "object" || Array.isArray(profile)) return [];
         const defaultProfile = DEFAULT_CHARACTER_TTS_PROFILES[id] || {};
-        const provider = ["system", "style-bert-vits2", "piper-plus", "supertonic-3", "irodori-webgpu", "kokoro", "sbv2-jp-extra"].includes(profile.provider)
+        const provider = ["system", "style-bert-vits2", "piper-plus", "supertonic-3", "irodori-webgpu", "speech-cpp", "kokoro", "sbv2-jp-extra"].includes(profile.provider)
           ? profile.provider : "system";
         return [[id, {
           provider,
@@ -625,7 +643,7 @@ class Preferences {
         }]];
       }));
       this.data.realtimeVoice = normalizeRealtimeVoice(this.data.realtimeVoice);
-      if (!["realtime", "streaming-local", "sherpa-onnx", "browser", "openai"].includes(this.data.speechInputProvider)) {
+      if (!["realtime", "streaming-local", "sherpa-onnx", "browser"].includes(this.data.speechInputProvider)) {
         this.data.speechInputProvider = "browser";
       }
       if (this.data.streamingSpeechModelId !== "reazonspeech-streaming") {
@@ -633,6 +651,7 @@ class Preferences {
       }
       this.data.conversationHistories = normalizeConversationHistories(this.data.conversationHistories);
       this.data.characterMemories = normalizeCharacterMemories(this.data.characterMemories);
+      this.data.startupTopicOffers = normalizeStartupOffers(this.data.startupTopicOffers);
       this.data.characterWorkspaces = normalizeCharacterWorkspaces(this.data.characterWorkspaces);
       if (typeof this.data.continuationStartupSpeechEnabled !== "boolean") this.data.continuationStartupSpeechEnabled = true;
       this.data.continuationSummaries = normalizeContinuationSummaries(this.data.continuationSummaries);
@@ -686,12 +705,12 @@ class Preferences {
   publicState() {
     const state = {};
     for (const key of PUBLIC_KEYS) {
-      if (!["customCharacters", "workDirectory", "piperPlusExecutablePath", "piperPlusModelPath", "piperPlusSpeakerEncoderPath", "supertonicModelDirectory", "irodoriModelDirectory", "irodoriV4ModelDirectory", "irodoriV4Int4ModelDirectory", "irodoriV41AnimeModelDirectory", "irodoriMfModelDirectory", "irodoriReferenceAudioPath", "irodoriVoices", "kokoroModelDirectory", "sbv2Models", "beatriceVstPath", "beatriceModelPath", "beatriceModels", "characterTtsProfiles", "conversationHistories", "characterMemories", "characterWorkspaces", "continuationSummaries", "managedSkills", "skillAssignments", "mcpServers", "mcpAssignments", "webPreviewRuntimes", "workHistory", "remoteTrustedDevices"].includes(key)) state[key] = this.data[key];
+      if (!["customCharacters", "workDirectory", "speechCppExecutablePath", "speechCppModelPath", "speechCppSmallModelPath", "piperPlusExecutablePath", "piperPlusModelPath", "piperPlusSpeakerEncoderPath", "supertonicModelDirectory", "irodoriModelDirectory", "irodoriV4ModelDirectory", "irodoriV4Int4ModelDirectory", "irodoriV41AnimeModelDirectory", "irodoriMfModelDirectory", "irodoriReferenceAudioPath", "irodoriVoices", "kokoroModelDirectory", "sbv2Models", "beatriceVstPath", "beatriceModelPath", "beatriceModels", "characterTtsProfiles", "conversationHistories", "characterMemories", "characterWorkspaces", "continuationSummaries", "managedSkills", "skillAssignments", "mcpServers", "mcpAssignments", "webPreviewRuntimes", "workHistory", "remoteTrustedDevices"].includes(key)) state[key] = this.data[key];
     }
     state.hasWorkDirectory = Boolean(this.data.workDirectory);
     state.workDirectoryName = this.data.workDirectory ? path.basename(this.data.workDirectory) : "";
     state.hasApiKey = Boolean(this.getApiKey());
-    state.apiKeyPersistence = this.canEncrypt() ? "encrypted" : "session";
+    state.apiKeyPersistence = this.sessionApiKey || !this.canEncryptJevKey() ? "session" : "encrypted";
     state.jevApiKeyConfigured = Boolean(this.getJevApiKey());
     state.jevApiKeyPersistence = this.sessionJevApiKey || !this.canEncryptJevKey() ? "session" : "encrypted";
     state.mcpServers = publicMcpServers(this.data.mcpServers, (serverId) => Boolean(this.getMcpApiKey(serverId)));
@@ -707,9 +726,14 @@ class Preferences {
     for (const key of PUBLIC_KEYS) {
       if (key === "mcpServers" || key === "mcpAssignments") continue;
       if (Object.prototype.hasOwnProperty.call(values, key)) {
+        if (key === "backend") { this.data.backend = "codex"; continue; }
+        if (key === "codexAuthMode" && !["chatgpt", "codex"].includes(values[key])) continue;
+        if (key === "speechInputProvider" && !["realtime", "streaming-local", "sherpa-onnx", "browser"].includes(values[key])) continue;
         if (key === "decisionProvider" && !["jev", "decisions"].includes(values[key])) continue;
         if (key === "jevAddressMode" && !["off", "standard", "strict", "living"].includes(values[key])) continue;
         if (["jevEnabled", "jevMediaEnabled", "jevExpressionEnabled", "jevNikePerformanceEnabled", "jevKohakuPerformanceEnabled"].includes(key) && typeof values[key] !== "boolean") continue;
+        if (key === "speechCppModelVariant") { this.data[key] = speechCppVariant(values[key]); continue; }
+        if (["speechCppMfSteps", "speechCppSmallSteps"].includes(key)) { this.data[key] = speechCppSteps(values[key], key === "speechCppMfSteps" ? 6 : 16); continue; }
         this.data[key] = key === "deviceProfiles" ? normalizeDeviceProfiles(values[key]) : values[key];
       }
     }
@@ -729,9 +753,11 @@ class Preferences {
     const normalized = String(apiKey || "").trim();
     this.sessionApiKey = normalized;
     delete this.data.encryptedApiKey;
-    if (normalized && this.canEncrypt()) {
-      this.data.encryptedApiKey = this.safeStorage.encryptString(normalized).toString("base64");
-      this.sessionApiKey = "";
+    if (normalized && this.canEncryptJevKey()) {
+      try {
+        this.data.encryptedApiKey = this.safeStorage.encryptString(normalized).toString("base64");
+        this.sessionApiKey = "";
+      } catch {}
     }
     this.save();
     return this.publicState();
@@ -774,14 +800,16 @@ class Preferences {
 
   getApiKey() {
     if (this.sessionApiKey) return this.sessionApiKey;
-    if (!this.data.encryptedApiKey || !this.canEncrypt()) return "";
+    if (!this.data.encryptedApiKey || !this.canEncryptJevKey()) return "";
     try {
       return this.safeStorage.decryptString(Buffer.from(this.data.encryptedApiKey, "base64"));
     } catch (error) {
-      console.warn("API key decrypt failed:", error);
       return "";
     }
   }
+
+  getDecisionApiKey() { return this.getApiKey(); }
+  setDecisionApiKey(key) { return this.setApiKey(key); }
 
   setAtomEchoPairingToken(token) {
     const normalized = String(token || "").toLowerCase();

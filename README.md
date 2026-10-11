@@ -52,7 +52,7 @@ CharaDock is an unofficial derivative of [rotejin/PuruPuruPNGTuber](https://gith
 
 ### Conversations that can continue
 
-- ChatGPT sign-in through Codex app-server, or the OpenAI Responses API
+- Sign in with ChatGPT for Chat/Work, or retain your existing Codex sign-in; Live uses Codex sign-in
 - Long-response bubbles show the sentence currently being spoken, then return to the full response
 - Conversation and work history restored after restarting the app
 - Up to 20 recent conversation turns per character
@@ -217,7 +217,9 @@ CharaDock's Beatrice 2 voice-conversion integration uses its own small native VS
 
 ### OpenAI API and local processing
 
-CharaDock can use the Responses API for conversation and the Transcriptions API for speech recognition. API keys are never passed to the renderer and use OS-encrypted storage where available. sherpa-onnx, system recognition, normal lip sync, and supported TTS engines run locally. Audio leaves the device only when Codex Realtime or OpenAI transcription is explicitly selected.
+Chat/Work use Codex app-server with either CharaDock's dedicated Sign in with ChatGPT connection or the existing Codex login. The dedicated connection uses the authorized ChatGPT plan through Responses, without a user API key. CharaDock validates OAuth identity, encrypts credentials with the OS where available, and renews them between turns while resuming the same thread. Without secure OS storage, credentials remain session-only. Existing profiles retain their Codex connection until switched in AI Connection. Live continues to use the separate Codex login.
+
+OpenAI API keys are used only by optional Decisions API in **AI Connection → Decision assist**. Saved keys are retained. API-key conversation and OpenAI transcription are retired. Local speech recognition, lip sync and supported TTS engines remain available; cloud audio is sent only when Live is selected.
 
 ## Create a character from one image
 
@@ -230,6 +232,8 @@ When connected to Codex app-server, select a PNG, JPEG, or WebP image in `Codex 
 - A user-supplied or automatically suggested personality, speaking style, and click reactions
 
 Only upload images for which you have all rights required to upload, modify, and use the result.
+
+Mesh Avatar Studio projects can be imported as additional appearances for the selected character. In **Character → Appearance → Import Mesh Avatar**, select a project folder containing `rig.json` and generated `built/` assets. CharaDock validates and copies the runtime assets into its profile; the original project stays unchanged. Choose **Original appearance** to return to the existing avatar. Each character retains its own selection, name, personality, voice, and conversation history. PC, OBS and paired CharaDock Link render the selected mesh appearance with expressions, blinking and audio-driven lips. Build the project in Mesh Avatar Studio before importing; images alone and incomplete projects are not supported. Imported images are kept locally and are not included in the CharaDock repository or `.purupuru` exports. The ESP32 portrait renderer continues to use the character’s existing portrait assets.
 
 Existing `.purupuru` packages can also be added or deleted in character settings. Edited characters can be exported as a portable, self-contained `.purupuru` avatar package containing their images. It does not depend on the original PNG asset folder, so it can be backed up or moved to another PC.
 
@@ -303,3 +307,13 @@ AI Nike-chan is a separately authorized character and is not covered by the proj
 - [GitHub release checklist](./docs/github-release-checklist.md)
 
 CharaDock is not endorsed by or affiliated with the original PuruPuru PNGTuber developer.
+
+### Irodori via speech.cpp (Windows)
+
+Settings → Voice → Character voice offers **Irodori TTS · speech.cpp** alongside the existing Irodori WebGPU engine. “Download model” installs the pinned speech.cpp v0.8.3 Windows x64 Vulkan runtime and the selected Irodori v4.1 Small MF or v4.1 Small F16 GGUF (approximately 2 GB per model) into the current profile. Both downloads are SHA-256 verified. A Vulkan-capable GPU driver is required; runtime startup failures appear in voice status.
+
+The native worker stays loaded between sentences and encodes the selected Irodori reference WAV once when it starts. The model selector switches between Small MF and Small without changing WebGPU settings. Step count is adjustable from 1 to 64 and saved separately for each model, defaulting to 6 for MF and 16 for Small. Native MF synthesis defaults to six MeanFlow steps: four steps reproduced an extra syllable after the short voice-test sentence with builtin-kohaku. Reference voices, Voice Design, captions, automatic emotion, speed, and seed use the existing character voice settings. PC and Link playback schedule streamed 48 kHz PCM continuously; captions and lip motion follow playback. Reference synthesis derives sentence timing from a private text-only one-step probe, cached across repeated sentences, to prevent the reference/caption from allocating unrelated speech at the end. Probe audio is never played. A conservative streaming tail gate additionally handles resumed speech after silence in a single clause; punctuation and real clause pauses are preserved. At sentence completion, an endpoint gate removes isolated bursts up to 80 ms after at least 320 ms of quiet, retains 80 ms of padding, and fades the end to zero. It holds only the last 40 ms of ordinary PCM so an EOF notification cannot arrive after the terminal audio has already played. Stop cancels queued and running generation, including initial warmup and duration probes. Device speakers retain their WAV-compatible chunk transport. Native Realtime speech and speech recognition are unchanged.
+
+Only CharaDock's adapter, download manifest, tests, and license notices are committed here. Runtime binaries, GGUF weights, reference recordings, and profile data stay outside Git. See [third-party notices](THIRD_PARTY_NOTICES.md). `npm run runtime:build` embeds the shared PCM scheduler into Electron's sandboxed mascot preload.
+
+See the [measured v4.1 RF and MF comparison](docs/benchmarks/speech-cpp-irodori-v41-20261011.md) for speech.cpp versus WebGPU FP16/INT4 timings and reproduction conditions.

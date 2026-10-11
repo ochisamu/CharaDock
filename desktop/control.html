@@ -360,6 +360,13 @@
         <div id="characterGrid" class="character-grid"></div>
         <section id="characterProfileCard" class="card profile-editor">
           <header><div><h2>キャラクター設定</h2><p>名前と性格は会話にも反映されます。吹き出しはキャラクターに重なる位置へ調整できます。</p></div></header>
+          <section class="character-appearance" aria-labelledby="characterAppearanceTitle">
+            <h3 id="characterAppearanceTitle">見た目</h3>
+            <label><span id="characterAppearanceLabel">表示するアバター</span><select id="characterAppearanceSelect"><option value="standard">標準の見た目</option></select></label>
+            <div class="button-row"><button id="importMeshAvatarButton" class="button button-secondary" type="button">Mesh Avatarを読み込む</button></div>
+            <p id="characterAppearanceHint" class="hint">Mesh Avatar Studioのプロジェクトフォルダーを選びます。見た目を切り替えても、このキャラの名前・性格・声・会話は共通です。</p>
+            <p id="characterAppearanceStatus" class="inline-status" role="status"></p>
+          </section>
           <div class="profile-fields">
             <label>名前<input id="characterNameInput" type="text" maxlength="40" /></label>
             <label class="profile-personality">性格・話し方<textarea id="characterPersonalityInput" rows="4" maxlength="2000"></textarea></label>
@@ -566,35 +573,31 @@
       </section>
 
       <section class="page" data-page-panel="connection">
-        <header class="page-header"><div><p class="eyebrow">AI接続</p><h1>応答エンジン</h1></div><button id="testBackendButton" class="button button-secondary" type="button">接続を確認</button></header>
-        <p class="page-lead">会話と作業を動かすAIを選びます。変更前に右上から接続を確認できます。</p>
+        <header class="page-header"><div><p class="eyebrow">AI接続</p><h1>会話と作業の接続</h1></div><button id="testBackendButton" class="button button-secondary" type="button">接続を確認</button></header>
+        <p class="page-lead">ChatGPTへの接続方法を選びます。会話と作業にはAPIキーは不要です。</p>
         <nav class="page-section-nav" aria-label="AI接続設定内を移動">
           <button type="button" data-settings-jump=".backend-grid"><span class="ui-symbol ui-symbol-connection" aria-hidden="true"></span>接続方式</button>
           <button type="button" data-settings-jump="#codexSettings"><span class="ui-symbol ui-symbol-chat" aria-hidden="true"></span>Codex</button>
-          <button type="button" data-settings-jump="#openaiSettings"><span class="ui-symbol ui-symbol-sparkle" aria-hidden="true"></span>OpenAI API</button>
+          <button type="button" data-settings-jump="#codexLiveSettings"><span class="ui-symbol ui-symbol-sparkle" aria-hidden="true"></span>Live</button>
         </nav>
         <div class="backend-grid">
           <label class="backend-card">
-            <input type="radio" name="backend" value="codex" />
-            <span class="backend-check">✓</span>
-            <span class="backend-icon">⌘</span>
-            <strong>Codex app-server</strong>
-            <small>Codexのログイン状態を使う</small>
-            <p>ローカルのCodex CLIを安全な読み取り専用モードで起動し、会話を継続します。</p>
+            <input type="radio" name="codexAuthMode" value="chatgpt" />
+            <span class="backend-check">✓</span><span class="backend-icon">✦</span>
+            <strong>ChatGPTでサインイン</strong><small>CharaDock専用の接続</small>
+            <p>ブラウザでログインし、ChatGPTプランの利用を許可します。ほかのアプリのログインとは別に管理できます。</p>
           </label>
           <label class="backend-card">
-            <input type="radio" name="backend" value="openai" />
-            <span class="backend-check">✓</span>
-            <span class="backend-icon">✦</span>
-            <strong>OpenAI API</strong>
-            <small>自分のAPIキーを使う</small>
-            <p>Responses APIを使います。APIキーはOSの暗号化ストレージからのみ復号します。</p>
+            <input type="radio" name="codexAuthMode" value="codex" />
+            <span class="backend-check">✓</span><span class="backend-icon">⌘</span>
+            <strong>Codexのログイン</strong><small>これまでの接続を使う</small>
+            <p>このPCのCodexにログインしたアカウントを使います。</p>
           </label>
         </div>
 
         <div class="settings-grid">
           <section class="card settings-card" id="codexSettings">
-            <header><div><h2>Codex設定</h2><p>会話と作業でモデルと推論の深さを分けられます。空欄ならCodex側の既定値です。</p></div></header>
+            <header><div><h2>Chat / Work</h2><p>会話と作業でモデルと推論の深さを分けられます。空欄ならCodex側の既定値です。</p></div></header>
             <div class="codex-mode-settings">
               <h3>Chat</h3>
               <label>モデル<select id="codexChatModelInput"><option value="">Codex既定</option></select></label>
@@ -617,11 +620,10 @@
               <p class="hint">音声入力方式はデスクトップ設定で明示的に選択します。Codex Realtimeは選択した場合だけ接続します。</p>
             </div>
           </section>
-          <section class="card settings-card" id="openaiSettings">
-            <header><div><h2>OpenAI API設定</h2><p id="apiKeyState">APIキー未設定</p></div></header>
-            <label>APIキー<div class="input-action"><input id="apiKeyInput" type="password" autocomplete="off" placeholder="sk-…" /><button id="saveApiKeyButton" type="button">保存</button></div></label>
-            <label>応答モデル<input id="openaiModelInput" type="text" autocomplete="off" /></label>
-            <label>音声認識モデル<input id="transcriptionModelInput" type="text" autocomplete="off" /></label>
+          <section class="card settings-card" id="codexLiveSettings">
+            <header><div><h2>Liveの接続</h2><p>LiveはCodexのログインを使います。Chat / Workの接続とは別に設定できます。</p></div></header>
+            <button id="codexLiveLoginButton" class="button button-secondary" type="button">Live用にログイン</button>
+            <p id="codexLiveAccountState" class="hint" role="status">アカウント状態を確認しています…</p>
           </section>
         </div>
         <p id="connectionStatus" class="inline-status" role="status"></p>
@@ -653,7 +655,11 @@
           <label><span data-jev-ja="JevアプリAPIキー" data-jev-en="Jev app API key">JevアプリAPIキー</span><div class="input-action"><input id="jevApiKeyInput" type="password" autocomplete="new-password" spellcheck="false" /><button id="saveJevApiKeyButton" type="button" data-jev-ja="保存" data-jev-en="Save">保存</button><button id="clearJevApiKeyButton" type="button" data-jev-ja="削除" data-jev-en="Clear">削除</button></div></label>
           <p data-jev-ja="キーはOSの暗号化ストレージで保存します。利用できない場合は今回の起動中のみ保持します。接続テストには保存済みのキーを使います。" data-jev-en="The key is saved using OS encryption. If unavailable, it is kept only for this session. Connection tests use the saved key.">キーはOSの暗号化ストレージで保存します。利用できない場合は今回の起動中のみ保持します。接続テストには保存済みのキーを使います。</p>
           </div>
-          <p id="decisionOpenAIKeyNote" hidden data-jev-ja="OpenAI Decisionsはプロフィールに設定したOpenAI APIキーを使います。キーの設定・変更はプロフィールで行えます。" data-jev-en="OpenAI Decisions uses the OpenAI API key saved in your profile. Add or change the key in Profile.">OpenAI Decisionsはプロフィールに設定したOpenAI APIキーを使います。キーの設定・変更はプロフィールで行えます。</p>
+          <div id="decisionOpenAIKeySettings" hidden>
+            <p id="apiKeyState" role="status">APIキー未設定</p>
+            <label>OpenAI APIキー<div class="input-action"><input id="apiKeyInput" type="password" autocomplete="new-password" spellcheck="false" placeholder="sk-…" /><button id="saveApiKeyButton" type="button">保存</button><button id="clearApiKeyButton" type="button">削除</button></div></label>
+            <p id="decisionOpenAIKeyNote" data-jev-ja="Decisions API専用のキーです。保存済みのOpenAI APIキーを引き継ぎます。OSの暗号化を利用できない場合は今回の起動中のみ保持します。" data-jev-en="This key is used only for Decisions API. Your saved OpenAI API key is retained. Without OS encryption, it is kept only for this session.">Decisions API専用のキーです。保存済みのOpenAI APIキーを引き継ぎます。OSの暗号化を利用できない場合は今回の起動中のみ保持します。</p>
+          </div>
           <button id="testJevConnectionButton" type="button" disabled data-jev-ja="接続テスト" data-jev-en="Test connection">接続テスト</button>
           <p id="jevStatus" class="inline-status" role="status" aria-live="polite"></p>
         </section>
@@ -696,7 +702,6 @@
                 <option value="streaming-local">ストリーミング音声認識（日本語・ローカル）</option>
                 <option value="sherpa-onnx">sherpa-onnx（ローカル）</option>
                 <option value="browser">端末音声認識</option>
-                <option value="openai">OpenAI文字起こし</option>
               </select></label>
               <div id="voiceActivationSettings" class="tts-provider-settings" hidden>
                 <label>開始方法<select id="voiceActivationModeSelect">
@@ -800,7 +805,7 @@
               <fieldset id="standardTtsSettings" class="voice-mode-panel standard-tts-settings">
               <label class="switch-row"><span><strong>AIの返答を音声で読み上げる</strong><small>読み上げのON/OFFは全キャラクター共通です</small></span><input id="ttsToggle" type="checkbox" /><i></i></label>
               <div class="tts-settings">
-              <label>音声方式<select id="ttsProviderSelect"><option value="system">Windows標準</option><option value="style-bert-vits2">Style-Bert-VITS2（API）</option><option value="sbv2-jp-extra">Style-Bert-VITS2 JP-Extra（WebGPU / CPU）</option><option value="piper-plus">piper-plus（ローカル）</option><option value="supertonic-3">Supertonic 3（ローカル）</option><option value="kokoro">Kokoro（WebGPU / CPU）</option><option value="irodori-webgpu">Irodori TTS（WebGPU）</option></select></label>
+              <label>音声方式<select id="ttsProviderSelect"><option value="system">Windows標準</option><option value="style-bert-vits2">Style-Bert-VITS2（API）</option><option value="sbv2-jp-extra">Style-Bert-VITS2 JP-Extra（WebGPU / CPU）</option><option value="piper-plus">piper-plus（ローカル）</option><option value="supertonic-3">Supertonic 3（ローカル）</option><option value="kokoro">Kokoro（WebGPU / CPU）</option><option value="irodori-webgpu">Irodori TTS（WebGPU）</option><option value="speech-cpp">Irodori TTS · speech.cpp（ローカル）</option></select></label>
               <div id="styleBertVits2Settings" class="tts-provider-settings" hidden>
                 <label>API URL<input id="styleBertVits2UrlInput" type="text" inputmode="url" autocomplete="off" placeholder="http://localhost:5000" /></label>
                 <div class="size-actions">
@@ -905,6 +910,26 @@
                 <p class="hint">日本語G2Pと音声生成は端末内で完結します。WebGPUで失敗した場合、「自動」ではCPUへ切り替わります。</p>
               </div>
               <div id="irodoriSettings" class="tts-provider-settings" hidden>
+                <div id="speechCppSettings" hidden>
+                  <p class="hint"><strong>Irodori TTS · speech.cpp</strong></p>
+                  <p class="hint">参照音声と話し方はIrodori TTSと共通です。音声が届いた部分から再生します。</p>
+                  <label>モデル<select id="speechCppModelSelect">
+                    <option value="mf">v4.1 Small MF（高速）</option>
+                    <option value="small">v4.1 Small</option>
+                  </select></label>
+                  <label>Step数<input id="speechCppStepsInput" type="number" min="1" max="64" step="1" value="6" /></label>
+                  <p id="speechCppStepsHint" class="hint">MFの初期値は6。増やすと生成に時間がかかります。モデルごとに保存します。</p>
+                  <div class="local-model-download">
+                    <p id="speechCppModelDownloadStatus" class="hint">モデルを確認しています…</p>
+                    <progress id="speechCppModelDownloadProgress" max="100" value="0" hidden></progress>
+                    <div class="size-actions">
+                      <button id="speechCppModelDownloadButton" class="button button-secondary" type="button">モデルをダウンロード</button>
+                      <button id="speechCppModelRemoveButton" class="button button-quiet" type="button" hidden>モデルを削除</button>
+                    </div>
+                    <p id="speechCppModelDownloadHint" class="hint">選択したモデルとWindows版エンジン（約2GB）を検証して、このプロフィールに保存します。</p>
+                    <p class="hint">Windows版のGPUドライバーはVulkan対応が必要です。</p>
+                  </div>
+                </div>
                 <label>モデル世代<select id="irodoriVersionSelect">
                   <option value="v4-small">v4.1 Small（推奨・Voice Design対応）</option>
                   <option value="v4-anime">v4.1 Anime（アニメ調・INT4）</option>
@@ -1194,7 +1219,7 @@
             <div class="onboarding-install-actions"><button id="onboardingCopyCliButton" class="button button-secondary" type="button">コマンドをコピー</button><button id="onboardingOpenCliGuideButton" class="button button-quiet" type="button">公式ガイド</button></div>
           </article>
         </div>
-        <button id="onboardingOpenConnectionButton" class="button button-quiet" type="button">OpenAI APIなど別の接続を設定</button>
+        <button id="onboardingOpenConnectionButton" class="button button-quiet" type="button">詳しい接続設定を設定</button>
       </div>
       <div class="onboarding-step" data-onboarding-step="1">
         <span class="onboarding-step-icon"><span class="ui-symbol ui-symbol-character" aria-hidden="true"></span></span>
@@ -1236,6 +1261,7 @@
   </section>
   <script src="./i18n.js"></script>
   <script src="./audio-envelope.js"></script>
+  <script src="./pcm-speech-player.js"></script>
   <script src="./realtime-turn-detection.js"></script>
   <script src="./realtime-beatrice.js"></script>
   <script src="../vendor/highlightjs/11.11.1/highlight.min.js"></script>

@@ -53,7 +53,7 @@ CharaDockは、[rotejin/PuruPuruPNGTuber](https://github.com/rotejin/PuruPuruPNG
 ### 会話を続けられる
 
 - 任意の[Jev連携](./docs/jev.md): アプリ内でAPIキーを設定し、Windowsの曲送り等と表情・仕草を判定。既定OFF、会話モデルやTTSは変更しません。
-- Codex app-serverのChatGPTログイン、またはOpenAI Responses API
+- Chat/WorkはChatGPTでサインイン、または従来のCodexログイン。LiveはCodexログインを使用
 - 現在読み上げている文を吹き出しへ表示し、完了後は全文へ戻る長文表示
 - 会話履歴と作業履歴をアプリ終了後も復元
 - キャラクターごとに最大20往復の会話履歴を保持
@@ -216,7 +216,9 @@ CharaDockのBeatrice 2声変換連携は、Windowsでは`charadock-beatrice-host
 
 ### OpenAI APIとローカル処理
 
-Responses APIによる会話とTranscriptions APIによる文字起こしを利用できます。APIキーはレンダラーへ渡さず、利用可能な場合はOSの暗号化ストレージへ保存します。sherpa-onnx、端末音声認識、通常の口パク、対応TTSは端末内で処理します。Codex RealtimeまたはOpenAI文字起こしを選んだ場合のみ、音声が該当サービスへ送られます。
+Chat/WorkはCodex app-serverの構成を維持し、「ChatGPTでサインイン」で許可したChatGPTプラン、または従来のCodexログインを使います。専用接続の認証はCharaDockが検証・保存・更新し、更新後も同じ会話を再開します。OSの暗号化を利用できない場合は起動中だけ保持します。既存プロフィールは現在のCodex接続を引き継ぎ、AI接続画面で切り替えられます。Liveは別のCodexログインを使います。
+
+OpenAI APIキーは **AI接続 → 判断アシスト** のDecisions API専用です。保存済みのキーは引き継ぎます。APIキーによる会話とOpenAI文字起こしは廃止しました。ローカル音声認識、口パク、対応TTSは維持し、クラウドへ音声を送るのはLiveを選んだ場合だけです。
 
 ## 一枚絵からキャラクターを追加
 

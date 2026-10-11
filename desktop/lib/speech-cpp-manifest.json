@@ -1,0 +1,49 @@
+{
+  "id": "speech-cpp",
+  "label": "Irodori v4.1 Small MF · speech.cpp",
+  "description": "日本語の参照音声を使う、音声を小分けに返すローカル音声エンジン。",
+  "directoryName": "speech-cpp-irodori-mf-v0.8.3",
+  "downloadBytes": 1950878442,
+  "platforms": [
+    "win32"
+  ],
+  "sourceUrl": "https://github.com/nyosegawa/speech.cpp",
+  "licenseUrl": "https://github.com/nyosegawa/speech.cpp/blob/v0.8.3/LICENSE",
+  "runtime": {
+    "archiveName": "speech-0.8.3-windows-x64-vulkan.zip",
+    "url": "https://github.com/nyosegawa/speech.cpp/releases/download/v0.8.3/speech-0.8.3-windows-x64-vulkan.zip",
+    "bytes": 30537244,
+    "sha256": "8c5f199aecf972cb214b5df9d91400108b07cdd7428ae985891a944ca077b976"
+  },
+  "files": [
+    {
+      "name": "Irodori-TTS-866M-MF-v4.1-F16.gguf",
+      "relativePath": "models/Irodori-TTS-866M-MF-v4.1-F16.gguf",
+      "url": "https://huggingface.co/sakasegawa/Irodori-TTS-v4.1-Small-MF-GGUF/resolve/69d307a472a1708c5637edcfe376d31c2685829d/Irodori-TTS-866M-MF-v4.1-F16.gguf",
+      "bytes": 1920321792,
+      "sha256": "e237dc3eefe469b8bba87872beacf12fb7fe00dbdf85767edca8ec04ab910d13"
+    },
+    {
+      "name": "LICENSE-MIT",
+      "relativePath": "licenses/model/LICENSE-MIT",
+      "url": "https://huggingface.co/sakasegawa/Irodori-TTS-v4.1-Small-MF-GGUF/resolve/69d307a472a1708c5637edcfe376d31c2685829d/LICENSE-MIT",
+      "bytes": 1064,
+      "sha256": "dfd47cc99fd79cced8e0cab04ed81f70b3d4f2f475a75746b341671bd3991c00"
+    },
+    {
+      "name": "LICENSE-APACHE-2.0",
+      "relativePath": "licenses/model/LICENSE-APACHE-2.0",
+      "url": "https://huggingface.co/sakasegawa/Irodori-TTS-v4.1-Small-MF-GGUF/resolve/69d307a472a1708c5637edcfe376d31c2685829d/LICENSE-APACHE-2.0",
+      "bytes": 11358,
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+    },
+    {
+      "name": "README.md",
+      "relativePath": "licenses/model/README.md",
+      "url": "https://huggingface.co/sakasegawa/Irodori-TTS-v4.1-Small-MF-GGUF/resolve/69d307a472a1708c5637edcfe376d31c2685829d/README.md",
+      "bytes": 6984,
+      "sha256": "049f4cecb3344f8686ef31a7de4ae330cb51754866d8cd65a1bf58b72bfd451d"
+    }
+  ],
+  "engine": "speech-cpp"
+}

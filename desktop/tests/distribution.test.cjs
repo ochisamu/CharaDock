@@ -283,7 +283,7 @@ test("voice input UI requires one explicit supported provider", () => {
   const html = fs.readFileSync(path.join(projectRoot, "desktop", "control.html"), "utf8");
   const main = fs.readFileSync(path.join(projectRoot, "desktop", "main.cjs"), "utf8");
   const select = html.match(/<select id="speechInputProviderSelect">([\s\S]*?)<\/select>/)?.[1] || "";
-  for (const provider of ["realtime", "streaming-local", "sherpa-onnx", "browser", "openai"]) {
+  for (const provider of ["realtime", "streaming-local", "sherpa-onnx", "browser"]) {
     assert.match(select, new RegExp(`<option value="${provider}">`));
   }
   assert.doesNotMatch(select, /<option value="(?:auto|codex-audio)">/);
@@ -814,7 +814,7 @@ test("Streamable HTTP MCP settings support scoped Chat, Work, and Live use witho
   assert.match(preload, /ipcRenderer\.invoke\("mcp:test", serverId\)/);
   assert.match(preload, /ipcRenderer\.invoke\("mcp:setAssignment", payload\)/);
   assert.match(preload, /ipcRenderer\.invoke\("audio:realtimeTurnMcp", selectedMcpServerIds\)/);
-  assert.match(main, /function ensureWorkClient\(selectedMcpServerIds = \[\]\)[\s\S]*preferences\.mcpRuntime\(effectiveMcpServerIds\(selectedMcpServerIds\)\)/);
+  assert.match(main, /function ensureWorkClient\(selectedMcpServerIds = \[\], forLive = false\)[\s\S]*preferences\.mcpRuntime\(effectiveMcpServerIds\(selectedMcpServerIds\)\)/);
   assert.match(main.match(/function createConversationCodexClient\([\s\S]*?\n}/)?.[0] || "", /mcpRuntime|mcpServers/);
   assert.match(main, /ipcMain\.handle\("mcp:setAssignment"/);
   assert.match(control, /selectedMcpServerIds: chatSelectedMcpServerIds/);

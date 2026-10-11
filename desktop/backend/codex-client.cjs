@@ -182,6 +182,9 @@ class CodexAppServerClient {
     spawnCwd = "",
     command = process.env.CODEX_CLI_PATH || "codex",
     commandArgs = [],
+    configOverrides = [],
+    accessTokenProvider = null,
+    authMode = "codex",
     pathMapper = null,
     model = "",
     reasoningEffort = "",
@@ -204,6 +207,11 @@ class CodexAppServerClient {
     this.spawnCwd = spawnCwd || this.cwd;
     this.command = command;
     this.commandArgs = Array.isArray(commandArgs) ? commandArgs : [];
+    this.configOverrides = Array.isArray(configOverrides) ? [...configOverrides] : [];
+    this.accessTokenProvider = accessTokenProvider;
+    this.authMode = authMode;
+    this.authPreparation = null;
+    this.resumeThreadId = null;
     this.pathMapper = typeof pathMapper === "function" ? pathMapper : (value) => value;
     this.model = model;
     this.reasoningEffort = String(reasoningEffort || "").trim();
@@ -219,6 +227,9 @@ class CodexAppServerClient {
     this.networkAccess = networkAccess === true;
     this.rejectInteractiveRequests = rejectInteractiveRequests === true;
     this.environment = environment && typeof environment === "object" && !Array.isArray(environment) ? { ...environment } : {};
+    // Codex Desktop exports an originator override. SIWC attribution must use
+    // CharaDock's registered name even when launched from another Codex process.
+    if (this.authMode === "chatgpt") this.environment.CODEX_INTERNAL_ORIGINATOR_OVERRIDE = "CharaDock";
     this.mcpServers = Array.isArray(mcpServers) ? mcpServers.map((server) => ({ ...server })) : [];
     this.mcpSignature = String(mcpSignature || "");
     this.persona = "";
@@ -252,6 +263,7 @@ class CodexAppServerClient {
 
   invalidateThread() {
     this.threadId = null;
+    this.resumeThreadId = null;
     this.threadVersion += 1;
     this.threadStartPromise = null;
   }
@@ -316,6 +328,9 @@ class CodexAppServerClient {
   }
 
   async ensureStarted() {
+    const signal = this.conversationController.signal;
+    if (this.accessTokenProvider) await this.prepareAuthentication();
+    if (signal.aborted || signal !== this.conversationController.signal) throw signal.reason || new Error("Codex conversation changed");
     if (this.startPromise) return this.startPromise;
     if (this.proc && !this.proc.killed) return;
     const starting = this.start().finally(() => {
@@ -325,13 +340,40 @@ class CodexAppServerClient {
     return this.startPromise;
   }
 
+  async prepareAuthentication() {
+    if (!this.authPreparation) {
+      const signal = this.conversationController.signal;
+      this.authPreparation = (async () => {
+        const token = await this.accessTokenProvider();
+        if (signal.aborted || signal !== this.conversationController.signal) throw signal.reason || new Error("Codex conversation changed");
+        if (!token) throw new Error("ChatGPT sign-in is required");
+        if (this.environment.CHARADOCK_CHATGPT_ACCESS_TOKEN === token) return;
+        if (this.proc && (this.activeTurnId || this.realtimeHandlers.size || this.pending.size || this.startPromise)) return;
+        const child = this.proc;
+        const threadId = this.threadId || this.resumeThreadId;
+        if (child) {
+          // Rotate credentials between turns without aborting the queued submit.
+          // The old child's exit must not cancel the resumed conversation.
+          this.proc = null;
+          this.readline?.close(); this.readline = null;
+          this.startPromise = null; this.mcpReadyPromise = null;
+          child.kill();
+          this.invalidateThread(); this.resumeThreadId = threadId;
+        }
+        this.environment.CHARADOCK_CHATGPT_ACCESS_TOKEN = token;
+      })().finally(() => { this.authPreparation = null; });
+    }
+    return this.authPreparation;
+  }
+
   async start() {
     if (!String(this.command || "").trim()) {
       throw new Error(CODEX_INSTALL_REQUIRED_MESSAGE);
     }
     const childEnvironment = childProcessEnvironment(this.command, this.environment);
     const inheritedMcpServers = configuredMcpServers(childEnvironment);
-    const child = spawn(this.command, [...this.commandArgs, ...appServerArgs(this.webSearchMode, this.sandbox, this.networkAccess, this.mcpServers, inheritedMcpServers)], {
+    const overrides = this.configOverrides.flatMap(value => ["-c", String(value)]);
+    const child = spawn(this.command, [...this.commandArgs, ...appServerArgs(this.webSearchMode, this.sandbox, this.networkAccess, this.mcpServers, inheritedMcpServers), ...overrides], {
       cwd: this.spawnCwd,
       env: childEnvironment,
       stdio: ["pipe", "pipe", "pipe"],
@@ -353,14 +395,19 @@ class CodexAppServerClient {
       });
       if (this.proc !== child) throw new Error("Codex app-server startup cancelled");
       child.stderr.on("data", (chunk) => {
-        const text = String(chunk || "").trim();
+        let text = String(chunk || "").trim();
+        if (this.accessTokenProvider) {
+          const token = this.environment.CHARADOCK_CHATGPT_ACCESS_TOKEN;
+          if (token) text = text.split(token).join("[redacted]");
+          text = text.replace(/eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g, "[redacted]");
+        }
         if (text && !isBenignCodexStderr(text)) console.warn("codex app-server:", text);
       });
       this.readline = readline.createInterface({ input: child.stdout });
       this.readline.on("line", (line) => { if (this.proc === child) this.handleLine(line); });
       await this.request("initialize", {
         clientInfo: {
-          name: "charadock",
+          name: this.authMode === "chatgpt" ? "CharaDock" : "charadock",
           title: "CharaDock",
           version: "0.1.0",
         },
@@ -610,7 +657,7 @@ class CodexAppServerClient {
       cwd: this.cwd,
       approvalPolicy: this.approvalPolicy,
       personality: this.personality,
-      ephemeral: true,
+      ephemeral: !this.accessTokenProvider,
       serviceName: this.serviceName,
       developerInstructions: [this.developerInstructions, this.persona].filter(Boolean).join("\n\n"),
     };
@@ -621,6 +668,13 @@ class CodexAppServerClient {
     if (this.model) params.model = this.model;
     if (this.dynamicTools.length) params.dynamicTools = this.dynamicTools;
     let result;
+    if (this.resumeThreadId) {
+      const resumeId = this.resumeThreadId;
+      const { ephemeral: _ephemeral, serviceName: _serviceName, ...resumeParams } = params;
+      result = await withSignal(this.request("thread/resume", { ...resumeParams, threadId: resumeId }, 60_000), signal);
+      if (result?.thread?.id !== resumeId) throw new Error("ChatGPT conversation could not be resumed");
+      this.resumeThreadId = null;
+    } else {
     try {
       result = await withSignal(this.request("thread/start", params, 60_000), signal);
     } catch (error) {
@@ -629,6 +683,7 @@ class CodexAppServerClient {
       delete params.permissions;
       params.sandbox = this.sandbox;
       result = await withSignal(this.request("thread/start", params, 60_000), signal);
+    }
     }
     signal.throwIfAborted();
     if (version !== this.threadVersion) throw new Error("Codex thread configuration changed during startup");
@@ -820,6 +875,7 @@ class CodexAppServerClient {
     requireMcpReady = false,
     onEvent,
   } = {}) {
+    if (this.authMode === "chatgpt") throw new Error("LiveにはCodexのログインが必要です。 / Live requires a Codex sign-in.");
     const normalizedSdp = String(sdp || "");
     if (!normalizedSdp.startsWith("v=0")) throw new Error("WebRTCの音声接続情報が正しくありません。");
     const signal = this.conversationController.signal;
@@ -991,7 +1047,7 @@ class CodexAppServerClient {
     return true;
   }
 
-  sendMessage(message, { onDelta, onEvent, localImagePath = "", localImagePaths = [], localAudioPath = "", skillItems = null, outputSchema = null, timeoutMs = 180_000, requireMcpReady = false } = {}) {
+  sendMessage(message, { onDelta, onEvent, localImagePath = "", localImagePaths = [], localAudioPath = "", skillItems = null, outputSchema = null, timeoutMs = 180_000, requireMcpReady = false, reasoningEffort = undefined } = {}) {
     const signal = this.conversationController.signal;
     const run = async () => {
       signal.throwIfAborted();
@@ -1028,7 +1084,8 @@ class CodexAppServerClient {
           input,
         };
         if (this.model) params.model = this.model;
-        if (this.reasoningEffort) params.effort = this.reasoningEffort;
+        const turnEffort = reasoningEffort === undefined ? this.reasoningEffort : reasoningEffort;
+        if (turnEffort) params.effort = turnEffort;
         const sandboxPolicy = this.usesPermissionProfile
           ? null
           : workspaceSandboxPolicy(this.sandbox, this.cwd, this.workspaceRoots, this.networkAccess);

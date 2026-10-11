@@ -32,6 +32,7 @@ test("RLCD commits each audio sentence before playback, including streamed tail"
   let held = false;
   const holds = [];
   const ctx = vm.createContext({
+    speechCpp: { cancelOwner() {} },
     RLCD42_TTS_OWNER_ID: "test", rlcd42SpeechGeneration: 0, atomEchoReplyGeneration: 0,
     rlcd42SpeechActive: false, rlcd42SpeechStream: null, rlcd42PlaybackCaption: "",
     configuredSpeechText: (text) => text, rlcd42SpeakerSelected: () => true,

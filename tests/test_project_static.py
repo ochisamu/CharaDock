@@ -283,7 +283,7 @@ class ProjectStaticTests(unittest.TestCase):
         self.assertIn("expectedAvatarSize = validateAvatarImageDimensions(image, key, expectedAvatarSize)", load_assets_body)
         self.assertIn("applyLoadedAvatarImages(loadedImages)", load_assets_body)
 
-    def test_desktop_app_has_secure_electron_boundaries_and_both_backends(self) -> None:
+    def test_desktop_app_has_secure_electron_boundaries_and_chatgpt_auth(self) -> None:
         main = self.read_text("desktop/main.cjs")
         control_preload = self.read_text("desktop/preload-control.cjs")
         package = json.loads(self.read_text("package.json"))
@@ -300,7 +300,8 @@ class ProjectStaticTests(unittest.TestCase):
             r"function createConversationCodexClient\([\s\S]*?new CodexAppServerClient\(\{[\s\S]*?webSearchMode: \"live\",[\s\S]*?\}\);",
         )
         self.assertIn("codexClient = createConversationCodexClient();", main)
-        self.assertIn('new OpenAIClient', main)
+        self.assertIn('new ChatGPTSignIn', main)
+        self.assertNotIn('new OpenAIClient', main)
         self.assertIn('contextBridge.exposeInMainWorld("mascotDesktop"', control_preload)
         self.assertNotIn('ipcRenderer.send,', control_preload)
 

@@ -106,7 +106,7 @@ test("Jev settings provide a password field and bilingual opt-in consent", () =>
 });
 
 
-test("Decisions UI uses only the profile key, preserves JEV draft and switches back", async () => {
+test("Decisions UI manages its dedicated key, preserves JEV draft and switches back", async () => {
   let calls = 0, payload;
   const { context, $ } = renderer({ testJevConnection: async () => { calls++; return {ok:true}; },
     setJevConfig: async value => { payload = value; return { ...context.state, decisionProvider: value.provider }; } });
@@ -114,7 +114,7 @@ test("Decisions UI uses only the profile key, preserves JEV draft and switches b
   $('#jevApiKeyInput').value = 'unsaved-jev-key';
   context.syncJevUi();
   assert.equal($('#decisionJevKeySettings').hidden,true);
-  assert.equal($('#decisionOpenAIKeyNote').hidden,false);
+  assert.equal($('#decisionOpenAIKeySettings').hidden,false);
   assert.equal($('#testJevConnectionButton').disabled,false);
   await context.testJevConnection();
   assert.equal(calls,1);

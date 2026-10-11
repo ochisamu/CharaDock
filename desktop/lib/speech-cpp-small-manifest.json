@@ -1,0 +1,49 @@
+{
+  "id": "speech-cpp-small",
+  "label": "Irodori v4.1 Small · speech.cpp",
+  "description": "日本語の参照音声を使う、音声を小分けに返すローカル音声エンジン。",
+  "directoryName": "speech-cpp-irodori-v4.1-small",
+  "downloadBytes": 1936460492,
+  "platforms": [
+    "win32"
+  ],
+  "sourceUrl": "https://github.com/nyosegawa/speech.cpp",
+  "licenseUrl": "https://github.com/nyosegawa/speech.cpp/blob/v0.8.3/LICENSE",
+  "runtime": {
+    "archiveName": "speech-0.8.3-windows-x64-vulkan.zip",
+    "url": "https://github.com/nyosegawa/speech.cpp/releases/download/v0.8.3/speech-0.8.3-windows-x64-vulkan.zip",
+    "bytes": 30537244,
+    "sha256": "8c5f199aecf972cb214b5df9d91400108b07cdd7428ae985891a944ca077b976"
+  },
+  "files": [
+    {
+      "name": "Irodori-TTS-859M-v4.1-F16.gguf",
+      "relativePath": "Irodori-TTS-859M-v4.1-F16.gguf",
+      "url": "https://huggingface.co/sakasegawa/Irodori-TTS-v4.1-Small-GGUF/resolve/3ebbd5ad88a3847c52f9e158d9dbe35178de5b98/Irodori-TTS-859M-v4.1-F16.gguf",
+      "bytes": 1905903936,
+      "sha256": "f334932bdf166579bada0a3c8bdabb7199af85682fdcefb6f1cb7e444f5c75b3"
+    },
+    {
+      "name": "LICENSE-MIT",
+      "relativePath": "LICENSE-MIT",
+      "url": "https://huggingface.co/sakasegawa/Irodori-TTS-v4.1-Small-GGUF/resolve/3ebbd5ad88a3847c52f9e158d9dbe35178de5b98/LICENSE-MIT",
+      "bytes": 1064,
+      "sha256": "dfd47cc99fd79cced8e0cab04ed81f70b3d4f2f475a75746b341671bd3991c00"
+    },
+    {
+      "name": "LICENSE-APACHE-2.0",
+      "relativePath": "LICENSE-APACHE-2.0",
+      "url": "https://huggingface.co/sakasegawa/Irodori-TTS-v4.1-Small-GGUF/resolve/3ebbd5ad88a3847c52f9e158d9dbe35178de5b98/LICENSE-APACHE-2.0",
+      "bytes": 11358,
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+    },
+    {
+      "name": "README.md",
+      "relativePath": "README.md",
+      "url": "https://huggingface.co/sakasegawa/Irodori-TTS-v4.1-Small-GGUF/resolve/3ebbd5ad88a3847c52f9e158d9dbe35178de5b98/README.md",
+      "bytes": 6890,
+      "sha256": "345c4920f136013446190beae8730cbc21d7a4e382ea9b1ce6b754da2a07e534"
+    }
+  ],
+  "engine": "speech-cpp"
+}

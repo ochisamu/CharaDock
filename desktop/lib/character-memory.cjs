@@ -2,8 +2,17 @@
 
 const crypto = require("node:crypto");
 
-const MEMORY_CATEGORIES = new Set(["identity", "preference", "relationship", "goal", "background", "other"]);
+const MEMORY_CATEGORIES = new Set(["identity", "preference", "relationship", "goal", "background", "other", "recent"]);
 const MAX_MEMORIES_PER_CHARACTER = 24;
+const MAX_RECENT_MEMORIES = 8;
+const RECENT_MEMORY_AGE_MS = 14 * 24 * 60 * 60 * 1000;
+
+function boundMemories(entries) {
+  const durable = entries.filter(entry => entry.category !== 'recent').slice(-MAX_MEMORIES_PER_CHARACTER);
+  const recent = entries.filter(entry => entry.category === 'recent').slice(-MAX_RECENT_MEMORIES);
+  const ids = new Set([...durable, ...recent].map(entry => entry.id));
+  return entries.filter(entry => ids.has(entry.id));
+}
 
 function normalizeCharacterMemories(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
@@ -11,7 +20,7 @@ function normalizeCharacterMemories(value) {
     const id = String(characterId || "").slice(0, 120);
     if (!id || !Array.isArray(entries)) return [];
     const seen = new Set();
-    const memories = entries.slice(-MAX_MEMORIES_PER_CHARACTER).flatMap((entry) => {
+    const memories = entries.slice(-200).flatMap((entry) => {
       const memoryId = String(entry?.id || "").slice(0, 100);
       const content = String(entry?.content || "").replace(/\s+/g, " ").trim().slice(0, 300);
       const duplicateKey = content.toLocaleLowerCase("ja-JP");
@@ -25,7 +34,7 @@ function normalizeCharacterMemories(value) {
         updatedAt: String(entry?.updatedAt || entry?.createdAt || "").slice(0, 40),
       }];
     });
-    return memories.length ? [[id, memories]] : [];
+    return memories.length ? [[id, boundMemories(memories)]] : [];
   }));
 }
 
@@ -62,7 +71,7 @@ function saveCharacterMemory(value, characterId, input = {}, now = new Date()) {
     };
   }
   entries.push(record);
-  memoriesByCharacter[id] = entries.slice(-MAX_MEMORIES_PER_CHARACTER);
+  memoriesByCharacter[id] = boundMemories(entries);
   return { memoriesByCharacter, record };
 }
 
@@ -81,7 +90,7 @@ function updateCharacterMemory(value, characterId, memoryId, input = {}, now = n
   const duplicateIndex = entries.findIndex((entry) => entry.content.toLocaleLowerCase("ja-JP") === content.toLocaleLowerCase("ja-JP"));
   if (duplicateIndex >= 0) entries.splice(duplicateIndex, 1);
   entries.push(record);
-  memoriesByCharacter[id] = entries.slice(-MAX_MEMORIES_PER_CHARACTER);
+  memoriesByCharacter[id] = boundMemories(entries);
   return { memoriesByCharacter, record };
 }
 
@@ -104,6 +113,12 @@ function clearCharacterMemories(value, characterId) {
 }
 
 module.exports = {
+  activeCharacterMemories(value, characterId, now = Date.now()) {
+    return (normalizeCharacterMemories(value)[characterId] || []).filter(entry => entry.category !== 'recent'
+      || (Number.isFinite(Date.parse(entry.updatedAt)) && Date.parse(entry.updatedAt) <= now
+        && now - Date.parse(entry.updatedAt) < RECENT_MEMORY_AGE_MS));
+  },
+  RECENT_MEMORY_AGE_MS,
   MAX_MEMORIES_PER_CHARACTER,
   normalizeCharacterMemories,
   saveCharacterMemory,

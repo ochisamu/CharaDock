@@ -35,6 +35,8 @@ For each affected entry and route, cover:
 
 - One user action creates at most one assistant answer and one audio route.
 - Desktop read-aloud and phone audio are independent destinations. Turning one off must not disable synthesis, captions, or lip sync on the other.
+- TTS preprocessing and auxiliary timing probes must never become audible speech or captions. Apply reference-duration and tail corrections at the shared synthesis owner, preserve whole clauses and natural pauses, and verify both the voice-test button and PC/remote playback. Cancelling during a private probe must settle immediately and reject its late audio. ASR correctness alone cannot establish clean playback: inspect the generated waveform for terminal bursts and test completion/fades across chunk boundaries while keeping intended speech and clause pauses intact.
+- Native TTS model and step selections must persist independently of WebGPU settings and per-model defaults. Selected-model readiness/download/remove state must follow the same authoritative selection used by PC, Link and device synthesis; switching models must not change the character voice or history.
 - Only the active turn may change visible text, speech, busy state, history, or results.
 - Temporary acknowledgement and progress never masquerade as completion or outlive the turn.
 - A follow-up steers the active turn when supported; it does not silently interrupt and start an unrelated turn.
@@ -52,6 +54,8 @@ For each affected entry and route, cover:
 - Codex Frameless Live owns its server-side endpointing and may reject Realtime `session.update` turn-detection fields. When a natural Japanese clause pause needs more grace, apply one shared, bounded microphone hangover to the outgoing Live track on settings chat, desktop mascot, and remote; do not send unsupported session fields or inject unrelated synthetic noise. Test a multi-clause utterance whose internal pause is shorter than the effective grace and confirm it becomes one turn.
 
 ## Evidence standard
+
+Chat/Work authentication is shared by settings chat, mascot input and Link. Renew CharaDock's ChatGPT credentials between turns and resume the same thread; cancellation must prevent a late refresh from restarting it. Live uses the existing Codex login, and disconnecting CharaDock's dedicated connection must not log that account out. OpenAI API keys belong only to Decisions assist; changing one must not reset a conversation or Work task. Existing profiles retain their prior Codex connection until explicitly switched.
 
 - Unit-test the coordinator, buffer, gate, readiness, and deduplication logic with interleaved and late events.
 - Integration-test every affected IPC/HTTP entry point and ensure it reaches the shared runtime exactly once.

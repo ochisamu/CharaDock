@@ -39,7 +39,7 @@ test("Realtime sessions start only from voice input, accept typed turns, and kee
   assert.match(control, /cove: \{ impression: "男性寄り", description: "落ち着いて率直" \}/);
   assert.match(control, /maple: \{ impression: "女性寄り", description: "陽気で率直" \}/);
   assert.match(control, /arbor: \{ impression: "中性的", description: "気さくで万能" \}/);
-  assert.match(main, /const realtimeClient = workMode[\s\S]{0,120}ensureWorkClient\(initialTurnMcpServerIds\)[\s\S]{0,120}ensureConversationCodexClient\(initialTurnMcpServerIds\)/);
+  assert.match(main, /const realtimeClient = workMode[\s\S]{0,120}ensureWorkClient\(initialTurnMcpServerIds, true\)[\s\S]{0,120}ensureConversationCodexClient\(initialTurnMcpServerIds, true\)/);
   assert.match(main, /prompt: undefined,[\s\S]*clientManagedHandoffs: false/);
   assert.match(main, /codexResponseHandoffMode: "thinking"/);
   assert.match(main, /delegationAckFiller: false/);

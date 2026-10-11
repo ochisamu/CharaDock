@@ -909,6 +909,9 @@
   const reactionMotion = createReactionController();
   const nikePerformance = createPerformanceController();
   let nikePerformanceOutput = nikePerformance.update(0);
+  const meshAvatar = window.CharaDockMeshAvatar.create({engine: window.MeshAvatarStudio,
+    onError: error => console.warn("Mesh avatar unavailable; retaining standard appearance", error)});
+  if (URL_PARAMS.has("mesh-avatar-preview")) window.CharaDockMeshPreview = meshAvatar;
   let obsPerformanceCharacter = "";
   let kohakuMotionEnabled = false;
   let kohakuMotionPlayer = null;
@@ -6991,6 +6994,7 @@
         try {
           obsLastEventId = Math.max(obsLastEventId, Math.round(Number(event.lastEventId) || 0));
           const data = sanitizeImportedJsonValue(JSON.parse(event.data));
+          meshAvatar.expression({ ...data, characterId: obsPerformanceCharacter });
           if (kohakuMotionEnabled && ["nikePerformance", "emotion", "reaction"].some(key => Object.hasOwn(data, key))) {
             kohakuMotionPendingInput = { ...data, receivedAt: performance.now() };
             if (kohakuMotionPlayer) {
@@ -7184,6 +7188,8 @@
   }
 
   async function applyObsSnapshot(snapshot) {
+    if (!snapshot || snapshot.type !== "purupuru-obs-snapshot") return false;
+    void meshAvatar.sync(snapshot.meshAvatar, String(snapshot.characterId || ""));
     if (obsPerformanceCharacter !== String(snapshot?.characterId || "")) {
       nikePerformance.reset();
       nikePerformanceOutput = nikePerformance.update(performance.now());
@@ -12814,6 +12820,24 @@
       kohakuMotionError = String(error.message || error); kohakuMotionPlayer.dispose(); kohakuMotionPlayer = null;
       console.warn("Kohaku authored renderer failed; retaining standard renderer", error); return false;
     }
+    return drawIndependentAvatarFrame(frozen);
+  }
+
+  function drawMeshAvatar() {
+    if (!imagesReady) return false;
+    const frozen = shouldFreezeCharacterMotion();
+    const frame = meshAvatar.draw({mouth: frozen ? 0 : Number.isInteger(obsExternalInput.forceMouth) ? mouthState / 2 : mouthTargetForVoiceLevel(voiceLevel),
+      level: frozen ? 0 : voiceLevel, blink: !frozen && blinkClosed,
+      gazeX: obsExternalInput.targetX / 3, gazeY: obsExternalInput.targetY / 3,
+      motion: state, reduced: performanceReducedMotion.matches || frozen});
+    if (!frame) return false;
+    clearCharacterCanvas();
+    const scale = Math.min(CROP.w / frame.width, CROP.h / frame.height);
+    charCtx.drawImage(frame, (CROP.w-frame.width*scale)/2, CROP.h-frame.height*scale, frame.width*scale, frame.height*scale);
+    return drawIndependentAvatarFrame(frozen);
+  }
+
+  function drawIndependentAvatarFrame(frozen) {
     // Authored frames own the pose. Do not add the legacy yaw/bob/hand warp.
     const fit = Math.min(stage.w / (CROP.w + 50), stage.h / (CROP.h * .76));
     const scale = fit * state.avatarSize / 100;
@@ -12835,7 +12859,7 @@
     resizeCanvas();
     drawBackground();
     drawItemLayers(ctx, "stageBack");
-    if (drawKohakuAuthoredMotion()) return;
+    if (drawMeshAvatar() || drawKohakuAuthoredMotion()) return;
     if (!imagesReady) {
       drawLoading();
       return;

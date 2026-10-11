@@ -155,16 +155,16 @@ test('real config/test IPC handler persists provider and invalidates shared owne
 });
 
 
-test('profile API key change invalidates Decisions results through the production IPC handler',async()=> {
+test('Decisions-only API key change invalidates Decisions results without resetting Chat through the production IPC handler',async()=> {
   const source=fs.readFileSync(path.join(__dirname,'../main.cjs'),'utf8');
   const handlers={},calls=[];
   const context={ipcMain:{handle:(name,fn)=>{handlers[name]=fn;}},assertTrustedSender:()=>{},
-    preferences:{data:{decisionProvider:'decisions'},setApiKey:key=>calls.push(['save',key])},
+    preferences:{data:{decisionProvider:'decisions'},setDecisionApiKey:key=>calls.push(['save',key])},
     jevClient:{invalidate:()=>calls.push('invalidate')},jevAddressGate:{reset:()=>calls.push('address-reset')},
     jevExpressionDirector:{cancel:()=>calls.push('expression-cancel')},openAIClient:{reset:()=>calls.push('chat-reset')},publicAppState:()=>({hasApiKey:true})};
-  vm.runInNewContext(source.slice(source.indexOf('  ipcMain.handle("settings:setApiKey"'),source.indexOf('  ipcMain.handle("mcp:save"')),context);
-  assert.equal(handlers['settings:setApiKey']({},'updated-key').hasApiKey,true);
-  assert.deepEqual(calls,[['save','updated-key'],'invalidate','address-reset','expression-cancel','chat-reset']);
-  calls.length=0;context.preferences.data.decisionProvider='jev';handlers['settings:setApiKey']({},'another-key');
-  assert.deepEqual(calls,[['save','another-key'],'chat-reset']);
+  vm.runInNewContext(source.slice(source.indexOf('  ipcMain.handle("decisions:setApiKey"'),source.indexOf('  ipcMain.handle("mcp:save"')),context);
+  assert.equal(handlers['decisions:setApiKey']({},'updated-key').hasApiKey,true);
+  assert.deepEqual(calls,[['save','updated-key'],'invalidate','address-reset','expression-cancel']);
+  calls.length=0;context.preferences.data.decisionProvider='jev';handlers['decisions:setApiKey']({},'another-key');
+  assert.deepEqual(calls,[['save','another-key']]);
 });

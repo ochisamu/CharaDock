@@ -1,0 +1,29 @@
+.lighting-preview { position: relative; }
+.lighting-preview > canvas { display: block; }
+.light-handle { position: absolute; z-index: 2; transform: translate(-50%, -50%); border: 2px solid #a66109; border-radius: 50%; width: 32px; height: 32px; padding: 0; background: #fff4cc; color: #805000; box-shadow: 0 1px 5px #0004; font-size: 22px; line-height: 26px; cursor: grab; touch-action: none; }
+.light-handle:active { cursor: grabbing; }
+.light-handle:disabled { opacity: .5; cursor: default; }
+.lighting-controls { padding: 12px; font-size: 12px; }
+.lighting-controls fieldset { border: 0; padding: 0; margin: 10px 0; min-width: 0; }
+.lighting-controls fieldset:disabled { opacity: .55; }
+.lighting-controls label { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 8px 0; }
+.lighting-controls .lighting-check { flex-direction: row; justify-content: flex-start; }
+.lighting-controls .lighting-slider { display: grid; grid-template-columns: 100px minmax(60px, 1fr) 34px; gap: 6px; }
+.lighting-controls input[type="range"] { width: 100%; min-width: 0; }
+.lighting-controls input[type="checkbox"] { margin: 0; width: auto; }
+.lighting-controls input[type="color"] { width: 58px; height: 28px; padding: 1px; }
+.lighting-controls select { max-width: 60%; }
+.lighting-hint { margin: 10px 0 0; color: #546a87; line-height: 1.5; }
+.live-controls .lighting-controls { padding: 0; }
+.live-preview.lighting-preview { overflow: visible; }
+.lighting-section, .live-lighting { border-top: 1px solid #d5dfeb; }
+.live-lighting { border: 1px solid #d5dfeb; border-radius: 12px; background: white; }
+.lighting-section > summary, .live-lighting > summary { display: flex; align-items: center; gap: 8px; cursor: pointer; padding: 12px 16px; font-weight: 600; }
+/* The editor row stays slim so the preview panel still fits a 900 px tall window. */
+.lighting-section > summary { padding: 7px 16px; }
+.lighting-section > summary::before, .live-lighting > summary::before { content: '▸'; }
+.lighting-section[open] > summary::before, .live-lighting[open] > summary::before { content: '▾'; }
+.lighting-section > summary::-webkit-details-marker, .live-lighting > summary::-webkit-details-marker { display: none; }
+.lighting-section > summary { list-style: none; } .live-lighting > summary { list-style: none; }
+.lighting-on { margin-left: auto; padding: 1px 7px; border-radius: 999px; background: #fff4cc; color: #805000; font-size: 11px; font-weight: 600; }
+.lighting-controls legend { padding: 0; margin-bottom: 2px; font-weight: 600; color: #4a5a70; }

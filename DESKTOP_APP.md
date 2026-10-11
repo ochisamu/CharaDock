@@ -16,9 +16,9 @@ npm run desktop
 
 小さな会話欄の左端にある `会話` を押すと、設定画面を開かずに `作業` モードへ切り替えられます。初回だけWindowsのフォルダー選択が開き、選択した作業先は細いチップで表示されます。チップを押すと作業先を変更でき、`作業` を押すと会話モードへ戻ります。作業モードはCodex app-server接続時のみ利用でき、選択フォルダーだけを書き込み可能なworkspace-writeセッションとして動作します。
 
-キャラクター画面では、画像から想定した初期性格・話し方をキャラごとに編集できます。名前、性格、吹き出し位置は保存され、Codex app-serverとOpenAI APIの両方の会話へ反映されます。追加キャラ3人には通常差分に加え、嬉しい・驚き・やさしく心配する表情PNGを収録しています。
+キャラクター画面では、画像から想定した初期性格・話し方をキャラごとに編集できます。名前、性格、吹き出し位置は保存され、Chat/Workへ反映されます。追加キャラ3人には通常差分に加え、嬉しい・驚き・やさしく心配する表情PNGを収録しています。
 
-Codex app-server接続時は、キャラクター画面の「一枚絵からキャラクターを追加」からPNG・JPEG・WebPを選べます。同梱の `$build-purupuru-avatar` Skillを隔離されたworkspace-writeジョブで実行し、標準の目2段階×口3段階、前髪レイヤー、推定した性格・話し方・触れ合い文を検証してからライブラリへ追加します。この機能はChatGPTログインと、利用中のCodexモデルによる画像生成対応が必要です。OpenAI API接続時は利用できません。
+「Codexのログイン」を選択した場合、キャラクター画面の「一枚絵からキャラクターを追加」からPNG・JPEG・WebPを選べます。同梱の `$build-purupuru-avatar` Skillを隔離されたworkspace-writeジョブで実行し、標準の目2段階×口3段階、前髪レイヤー、推定した性格・話し方・触れ合い文を検証してからライブラリへ追加します。この機能はログインと画像生成対応モデルが必要です。CharaDock専用のChatGPT接続では画像生成は利用できません。
 
 Global shortcuts:
 
@@ -27,11 +27,11 @@ Global shortcuts:
 - `Ctrl+Shift+L`: toggle click-through
 - `Ctrl+Shift+H`: show or hide the character
 
-## Response backends
+## Chat / Work authentication
 
 ### Codex app-server
 
-Select **Codex app-server** in AI Connection. The app launches the locally
+Choose **ChatGPTでサインイン** or **Codexのログイン** in AI Connection. The app launches the locally
 installed `codex app-server --stdio`, performs the required JSON-RPC
 initialization, and creates an ephemeral read-only conversation. It uses the
 existing Codex login. Set `CODEX_CLI_PATH` if `codex` is not on `PATH`.
@@ -47,19 +47,21 @@ Codex設定では、app-serverから取得したプルダウンを使い、会�
 モデルと推論の深さを指定できます。Codex既定を選ぶとCodex側の既定値を使い、
 深い推論ほど応答に時間がかかる場合があります。
 
-### OpenAI API
+### CharaDock専用のChatGPT接続
 
-Select **OpenAI API**, paste an API key, and save it. The app uses the Responses
-API for chat and the transcription API as the fallback speech-recognition path.
-The key never enters a renderer window. When Electron's `safeStorage` is
-available it is encrypted with the operating system credential store; otherwise
-it remains in memory for the current app session only.
+**ChatGPTでサインイン → Continue with ChatGPT** を押し、ブラウザでログインとChatGPTプラン利用許可を完了します。APIキーは不要です。ローカルapp-serverへのResponsesプロバイダー設定とトークン受け渡しはCharaDockが行います。動的クライアント登録、PKCE・state・nonce、署名・issuer・audience・期限・アカウントの検証を行い、OSの暗号化で資格情報を保存します。安全な暗号化が使えない場合は起動中だけ保持します。
+
+更新トークンのローテーションを直列化し、app-serverを次のターン開始前に再起動して同じスレッドを再開します。ログアウトはCharaDock専用接続だけを解除します。既存プロフィールは従来のCodex接続を維持し、新規プロフィールはこの方式を既定にします。
+
+**Liveの接続** はCodexログインを使います。専用接続のトークンはCodex Liveエンドポイントに渡しません。APIキーによる会話とOpenAI文字起こしは廃止しました。
+
+参照: [Sign in with ChatGPT](https://developers.openai.com/siwc/quickstart)、[app-server](https://developers.openai.com/siwc/token-sharing-open-source/codex-app-server)、[preview limitations](https://developers.openai.com/siwc/token-sharing-open-source/preview-limitations)。
 
 ## Decision assist
 
 AI接続画面の **判断アシスト → 判断サービス** で **JEV · TypeSafe** と
 **OpenAI Decisions** を切り替えられます。有効化と各機能の設定は共通です。
-Decisionsは既存のOpenAI APIキーを使い、会話の応答エンジンとは独立して選べます。
+Decisionsは **判断アシスト** 内の専用入力欄からOpenAI APIキーを管理します。保存済みのキーは引き継ぎ、会話と文字起こしには使用しません。キーを変更しても会話・Workはリセットしません。
 JEVは専用のアプリAPIキーを使います。既存プロフィールの既定はJEVです。
 
 対象はメディア操作、表情・身振り、通常TTSのハンズフリー呼びかけ判定です。

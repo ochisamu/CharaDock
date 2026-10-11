@@ -45,7 +45,7 @@ function assertConversationRole() {
 async function startCodexCompanion(key = '') {
   if (companionTransitioning) throw new Error("Companionへ切り替え中です。");
   if (key && !codexCompanion.files.has(String(key))) throw new Error("会話一覧を更新してください。");
-  if (activeWorkRunId || activeCodexInteractionClient() || openAIClient?.hasActiveTurn?.()
+  if (activeWorkRunId || activeCodexInteractionClient()
       || atomEchoCapture || atomEchoRecognizingCapture || turnCoordinator.snapshot().status === "speaking") {
     throw new Error("現在の会話・作業・再生が終了してからCompanionを開始してください。");
   }
@@ -65,7 +65,7 @@ async function startCodexCompanion(key = '') {
   } finally { companionTransitioning = false; }
 }
 const { PNG } = require("pngjs");
-const { OpenAIClient } = require("./backend/openai-client.cjs");
+const { ChatGPTSignIn, PROVIDER_ARGS } = require("./lib/chatgpt-sign-in.cjs");
 const { MEDIA_DYNAMIC_TOOLS, MEDIA_TOOL_INSTRUCTIONS, createMediaController } = require("./lib/media-control.cjs");
 const mediaController = createMediaController();
 const { DecisionClient } = require("./lib/decision-client.cjs");
@@ -80,7 +80,7 @@ const jevClient = new DecisionClient({
   observe: debugJev,
   getProvider: () => preferences.data.decisionProvider,
   getJevApiKey: () => preferences.getJevApiKey(),
-  getOpenAIApiKey: () => preferences.getApiKey(),
+  getOpenAIApiKey: () => preferences.getDecisionApiKey(),
 });
 const jevAddressGate = new JevAddressGate({
   classify: (text, options) => jevClient.address(text, options),
@@ -273,6 +273,8 @@ const {
   resolveBeatriceHostExecutable,
 } = require("./lib/beatrice-v2.cjs");
 const { MascotStaticServer } = require("./lib/static-server.cjs");
+const { MeshAvatarStore } = require("./lib/mesh-avatar-store.cjs");
+let meshAvatarStore;
 const { kohakuPackage, remoteExpression, remoteTtsWithExpression } = require("./lib/remote-kohaku.cjs");
 const { RemoteCompanionServer, isPrivateIpv4 } = require("./lib/remote-server.cjs");
 const { AtomEchoHub } = require("./lib/atom-echo-hub.cjs");
@@ -523,7 +525,8 @@ let macComputerSkillClient;
 let codexCommand = "";
 let codexWorkingDirectory = "";
 let wslCodexCommand = "";
-let openAIClient;
+let chatgptSignIn;
+let codexLoginClient;
 let embeddedSherpaOnnx;
 let embeddedSherpaVad;
 let streamingSpeechRecognition;
@@ -1027,7 +1030,15 @@ function activeCharacter() {
   return effectiveCharacter(preferences.data.characterId);
 }
 
-const TTS_PROVIDERS = new Set(["system", "style-bert-vits2", "piper-plus", "supertonic-3", "irodori-webgpu", "kokoro", "sbv2-jp-extra"]);
+const { SpeechCppClient, speechCppStatus } = require("./lib/speech-cpp-client.cjs");
+const { SPEECH_CPP_VARIANTS, speechCppVariant, normalizeSpeechCppSettings, speechCppConfiguration } = require("./lib/speech-cpp-settings.cjs");
+const speechCpp = new SpeechCppClient();
+app.on("web-contents-created", (_event,contents) => {
+  const ownerId = contents.id;
+  contents.on("destroyed",() => speechCpp.cancelOwner(ownerId));
+  contents.on("render-process-gone",() => speechCpp.cancelOwner(ownerId));
+});
+const TTS_PROVIDERS = new Set(["system", "style-bert-vits2", "piper-plus", "supertonic-3", "irodori-webgpu", "speech-cpp", "kokoro", "sbv2-jp-extra"]);
 
 function characterTtsSettings(characterId = preferences.data.characterId) {
   const stored = preferences.data.characterTtsProfiles?.[characterId] || {};
@@ -1143,6 +1154,17 @@ function activeIrodoriVoicePath(characterId = preferences.data.characterId) {
   return voice ? irodoriVoiceLibrary.voicePath(voice) : "";
 }
 
+function activeSpeechCppOptions(characterId = preferences.data.characterId) {
+  const settings = characterTtsSettings(characterId);
+  return {
+    ...speechCppConfiguration(preferences.data, embeddedTtsModels?.installedPaths(SPEECH_CPP_VARIANTS[speechCppVariant(preferences.data.speechCppModelVariant)].provider)),
+    referenceAudioPath: activeIrodoriVoicePath(characterId),
+    mode: settings.irodoriMode,
+    playbackRate: preferences.data.irodoriSpeed,
+    seed: preferences.data.irodoriSeed,
+  };
+}
+
 function activeIrodoriModelDirectory(characterId = preferences.data.characterId) {
   const settings = characterTtsSettings(characterId);
   if (settings.irodoriVersion === "v4-anime") return preferences.data.irodoriV41AnimeModelDirectory;
@@ -1213,7 +1235,6 @@ function memoryToolResult(value) {
 
 function refreshConversationAfterMemoryChange() {
   codexClient?.reset();
-  openAIClient?.reset();
 }
 
 async function handleMemoryToolCall(params = {}) {
@@ -1638,6 +1659,23 @@ function sanitizedMotion(motion, fallback) {
   };
 }
 
+function characterAppearance(characterId = preferences.data.characterId) {
+  const selection = preferences.data.characterAvatarSelections?.[characterId] || "standard";
+  const mesh = meshAvatarStore?.descriptor(characterId, selection) || null;
+  return { selected: mesh ? selection : "standard", options: [{ id: "standard", label: mainText("標準の見た目", "Original appearance") }, ...(meshAvatarStore?.list(characterId) || [])], mesh };
+}
+function readSelectedMeshAsset(id, file) {
+  const characterId = preferences.data.characterId;
+  if (characterAppearance(characterId).selected !== id) return null;
+  return meshAvatarStore?.read(characterId, id, file) || null;
+}
+function selectCharacterAppearance(characterId, selection) {
+  const options = characterAppearance(characterId).options;
+  if (!options.some(x => x.id === selection)) throw new Error("読み込んだ見た目を選んでください。");
+  preferences.patch({ characterAvatarSelections: { ...preferences.data.characterAvatarSelections, [characterId]: selection } });
+  if (preferences.data.characterId === characterId) localServer.setSnapshot(buildAvatarSnapshot(characterId));
+  return broadcastAppState();
+}
 function buildAvatarSnapshot(characterId, motionOverride = null) {
   const character = characterById(characterId);
   const configured = effectiveCharacter(character);
@@ -1665,7 +1703,8 @@ function buildAvatarSnapshot(characterId, motionOverride = null) {
     version: 1,
     createdAt: new Date().toISOString(),
     characterId: character.id,
-    kohakuMotionEnabled: character.id === "amber-avatar" && nikePerformanceEnabled(character.id),
+    meshAvatar: characterAppearance(character.id).mesh,
+    kohakuMotionEnabled: !characterAppearance(character.id).mesh && character.id === "amber-avatar" && nikePerformanceEnabled(character.id),
     settings,
     avatarImages,
   };
@@ -1792,6 +1831,7 @@ function remoteTtsProviderOptions(characterId = preferences.data.characterId) {
     try {
       if (provider === "system") return { available: true, phone: false };
       if (provider === "style-bert-vits2") return { available: provider === selected, phone: true };
+      if (provider === "speech-cpp") return { available: speechCppStatus(activeSpeechCppOptions(characterId)).ready, phone: true };
       if (provider === "piper-plus") return { available: piperPlusStatus(activePiperPlusOptions(characterId)).ready, phone: true };
       if (provider === "supertonic-3") return { available: supertonicStatus(preferences.data.supertonicModelDirectory).ready, phone: true };
       if (provider === "irodori-webgpu") {
@@ -1822,6 +1862,7 @@ function remoteTtsProviderOptions(characterId = preferences.data.characterId) {
     "piper-plus": "Piper Plus",
     "supertonic-3": "Supertonic 3",
     "irodori-webgpu": "Irodori WebGPU",
+    "speech-cpp": "Irodori TTS · speech.cpp",
     kokoro: "Kokoro",
     "sbv2-jp-extra": "SBV2 JP-Extra",
   };
@@ -1875,6 +1916,12 @@ function remoteTtsModelSettings(characterId = preferences.data.characterId) {
         `${voice.label.replace(/（.*$/, "")} · ${voice.id.startsWith("jf_") ? mainText("女性系", "Feminine") : mainText("男性系", "Masculine")}`,
       )))],
     };
+  }
+  if (settings.provider === "speech-cpp") {
+    const voices = irodoriVoiceLibrary.publicVoices(preferences.data.irodoriVoices, settings.irodoriVoiceId);
+    return { provider: settings.provider, hint: mainText("Irodori MFの参照音声を選びます。", "Choose an Irodori MF reference voice."), fields: [
+      selectField("irodoriVoiceId", mainText("参照音声", "Reference voice"), settings.irodoriVoiceId, voices.map(item => option(item.id,item.name,item.ready))),
+    ] };
   }
   if (settings.provider === "irodori-webgpu") {
     const voice = activeIrodoriVoice(characterId);
@@ -1947,7 +1994,7 @@ function remoteAvatarAssetKeys() {
 }
 
 function remoteKohakuDescriptor(character) {
-  if (character.id !== 'amber-avatar' || !nikePerformanceEnabled(character.id)) return null;
+  if (characterAppearance(character.id).mesh || character.id !== 'amber-avatar' || !nikePerformanceEnabled(character.id)) return null;
   try { return { manifestUrl: '/api/authored/manifest.json', version: kohakuPackage(projectRoot).version }; }
   catch { return null; } // Keep the standard Link avatar available on asset failure.
 }
@@ -2095,6 +2142,7 @@ function publicRemoteState(context = {}) {
       motion: sanitizedMotion(character.motion, characterMotionDefaults(character)),
       touchHeadRatio: character.touchHeadRatio,
       authoredMotion: remoteKohakuDescriptor(character),
+      meshAvatar: characterAppearance(character.id).mesh,
     },
     characters: allCharacters().map((item) => {
       const effective = effectiveCharacter(item);
@@ -2406,7 +2454,7 @@ function applyRemoteTtsModelSetting(setting = {}) {
     if (!status.modelReady) throw new Error(mainText("このIrodoriモデルはPC側に導入されていません。", "This Irodori model is not installed on the PC."));
     profilePatch = { irodoriVersion: version, irodoriPrecision: precision };
     preferencePatch = { irodoriVersion: version, irodoriPrecision: precision };
-  } else if (key === "irodoriVoiceId" && current.provider === "irodori-webgpu") {
+  } else if (key === "irodoriVoiceId" && ["irodori-webgpu", "speech-cpp"].includes(current.provider)) {
     const voice = preferences.data.irodoriVoices.find((item) => item.id === value);
     if (!voice || !irodoriVoiceLibrary.isReady(voice)) throw new Error(mainText("このIrodori参照音声は利用できません。", "This Irodori reference voice is unavailable."));
     profilePatch = { irodoriVoiceId: voice.id };
@@ -2491,6 +2539,7 @@ function createRemoteServer(address, sessionMinutes = preferences.data.remoteSes
     trustedDevices: preferences.data.remoteTrustedDevices,
     callbacks: {
       getState: publicRemoteState,
+      getMeshAsset: readSelectedMeshAsset,
       getAuthoredAsset: (file) => remoteKohakuDescriptor(activeCharacter()) ? kohakuPackage(projectRoot).read(file) : null,
       getAvatarAsset: (key) => {
         const filename = AVATAR_IMAGE_FILES[key] || OPTIONAL_AVATAR_IMAGE_FILES[key];
@@ -3294,7 +3343,7 @@ function esp32InputGate(deviceKind) {
       diagnosticLog?.write("info", "esp32-silero-rejected", { deviceKind, reason, ...metrics });
       // Rejection is not an input error. Preserve an existing answer owner.
       if (!atomEchoCapture && !atomEchoRecognizingCapture && !esp32SpeechOutput.count
-          && !activeCodexInteractionClient() && !activeWorkRunId && !openAIClient?.hasActiveTurn?.()) {
+          && !activeCodexInteractionClient() && !activeWorkRunId) {
         await esp32VoiceGateway(deviceKind)?.setDeviceState("idle");
         if (deviceKind === "rlcd42") scheduleRlcd42SceneSync(0, { force: true });
       }
@@ -3376,7 +3425,7 @@ async function esp32PttStart(deviceKind = "atom-echo", { handsfree = false } = {
   // to use the normal follow-up route and an active Live session stays blocked.
   if (!captureRoute.allowed && captureRoute.route === "busy"
       && !activeCodexInteractionClient() && !activeWorkRunId
-      && !openAIClient?.hasActiveTurn?.()
+     
       && !activeRealtimeStarting && !activeRealtimeTarget
       && !currentRealtimeClient() && !remoteRealtimeStartReservation) {
     if (deviceKind === "rlcd42") await stopRlcd42Speech().catch(() => {});
@@ -3618,6 +3667,7 @@ function rlcd42SpeakerSelected() {
 }
 
 async function stopRlcd42Speech() {
+  speechCpp.cancelOwner(RLCD42_TTS_OWNER_ID);
   rlcd42SpeechGeneration += 1;
   const activeStream = rlcd42SpeechStream;
   const wasActive = rlcd42SpeechActive || Boolean(activeStream);
@@ -4270,6 +4320,7 @@ function publicAppState() {
   const sbv2Selection = validSbv2VoiceSelection(sbv2Model, characterTts.sbv2SpeakerId, characterTts.sbv2StyleId);
   return {
     ...preferences.publicState(),
+    avatarAppearance: characterAppearance(),
     codexCompanion: codexCompanion.snapshot(),
     companionEnabled: codexCompanion.state.enabled,
     remote: remoteServerStatus(),
@@ -4314,6 +4365,7 @@ function publicAppState() {
     beatrice: publicBeatriceStatus(),
     interactionMode: preferences.data.interactionMode === "work" ? "work" : "chat",
     turn: publicTurnState(),
+    chatgptConnection: chatgptSignIn?.state(),
     conversationHistory: conversationHistory.map((entry) => ({ ...entry })),
     workHistory: { activeWorkRunId, runs: publicWorkHistory() },
     memories: characterMemories(),
@@ -4361,6 +4413,9 @@ function publicAppState() {
       ...supertonicStatus(preferences.data.supertonicModelDirectory),
       sampleModel: embeddedTtsModels?.status("supertonic-3") || null,
     },
+    speechCpp: { ...speechCppStatus(activeSpeechCppOptions()),
+      sampleModel: embeddedTtsModels?.status(SPEECH_CPP_VARIANTS[speechCppVariant(preferences.data.speechCppModelVariant)].provider) || null,
+      mfSampleModel: embeddedTtsModels?.status("speech-cpp") || null, smallSampleModel: embeddedTtsModels?.status("speech-cpp-small") || null },
     irodori: {
       ...activeIrodoriStatus(irodoriWebGpuAvailable),
       voices: irodoriVoiceLibrary?.publicVoices(preferences.data.irodoriVoices, irodoriVoice?.id || "") || [],
@@ -4614,11 +4669,39 @@ function conversationCodexSettings() {
   };
 }
 
-function createConversationCodexClient(command = codexCommand, selectedMcpServerIds = []) {
+function codexAuthenticationOptions(forLive = false) {
+  if (forLive || preferences.data.codexAuthMode !== "chatgpt") return { authMode: "codex" };
+  return { authMode: "chatgpt", configOverrides: PROVIDER_ARGS,
+    accessTokenProvider: () => chatgptSignIn.getAccessToken() };
+}
+
+function legacyCodexLoginClient() {
+  if (!codexLoginClient || codexLoginClient.command !== codexCommand) {
+    codexLoginClient?.stop();
+    codexLoginClient = new CodexAppServerClient({ cwd: codexWorkingDirectory || projectRoot,
+      command: codexCommand || "codex", webSearchMode: "disabled" });
+  }
+  return codexLoginClient;
+}
+
+function assertAuthenticationMutable() {
+  if (activeCodexInteractionClient() || activeWorkRunId || currentRealtimeClient() || activeRealtimeStarting) {
+    throw new Error(mainText("会話・作業・Liveが終わってから接続を変更してください。", "Change the connection after the conversation, Work or Live finishes."));
+  }
+}
+
+function refreshAuthenticatedClients() {
+  const live = currentRealtimeClient();
+  if (codexClient !== live && !codexClient?.hasActiveTurn?.()) resetConversationClient();
+  if (workCodexClient !== live && !workCodexClient?.hasActiveTurn?.()) resetWorkClient();
+}
+
+function createConversationCodexClient(command = codexCommand, selectedMcpServerIds = [], forLive = false) {
   const mcpRuntime = preferences.mcpRuntime(effectiveMcpServerIds(selectedMcpServerIds));
   const client = new CodexAppServerClient({
     cwd: codexWorkingDirectory || projectRoot,
     command: command || "codex",
+    ...codexAuthenticationOptions(forLive),
     ...conversationCodexSettings(),
     environment: mcpRuntime.environment,
     mcpServers: mcpRuntime.servers,
@@ -4633,12 +4716,12 @@ function createConversationCodexClient(command = codexCommand, selectedMcpServer
   return client;
 }
 
-function ensureConversationCodexClient(selectedMcpServerIds = []) {
+function ensureConversationCodexClient(selectedMcpServerIds = [], forLive = false) {
   const effectiveIds = effectiveMcpServerIds(selectedMcpServerIds);
   const mcpRuntime = preferences.mcpRuntime(effectiveIds);
-  if (!codexClient || String(codexClient.mcpSignature || "") !== mcpRuntime.signature) {
+  if (!codexClient || codexClient.authMode !== codexAuthenticationOptions(forLive).authMode || String(codexClient.mcpSignature || "") !== mcpRuntime.signature) {
     codexClient?.stop();
-    codexClient = createConversationCodexClient(codexCommand, selectedMcpServerIds);
+    codexClient = createConversationCodexClient(codexCommand, selectedMcpServerIds, forLive);
   }
   const settings = conversationCodexSettings();
   codexClient.setModel(settings.model);
@@ -5413,7 +5496,7 @@ async function interruptActiveInteraction() {
     return { interrupted: true, mode: "work" };
   }
   const client = activeCodexInteractionClient()
-    || (preferences.data.backend === "openai" ? openAIClient : codexClient);
+    || codexClient;
   const interrupted = await client?.interruptActiveTurn?.();
   if (!interrupted) throw new Error("中断できる応答がありません。");
   return { interrupted: true, mode: "chat" };
@@ -5467,9 +5550,7 @@ function normalConversationSubmitRouteForMode(mode, {
     realtimeOutput,
     activeWork: matchingMode && Boolean(activeWorkRunId),
     activeInteraction: matchingMode && Boolean(activeClient),
-    // OpenAI has no turn/steer API. Treat its real request owner as busy even
-    // if a captured input bypasses a stale presentation-only busy status.
-    conflictingInteraction: Boolean((activeMode && !matchingMode) || openAIClient?.hasActiveTurn?.()),
+    conflictingInteraction: Boolean((activeMode && !matchingMode)),
     activeRealtime: Boolean(activeRealtimeStarting || activeRealtimeTarget || currentRealtimeClient() || remoteRealtimeStartReservation),
     turnStatus: turnCoordinator.snapshot().status,
   }, capturedSubmitRoute);
@@ -5629,15 +5710,16 @@ function codexRuntimeMatches(client, runtime, mcpSignature = "") {
     && String(client.mcpSignature || "") === String(mcpSignature || "");
 }
 
-function ensureWorkClient(selectedMcpServerIds = []) {
+function ensureWorkClient(selectedMcpServerIds = [], forLive = false) {
   const directory = validWorkDirectory();
   if (!directory) throw new Error("先に作業先フォルダーを選択してください。");
   const runtime = codexWorkspaceRuntime(directory, [activeCharacterHomeDirectory()]);
   const mcpRuntime = preferences.mcpRuntime(effectiveMcpServerIds(selectedMcpServerIds));
-  if (!codexRuntimeMatches(workCodexClient, runtime, mcpRuntime.signature)) {
+  if (!codexRuntimeMatches(workCodexClient, runtime, mcpRuntime.signature) || workCodexClient.authMode !== codexAuthenticationOptions(forLive).authMode) {
     resetWorkClient();
     workCodexClient = new CodexAppServerClient({
       ...runtime,
+      ...codexAuthenticationOptions(forLive),
       ...workCodexSettings(),
       environment: mcpRuntime.environment,
       mcpServers: mcpRuntime.servers,
@@ -5689,6 +5771,7 @@ async function testMcpServer(serverId) {
   const client = new CodexAppServerClient({
     ...runtime,
     ...conversationCodexSettings(),
+    ...codexAuthenticationOptions(),
     environment: mcpRuntime.environment,
     mcpServers: mcpRuntime.servers,
     mcpSignature: mcpRuntime.signature,
@@ -7247,7 +7330,7 @@ async function runSmokeTest() {
       [...provider.options].some((option) => option.value === 'kokoro') &&
       [...provider.options].some((option) => option.value === 'irodori-webgpu') &&
       ![...inputProvider.options].some((option) => ['auto', 'codex-audio'].includes(option.value)) &&
-      ['realtime', 'streaming-local', 'sherpa-onnx', 'browser', 'openai'].every((value) =>
+      ['realtime', 'streaming-local', 'sherpa-onnx', 'browser'].every((value) =>
         [...inputProvider.options].some((option) => option.value === value)) &&
       document.querySelector('#styleBertVits2UrlInput') &&
       document.querySelector('#styleBertVits2ModelIdInput') &&
@@ -8013,8 +8096,8 @@ function rememberAssistantAnnouncement(text) {
 
 async function generateStartupContinuationMessage(summary, character) {
   const backend = preferences.data.backend;
-  if ((backend === "codex" && !codexCommand) || (backend === "openai" && !preferences.getApiKey())) return "";
-  if (!["codex", "openai"].includes(backend)) return "";
+  if (!codexCommand) return "";
+  if (backend !== "codex") return "";
   const language = interfaceLanguage();
   const hasRecordedNext = Boolean(summary?.nextStep || summary?.pending?.length);
   const continuationRuntimeDirectory = path.join(app.getPath("userData"), "continuation-runtime");
@@ -8036,10 +8119,11 @@ async function generateStartupContinuationMessage(summary, character) {
       "記録済みの事実だけを使い、進捗、完了、決定、感情、自信を創作してはいけません。保存、サマリー、プロンプト、内部ツールには言及しないでください。",
       "指定JSONだけを返してください。evidenceKeyにはresumeEvidenceにあるキーを一つだけ完全一致で入れてください。messageでは対応する文をそのまま繰り返さず自然に言い換えて構いませんが、話題が分かる固有名詞・名詞・対象のいずれかは残してください。",
     ].join("\n");
-  const client = backend === "codex" ? new CodexAppServerClient({
+  const client = new CodexAppServerClient({
     cwd: continuationRuntimeDirectory,
     command: codexCommand,
     ...conversationCodexSettings(),
+    ...codexAuthenticationOptions(),
     reasoningEffort: "low",
     developerInstructions: instructions,
     sandbox: "read-only",
@@ -8047,14 +8131,13 @@ async function generateStartupContinuationMessage(summary, character) {
     serviceName: "charadock_continuation",
     personality: "friendly",
     webSearchMode: "disabled",
-  }) : new OpenAIClient();
+  });
   let startupDeadline;
   const startedAt = Date.now();
   try {
     const deadline = new Promise((_, reject) => {
       startupDeadline = setTimeout(() => {
-        if (backend === "codex") client.stop();
-        else client.reset();
+        client.stop();
         reject(new Error("Startup continuation generation timed out"));
       }, STARTUP_CONTINUATION_TIMEOUT_MS);
     });
@@ -8070,16 +8153,11 @@ async function generateStartupContinuationMessage(summary, character) {
         basis: { type: "string", enum: ["recorded-next-step", "goal-suggestion"] },
       },
     };
-    const generation = backend === "codex" ? client.sendMessage(context, {
+    const generation = client.sendMessage(context, {
       outputSchema: {
         ...outputSchema,
       },
       timeoutMs: STARTUP_CONTINUATION_TIMEOUT_MS,
-    }) : client.sendMessage({
-      apiKey: preferences.getApiKey(),
-      model: preferences.data.openaiModel,
-      message: context,
-      instructions,
     });
     // Generation is asynchronous and never blocks the windows or normal chat.
     // The deadline only prevents a stale greeting from appearing much later.
@@ -8089,8 +8167,7 @@ async function generateStartupContinuationMessage(summary, character) {
     return message;
   } finally {
     clearTimeout(startupDeadline);
-    if (backend === "codex") client.stop();
-    else client.reset();
+    client.stop();
   }
 }
 
@@ -8256,6 +8333,7 @@ function beginIrodoriStreamChunk(streamId, stream) {
 
 async function nextIrodoriTtsChunk(streamId, ownerId) {
   const id = String(streamId || "");
+  if (id.startsWith("speech-cpp-stream-")) return speechCpp.next(id, ownerId);
   const stream = irodoriTtsStreams.get(id);
   if (!stream || stream.ownerId !== ownerId) return { done: true };
   const result = await stream.pending;
@@ -8276,6 +8354,8 @@ async function nextIrodoriTtsChunk(streamId, ownerId) {
 
 function cancelIrodoriTtsStream(streamId, ownerId) {
   const id = String(streamId || "");
+  if (id === "speech-cpp-pending") return speechCpp.cancelOwner(ownerId);
+  if (id.startsWith("speech-cpp-stream-")) return speechCpp.cancel(id, ownerId);
   const stream = irodoriTtsStreams.get(id);
   if (!stream || stream.ownerId !== ownerId) return false;
   clearTimeout(stream.timer);
@@ -8300,7 +8380,10 @@ async function synthesizeIrodoriTts(text, ownerId = 0) {
 
 function scheduleIrodoriPrewarm(delayMs = 3000) {
   clearTimeout(irodoriPrewarmTimer);
-  if (!preferences?.data.ttsEnabled || characterTtsSettings().provider !== "irodori-webgpu") return;
+  const provider = characterTtsSettings().provider;
+  if (provider !== "speech-cpp") speechCpp.stop();
+  if (provider !== "irodori-webgpu") destroyIrodoriWindow();
+  if (!preferences?.data.ttsEnabled || provider !== "irodori-webgpu") return;
   const referenceAudioPath = activeIrodoriVoicePath();
   if (!activeIrodoriStatus(null).ready) return;
   irodoriPrewarmTimer = setTimeout(async () => {
@@ -8458,7 +8541,9 @@ function synthesizeConfiguredTts(text, ownerId = 0, { enabled = preferences.data
   }
   const spokenText = configuredSpeechText(text);
   if (!spokenText) return Promise.resolve({ audioDataUrls: [] });
-  const setupStatus = characterTts.provider === "piper-plus"
+  const setupStatus = characterTts.provider === "speech-cpp"
+    ? speechCppStatus(activeSpeechCppOptions())
+    : characterTts.provider === "piper-plus"
     ? piperPlusStatus(activePiperPlusOptions())
     : characterTts.provider === "supertonic-3"
       ? supertonicStatus(preferences.data.supertonicModelDirectory)
@@ -8485,6 +8570,12 @@ function synthesizeConfiguredTts(text, ownerId = 0, { enabled = preferences.data
       speed: preferences.data.supertonicSpeed,
       numSteps: preferences.data.supertonicSteps,
     });
+  }
+  if (characterTts.provider === "speech-cpp") {
+    const chunks = splitIrodoriText(spokenText).map(text => ({ text, instructions: dynamicIrodoriCaption(characterTts.irodoriCaption, text, {
+      enabled: characterTts.irodoriAutoEmotion, strength: characterTts.irodoriEmotionStrength,
+    }).caption }));
+    return speechCpp.start({ ownerId, chunks, ...activeSpeechCppOptions() });
   }
   if (characterTts.provider === "irodori-webgpu") return synthesizeIrodoriTts(spokenText, ownerId);
   if (characterTts.provider === "kokoro") return synthesizeKokoroTts(spokenText);
@@ -9045,8 +9136,8 @@ async function startCodexRealtimeVoice(payload, target = "control") {
   // inherits the same cwd, write permission, persona, and dynamic tools as
   // standard Work instead of editing from the conversation client's cwd.
   const realtimeClient = workMode
-    ? ensureWorkClient(initialTurnMcpServerIds)
-    : ensureConversationCodexClient(initialTurnMcpServerIds);
+    ? ensureWorkClient(initialTurnMcpServerIds, true)
+    : ensureConversationCodexClient(initialTurnMcpServerIds, true);
   // Live and normal TTS are exclusive audio routes. Stop any speech still
   // draining in either renderer before the WebRTC answer can become audible.
   if (controlWindow && !controlWindow.isDestroyed()) controlWindow.webContents.send("audio:stopNormalSpeech");
@@ -9943,7 +10034,7 @@ async function setCharacter(characterId) {
       "Characters cannot be switched while Work is running. Wait for completion or stop it from history.",
     ));
   }
-  if (activeCodexInteractionClient() || openAIClient?.hasActiveTurn?.() || atomEchoCapture || atomEchoRecognizingCapture
+  if (activeCodexInteractionClient() || atomEchoCapture || atomEchoRecognizingCapture
       || remoteBusy || ["listening", "thinking", "working", "speaking"].includes(turnCoordinator.snapshot().status)) {
     throw new Error(mainText(
       "応答中はキャラクターを切り替えられません。完了を待つか、先に中断してください。",
@@ -9968,7 +10059,6 @@ async function setCharacter(characterId) {
   resetConversationClient();
   localServer.setSnapshot(buildAvatarSnapshot(character.id));
   codexClient?.setPersona(personaInstructions(configured));
-  openAIClient?.reset();
   mascotWindow?.webContents.send("mascot:character", configured);
   mascotWindow?.webContents.send("mascot:conversationHistory", conversationHistory);
   mascotWindow?.webContents.send("mascot:tts", {
@@ -10989,11 +11079,12 @@ function registerIpc() {
   });
   ipcMain.handle("codex:models", async (event) => {
     assertTrustedSender(event);
+    if (preferences.data.codexAuthMode === "chatgpt") return chatgptSignIn.models();
     return codexClient.listModels();
   });
   ipcMain.handle("codex:realtimeVoices", async (event) => {
     assertTrustedSender(event);
-    return normalizeRealtimeVoiceList(await codexClient.listRealtimeVoices());
+    return normalizeRealtimeVoiceList(await legacyCodexLoginClient().listRealtimeVoices());
   });
   ipcMain.handle("codex:detect", async (event) => {
     assertTrustedSender(event);
@@ -11002,6 +11093,7 @@ function registerIpc() {
   ipcMain.handle("settings:save", async (event, patch) => {
     assertTrustedSender(event);
     const previousBackend = preferences.data.backend;
+    const previousAuthMode = preferences.data.codexAuthMode;
     const previousSpeechInputProvider = preferences.data.speechInputProvider;
     const previousLanguage = interfaceLanguage();
     const previousWorkNetworkAccess = preferences.data.workNetworkAccess === true;
@@ -11012,10 +11104,10 @@ function registerIpc() {
     const previousUpdateChannel = preferences.data.updateChannel === "beta" ? "beta" : "stable";
     const requestedDisplayId = String(patch?.preferredDisplayId || "");
     const displayId = screen.getAllDisplays().some((display) => String(display.id) === requestedDisplayId) ? requestedDisplayId : "";
-    const ttsProvider = ["system", "style-bert-vits2", "piper-plus", "supertonic-3", "irodori-webgpu", "kokoro", "sbv2-jp-extra"].includes(patch?.ttsProvider) ? patch.ttsProvider : "system";
+    const ttsProvider = ["system", "style-bert-vits2", "piper-plus", "supertonic-3", "irodori-webgpu", "speech-cpp", "kokoro", "sbv2-jp-extra"].includes(patch?.ttsProvider) ? patch.ttsProvider : "system";
     const styleBertVits2Url = String(patch?.styleBertVits2Url || preferences.data.styleBertVits2Url || "http://localhost:5000").trim().slice(0, 300);
     if (ttsProvider === "style-bert-vits2") styleBertVoiceEndpoint(styleBertVits2Url);
-    const speechInputProvider = ["realtime", "streaming-local", "sherpa-onnx", "browser", "openai"].includes(patch?.speechInputProvider)
+    const speechInputProvider = ["realtime", "streaming-local", "sherpa-onnx", "browser"].includes(patch?.speechInputProvider)
       ? patch.speechInputProvider : "browser";
     const sherpaModelId = embeddedSherpaOnnx.hasModel(patch?.sherpaModelId)
       ? String(patch.sherpaModelId) : preferences.data.sherpaModelId;
@@ -11100,9 +11192,8 @@ function registerIpc() {
     });
     const allowed = {
       language: ["ja", "en"].includes(patch?.language) ? patch.language : interfaceLanguage(),
-      backend: ["codex", "openai"].includes(patch?.backend) ? patch.backend : preferences.data.backend,
-      openaiModel: String(patch?.openaiModel || preferences.data.openaiModel).slice(0, 120),
-      transcriptionModel: String(patch?.transcriptionModel || preferences.data.transcriptionModel).slice(0, 120),
+      backend: "codex",
+      codexAuthMode: ["chatgpt", "codex"].includes(patch?.codexAuthMode) ? patch.codexAuthMode : preferences.data.codexAuthMode,
       codexModel: String(patch?.codexModel ?? preferences.data.codexModel).slice(0, 120),
       codexChatModel: String(patch?.codexChatModel ?? preferences.data.codexChatModel).trim().slice(0, 120),
       codexChatReasoningEffort,
@@ -11122,6 +11213,7 @@ function registerIpc() {
       styleBertVits2ModelId: Math.min(9999, Math.max(0, Math.round(Number(patch?.styleBertVits2ModelId) || 0))),
       styleBertVits2Speed: Math.min(2, Math.max(.5, Number(patch?.styleBertVits2Speed) || 1)),
       piperPlusSpeed: Math.min(2, Math.max(.5, Number(patch?.piperPlusSpeed) || 1)),
+      ...normalizeSpeechCppSettings({ ...preferences.data, ...patch }),
       supertonicVoice,
       supertonicSpeed: Math.min(2, Math.max(.5, Number(patch?.supertonicSpeed) || 1)),
       supertonicSteps: Math.min(20, Math.max(2, Math.round(Number(patch?.supertonicSteps) || 8))),
@@ -11175,7 +11267,10 @@ function registerIpc() {
         });
       });
     }
+    if (allowed.speechCppModelVariant !== preferences.data.speechCppModelVariant) speechCpp.stop();
+    if (allowed.codexAuthMode !== previousAuthMode) assertAuthenticationMutable();
     preferences.patch(allowed);
+    if (allowed.codexAuthMode !== previousAuthMode) refreshAuthenticatedClients();
     await resetAtomEchoLiveBridgeForProviderChange(previousSpeechInputProvider, allowed.speechInputProvider);
     if (allowed.updateChannel !== previousUpdateChannel) appUpdateStatus = null;
     if (allowed.updateChecksEnabled && (!previousUpdateChecksEnabled || allowed.updateChannel !== previousUpdateChannel)) scheduleAppUpdateCheck();
@@ -11206,8 +11301,7 @@ function registerIpc() {
       || allowed.workNetworkAccess !== previousWorkNetworkAccess) resetWorkClient();
     if (allowed.language !== previousLanguage) {
       codexClient?.reset();
-      openAIClient?.reset();
-      codexClient?.setPersona(personaInstructions());
+          codexClient?.setPersona(personaInstructions());
       mascotWindow?.webContents.send("mascot:character", activeCharacter());
     }
     syncMascotAlwaysOnTop();
@@ -11279,6 +11373,10 @@ function registerIpc() {
         piperPlusModelPath: status.modelPath,
         piperPlusSpeed: preferences.data.piperPlusSpeed === 1 ? .67 : preferences.data.piperPlusSpeed,
       });
+    } else if (["speech-cpp", "speech-cpp-small"].includes(normalizedProvider)) {
+      speechCpp.stop();
+      const key = normalizedProvider === "speech-cpp-small" ? "speechCppSmallModelPath" : "speechCppModelPath";
+      preferences.patch({ [key]: status.modelPath, ...(!preferences.data.speechCppExecutablePath || key === "speechCppModelPath" ? { speechCppExecutablePath: status.executablePath } : {}) });
     } else if (normalizedProvider === "supertonic-3") {
       preferences.patch({ supertonicModelDirectory: status.modelDirectory });
     } else if (normalizedProvider === "irodori-webgpu") {
@@ -11303,6 +11401,8 @@ function registerIpc() {
     }
     const result = publicAppState();
     const progressState = result[{
+      "speech-cpp": "speechCpp",
+      "speech-cpp-small": "speechCpp",
       "piper-plus": "piperPlus",
       "supertonic-3": "supertonic",
       "irodori-webgpu": "irodori",
@@ -11317,7 +11417,8 @@ function registerIpc() {
         ? progressState?.int4SampleModel
         : normalizedProvider === "irodori-webgpu"
           ? progressState?.fp16SampleModel
-          : progressState?.sampleModel;
+          : normalizedProvider === "speech-cpp-small" ? progressState?.smallSampleModel
+            : normalizedProvider === "speech-cpp" ? progressState?.mfSampleModel : progressState?.sampleModel;
     controlWindow?.webContents.send("tts:modelProgress", progressModel);
     broadcastAppState();
     return result;
@@ -11326,12 +11427,17 @@ function registerIpc() {
     assertTrustedSender(event);
     const normalizedProvider = String(provider || "");
     const managedPaths = embeddedTtsModels.installedPaths(normalizedProvider);
+    if (["speech-cpp", "speech-cpp-small"].includes(normalizedProvider)) speechCpp.stop();
     embeddedTtsModels.remove(normalizedProvider);
     if (normalizedProvider === "piper-plus") {
       const patch = {};
       if (preferences.data.piperPlusExecutablePath === managedPaths.executablePath) patch.piperPlusExecutablePath = "";
       if (preferences.data.piperPlusModelPath === managedPaths.modelPath) patch.piperPlusModelPath = "";
       if (Object.keys(patch).length) preferences.patch(patch);
+    } else if (["speech-cpp", "speech-cpp-small"].includes(normalizedProvider)) {
+      const key = normalizedProvider === "speech-cpp-small" ? "speechCppSmallModelPath" : "speechCppModelPath";
+      if (preferences.data.speechCppExecutablePath === managedPaths.executablePath) preferences.patch({ speechCppExecutablePath: "" });
+      if (preferences.data[key] === managedPaths.modelPath) preferences.patch({ [key]: "" });
     } else if (normalizedProvider === "supertonic-3") {
       if (preferences.data.supertonicModelDirectory === managedPaths.modelDirectory) preferences.patch({ supertonicModelDirectory: "" });
     } else if (normalizedProvider === "irodori-webgpu") {
@@ -11574,8 +11680,9 @@ function registerIpc() {
       "最初の仕事を始めるにはCodexをインストールしてください。",
       "Install Codex before starting the first task.",
     ));
-    const account = await codexClient.getAccount();
-    if (account?.requiresOpenaiAuth && !account?.account) throw new Error(mainText(
+    const account = request.delivery === "live" || preferences.data.codexAuthMode !== "chatgpt"
+      ? await legacyCodexLoginClient().getAccount() : { account: chatgptSignIn.state().signedIn };
+    if (!account?.account) throw new Error(mainText(
       "最初の仕事を始めるにはChatGPTへログインしてください。",
       "Sign in to ChatGPT before starting the first task.",
     ));
@@ -11649,15 +11756,14 @@ function registerIpc() {
     if (error) throw new Error(error);
     return { opened: true };
   });
-  ipcMain.handle("settings:setApiKey", (event, key) => {
+  ipcMain.handle("decisions:setApiKey", (event, key) => {
     assertTrustedSender(event);
-    preferences.setApiKey(String(key || "").slice(0, 512));
+    preferences.setDecisionApiKey(String(key || "").slice(0, 4096));
     if (preferences.data.decisionProvider === "decisions") {
       jevClient.invalidate();
       jevAddressGate.reset();
       jevExpressionDirector.cancel();
     }
-    openAIClient.reset();
     return publicAppState();
   });
   ipcMain.handle("mcp:save", (event, input = {}) => {
@@ -11738,6 +11844,17 @@ function registerIpc() {
     assertTrustedSender(event);
     return setCharacter(String(characterId || ""));
   });
+  ipcMain.handle("character:importMesh", async (event) => {
+    assertTrustedSender(event);
+    const characterId = preferences.data.characterId;
+    const result = await dialog.showOpenDialog(controlWindow, { title: mainText("Mesh Avatarのプロジェクトを選択", "Choose a Mesh Avatar project"), properties: ["openDirectory"] });
+    if (result.canceled || !result.filePaths[0]) return publicAppState();
+    const imported = meshAvatarStore.import(result.filePaths[0], characterId);
+    return selectCharacterAppearance(characterId, imported.id);
+  });
+  ipcMain.handle("character:setAppearance", (event, selection) => {
+    assertTrustedSender(event); return selectCharacterAppearance(preferences.data.characterId, String(selection || ""));
+  });
   ipcMain.handle("character:remove", async (event, characterId) => {
     assertTrustedSender(event);
     return removeGeneratedCharacter(String(characterId || ""));
@@ -11782,8 +11899,7 @@ function registerIpc() {
     });
     preferences.patch({ continuationSummaries: saved.summaries });
     codexClient?.reset();
-    openAIClient?.reset();
-    resetWorkClient();
+      resetWorkClient();
     return broadcastAppState();
   });
   ipcMain.handle("continuation:clear", (event) => {
@@ -11796,8 +11912,7 @@ function registerIpc() {
     const cleared = clearContinuationSummary(preferences.data.continuationSummaries, character.id, scope.key);
     preferences.patch({ continuationSummaries: cleared.summaries });
     codexClient?.reset();
-    openAIClient?.reset();
-    resetWorkClient();
+      resetWorkClient();
     return broadcastAppState();
   });
   ipcMain.handle("skills:listTrusted", async (event) => {
@@ -12035,17 +12150,23 @@ function registerIpc() {
     assertTrustedSender(event);
     codexClient.reset();
     workCodexClient?.reset();
-    openAIClient.reset();
     clearCurrentConversationHistory();
     return true;
   });
   ipcMain.handle("backend:test", async (event, backend) => {
     assertTrustedSender(event);
-    if (backend === "openai") {
-      if (!preferences.getApiKey()) throw new Error("OpenAI APIキーが未設定です。");
-      return { ok: true, message: "APIキーを暗号化ストレージから読み込めました。" };
+    if (backend && backend !== "codex") throw new Error("APIキーを使う会話は廃止しました。 / API-key conversation is no longer available.");
+    if (preferences.data.codexAuthMode === "chatgpt") {
+      const client = new CodexAppServerClient({ cwd: codexWorkingDirectory || projectRoot, command: codexCommand,
+        ...codexAuthenticationOptions(), ...conversationCodexSettings(), webSearchMode: "disabled",
+        developerInstructions: "Reply with exactly CHARADOCK_CONNECTION_OK. Do not use tools." });
+      try {
+        const response = await client.sendMessage("Reply with exactly CHARADOCK_CONNECTION_OK. Do not use tools.");
+        if (response.text.trim() !== "CHARADOCK_CONNECTION_OK") throw new Error("ChatGPT接続を確認できませんでした。 / Could not verify the ChatGPT connection.");
+        return { ok: true, message: mainText("ChatGPTから応答を受信しました。", "Received a response from ChatGPT.") };
+      } finally { client.stop(); }
     }
-    const account = await codexClient.getAccount();
+    const account = await legacyCodexLoginClient().getAccount();
     if (account?.requiresOpenaiAuth && !account?.account) {
       throw new Error("Codex app-serverへ接続しました。ChatGPTログインが必要です。");
     }
@@ -12055,10 +12176,11 @@ function registerIpc() {
   ipcMain.handle("codex:account", async (event) => {
     assertTrustedSender(event);
     if (!codexCommand) await refreshCodexInstallation();
+    if (preferences.data.codexAuthMode === "chatgpt") return { ...chatgptSignIn.state(), available: Boolean(codexCommand), requiresAuth: !chatgptSignIn.state().signedIn };
     if (!codexCommand) {
       return { available: false, signedIn: false, requiresAuth: true, type: null, planType: null };
     }
-    const result = await codexClient.getAccount();
+    const result = await legacyCodexLoginClient().getAccount();
     return {
       available: true,
       signedIn: Boolean(result?.account),
@@ -12069,12 +12191,14 @@ function registerIpc() {
   });
   ipcMain.handle("codex:login", async (event) => {
     assertTrustedSender(event);
+    assertAuthenticationMutable();
+    if (preferences.data.codexAuthMode === "chatgpt") return chatgptSignIn.beginSignIn();
     if (!codexCommand) await refreshCodexInstallation();
     if (!codexCommand) throw new Error(mainText(
       "Codexが見つかりません。公式WindowsアプリまたはCodex CLIをインストールしてから再確認してください。",
       "Codex was not found. Install the official Windows app or Codex CLI, then check again.",
     ));
-    const result = await codexClient.startChatGPTLogin();
+    const result = await legacyCodexLoginClient().startChatGPTLogin();
     const loginUrl = new URL(result.authUrl);
     if (loginUrl.protocol !== "https:") throw new Error("安全でないログインURLを拒否しました。");
     await shell.openExternal(loginUrl.toString());
@@ -12082,8 +12206,24 @@ function registerIpc() {
   });
   ipcMain.handle("codex:logout", async (event) => {
     assertTrustedSender(event);
-    await codexClient.logout();
+    assertAuthenticationMutable();
+    if (preferences.data.codexAuthMode === "chatgpt") chatgptSignIn.logout();
+    else await legacyCodexLoginClient().logout();
+    refreshAuthenticatedClients();
     return { loggedOut: true };
+  });
+  ipcMain.handle("codex:liveAccount", async (event) => {
+    assertTrustedSender(event);
+    const account = await legacyCodexLoginClient().getAccount();
+    return { signedIn: Boolean(account.account), type: account.account?.type || null };
+  });
+  ipcMain.handle("codex:liveLogin", async (event) => {
+    assertTrustedSender(event); assertAuthenticationMutable();
+    const result = await legacyCodexLoginClient().startChatGPTLogin();
+    const url = new URL(result.authUrl);
+    if (url.protocol !== "https:" || url.hostname !== "auth.openai.com") throw new Error("Invalid Codex sign-in URL");
+    await shell.openExternal(url.href);
+    return { opened: true };
   });
   ipcMain.handle("chat:send", async (event, payload) => {
     assertTrustedSender(event);
@@ -12534,6 +12674,7 @@ function ensureBrowserWindow(browserSession) {
   activeBrowserSession = browserSession;
   if (browserWindow && !browserWindow.isDestroyed() && browserWindowSessionId === browserSession.id) return browserWindow;
   if (browserWindow && !browserWindow.isDestroyed()) browserWindow.destroy();
+  speechCpp.stop();
   destroyIrodoriWindow();
   destroyKokoroWindow();
   browserWindowSessionId = browserSession.id;
@@ -13466,6 +13607,7 @@ async function sendChatMessage(message, {
           cwd: app.getPath("documents"),
           command: codexCommand,
           ...conversationCodexSettings(),
+    ...codexAuthenticationOptions(),
           developerInstructions: [
             mainText(
               "You are the user's friendly desktop character companion. Carry out only the explicitly approved foreground Windows task and report the result concisely in Japanese.",
@@ -13489,6 +13631,7 @@ async function sendChatMessage(message, {
           cwd: app.getPath("documents"),
           command: codexCommand,
           ...conversationCodexSettings(),
+    ...codexAuthenticationOptions(),
           developerInstructions: mainText(
             "You are the user's friendly desktop character companion. Carry out only the explicitly approved foreground task on the active desktop and report the result concisely in Japanese.",
             "You are the user's friendly desktop character companion. Carry out only the explicitly approved foreground task on the active desktop and report the result concisely in English.",
@@ -13550,6 +13693,7 @@ async function sendChatMessage(message, {
       browserCodexClient = new CodexAppServerClient({
         ...browserRuntime,
         ...(workMode ? workCodexSettings() : conversationCodexSettings()),
+        ...codexAuthenticationOptions(),
         developerInstructions: [
           workMode ? workModeInstructions() : mainText(
             "You are the user's friendly desktop character companion. Answer concisely in natural Japanese and do not modify local files or run commands.",
@@ -13612,14 +13756,6 @@ async function sendChatMessage(message, {
         },
       });
       result = { ...result, mode: "work", workDirectoryName: path.basename(validWorkDirectory()) };
-    } else if (preferences.data.backend === "openai") {
-      result = await openAIClient.sendMessage({
-        apiKey: preferences.getApiKey(),
-        model: preferences.data.openaiModel,
-        message: codexText,
-        instructions: personaInstructions(),
-        onDelta,
-      });
     } else {
       const conversationClient = ensureConversationCodexClient(selectedMcpServerIds);
       conversationClient.setTurnStartSkillItems([builtInSkillCreatorItem()]);
@@ -13756,6 +13892,7 @@ async function sendChatMessage(message, {
 
 async function generateCharacterFromImage(payload) {
   if (preferences.data.backend !== "codex") throw new Error("この機能はCodex app-server接続時のみ利用できます。");
+  if (preferences.data.codexAuthMode === "chatgpt") throw new Error(mainText("画像生成にはAI接続で「Codexのログイン」を選んでください。", "Select Codex sign-in in AI Connection to generate images."));
   if (generationInProgress) throw new Error("別のキャラクターを生成中です。完了までお待ちください。");
   const account = await codexClient.getAccount();
   if (!account?.account) throw new Error("先にAI接続画面からChatGPTへログインしてください。");
@@ -13868,13 +14005,7 @@ async function generateCharacterFromImage(payload) {
 }
 
 async function transcribeAudio(payload) {
-  const bytes = payload?.bytes instanceof Uint8Array ? payload.bytes : new Uint8Array(payload?.bytes || []);
-  return openAIClient.transcribe({
-    apiKey: preferences.getApiKey(),
-    model: preferences.data.transcriptionModel,
-    bytes,
-    mimeType: String(payload?.mimeType || "audio/webm"),
-  });
+  throw new Error(mainText("APIによる文字起こしは廃止しました。ローカル音声認識またはブラウザー音声認識を選んでください。", "API transcription is no longer available. Select local or browser speech recognition."));
 }
 
 async function removeRetiredWorkSlmData() {
@@ -14006,6 +14137,7 @@ async function boot() {
   const projectRootIsArchive = projectRoot.toLowerCase().includes(".asar");
   codexWorkingDirectory = app.isPackaged || projectRootIsArchive ? app.getPath("documents") : projectRoot;
   preferences = new Preferences(path.join(app.getPath("userData"), "preferences.json"), safeStorage);
+  meshAvatarStore = new MeshAvatarStore(path.join(app.getPath("userData"), "mesh-avatars"));
   RLCD42_PROFILE_ID = preferences.data.characterDeviceType === STACKCHAN_BOARD ? "stackchan-default" : "rlcd42-default";
   ensureBuiltInSkillCreator();
   await removeRetiredWorkSlmData();
@@ -14104,6 +14236,12 @@ async function boot() {
   });
   if (Object.keys(piperUpgrade).length) preferences.patch(piperUpgrade);
 
+  const installedSpeechCpp = embeddedTtsModels.installedPaths("speech-cpp");
+  if (!preferences.data.speechCppExecutablePath && installedSpeechCpp.executablePath) {
+    preferences.patch({ speechCppExecutablePath: installedSpeechCpp.executablePath, speechCppModelPath: installedSpeechCpp.modelPath });
+  }
+  const installedSpeechCppSmall = embeddedTtsModels.installedPaths("speech-cpp-small");
+  if (!preferences.data.speechCppSmallModelPath && installedSpeechCppSmall.modelPath) preferences.patch({ speechCppSmallModelPath: installedSpeechCppSmall.modelPath });
   const localMfDirectory = path.join(app.getPath("userData"), "tts-models", "irodori-v41-mf-webgpu");
   if (!preferences.data.irodoriMfModelDirectory && irodoriModelStatus(localMfDirectory, "", null, { version: "v4-mf", mode: "design" }).modelReady) {
     preferences.patch({ irodoriMfModelDirectory: localMfDirectory });
@@ -14118,7 +14256,7 @@ async function boot() {
   });
   cleanupStaleTemporaryInputs();
   if (process.argv.includes("--smoke-test")) preferences.patch({ onboardingComplete: false });
-  localServer = new MascotStaticServer(projectRoot, { onInput: input => {
+  localServer = new MascotStaticServer(projectRoot, { getMeshAsset: readSelectedMeshAsset, onInput: input => {
     const expression = remoteExpression(input, activeCharacter().id);
     if (expression) remoteServer?.publish("expression", expression);
   } });
@@ -14143,7 +14281,11 @@ async function boot() {
       remoteLastError = mainText("プライベートLANが見つかりません。", "No private LAN connection was found.");
     }
   }
-  openAIClient = new OpenAIClient();
+  chatgptSignIn = new ChatGPTSignIn({ directory: path.join(app.getPath("userData"), "chatgpt-connection"),
+    safeStorage, openExternal: url => shell.openExternal(url), onChange: () => {
+      if (!preferences || quitting) return;
+      broadcastAppState();
+    } });
   codexCommand = await resolveCodexCommand({ cacheDirectory: path.join(app.getPath("userData"), "codex-bin") });
   wslCodexCommand = await resolveInstalledWslCodexCommand({ cacheDirectory: path.join(app.getPath("userData"), "codex-bin") });
   codexClient = createConversationCodexClient();
@@ -14274,6 +14416,8 @@ app.on("before-quit", () => {
   clearTimeout(snapBoundsTimer);
   stopMascotSnapAnimation();
   globalShortcut.unregisterAll();
+  chatgptSignIn?.dispose();
+  codexLoginClient?.stop();
   codexClient?.stop();
   workCodexClient?.stop();
   browserCodexClient?.stop();
@@ -14287,6 +14431,7 @@ app.on("before-quit", () => {
   if (atomEchoLiveWindow && !atomEchoLiveWindow.isDestroyed()) atomEchoLiveWindow.destroy();
   if (browserWindow && !browserWindow.isDestroyed()) browserWindow.destroy();
   if (artifactPreviewWindow && !artifactPreviewWindow.isDestroyed()) artifactPreviewWindow.destroy();
+  speechCpp.stop();
   destroyIrodoriWindow();
   destroyKokoroWindow();
   streamingSpeechRecognition?.close();

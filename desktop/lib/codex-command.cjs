@@ -102,12 +102,19 @@ async function resolveInstalledWslCodexCommand(options = {}) {
   const { platform = process.platform, env = process.env, runCommand = run } = options;
   if (platform !== "win32") return "";
   if (env.CODEX_WSL_CLI_PATH) return resolveWslCodexCommand(options);
-  // Discover the user's regular Linux installation, not an app-specific copy.
-  // A login shell includes the standard user-local npm prefix in PATH.
-  const output = await runCommand("wsl.exe", ["--exec", "/bin/sh", "-lc", "command -v codex"]);
-  const candidate = String(output || "").trim();
-  if (candidate.startsWith("/") && !/[\r\n\0]/.test(candidate)
-    && !/\/\.codex\/bin\/wsl\//.test(candidate)) return candidate;
+  // nvm commonly initializes in interactive .bashrc, so a non-interactive sh
+  // can find an older user-local install than the CLI the user just updated.
+  // Resolve an executable rather than a shell alias/function, with sh as a
+  // fallback for distributions without bash or usable interactive output.
+  for (const args of [
+    ["--exec", "/bin/bash", "-lic", "type -P codex"],
+    ["--exec", "/bin/sh", "-lc", "command -v codex"],
+  ]) {
+    const output = await runCommand("wsl.exe", args);
+    const candidate = String(output || "").trim();
+    if (candidate.startsWith("/") && !/[\r\n\0]/.test(candidate)
+      && !/\/\.codex\/bin\/wsl\//.test(candidate)) return candidate;
+  }
   return resolveWslCodexCommand(options);
 }
 

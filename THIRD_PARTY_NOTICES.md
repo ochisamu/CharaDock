@@ -367,3 +367,24 @@ Vendored MediaPipe file checksums are recorded in `vendor/mediapipe/SHASUMS256.t
 ## Browser and platform APIs
 
 The app uses standard browser APIs including Canvas 2D, WebGL, MediaDevices, Web Audio, FileReader, localStorage, EventSource, and fetch.
+
+## jose
+
+CharaDock uses [jose](https://github.com/panva/jose) 6.2.12 to validate Sign in with ChatGPT identity tokens against the issuer's public keys. Copyright (c) Filip Skokan. MIT licensed; the package's complete `LICENSE.md` is included with the dependency in distributed builds.
+
+## Mesh Avatar Studio runtime
+
+The engine, rig validation and lighting code under `vendor/mesh-avatar-studio` comes from [Mesh Avatar Studio](https://github.com/shinshin86/mesh-avatar-studio), revision `3e8f4e972aa9c1824773a5aca090651db0c8870a`. Copyright (c) 2026 Yuki Shindo. Licensed under MIT; the complete license and modification details are included in that directory. Sample character images are not included.
+
+## Optional speech.cpp voice engine
+
+CharaDock downloads the official, unmodified speech.cpp **v0.8.3** Windows x64 Vulkan runtime from [nyosegawa/speech.cpp](https://github.com/nyosegawa/speech.cpp/releases/tag/v0.8.3). The archive and the Irodori Small / Small MF GGUF weights are version pinned and SHA-256 verified. Executables, model weights, and user reference audio are stored in the selected application profile, outside this source repository.
+
+- speech.cpp: MIT, Copyright (c) 2026 Sakasegawa. Full license: [speech-cpp-MIT.txt](vendor/speech-cpp-licenses/speech-cpp-MIT.txt).
+- ggml, pinned upstream submodule `353b63b439f27ab2cc19dac97ab1681ba6d2d084`: MIT. Full license: [ggml-MIT.txt](vendor/speech-cpp-licenses/ggml-MIT.txt).
+- cpp-httplib: MIT. Full license: [cpp-httplib-MIT.txt](vendor/speech-cpp-licenses/cpp-httplib-MIT.txt).
+- miniaudio: upstream MIT / public-domain license text: [miniaudio.txt](vendor/speech-cpp-licenses/miniaudio.txt).
+
+These notices are packaged with CharaDock and copied beside the downloaded runtime. The model's original license files and conversion model card are downloaded beside its GGUF under `licenses/model/`. [Aratako/Irodori-TTS-v4.1-Small-MF](https://huggingface.co/Aratako/Irodori-TTS-v4.1-Small-MF) is MIT licensed; the conversion also supplies an Apache-2.0 license. Reference audio must be owned or permitted by the speaker. Follow the model card's restrictions against impersonation without explicit consent and deceptive use.
+
+The optional standard Small GGUF is distributed by [sakasegawa/Irodori-TTS-v4.1-Small-GGUF](https://huggingface.co/sakasegawa/Irodori-TTS-v4.1-Small-GGUF), pinned to revision `3ebbd5ad88a3847c52f9e158d9dbe35178de5b98`. Its model card and MIT / Apache-2.0 license files are downloaded and verified with the model. It uses the same unmodified speech.cpp runtime and runtime notices.

@@ -38,10 +38,9 @@ test("idle Chat stays available before and after resetting the Work client", () 
   assert.equal(ctx.normalConversationSubmitRouteForMode("chat", { capturedSubmitRoute: "new-turn" }), "new-turn");
 });
 
-test("OpenAI request cannot be bypassed by captured input and is not steerable", () => {
+test("retired API conversation does not own or block the conversation route", () => {
   const ctx = routingHarness({ openAIClient: { hasActiveTurn: () => true } });
-  assert.equal(ctx.normalConversationSubmitRouteForMode("chat"), "busy");
-  assert.equal(ctx.normalConversationSubmitRouteForMode("chat", { capturedSubmitRoute: "new-turn" }), "busy");
+  assert.equal(ctx.normalConversationSubmitRouteForMode("chat"), "new-turn");
 });
 
 function deferred() {
@@ -262,6 +261,7 @@ test("late synthesis cannot replace the active RLCD stream cancellation handle",
   const cancelled = [];
   const ctx = vm.createContext({
     esp32SpeechOutput: () => {},
+    speechCpp: { cancelOwner() {} },
     RLCD42_TTS_OWNER_ID: "rlcd", rlcd42SpeechGeneration: 0, atomEchoReplyGeneration: 0,
     rlcd42PlaybackCaption: "", syncRlcd42Scene: async () => {},
     publishSpeechCaption: () => {}, scheduleRlcd42SceneSync: () => {},

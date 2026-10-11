@@ -1,0 +1,494 @@
+{
+  "measuredDates": [
+    "2026-10-10",
+    "2026-10-11"
+  ],
+  "hardware": {
+    "gpu": "NVIDIA GeForce RTX 5060 Ti",
+    "vramMiB": 16311,
+    "driver": "591.86",
+    "cpu": "Intel Core i7-12700F",
+    "os": "Windows",
+    "electron": "43.1.1"
+  },
+  "settings": {
+    "text": "新しい音声エンジンでも、いつもの声で話せるよ。",
+    "caption": "自然で明瞭な日本語。落ち着いた親しみやすい口調で話す。",
+    "seed": 42,
+    "speed": 1,
+    "steps": 16,
+    "schedule": "linear",
+    "guidance": {
+      "text": 3,
+      "speaker": 5,
+      "instructions": 3,
+      "mode": "independent",
+      "minT": 0.5,
+      "maxT": 1
+    },
+    "voiceId": "builtin-hiro",
+    "referenceSha256": "23c8fd4deb6c7164048a42f46a26c168e012d3bb733ae39f9439618ca1f9c927"
+  },
+  "mfSteps": 4,
+  "speechCppVersion": "0.8.3",
+  "nativeModel": {
+    "repository": "sakasegawa/Irodori-TTS-v4.1-Small-GGUF",
+    "revision": "3ebbd5ad88a3847c52f9e158d9dbe35178de5b98",
+    "file": "Irodori-TTS-859M-v4.1-F16.gguf",
+    "sha256": "f334932bdf166579bada0a3c8bdabb7199af85682fdcefb6f1cb7e444f5c75b3"
+  },
+  "webgpuModelReleases": {
+    "fp16": "v4-small-e4aaac4-webgpu-fp16-r2",
+    "int4": "v4-small-quantized-4a5a4d6-webgpu-int4-r1",
+    "duration": "v4.1-small-webgpu-duration-r1"
+  },
+  "stats": [
+    {
+      "provider": "speech-cpp-fp16",
+      "firstAudioMs": 472,
+      "generationMs": 679,
+      "durationSeconds": 5.4,
+      "cold": {
+        "provider": "speech-cpp-fp16",
+        "run": 0,
+        "cold": true,
+        "firstAudioMs": 2776,
+        "generationMs": 2982,
+        "durationSeconds": 5.4,
+        "chunks": 4
+      }
+    },
+    {
+      "provider": "irodori-webgpu-fp16",
+      "firstAudioMs": 4040,
+      "generationMs": 4041,
+      "durationSeconds": 5.6,
+      "cold": {
+        "provider": "irodori-webgpu-fp16",
+        "run": 0,
+        "cold": true,
+        "firstAudioMs": 12980,
+        "generationMs": 12980,
+        "durationSeconds": 5.6,
+        "chunks": 1,
+        "metrics": {
+          "prepareMs": 4732.799999713898,
+          "elapsedMs": 12970,
+          "audioSeconds": 5.6,
+          "referenceCacheHit": false,
+          "speakerCacheHit": false,
+          "captionCacheHit": false,
+          "generationSchedule": "linear",
+          "generationSteps": 16,
+          "generationCfgExecution": "sequential",
+          "modelVersion": "v4-small",
+          "modelPrecision": "fp16",
+          "modelRelease": "",
+          "textLength": 23,
+          "captionLength": 27,
+          "sequenceLength": 140,
+          "trimmedSequenceLength": 140,
+          "trailingUtteranceTrimmed": false
+        }
+      }
+    },
+    {
+      "provider": "irodori-webgpu-int4",
+      "firstAudioMs": 5997,
+      "generationMs": 5997,
+      "durationSeconds": 6.44,
+      "cold": {
+        "provider": "irodori-webgpu-int4",
+        "run": 0,
+        "cold": true,
+        "firstAudioMs": 14009,
+        "generationMs": 14010,
+        "durationSeconds": 6.44,
+        "chunks": 1,
+        "metrics": {
+          "prepareMs": 3401.0999999046326,
+          "elapsedMs": 14000,
+          "audioSeconds": 6.44,
+          "referenceCacheHit": false,
+          "speakerCacheHit": false,
+          "captionCacheHit": false,
+          "generationSchedule": "linear",
+          "generationSteps": 16,
+          "generationCfgExecution": "sequential",
+          "modelVersion": "v4-small",
+          "modelPrecision": "int4",
+          "modelRelease": "",
+          "textLength": 23,
+          "captionLength": 27,
+          "sequenceLength": 161,
+          "trimmedSequenceLength": 161,
+          "trailingUtteranceTrimmed": false
+        }
+      }
+    },
+    {
+      "provider": "speech-cpp-mf-fp16",
+      "firstAudioMs": 105,
+      "generationMs": 316,
+      "durationSeconds": 5.4,
+      "cold": {
+        "run": 0,
+        "cold": true,
+        "firstAudioMs": 3745,
+        "generationMs": 3955,
+        "durationSeconds": 5.4,
+        "chunks": 4,
+        "provider": "speech-cpp-mf-fp16"
+      }
+    },
+    {
+      "provider": "irodori-webgpu-mf-fp16",
+      "firstAudioMs": 678,
+      "generationMs": 679,
+      "durationSeconds": 5.6,
+      "cold": {
+        "run": 0,
+        "cold": true,
+        "firstAudioMs": 6040,
+        "generationMs": 6040,
+        "durationSeconds": 5.6,
+        "chunks": 1,
+        "provider": "irodori-webgpu-mf-fp16"
+      }
+    }
+  ],
+  "rows": [
+    {
+      "provider": "speech-cpp-fp16",
+      "run": 0,
+      "cold": true,
+      "firstAudioMs": 2776,
+      "generationMs": 2982,
+      "durationSeconds": 5.4,
+      "chunks": 4
+    },
+    {
+      "provider": "speech-cpp-fp16",
+      "run": 1,
+      "cold": false,
+      "firstAudioMs": 472,
+      "generationMs": 679,
+      "durationSeconds": 5.4,
+      "chunks": 4
+    },
+    {
+      "provider": "speech-cpp-fp16",
+      "run": 2,
+      "cold": false,
+      "firstAudioMs": 472,
+      "generationMs": 679,
+      "durationSeconds": 5.4,
+      "chunks": 4
+    },
+    {
+      "provider": "speech-cpp-fp16",
+      "run": 3,
+      "cold": false,
+      "firstAudioMs": 472,
+      "generationMs": 677,
+      "durationSeconds": 5.4,
+      "chunks": 4
+    },
+    {
+      "provider": "irodori-webgpu-fp16",
+      "run": 0,
+      "cold": true,
+      "firstAudioMs": 12980,
+      "generationMs": 12980,
+      "durationSeconds": 5.6,
+      "chunks": 1,
+      "metrics": {
+        "prepareMs": 4732.799999713898,
+        "elapsedMs": 12970,
+        "audioSeconds": 5.6,
+        "referenceCacheHit": false,
+        "speakerCacheHit": false,
+        "captionCacheHit": false,
+        "generationSchedule": "linear",
+        "generationSteps": 16,
+        "generationCfgExecution": "sequential",
+        "modelVersion": "v4-small",
+        "modelPrecision": "fp16",
+        "modelRelease": "",
+        "textLength": 23,
+        "captionLength": 27,
+        "sequenceLength": 140,
+        "trimmedSequenceLength": 140,
+        "trailingUtteranceTrimmed": false
+      }
+    },
+    {
+      "provider": "irodori-webgpu-fp16",
+      "run": 1,
+      "cold": false,
+      "firstAudioMs": 3711,
+      "generationMs": 3711,
+      "durationSeconds": 5.6,
+      "chunks": 1,
+      "metrics": {
+        "prepareMs": 1.8000001907348633,
+        "elapsedMs": 3705.5,
+        "audioSeconds": 5.6,
+        "referenceCacheHit": true,
+        "speakerCacheHit": true,
+        "captionCacheHit": true,
+        "generationSchedule": "linear",
+        "generationSteps": 16,
+        "generationCfgExecution": "sequential",
+        "modelVersion": "v4-small",
+        "modelPrecision": "fp16",
+        "modelRelease": "",
+        "textLength": 23,
+        "captionLength": 27,
+        "sequenceLength": 140,
+        "trimmedSequenceLength": 140,
+        "trailingUtteranceTrimmed": false
+      }
+    },
+    {
+      "provider": "irodori-webgpu-fp16",
+      "run": 2,
+      "cold": false,
+      "firstAudioMs": 4106,
+      "generationMs": 4106,
+      "durationSeconds": 5.6,
+      "chunks": 1,
+      "metrics": {
+        "prepareMs": 2,
+        "elapsedMs": 4099.599999904633,
+        "audioSeconds": 5.6,
+        "referenceCacheHit": true,
+        "speakerCacheHit": true,
+        "captionCacheHit": true,
+        "generationSchedule": "linear",
+        "generationSteps": 16,
+        "generationCfgExecution": "sequential",
+        "modelVersion": "v4-small",
+        "modelPrecision": "fp16",
+        "modelRelease": "",
+        "textLength": 23,
+        "captionLength": 27,
+        "sequenceLength": 140,
+        "trimmedSequenceLength": 140,
+        "trailingUtteranceTrimmed": false
+      }
+    },
+    {
+      "provider": "irodori-webgpu-fp16",
+      "run": 3,
+      "cold": false,
+      "firstAudioMs": 4040,
+      "generationMs": 4041,
+      "durationSeconds": 5.6,
+      "chunks": 1,
+      "metrics": {
+        "prepareMs": 2.4000000953674316,
+        "elapsedMs": 4026.9000000953674,
+        "audioSeconds": 5.6,
+        "referenceCacheHit": true,
+        "speakerCacheHit": true,
+        "captionCacheHit": true,
+        "generationSchedule": "linear",
+        "generationSteps": 16,
+        "generationCfgExecution": "sequential",
+        "modelVersion": "v4-small",
+        "modelPrecision": "fp16",
+        "modelRelease": "",
+        "textLength": 23,
+        "captionLength": 27,
+        "sequenceLength": 140,
+        "trimmedSequenceLength": 140,
+        "trailingUtteranceTrimmed": false
+      }
+    },
+    {
+      "provider": "irodori-webgpu-int4",
+      "run": 0,
+      "cold": true,
+      "firstAudioMs": 14009,
+      "generationMs": 14010,
+      "durationSeconds": 6.44,
+      "chunks": 1,
+      "metrics": {
+        "prepareMs": 3401.0999999046326,
+        "elapsedMs": 14000,
+        "audioSeconds": 6.44,
+        "referenceCacheHit": false,
+        "speakerCacheHit": false,
+        "captionCacheHit": false,
+        "generationSchedule": "linear",
+        "generationSteps": 16,
+        "generationCfgExecution": "sequential",
+        "modelVersion": "v4-small",
+        "modelPrecision": "int4",
+        "modelRelease": "",
+        "textLength": 23,
+        "captionLength": 27,
+        "sequenceLength": 161,
+        "trimmedSequenceLength": 161,
+        "trailingUtteranceTrimmed": false
+      }
+    },
+    {
+      "provider": "irodori-webgpu-int4",
+      "run": 1,
+      "cold": false,
+      "firstAudioMs": 5997,
+      "generationMs": 5997,
+      "durationSeconds": 6.44,
+      "chunks": 1,
+      "metrics": {
+        "prepareMs": 1.8000001907348633,
+        "elapsedMs": 5989.400000095367,
+        "audioSeconds": 6.44,
+        "referenceCacheHit": true,
+        "speakerCacheHit": true,
+        "captionCacheHit": true,
+        "generationSchedule": "linear",
+        "generationSteps": 16,
+        "generationCfgExecution": "sequential",
+        "modelVersion": "v4-small",
+        "modelPrecision": "int4",
+        "modelRelease": "",
+        "textLength": 23,
+        "captionLength": 27,
+        "sequenceLength": 161,
+        "trimmedSequenceLength": 161,
+        "trailingUtteranceTrimmed": false
+      }
+    },
+    {
+      "provider": "irodori-webgpu-int4",
+      "run": 2,
+      "cold": false,
+      "firstAudioMs": 5978,
+      "generationMs": 5979,
+      "durationSeconds": 6.44,
+      "chunks": 1,
+      "metrics": {
+        "prepareMs": 1.8000001907348633,
+        "elapsedMs": 5972,
+        "audioSeconds": 6.44,
+        "referenceCacheHit": true,
+        "speakerCacheHit": true,
+        "captionCacheHit": true,
+        "generationSchedule": "linear",
+        "generationSteps": 16,
+        "generationCfgExecution": "sequential",
+        "modelVersion": "v4-small",
+        "modelPrecision": "int4",
+        "modelRelease": "",
+        "textLength": 23,
+        "captionLength": 27,
+        "sequenceLength": 161,
+        "trimmedSequenceLength": 161,
+        "trailingUtteranceTrimmed": false
+      }
+    },
+    {
+      "provider": "irodori-webgpu-int4",
+      "run": 3,
+      "cold": false,
+      "firstAudioMs": 6186,
+      "generationMs": 6187,
+      "durationSeconds": 6.44,
+      "chunks": 1,
+      "metrics": {
+        "prepareMs": 2.0999999046325684,
+        "elapsedMs": 6177.299999713898,
+        "audioSeconds": 6.44,
+        "referenceCacheHit": true,
+        "speakerCacheHit": true,
+        "captionCacheHit": true,
+        "generationSchedule": "linear",
+        "generationSteps": 16,
+        "generationCfgExecution": "sequential",
+        "modelVersion": "v4-small",
+        "modelPrecision": "int4",
+        "modelRelease": "",
+        "textLength": 23,
+        "captionLength": 27,
+        "sequenceLength": 161,
+        "trimmedSequenceLength": 161,
+        "trailingUtteranceTrimmed": false
+      }
+    },
+    {
+      "run": 0,
+      "cold": true,
+      "firstAudioMs": 3745,
+      "generationMs": 3955,
+      "durationSeconds": 5.4,
+      "chunks": 4,
+      "provider": "speech-cpp-mf-fp16"
+    },
+    {
+      "run": 1,
+      "cold": false,
+      "firstAudioMs": 108,
+      "generationMs": 318,
+      "durationSeconds": 5.4,
+      "chunks": 4,
+      "provider": "speech-cpp-mf-fp16"
+    },
+    {
+      "run": 2,
+      "cold": false,
+      "firstAudioMs": 105,
+      "generationMs": 316,
+      "durationSeconds": 5.4,
+      "chunks": 4,
+      "provider": "speech-cpp-mf-fp16"
+    },
+    {
+      "run": 3,
+      "cold": false,
+      "firstAudioMs": 104,
+      "generationMs": 316,
+      "durationSeconds": 5.4,
+      "chunks": 4,
+      "provider": "speech-cpp-mf-fp16"
+    },
+    {
+      "run": 0,
+      "cold": true,
+      "firstAudioMs": 6040,
+      "generationMs": 6040,
+      "durationSeconds": 5.6,
+      "chunks": 1,
+      "provider": "irodori-webgpu-mf-fp16"
+    },
+    {
+      "run": 1,
+      "cold": false,
+      "firstAudioMs": 1193,
+      "generationMs": 1193,
+      "durationSeconds": 5.6,
+      "chunks": 1,
+      "provider": "irodori-webgpu-mf-fp16"
+    },
+    {
+      "run": 2,
+      "cold": false,
+      "firstAudioMs": 678,
+      "generationMs": 679,
+      "durationSeconds": 5.6,
+      "chunks": 1,
+      "provider": "irodori-webgpu-mf-fp16"
+    },
+    {
+      "run": 3,
+      "cold": false,
+      "firstAudioMs": 672,
+      "generationMs": 673,
+      "durationSeconds": 5.6,
+      "chunks": 1,
+      "provider": "irodori-webgpu-mf-fp16"
+    }
+  ]
+}

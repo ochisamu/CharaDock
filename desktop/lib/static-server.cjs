@@ -31,7 +31,8 @@ function jsonResponse(response, status, value) {
 }
 
 class MascotStaticServer {
-  constructor(rootDir, { onInput } = {}) {
+  constructor(rootDir, { onInput, getMeshAsset } = {}) {
+    this.getMeshAsset = getMeshAsset;
     this.rootDir = path.resolve(rootDir);
     this.onInput = onInput;
     this.server = null;
@@ -110,6 +111,12 @@ class MascotStaticServer {
   async handle(request, response) {
     try {
       const url = new URL(request.url || "/", this.origin());
+      if (request.method === "GET" && url.pathname.startsWith("/api/mesh/")) {
+        const parts = decodeURIComponent(url.pathname).match(/^\/api\/mesh\/([a-f0-9-]{36})\/(rig\.json|built\/[a-zA-Z0-9_/-]+\.(?:json|png))$/);
+        const asset = parts && !parts[2].includes("..") ? await this.getMeshAsset?.(parts[1], parts[2]) : null;
+        if (!asset?.body) return jsonResponse(response,404,{error:"Mesh asset not found"});
+        response.writeHead(200,{"Content-Type":asset.contentType,"Cache-Control":"no-store","X-Content-Type-Options":"nosniff"}); response.end(asset.body); return;
+      }
       if (url.pathname === "/api/obs/events" && request.method === "GET") {
         response.writeHead(200, {
           "Content-Type": "text/event-stream; charset=utf-8",

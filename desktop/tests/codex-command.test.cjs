@@ -21,11 +21,26 @@ test("Windows Work discovers the regular WSL CLI before a desktop-managed copy",
     platform: "win32", env: {},
     runCommand: async (exe, args) => {
       assert.equal(exe, "wsl.exe");
-      assert.deepEqual(args, ["--exec", "/bin/sh", "-lc", "command -v codex"]);
-      return "/home/test/.local/bin/codex\n";
+      assert.deepEqual(args, ["--exec", "/bin/bash", "-lic", "type -P codex"]);
+      return "/home/test/.nvm/versions/node/v22.16.0/bin/codex\n";
     },
   });
-  assert.equal(command, "/home/test/.local/bin/codex");
+  assert.equal(command, "/home/test/.nvm/versions/node/v22.16.0/bin/codex");
+});
+
+test("WSL discovery falls back to sh when interactive shell output is unavailable or noisy", async () => {
+  for (const interactiveOutput of ["", "welcome\n/home/test/.nvm/bin/codex", "/home/test/.codex/bin/wsl/build/codex"]) {
+    const calls = [];
+    const command = await resolveInstalledWslCodexCommand({
+      platform: "win32", env: {},
+      runCommand: async (_exe, args) => {
+        calls.push(args);
+        return args[1] === "/bin/bash" ? interactiveOutput : "/home/test/.local/bin/codex";
+      },
+    });
+    assert.equal(command, "/home/test/.local/bin/codex");
+    assert.deepEqual(calls[1], ["--exec", "/bin/sh", "-lc", "command -v codex"]);
+  }
 });
 
 test("WSL CLI discovery safely falls back when WSL is unavailable", async () => {

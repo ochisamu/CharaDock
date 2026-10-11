@@ -62,7 +62,7 @@ function vadHarness(transcription) {
 test("stopping VAD discards an in-flight transcript and releases capture immediately", async () => {
   const d = deferred();
   const { context: c, events, timers } = vadHarness(d);
-  const processing = c.actions.processVadTranscript({}, "openai");
+  const processing = c.actions.processVadTranscript({}, "sherpa-onnx");
   c.actions.stopVadListening();
   assert.deepEqual(events, ["cleanup"]);
   d.resolve("do not send this");
@@ -115,7 +115,7 @@ test("cancelled streaming VAD finalization never schedules a command", async () 
 test("an active VAD transcription still auto-sends normally", async () => {
   const d = deferred();
   const { context: c, events, timers } = vadHarness(d);
-  const processing = c.actions.processVadTranscript({}, "openai");
+  const processing = c.actions.processVadTranscript({}, "sherpa-onnx");
   d.resolve("send this");
   await processing;
   for (const fn of [...timers.values()]) fn();
@@ -139,11 +139,11 @@ test("retrying manual recording preserves the new microphone and ignores the old
   });
   vm.runInContext(section(mascot, "  const toggleRecordedSpeech =", "  const resampleStreamingSpeechSamples =")
     + "globalThis.toggle = toggleRecordedSpeech;", c);
-  await c.toggle("openai");
+  await c.toggle("sherpa-onnx");
   const first = c.recordedSpeechRecorder;
-  await c.toggle("openai");
+  await c.toggle("sherpa-onnx");
   assert.equal(tracks[0].stopped, true);
-  await c.toggle("openai");
+  await c.toggle("sherpa-onnx");
   c.input.value = "new draft";
   d.resolve("old transcript");
   await first.finished;
@@ -160,7 +160,7 @@ for (const fails of [false, true]) {
       Blob, Uint8Array, MediaRecorder: Recorder, ensureAudioStream: async () => ({}),
       mediaRecorder: null, chatBusy: true, streamingMessage: reply, $: () => input,
       setStatus() {}, setChatBusy(value) { c.chatBusy = value; },
-      api: { transcribe: async () => { if (fails) throw new Error("STT failed"); return "recognized"; } },
+      transcribeWithSherpaOnnx: async () => { if (fails) throw new Error("STT failed"); return "recognized"; },
     });
     vm.runInContext(section(control, "  async function toggleRecordedSpeechInput(", "  function resampleSpeechChunk(")
       + "globalThis.toggle = toggleRecordedSpeechInput;", c);

@@ -213,3 +213,6 @@ dialog::backdrop { background: rgba(16,24,36,.28); backdrop-filter: blur(4px); }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; } }
 @media (prefers-reduced-transparency: reduce) { .approval-card, .work-progress-card, .control-dock, .response-bubble { background: #fff; backdrop-filter: none; } }
 @media (prefers-contrast: more) { .approval-card, .work-progress-card { border-color: #536071; background: #fff; } }
+
+.avatar-motion.is-mesh { animation: none !important; transform: none !important; }
+.avatar-motion.is-mesh > img { visibility: hidden; }

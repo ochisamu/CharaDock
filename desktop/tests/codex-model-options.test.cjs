@@ -10,7 +10,7 @@ test("Chat and Work can select Astra, Sol and Luna with stale, current or duplic
   const models = { "gpt-6-astra": "GPT-6 Astra", "gpt-6-sol": "GPT-6 Sol", "gpt-6-luna": "GPT-6 Luna" };
   const listed = Object.keys(models).map(model => ({ model, displayName: model }));
   for (const codexModels of [[], [listed[0]], listed, [...listed, ...listed]]) {
-    const ctx = vm.createContext({ codexModels, localized: (ja) => ja,
+    const ctx = vm.createContext({ state: {codexAuthMode:"codex"}, codexModels, localized: (ja) => ja,
       Option: class { constructor(text, value) { this.text = text; this.value = value; } },
     });
     vm.runInContext(source.slice(source.indexOf("  function setCodexModelOptions("), source.indexOf("  async function refreshCodexModels(")), ctx);

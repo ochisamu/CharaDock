@@ -6,6 +6,9 @@
 // clamping, multi-condition CFG, Euler/sway schedules and DACVAE tensor layout
 // stay here so every phase can select only the sessions it actually needs.
 
+import { findTrailingUtteranceCutoff } from "./speech-tail.mjs";
+export { findTrailingUtteranceCutoff } from "./speech-tail.mjs";
+
 export const VOICEDESIGN_CONFIG = Object.freeze({
   sampleRate: 48000,
   hopLength: 1920,
@@ -121,69 +124,6 @@ export function findFlatteningPoint(latent, sequenceLength, {
 // clearly silent gap. The latent flattening heuristic cannot remove it because
 // the latent becomes active again. Detect only silence followed by sustained
 // resumed speech; ordinary trailing silence is left to the latent trim.
-export function findTrailingUtteranceCutoff(audio, sampleRate, {
-  windowMs = 40,
-  minInitialSpeechMs = 200,
-  minSilenceMs = 480,
-  resumeLookaheadMs = 800,
-  minResumedSpeechMs = 160,
-  tailPaddingMs = 80,
-} = {}) {
-  if (!(audio instanceof Float32Array) || !(sampleRate > 0) || audio.length < 1) return audio?.length ?? 0;
-  const windowSamples = Math.max(1, Math.round(sampleRate * windowMs / 1000));
-  const windows = Math.ceil(audio.length / windowSamples);
-  const levels = new Float32Array(windows);
-  let peakDb = -120;
-  for (let window = 0; window < windows; window++) {
-    const start = window * windowSamples;
-    const end = Math.min(audio.length, start + windowSamples);
-    let sumSquares = 0;
-    for (let i = start; i < end; i++) sumSquares += audio[i] * audio[i];
-    const rms = Math.sqrt(sumSquares / Math.max(1, end - start));
-    const db = 20 * Math.log10(Math.max(1e-8, rms));
-    levels[window] = db;
-    peakDb = Math.max(peakDb, db);
-  }
-  if (peakDb < -45) return audio.length;
-
-  const speechThreshold = Math.max(-38, peakDb - 28);
-  const silenceThreshold = Math.max(-55, peakDb - 38);
-  const initialSpeechWindows = Math.max(1, Math.ceil(minInitialSpeechMs / windowMs));
-  const silenceWindows = Math.max(1, Math.ceil(minSilenceMs / windowMs));
-  const lookaheadWindows = Math.max(1, Math.ceil(resumeLookaheadMs / windowMs));
-  const resumedSpeechWindows = Math.max(1, Math.ceil(minResumedSpeechMs / windowMs));
-  let speechSeen = 0;
-
-  for (let window = 0; window < windows; window++) {
-    if (levels[window] >= speechThreshold) speechSeen += 1;
-    if (speechSeen < initialSpeechWindows || levels[window] > silenceThreshold) continue;
-
-    let silenceEnd = window;
-    while (silenceEnd < windows && levels[silenceEnd] <= silenceThreshold) silenceEnd += 1;
-    if (silenceEnd - window < silenceWindows) {
-      window = silenceEnd;
-      continue;
-    }
-
-    const lookaheadEnd = Math.min(windows, silenceEnd + lookaheadWindows);
-    let resumedSpeech = 0;
-    let longestResumedSpeech = 0;
-    for (let next = silenceEnd; next < lookaheadEnd; next++) {
-      if (levels[next] >= speechThreshold) {
-        resumedSpeech += 1;
-        longestResumedSpeech = Math.max(longestResumedSpeech, resumedSpeech);
-      } else {
-        resumedSpeech = 0;
-      }
-    }
-    if (longestResumedSpeech >= resumedSpeechWindows) {
-      const cutoff = window * windowSamples + Math.round(sampleRate * tailPaddingMs / 1000);
-      return Math.max(1, Math.min(audio.length, cutoff));
-    }
-    window = silenceEnd;
-  }
-  return audio.length;
-}
 
 export function shouldTrimTrailingUtterance(textValue) {
   const normalized = normalizeText(textValue).trim();

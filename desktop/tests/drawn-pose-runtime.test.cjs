@@ -311,6 +311,6 @@ test('Jev mapping uses supported drawings, silence-only yawn never runs over con
 });
 test('packaging includes runtime on Windows/macOS and opt-in is explicit in snapshots', () => {
   const pkg = require('../../package.json'); for (const b of [pkg.build, pkg.build.win, pkg.build.mac]) { assert.ok(b.files.includes('drawn-pose-runtime.js')); assert.ok(b.files.includes('assets/amber-avatar/**/*')); }
-  const main = fs.readFileSync(path.resolve(__dirname, '../main.cjs'), 'utf8'); assert.match(main, /kohakuMotionEnabled: character\.id === "amber-avatar" && nikePerformanceEnabled/);
+  const main = fs.readFileSync(path.resolve(__dirname, '../main.cjs'), 'utf8'); assert.match(main, /kohakuMotionEnabled: !characterAppearance\(character\.id\)\.mesh && character\.id === "amber-avatar" && nikePerformanceEnabled/);
   const app = fs.readFileSync(path.resolve(__dirname, '../../app.js'), 'utf8'); assert.match(app, /snapshot\?\.kohakuMotionEnabled === true/);
 });

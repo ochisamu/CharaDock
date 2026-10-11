@@ -3,6 +3,7 @@
 const DOWNLOAD_LABELS = Object.freeze({
   "piper-plus": Object.freeze({ ja: "サンプルをダウンロード", en: "Download sample" }),
   "supertonic-3": Object.freeze({ ja: "サンプルをダウンロード", en: "Download sample" }),
+  "speech-cpp": Object.freeze({ ja: "モデルをダウンロード", en: "Download model" }),
   "irodori-webgpu": Object.freeze({ ja: "モデルをダウンロード", en: "Download model" }),
   kokoro: Object.freeze({ ja: "日本語モデルをダウンロード", en: "Download Japanese model" }),
   "sbv2-jp-extra": Object.freeze({ ja: "AIVMXモデルを追加", en: "Add AIVMX model" }),
@@ -12,6 +13,7 @@ const PROVIDER_NAMES = Object.freeze({
   "piper-plus": "piper-plus",
   "supertonic-3": "Supertonic 3",
   "irodori-webgpu": "Irodori TTS",
+  "speech-cpp": "Irodori TTS · speech.cpp",
   kokoro: "Kokoro",
   "sbv2-jp-extra": "Style-Bert-VITS2 JP-Extra",
 });
@@ -33,7 +35,7 @@ function ttsSetupGuidance(provider, status = {}, language = "ja") {
       ? "Irodori TTS cannot use WebGPU on this PC. Update the GPU driver or choose another voice method in Settings → Desktop → Character voice."
       : "Irodori TTSでWebGPUを利用できません。GPUドライバーを更新するか、設定 → デスクトップ → キャラクターの声で音声方式を変更してください。";
   }
-  if (selected === "irodori-webgpu" && status.modelReady && status.referenceRequired !== false && !status.referenceReady) {
+  if (["irodori-webgpu", "speech-cpp"].includes(selected) && status.modelReady && status.referenceRequired !== false && !status.referenceReady) {
     return english
       ? "Irodori TTS has no usable reference voice. Add or select one, or choose another voice method in Settings → Desktop → Character voice."
       : "Irodori TTSの参照音声がありません。設定 → デスクトップ → キャラクターの声で参照音声を追加・選択するか、音声方式を変更してください。";

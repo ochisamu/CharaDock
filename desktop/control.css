@@ -1610,3 +1610,13 @@ input[type="range"]:active::-webkit-slider-thumb { transform: scale(1.16); box-s
   .skill-target-bar { background: var(--surface-raised); }
   .confirmation-overlay, .character-director-overlay { background: rgba(0, 0, 0, .82); }
 }
+
+.character-appearance { display: grid; gap: 10px; margin: 18px 0; padding: 16px; border: 1px solid var(--line); border-radius: 14px; }
+.character-appearance h3 { margin: 0; font-size: 14px; }
+.character-appearance label { display: grid; gap: 7px; }
+.character-appearance select { width: 100%; }
+.character-appearance button { justify-self: start; }
+.character-appearance .hint { margin: 0; }
+
+/* Voice engine sections include labels and flex panels with explicit display. */
+#irodoriSettings [hidden] { display: none !important; }

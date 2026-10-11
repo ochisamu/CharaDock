@@ -19,6 +19,8 @@ const IRODORI_V41_DURATION_RELEASE = "v4.1-small-webgpu-duration-r1";
 const IRODORI_V41_DURATION_RELEASE_BASE = `https://github.com/ochisamu/irodori-tts-v4-webgpu-models/releases/download/${IRODORI_V41_DURATION_RELEASE}`;
 
 const TTS_MODELS = Object.freeze({
+  "speech-cpp": Object.freeze(require("./speech-cpp-manifest.json")),
+  "speech-cpp-small": Object.freeze(require("./speech-cpp-small-manifest.json")),
   "piper-plus": Object.freeze({
     id: "piper-plus",
     label: "piper-plus · つくよみちゃん FP16",
@@ -257,6 +259,7 @@ function isFile(filePath) {
 }
 
 function requiredPaths(model, directory) {
+  if (model.engine === "speech-cpp") return [path.join(directory,"runtime","speech.exe"), ...model.files.map(file => path.join(directory,file.relativePath))];
   if (model.id === "piper-plus") return [
     path.join(directory, "runtime", "piper-plus-cli.exe"),
     ...model.files.map((file) => path.join(directory, file.relativePath)),
@@ -455,6 +458,7 @@ class EmbeddedTtsModels {
       ? this.directoryFor(model)
       : this.obsoleteInstallations(model)[0];
     if (!directory) return {};
+    if (model.engine === "speech-cpp") return {executablePath: path.join(directory,"runtime","speech.exe"), modelPath: path.join(directory,model.files.find(file => file.name.endsWith(".gguf")).relativePath), modelDirectory: directory};
     if (provider === "piper-plus") return {
       executablePath: this.isInstalled(provider) ? path.join(directory, "runtime", "piper-plus-cli.exe") : path.join(directory, "piper", "bin", "piper.exe"),
       modelPath: path.join(directory, "models", "tsukuyomi-chan-6lang-fp16.onnx"),
@@ -576,7 +580,7 @@ class EmbeddedTtsModels {
     };
     try {
       await fsp.mkdir(temporaryDirectory, { recursive: true });
-      if (model.id === "piper-plus") {
+      if (model.runtime) {
         const archivePath = path.join(temporaryDirectory, model.runtime.archiveName);
         await downloadFile({ ...model.runtime, name: model.runtime.archiveName }, archivePath);
         const extracted = path.join(temporaryDirectory, "runtime");
@@ -588,6 +592,9 @@ class EmbeddedTtsModels {
         await fsp.rm(archivePath, { force: true });
         await fsp.mkdir(path.join(temporaryDirectory, "ready"), { recursive: true });
         await fsp.rename(extracted, path.join(temporaryDirectory, "ready", "runtime"));
+        if (model.engine === "speech-cpp") {
+          await fsp.cp(path.resolve(__dirname,"../../vendor/speech-cpp-licenses"),path.join(temporaryDirectory,"ready","licenses","runtime"),{recursive:true});
+        }
         for (const file of model.files) await installFile(file, path.join(temporaryDirectory, "ready", file.relativePath));
       } else if (model.archive) {
         const archivePath = path.join(temporaryDirectory, model.archive.archiveName);

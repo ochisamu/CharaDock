@@ -503,7 +503,13 @@ class RemoteCompanionServer {
     if (request.method === "GET" && url.pathname === "/remote.css") return this.sendStatic(response, "remote.css", "text/css; charset=utf-8");
     if (request.method === "GET" && url.pathname === "/remote-speech-caption.js") return this.sendStatic(response, "remote-speech-caption.js", "text/javascript; charset=utf-8");
     if (request.method === "GET" && url.pathname === "/remote.js") return this.sendStatic(response, "remote.js", "text/javascript; charset=utf-8");
+    if (request.method === "GET" && url.pathname === "/remote-mesh-avatar.js") return this.sendStatic(response, "remote-mesh-avatar.js", "text/javascript; charset=utf-8");
     if (request.method === "GET" && url.pathname === "/remote-authored-avatar.js") return this.sendStatic(response, "remote-authored-avatar.js", "text/javascript; charset=utf-8");
+    if (request.method === "GET" && ["/mesh-avatar.js", "/mesh-avatar-runtime.js"].includes(url.pathname)) {
+      const file = url.pathname === "/mesh-avatar.js" ? "vendor/mesh-avatar-studio/mesh-avatar.js" : "desktop/mesh-avatar-runtime.js";
+      const body = fs.readFileSync(path.resolve(this.rootDir, "..", "..", file));
+      response.writeHead(200,{...securityHeaders("text/javascript; charset=utf-8"),"Content-Security-Policy":"default-src 'none'"}); response.end(body); return;
+    }
     if (request.method === "GET" && url.pathname === "/drawn-pose-runtime.js") {
       const body = fs.readFileSync(path.resolve(this.rootDir, '..', '..', 'drawn-pose-runtime.js'));
       response.writeHead(200, { ...securityHeaders('text/javascript; charset=utf-8'), 'Content-Security-Policy': "default-src 'none'" });
@@ -516,8 +522,8 @@ class RemoteCompanionServer {
       response.end(body);
       return;
     }
-    if (request.method === "GET" && url.pathname === "/audio-envelope.js") {
-      const body = fs.readFileSync(path.resolve(this.rootDir, "..", "audio-envelope.js"));
+    if (request.method === "GET" && ["/audio-envelope.js", "/pcm-speech-player.js"].includes(url.pathname)) {
+      const body = fs.readFileSync(path.resolve(this.rootDir, "..", url.pathname.slice(1)));
       response.writeHead(200, {
         ...securityHeaders("text/javascript; charset=utf-8"),
         "Content-Security-Policy": "default-src 'none'",
@@ -598,6 +604,13 @@ class RemoteCompanionServer {
       return;
     }
 
+    if (request.method === "GET" && url.pathname.startsWith("/api/mesh/")) {
+      this.authenticate(request);
+      const parts = decodeURIComponent(url.pathname).match(/^\/api\/mesh\/([a-f0-9-]{36})\/(rig\.json|built\/[a-zA-Z0-9_/-]+\.(?:json|png))$/);
+      const asset = parts && !parts[2].includes("..") ? await this.callbacks.getMeshAsset?.(parts[1],parts[2]) : null;
+      if (!asset?.body) throw Object.assign(new Error("Mesh asset not found."),{statusCode:404});
+      response.writeHead(200,{...securityHeaders(asset.contentType),"Content-Security-Policy":"default-src 'none'"}); response.end(asset.body); return;
+    }
     if (request.method === 'GET' && url.pathname.startsWith('/api/authored/')) {
       this.authenticate(request);
       const file = decodeURIComponent(url.pathname.slice('/api/authored/'.length));

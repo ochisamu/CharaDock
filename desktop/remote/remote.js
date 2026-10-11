@@ -10,6 +10,7 @@
   let busy = false;
   let audioEnabled = localStorage.getItem("charadock.remote.audio") !== "0";
   let audioContext = null;
+  let pcmSpeechPlayback = null;
   let activeAudioSource = null;
   let mouthTimer = 0;
   let blinkTimer = 0;
@@ -24,6 +25,10 @@
   const authoredAvatar = window.CharaDockRemoteAuthoredAvatar.create({
     canvas: $('#avatarAuthored'), shell: $('#avatarMotion'), runtime: window.PuruPuruDrawnPoseRuntime,
     onError: () => console.warn('Link authored avatar unavailable; using standard avatar'),
+  });
+  const meshAvatar = window.CharaDockRemoteMeshAvatar.create({
+    canvas: $('#avatarMesh'), shell: $('#avatarMotion'), runtime: window.CharaDockMeshAvatar, engine: window.MeshAvatarStudio,
+    onError: () => console.warn('Link Mesh avatar unavailable; using standard appearance'),
   });
   let petRequestInFlight = false;
   let mobileSpeechToken = 0;
@@ -405,6 +410,7 @@
 
   function showFace(key) {
     authoredAvatar.blink(key.startsWith('eyesClosed'));
+    meshAvatar.blink(key.startsWith('eyesClosed'));
     if (!appState?.character?.assetKeys?.includes(key)) key = "eyesOpenMouthClosed";
     const source = avatarAssets.get(key);
     const face = $("#avatarFace");
@@ -441,6 +447,7 @@
     }
     setAvatarSpeaking(next.speaking);
     authoredAvatar.audio(currentMouth, rawRms);
+    meshAvatar.audio(currentMouth, rawRms);
     return next;
   }
 
@@ -448,6 +455,7 @@
     remoteMouthTracker.reset();
     currentMouth = "closed";
     authoredAvatar.audio('closed', 0);
+    meshAvatar.audio('closed', 0);
     showFace(faceKey(true));
     if (!keepSpeaking) setAvatarSpeaking(false, 0);
   }
@@ -500,8 +508,9 @@
     const shell = $("#avatarReactionShell");
     for (const name of ["happy", "soft", "surprised"]) shell.classList.remove(`is-reacting-${name}`);
     void shell.offsetWidth;
-    if (!authoredAvatar.status().ready) shell.classList.add(`is-reacting-${emotion}`);
+    if (!authoredAvatar.status().ready && !meshAvatar.status().ready) shell.classList.add(`is-reacting-${emotion}`);
     authoredAvatar.expression({ ...payload, emotion, characterId: appState?.character?.id });
+    meshAvatar.expression({ ...payload, emotion, characterId: appState?.character?.id });
     currentEmotion = emotion;
     showFace(faceKey(true));
     reactionTimer = setTimeout(() => {
@@ -516,6 +525,7 @@
     if (!character) return;
     const generation = ++avatarSyncGeneration;
     authoredAvatar.sync(character);
+    meshAvatar.sync(character);
     clearTimeout(reactionTimer);
     currentEmotion = "";
     for (const name of ["happy", "soft", "surprised"]) $("#avatarReactionShell").classList.remove(`is-reacting-${name}`);
@@ -1372,6 +1382,7 @@
     observeStateTransitions(nextState);
     appState = nextState;
     authoredAvatar.sync(appState.character);
+    meshAvatar.sync(appState.character);
     if (!modeInitialized || appState?.voice?.liveConnected) {
       currentMode = appState.interactionMode === "work" && appState.workAllowed ? "work" : "chat";
       modeInitialized = true;
@@ -1427,7 +1438,7 @@
     eventSource?.close();
     eventSource = new EventSource("/api/events");
     eventSource.addEventListener("state", (event) => applyState(JSON.parse(event.data)));
-    eventSource.addEventListener('expression', event => authoredAvatar.expression(JSON.parse(event.data)));
+    eventSource.addEventListener('expression', event => { const input=JSON.parse(event.data); authoredAvatar.expression(input); meshAvatar.expression(input); });
     eventSource.addEventListener("stream", (event) => handleStream(JSON.parse(event.data)));
     eventSource.addEventListener("history", (event) => {
       if (!appState) return;
@@ -1484,6 +1495,7 @@
   function showPairing(message = "") {
     avatarSyncGeneration++;
     authoredAvatar.dispose();
+    meshAvatar.dispose();
     eventSource?.close();
     closeRemoteLivePeer();
     $("#companionView").hidden = true;
@@ -2012,6 +2024,8 @@
   }
 
   function stopMobileSpeech({ resumeDictation = true } = {}) {
+    pcmSpeechPlayback?.stop(); pcmSpeechPlayback = null;
+    request("/api/tts/cancel", { method: "POST", body: JSON.stringify({ streamId: "speech-cpp-pending" }) }).catch(() => {});
     mobileSpeechToken += 1;
     mobileSpeechPending = false;
     mobileStreamSpeechQueue = [];
@@ -2036,17 +2050,34 @@
     const normalized = String(value || "").trim().slice(0, 4000);
     if (!normalized || token !== mobileSpeechToken) return false;
     const result = await request("/api/tts", { method: "POST", body: JSON.stringify({ text: normalized }) });
-    if (token !== mobileSpeechToken) return false;
+    if (token !== mobileSpeechToken) {
+      if (result?.streamId) request("/api/tts/cancel",{ method:"POST",body:JSON.stringify({streamId:result.streamId}) }).catch(() => {});
+      return false;
+    }
+    if (result?.error) throw new Error(result.error);
     let activated = false;
     let played = false;
     const activate = (caption) => {
       if (!activated) {
         activated = true;
-        if (result?.expression) authoredAvatar.expression(result.expression);
+        if (result?.expression) { authoredAvatar.expression(result.expression); meshAvatar.expression(result.expression); }
       }
       onStart?.(caption);
     };
     activeMobileTtsStreamId = result?.streamId || "";
+    if (result?.pcmChunk) {
+      audioContext ||= new AudioContext({ latencyHint: "interactive" });
+      const player = window.CharaDockPcmSpeech.create({ context: audioContext,
+        next: streamId => request("/api/tts/next",{method:"POST",body:JSON.stringify({streamId})}),
+        cancel: () => result.streamId ? request("/api/tts/cancel",{method:"POST",body:JSON.stringify({streamId:result.streamId})}) : undefined,
+        isCurrent: () => token === mobileSpeechToken,
+        onStart: caption => activate(caption || normalized),
+        onLevel: level => updateRemoteMouth(level / 8),
+      });
+      pcmSpeechPlayback = player;
+      try { await player.play(result); return token === mobileSpeechToken; }
+      finally { if (pcmSpeechPlayback === player) pcmSpeechPlayback = null; if (token === mobileSpeechToken) { activeMobileTtsStreamId = ""; resetRemoteMouth(); } }
+    }
     for (const chunk of window.CharaDockRemoteSpeechCaption.audioChunks(result, normalized)) {
       if (token !== mobileSpeechToken) return false;
       await playAudioUrl(chunk.url, result.playbackRate, () => activate(chunk.text), () => token === mobileSpeechToken);
@@ -2445,6 +2476,7 @@
   });
   document.addEventListener("visibilitychange", () => {
     authoredAvatar.visibility();
+    meshAvatar.visibility();
     syncWakeLock();
     if (document.visibilityState !== "visible") stopDictation();
   });
@@ -2463,6 +2495,7 @@
   });
   window.addEventListener("pagehide", () => {
     authoredAvatar.dispose();
+    meshAvatar.dispose();
     clearInterval(approvalCountdownTimer);
     clearInterval(workElapsedTimer);
     if (streamingSpeechContext || streamingSpeechStream) stopStreamingDictation();

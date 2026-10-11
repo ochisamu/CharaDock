@@ -5,6 +5,7 @@ const REMOTE_TTS_PROVIDERS = new Set([
   "piper-plus",
   "supertonic-3",
   "irodori-webgpu",
+  "speech-cpp",
   "kokoro",
   "sbv2-jp-extra",
 ]);

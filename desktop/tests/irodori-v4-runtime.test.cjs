@@ -170,3 +170,45 @@ test("Irodori v4 cleanup preserves pauses in comma prose and multiple sentences"
     assert.equal(preserved.audio.length, 3 * 48_000);
   }
 });
+
+
+test("streaming tail gate agrees with offline cleanup and preserves uncertain tails and partial windows",async()=>{
+  const {StreamingSpeechTailGate,findTrailingUtteranceCutoff}=await import(pathToFileURL(path.join(__dirname,"..","irodori","speech-tail.mjs")).href);
+  const sampleRate=1000;
+  for(const variant of ["resumed","shortPause","trailingSilence","noise","leadingSilence","partial"]){
+    const audio=new Float32Array(variant==="partial"?3017:3000);audio.fill(.5,400,1000);
+    if(variant==="resumed"||variant==="shortPause")audio.fill(.5,1600,2200);
+    if(variant==="shortPause")audio.fill(.5,1280,1600);
+    if(variant==="noise"){audio.fill(.5,1600,1680);audio.fill(.5,1760,1840);}
+    if(variant==="leadingSilence"){audio.fill(0);audio.fill(.5,1600,2200);}
+    const gate=new StreamingSpeechTailGate(sampleRate),frames=[];
+    for(let i=0;i<audio.length;i+=137)frames.push(...gate.push(audio.slice(i,i+137)));
+    frames.push(...gate.finish());
+    const length=frames.reduce((sum,frame)=>sum+frame.length,0),result=new Float32Array(length);let offset=0;for(const frame of frames){result.set(frame,offset);offset+=frame.length;}
+    assert.equal(result.length,findTrailingUtteranceCutoff(audio,sampleRate),variant);
+    if(variant!=="resumed")assert.deepEqual(result,audio,variant);
+  }
+});
+
+test("native endpoint cleanup distinguishes terminal chirps from real short syllables and natural clause pauses",async()=>{
+  const {StreamingSpeechTailGate}=await import(pathToFileURL(path.join(__dirname,"..","irodori","speech-tail.mjs")).href);
+  const rate=1000;
+  for(const variant of ["terminalBurst","partialBurst","quietTail","shortGap","realResume","clauseResume","noGap","shortAudio"]){
+    const length={terminalBurst:1520,partialBurst:1497,quietTail:1520,shortGap:1240,realResume:1800,clauseResume:1800,noGap:1520,shortAudio:17}[variant];
+    const audio=new Float32Array(length);audio.fill(.5,0,Math.min(1000,length));
+    if(variant==="terminalBurst"||variant==="partialBurst")audio.fill(.8,1440);
+    if(variant==="shortGap")audio.fill(.8,1160);
+    if(variant==="realResume"||variant==="clauseResume")audio.fill(.5,1600);
+    if(variant==="noGap")audio.fill(.5);
+    const gate=new StreamingSpeechTailGate(rate,{cleanEndpoint:true,removeResumedSpeech:variant!=="clauseResume"}),frames=[];
+    for(let i=0;i<audio.length;i+=137)frames.push(...gate.push(audio.subarray(i,i+137)));
+    frames.push(...gate.finish());
+    const result=Float32Array.from(frames.flatMap(frame=>[...frame]));
+    const cut=["terminalBurst","partialBurst","quietTail","realResume"].includes(variant);
+    assert.equal(result.length,cut?1080:length,variant);
+    assert.equal(result.at(-1),0,variant);
+    // No word-sized attenuation: only a five ms click fade when speech reaches EOF.
+    const unchanged=cut?1000:Math.max(0,length-5);
+    assert.deepEqual(result.subarray(0,unchanged),audio.subarray(0,unchanged),variant);
+  }
+});
