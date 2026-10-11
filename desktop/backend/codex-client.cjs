@@ -712,6 +712,7 @@ class CodexAppServerClient {
       if (Array.isArray(result?.data)) models.push(...result.data);
       cursor = result?.nextCursor || null;
     } while (cursor && models.length < 500);
+    this.modelCatalog = models;
     return models;
   }
 

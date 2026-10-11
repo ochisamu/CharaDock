@@ -441,6 +441,30 @@ test("Codex client sends per-turn model and reasoning effort overrides", async (
   await pending;
 });
 
+test("social effort override preserves the thread and the next turn's configured effort", async () => {
+  const client = new CodexAppServerClient({ model: "gpt-6-luna", reasoningEffort: "high" });
+  client.ensureStarted = async () => {};
+  let starts = 0;
+  const turns = [];
+  client.request = async (method, params) => {
+    if (method === "thread/start") { starts++; return { thread: { id: "shared-thread" } }; }
+    if (method === "turn/start") {
+      turns.push(params);
+      const id = `turn-${turns.length}`;
+      setImmediate(() => client.handleLine(JSON.stringify({ method: "item/agentMessage/delta", params: { turnId: id, delta: "ok" } })));
+      setImmediate(() => client.handleLine(JSON.stringify({ method: "turn/completed", params: { turn: { id, status: "completed" } } })));
+      return { turn: { id } };
+    }
+    return {};
+  };
+  await client.sendMessage("こんにちは", { reasoningEffort: "none" });
+  await client.sendMessage("設計を比較して");
+  assert.equal(starts, 1);
+  assert.deepEqual(turns.map(turn => turn.effort), ["none", "high"]);
+  assert.deepEqual(turns.map(turn => turn.threadId), ["shared-thread", "shared-thread"]);
+  assert.equal(client.reasoningEffort, "high");
+});
+
 test("Codex client replays a turn that completes before turn/start returns without leaving ghost ownership", async () => {
   const client = new CodexAppServerClient();
   client.ensureStarted = async () => {};

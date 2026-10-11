@@ -1620,3 +1620,4 @@ input[type="range"]:active::-webkit-slider-thumb { transform: scale(1.16); box-s
 
 /* Voice engine sections include labels and flex panels with explicit display. */
 #irodoriSettings [hidden] { display: none !important; }
+#clearCharacterMemoriesButton { flex-shrink: 0; white-space: nowrap; }

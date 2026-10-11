@@ -10,6 +10,8 @@ function normalizeStartupOffers(value) {
 
 function selectStartupTopic({ characterId, scopeKey, summary, memories, offers, now = Date.now() }) {
   const seen = normalizeStartupOffers(offers);
+  const lastGreeting = Date.parse(seen[`${characterId}:greeting`] || '');
+  if (Number.isFinite(lastGreeting) && now - lastGreeting < 6 * 60 * 60 * 1000) return null;
   const allowed = key => !seen[key] || now - Date.parse(seen[key]) >= COOLDOWN_MS;
   const candidates = activeCharacterMemories(memories, characterId, now)
     .filter(entry => ['recent', 'preference', 'goal'].includes(entry.category))
@@ -24,6 +26,7 @@ function selectStartupTopic({ characterId, scopeKey, summary, memories, offers, 
 }
 
 function markStartupOffered(offers, topic, now = Date.now()) {
-  return normalizeStartupOffers({ ...normalizeStartupOffers(offers), [topic.key]: new Date(now).toISOString() });
+  const at = new Date(now).toISOString();
+  return normalizeStartupOffers({ ...normalizeStartupOffers(offers), [topic.key]: at, [`${topic.key.split(':')[0]}:greeting`]: at });
 }
 module.exports = { selectStartupTopic, markStartupOffered, normalizeStartupOffers, COOLDOWN_MS };

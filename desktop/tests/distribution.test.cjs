@@ -669,7 +669,7 @@ test("remote access exposes compact avatar dialogue, device controls, and Live r
   assert.match(main, /remoteRealtimeOwnerHash !== remoteTokenHash/);
   assert.match(main, /requestedTakeover[\s\S]*remote-live-takeover-requested/);
   assert.match(main, /realtime:\s*true,\s*delegated:\s*appended\?\.delegated === true/);
-  assert.match(main, /Realtime V3 appendText is context-only[\s\S]*client\.sendMessage\(normalized, \{ skillItems, requireMcpReady \}\)/);
+  assert.match(main, /Realtime V3 appendText is context-only[\s\S]*client\.sendMessage\(normalized, \{ skillItems, requireMcpReady,[\s\S]*?reasoningEffort: socialTurnEffort/);
   assert.match(main, /prompt: undefined,[\s\S]*clientManagedHandoffs:\s*false/);
   assert.match(main, /Chat is conversational and read-only except for the explicitly listed built-in playback controls/);
   assert.match(main, /const answer = cleanAssistantText\(result\?\.text \|\| ""\)\.trim\(\)/);
@@ -788,8 +788,8 @@ test("Character memory and continuation are grouped, scoped, editable, private, 
   assert.match(main, /name: "history_search"/);
   assert.match(main, /startupContinuationAttempts\.has\(attemptKey\)/);
   assert.match(main, /STARTUP_CONTINUATION_TIMEOUT_MS = 25_000/);
-  assert.match(main, /reasoningEffort: "low"/);
-  assert.match(main, /startupContinuationMessages\.set\([\s\S]{0,180}rememberAssistantAnnouncement\(message\)/);
+  assert.match(main, /reasoningEffort: fastReasoningEffort\(conversationCodexSettings\(\).model\) \|\| "low"/);
+  assert.match(main, /startupContinuationMessages\.set\([\s\S]{0,500}rememberAssistantAnnouncement\(message\)/);
   assert.doesNotMatch(main.match(/function remoteStartupGreeting\([\s\S]*?\n}/)?.[0] || "", /continuationFallbackMessage/);
   assert.match(main, /project\.id === HOME_PROJECT_ID && preferences\.data\.interactionMode === "work"[\s\S]*HOME_SCOPE_KEY/);
   assert.match(main, /if \(scopeKey === COMMON_SCOPE_KEY\)[\s\S]{0,500}continuationRecordedAt/);

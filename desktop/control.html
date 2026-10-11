@@ -390,13 +390,13 @@
               <div><h3 id="characterKnowledgeTitle">このキャラが覚えていること</h3><p>会話を自分向けにする情報と、いま取り組んでいる続きです。保存範囲を分けたまま、ここでまとめて確認できます。</p></div>
             </header>
             <section class="character-memory knowledge-pane" aria-labelledby="characterMemoryTitle">
-              <header><div><p class="knowledge-eyebrow">あなたについて</p><h4 id="characterMemoryTitle">会話を自分向けにする記憶</h4><p>呼び名・好み・普段のやり方など、今後も役立つ内容を自然な会話から覚えます。このキャラだけが使います。</p></div><button id="clearCharacterMemoriesButton" class="button button-quiet" type="button" hidden>すべて忘れる</button></header>
+              <header><div><p class="knowledge-eyebrow">あなたについて</p><h4 id="characterMemoryTitle">会話を自分向けにする記憶</h4><p>呼び名や好みに加え、最近の話題を14日間覚えます。ChatとWorkで共有し、起動時の声かけにも使います。このキャラだけが使います。</p></div><button id="clearCharacterMemoriesButton" class="button button-quiet" type="button" hidden>すべて忘れる</button></header>
               <div id="characterMemoryList" class="character-memory-list"></div>
             </section>
             <section id="characterContinuation" class="character-continuation knowledge-pane" aria-labelledby="characterContinuationTitle">
               <header>
                 <div><p class="knowledge-eyebrow">作業の続き</p><h4 id="characterContinuationTitle">現在の目的と次の一手</h4><p>キャラ共通・キャラクターホーム・追加プロジェクトを混ぜずに引き継ぎます。</p></div>
-                <label class="switch-row continuation-master-switch"><span><strong>起動時に声をかける</strong><small>続きがある場合だけ、一度だけ話します</small></span><input id="continuationModeToggle" type="checkbox" /><i></i></label>
+                <label class="switch-row continuation-master-switch"><span><strong>起動時に声をかける</strong><small>最近の話題や作業の続きから、一度だけ話します</small></span><input id="continuationModeToggle" type="checkbox" /><i></i></label>
               </header>
               <div class="continuation-scope-row">
                 <span><small>現在の範囲</small><strong id="continuationScopeLabel">このキャラ共通</strong><small id="continuationUpdatedAt" class="continuation-updated-at"></small></span>
@@ -633,6 +633,7 @@
           <label class="switch-row"><span><strong data-jev-ja="判断アシストを有効にする（任意）" data-jev-en="Enable decision assist (optional)">判断アシストを有効にする（任意）</strong></span><input id="jevEnabledToggle" type="checkbox" /><i></i></label>
           <p data-jev-ja="有効な場合のみ、認識した指示・応答の必要最小限のテキストを選択したサービスへ送信します。" data-jev-en="Only when enabled, the minimum necessary recognized instruction and response text is sent to the selected service.">有効な場合のみ、認識した指示・応答の必要最小限のテキストを選択したサービスへ送信します。</p>
           <label class="switch-row"><span><strong data-jev-ja="メディア操作" data-jev-en="Media control">メディア操作</strong></span><input id="jevMediaEnabledToggle" type="checkbox" checked disabled /><i></i></label>
+          <label class="switch-row"><span><strong data-jev-ja="待ち時間のひとこと" data-jev-en="Brief waiting replies">待ち時間のひとこと</strong><small data-jev-ja="通常TTSのChatで、必要なときだけキャラに合うひとことを選びます。挨拶やLiveには追加しません。" data-jev-en="Selects a fitting short phrase during longer Chat waits with normal TTS. Skips greetings and Live.">通常TTSのChatで、必要なときだけキャラに合うひとことを選びます。挨拶やLiveには追加しません。</small></span><input id="thinkingFillerEnabledToggle" type="checkbox" checked disabled /><i></i></label>
           <label class="switch-row"><span><strong data-jev-ja="表情の選択" data-jev-en="Expression selection">表情の選択</strong></span><input id="jevExpressionEnabledToggle" type="checkbox" checked disabled /><i></i></label>
           <label class="switch-row"><span><strong data-jev-ja="ニケちゃん・表現拡張（試作）" data-jev-en="Nike expressive performance (prototype)">ニケちゃん・表現拡張（試作）</strong><small data-jev-ja="標準AIニケちゃん専用。会話に合わせた身振りを追加します。" data-jev-en="Built-in AI Nike only. Adds conversational body gestures.">標準AIニケちゃん専用。会話に合わせた身振りを追加します。</small></span><input id="jevNikePerformanceEnabledToggle" type="checkbox" disabled /><i></i></label>
           <label class="switch-row"><span><strong data-jev-ja="コハク・作画アニメーション（v9）" data-jev-en="Kohaku authored animation (v9)">コハク・作画アニメーション（v9）</strong><small data-jev-ja="PC表示専用。首かしげ・傾聴・喜び・横目・あくびと独立した髪の動き。口パク・瞬きに対応。" data-jev-en="PC Kohaku: authored tilt, listening, delight, side-eye and yawn, with independent hair, speech and blinking.">PC表示専用。首かしげ・傾聴・喜び・横目・あくびと独立した髪の動き。口パク・瞬きに対応。</small></span><input id="jevKohakuPerformanceEnabledToggle" type="checkbox" disabled /><i></i></label>

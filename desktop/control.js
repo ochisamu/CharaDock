@@ -2181,6 +2181,7 @@
       relationship: "関係性",
       goal: "目標",
       background: "背景",
+      recent: localized("最近の話題（14日間）", "Recent topic (14 days)"),
       other: "その他",
     };
     list.replaceChildren();
@@ -3985,6 +3986,8 @@
     $("#jevEnabledToggle").disabled = jevBusy;
     $("#jevMediaEnabledToggle").checked = state?.jevMediaEnabled !== false;
     $("#jevExpressionEnabledToggle").checked = state?.jevExpressionEnabled !== false;
+    $("#thinkingFillerEnabledToggle").checked = state?.thinkingFillerEnabled !== false;
+    $("#thinkingFillerEnabledToggle").disabled = jevBusy || !enabled;
     $("#jevNikePerformanceEnabledToggle").checked = state?.jevNikePerformanceEnabled === true;
     $("#jevKohakuPerformanceEnabledToggle").checked = state?.jevKohakuPerformanceEnabled === true;
     $("#jevKohakuPerformanceEnabledToggle").disabled = jevBusy || !enabled || state?.jevExpressionEnabled === false;
@@ -4020,6 +4023,7 @@
       enabled: $("#jevEnabledToggle").checked,
       mediaEnabled: $("#jevMediaEnabledToggle").checked,
       expressionEnabled: $("#jevExpressionEnabledToggle").checked,
+      fillerEnabled: $("#thinkingFillerEnabledToggle").checked,
       nikePerformanceEnabled: $("#jevNikePerformanceEnabledToggle").checked,
       kohakuPerformanceEnabled: $("#jevKohakuPerformanceEnabledToggle").checked,
       addressMode: $("#jevAddressModeSelect").value,
@@ -6089,7 +6093,7 @@
         state = await api.setContinuationStartupSpeech(requested);
         syncUi();
         setStatus($("#continuationStatus"), requested
-          ? localized("起動時の声かけを有効にしました。続きがある場合だけ一度話します。", "Startup greeting is on. It speaks once only when there is something to resume.")
+          ? localized("起動時の声かけを有効にしました。最近の話題や作業の続きから一度話します。", "Startup greeting is on. It may mention a recent topic or something to resume.")
           : localized("起動時の声かけを停止しました。記憶と作業の続きはそのまま保持します。", "Startup greeting is off. Memories and work continuation remain available."));
       } catch (error) {
         toggles.forEach((toggle) => { toggle.checked = state?.continuation?.startupSpeechEnabled !== false; toggle.disabled = false; });
@@ -6671,7 +6675,7 @@
         setStatus($("#jevStatus"), localized("標準AIニケちゃんを選び、表現拡張とAPIキーを確認してください。", "Select built-in AI Nike and check performance settings and the API key."), true);
       }
     });
-    for (const selector of ["#decisionProviderSelect", "#jevEnabledToggle", "#jevMediaEnabledToggle", "#jevExpressionEnabledToggle", "#jevNikePerformanceEnabledToggle", "#jevKohakuPerformanceEnabledToggle", "#jevAddressModeSelect"]) {
+    for (const selector of ["#decisionProviderSelect", "#jevEnabledToggle", "#jevMediaEnabledToggle", "#jevExpressionEnabledToggle", "#thinkingFillerEnabledToggle", "#jevNikePerformanceEnabledToggle", "#jevKohakuPerformanceEnabledToggle", "#jevAddressModeSelect"]) {
       $(selector).addEventListener("change", () => saveJevConfig());
     }
     $("#jevApiKeyInput").addEventListener("input", () => {

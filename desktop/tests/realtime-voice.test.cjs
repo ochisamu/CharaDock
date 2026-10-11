@@ -76,7 +76,7 @@ test("Realtime sessions start only from voice input, accept typed turns, and kee
   assert.match(main, /phase: "follow-up"[\s\S]*statusText[\s\S]*workRunId/);
   assert.match(control, /liveWorkFollowUp[\s\S]*appendCodexRealtimeText\(message, selectedSkillIds, selectedMcpServerIds\)[\s\S]*if \(chatBusy\)/);
   assert.match(mascot, /liveWorkFollowUp[\s\S]*mascotInline:realtimeAppendText[\s\S]*if \(sending\)/);
-  assert.match(main, /Realtime V3 appendText is context-only[\s\S]*client\.sendMessage\(normalized, \{ skillItems, requireMcpReady \}\)/);
+  assert.match(main, /Realtime V3 appendText is context-only[\s\S]*client\.sendMessage\(normalized, \{ skillItems, requireMcpReady,[\s\S]*?reasoningEffort: socialTurnEffort/);
   assert.match(main, /const requireMcpReady = requestedMcpServerIds\.length > 0 \|\| messageExplicitlyRequestsMcp\(normalized\);[\s\S]*await client\.ensureMcpServersReady\(\)/);
   assert.match(main, /activeRealtimeTurnBuffer\?\.addTyped\(normalized, \{ followUp: activeTurn \}\)/);
   assert.match(main, /rememberActiveInteractionFollowUp\(client, normalized\)/);

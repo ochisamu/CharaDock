@@ -39,6 +39,7 @@ const DEFAULTS = Object.freeze({
   decisionProvider: "jev",
   characterAvatarSelections: {},
   jevEnabled: false,
+  thinkingFillerEnabled: true,
   jevMediaEnabled: true,
   jevExpressionEnabled: true,
   jevNikePerformanceEnabled: false,
@@ -401,7 +402,7 @@ class Preferences {
       this.data.codexAuthMode = ["chatgpt", "codex"].includes(parsed.codexAuthMode) ? parsed.codexAuthMode
         : parsed.backend === "openai" ? "chatgpt" : "codex";
       // Migrate the former single Codex model setting without discarding it.
-      for (const key of ["jevEnabled", "jevMediaEnabled", "jevExpressionEnabled", "jevNikePerformanceEnabled", "jevKohakuPerformanceEnabled"]) {
+      for (const key of ["jevEnabled", "jevMediaEnabled", "jevExpressionEnabled", "jevNikePerformanceEnabled", "jevKohakuPerformanceEnabled", "thinkingFillerEnabled"]) {
         if (typeof this.data[key] !== "boolean") this.data[key] = DEFAULTS[key];
       }
       if (typeof parsed.codexModel === "string") {
@@ -731,7 +732,7 @@ class Preferences {
         if (key === "speechInputProvider" && !["realtime", "streaming-local", "sherpa-onnx", "browser"].includes(values[key])) continue;
         if (key === "decisionProvider" && !["jev", "decisions"].includes(values[key])) continue;
         if (key === "jevAddressMode" && !["off", "standard", "strict", "living"].includes(values[key])) continue;
-        if (["jevEnabled", "jevMediaEnabled", "jevExpressionEnabled", "jevNikePerformanceEnabled", "jevKohakuPerformanceEnabled"].includes(key) && typeof values[key] !== "boolean") continue;
+        if (["jevEnabled", "jevMediaEnabled", "jevExpressionEnabled", "jevNikePerformanceEnabled", "jevKohakuPerformanceEnabled", "thinkingFillerEnabled"].includes(key) && typeof values[key] !== "boolean") continue;
         if (key === "speechCppModelVariant") { this.data[key] = speechCppVariant(values[key]); continue; }
         if (["speechCppMfSteps", "speechCppSmallSteps"].includes(key)) { this.data[key] = speechCppSteps(values[key], key === "speechCppMfSteps" ? 6 : 16); continue; }
         this.data[key] = key === "deviceProfiles" ? normalizeDeviceProfiles(values[key]) : values[key];

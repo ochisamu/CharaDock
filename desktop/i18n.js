@@ -254,6 +254,8 @@
     "現在の目的と次の一手": "Current goal and next step",
     "キャラ共通・キャラクターホーム・追加プロジェクトを混ぜずに引き継ぎます。": "Keeps shared character context, Character Home, and attached projects separate.",
     "起動時に声をかける": "Greet at startup",
+    "最近の話題や作業の続きから、一度だけ話します": "Speaks once about a recent topic or something to resume",
+    "呼び名や好みに加え、最近の話題を14日間覚えます。ChatとWorkで共有し、起動時の声かけにも使います。このキャラだけが使います。": "Remembers names and preferences, plus recent topics for 14 days. Shared across Chat and Work and used for startup greetings, only by this character.",
     "続きがある場合だけ、一度だけ話します": "Speaks once only when there is something to resume",
     "キャラクター継続モード": "Character Continuation",
     "前回の目的と次の一手だけを、このキャラと現在のプロジェクトの組み合わせで引き継ぎます。利用者メモリとは別に管理します。": "Carries over only the previous goal and next step for this character and current project. It is managed separately from user memory.",
