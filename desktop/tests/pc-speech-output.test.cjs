@@ -4,7 +4,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const vm = require("node:vm");
 const main = fs.readFileSync(require.resolve("../main.cjs"), "utf8");
-const source = main.slice(main.indexOf("async function synthesizeConfiguredTtsForRenderer("), main.indexOf("function thinkingFillerText("));
+const source = main.slice(main.indexOf("async function synthesizeConfiguredTtsForRenderer("), main.indexOf("function rememberConversationTurn("));
 
 for (const enabled of [true, false]) {
   test(`PC TTS stays on the requesting renderer with peripheral speaker ${enabled}`, async () => {

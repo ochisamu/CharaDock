@@ -12,12 +12,15 @@ const report = { stage: 'starting', realProfile: true, checks: {} };
 const write = () => fs.writeFileSync(path.join(output, 'verification.json'), JSON.stringify(report, null, 2));
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function wait(check, timeout = 90000) { const until = Date.now() + timeout; while (Date.now() < until) { if (await check()) return; await sleep(100); } throw Error('Verification wait timed out'); }
-const levels = [], streams = [], turns = [], errors = [];
+const levels = [], streams = [], turns = [], errors = [], synthesized = [];
+let delayNextTurnStartMs = 0;
 let speechStartAt = 0;
 const handle = ipcMain.handle.bind(ipcMain);
 ipcMain.handle = (channel, callback) => handle(channel, async (event, ...args) => {
   if (['mascot:voice', 'mascotInline:voice'].includes(channel)) levels.push({ level: Number(args[0]), at: Date.now() });
-  return callback(event, ...args);
+  const result = await callback(event, ...args);
+  if (['tts:synthesize', 'mascotInline:synthesizeTts'].includes(channel)) synthesized.push({ text: String(args[0]), at: Date.now(), ok: Boolean(result) });
+  return result;
 });
 app.on('web-contents-created', (_event, contents) => {
   contents.on('console-message', (_event, detail) => { if (/Uncaught|ReferenceError|TypeError|Unable to load preload/.test(detail?.message || '')) errors.push('renderer-error'); });
@@ -32,6 +35,10 @@ const { CodexAppServerClient } = require(path.join(source, 'desktop/backend/code
 const request = CodexAppServerClient.prototype.request;
 CodexAppServerClient.prototype.request = function(method, params, ...args) {
   if (method === 'turn/start') turns.push({ effort: params.effort, threadId: params.threadId, at: Date.now() });
+  if (method === 'turn/start' && delayNextTurnStartMs) {
+    const delay = delayNextTurnStartMs; delayNextTurnStartMs = 0;
+    return sleep(delay).then(() => request.call(this, method, params, ...args));
+  }
   return request.call(this, method, params, ...args);
 };
 // Suppress only the scheduled greeting so the test can invoke that same
@@ -52,6 +59,8 @@ module.exports.verification = {
   resetClient: () => resetConversationClient(),
   busy: () => Boolean(activeCodexInteractionClient() || activeWorkRunId || currentRealtimeClient()),
   get decisions() { return jevClient; },
+  get character() { return activeCharacter(); },
+  resetFillerCooldown: () => { lastThinkingFillerAt = 0; },
 };`, filename);
 const qa = entry.exports.verification;
 let before, history, mobile, remoteIds;
@@ -106,15 +115,21 @@ const keys = ['interactionMode', 'characterMemories', 'conversationHistories', '
   await js(`document.querySelector('#characterMemoryTitle').scrollIntoView({block:'center'})`); await sleep(500);
   fs.writeFileSync(path.join(output, 'recent-memory.png'), (await control.capturePage()).toPNG());
   report.stage = 'filler'; write();
-  const { decideFiller, safeFillerCandidates } = require(path.join(source, 'desktop/lib/turn-policy.cjs'));
-  const decision = await decideFiller(qa.decisions, '旅行計画について、鉄道と車と飛行機それぞれの長所と短所をじっくり比較してほしい。', { candidates: safeFillerCandidates(['少し考えるね。', 'ちょっと待ってね。']) });
+  const { decideFiller } = require(path.join(source, 'desktop/lib/turn-policy.cjs'));
+  const decision = await decideFiller(qa.decisions, '旅行計画について、鉄道と車と飛行機それぞれの長所と短所をじっくり比較してほしい。', { character: qa.character });
   assert.equal(typeof decision.text, 'string');
+  // Controlled slow backend start tests the waiting branch without replacing
+  // either the real decision provider or the real answer/TTS providers.
+  qa.resetFillerCooldown(); delayNextTurnStartMs = 3500;
   const fillerAt = Date.now();
-  await send('一人で始める趣味として将棋と囲碁とチェスを、学びやすさ、費用、続けやすさから比較して。返事は120文字以内でおすすめを教えて。');
+  await send('新しい趣味を始めたいけれど、好きなものが多くて決められない。何を軸に選ぶと続けやすいか、一緒に考えてもらえる？返事は120文字以内で。');
   await settleAudio();
   const fillers = streams.filter(item => item.at >= fillerAt && item.kind === 'filler');
-  assert.ok(fillers.length <= 1);
-  report.checks.filler = { passed: true, actualDecision: Boolean(decision.text), emitted: fillers.length, noDuplicates: true }; write();
+  assert.equal(fillers.length, 1, 'Slow reflective turn should receive one model-selected filler');
+  assert.ok(synthesized.some(item => item.at >= fillerAt && item.ok && item.text.includes(fillers[0].text)), 'Selected filler reaches real TTS');
+  report.checks.filler = { passed: true, actualDecision: Boolean(decision.text), emitted: fillers.length,
+    text: fillers[0].text, emissionMs: fillers[0].at - fillerAt, synthesized: true,
+    simulatedBackendStartDelayMs: 3500, noDuplicates: true }; write();
   report.stage = 'cancel'; write();
   const cancelAt = Date.now(); const pending = send('将棋の歴史について長い解説を考えて。').catch(() => null);
   await wait(() => qa.busy()); await js('window.mascotDesktop.interruptChat()'); await pending; await sleep(3000);

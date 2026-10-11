@@ -216,7 +216,7 @@ const { discoverWorkArtifacts, fileChangeCandidates, isArtifactInsideWorkspace }
 const { boundedConversationHistory, scopedWorkHistory, searchContinuityEntries, sharedContinuityContext, unfinishedWorkContext } = require("./lib/conversation-context.cjs");
 const { clearCharacterMemories, removeCharacterMemory, saveCharacterMemory, updateCharacterMemory, activeCharacterMemories } = require("./lib/character-memory.cjs");
 const { selectStartupTopic, markStartupOffered } = require("./lib/startup-topic.cjs");
-const { isFastSocialTurn, decideFiller, safeFillerCandidates, fastReasoningEffort, PendingFiller } = require("./lib/turn-policy.cjs");
+const { isFastSocialTurn, decideFiller, fastReasoningEffort, PendingFiller } = require("./lib/turn-policy.cjs");
 const {
   COMMON_SCOPE_KEY,
   HOME_SCOPE_KEY,
@@ -611,7 +611,7 @@ let pendingBrowserUse = null;
 let pendingComputerUse = null;
 let conversationHistory = [];
 const appSessionStartedAt = Date.now();
-const lastThinkingFillerIndex = new Map();
+const recentThinkingFillers = new Map();
 let lastThinkingFillerAt = 0;
 const turnCoordinator = new TurnCoordinator();
 let activeBrowserSession = null;
@@ -8635,20 +8635,6 @@ async function synthesizeConfiguredTtsForRenderer(text, ownerId = 0) {
   }
 }
 
-function thinkingFillerText() {
-  const fillers = activeCharacter().thinkingFillers;
-  const choices = Array.isArray(fillers) && fillers.length
-    ? fillers
-    : interfaceLanguage() === "en"
-      ? ["Let me think for a moment.", "I'm checking that now.", "Give me just a little longer."]
-      : ["少し考えるね。", "確認しているよ。", "もう少しだけ待ってね。"];
-  const characterId = activeCharacter().id;
-  let index = Math.floor(Math.random() * choices.length);
-  if (choices.length > 1 && index === lastThinkingFillerIndex.get(characterId)) index = (index + 1) % choices.length;
-  lastThinkingFillerIndex.set(characterId, index);
-  return String(choices[index] || mainText("少し考えるね。", "Let me think for a moment."));
-}
-
 function rememberConversationTurn(userText, assistantText) {
   jevAddressGate.remember(assistantText, { userText });
   conversationHistory = boundedConversationHistory(conversationHistory, userText, assistantText);
@@ -10153,7 +10139,7 @@ async function removeGeneratedCharacter(characterId) {
   characterMotionCache.delete(plan.directory);
   characterTouchHeadRatioCache.delete(plan.directory);
   lastPetPhraseIndex.delete(characterId);
-  lastThinkingFillerIndex.delete(characterId);
+  recentThinkingFillers.delete(characterId);
   return broadcastAppState();
 }
 
@@ -13587,19 +13573,22 @@ async function sendChatMessage(message, {
     workVoiceReporter.scheduleFallback(workAcknowledgement, realtimeOutput ? 600 : 6000);
   }
   let thinkingFiller = null;
-  if (!workMode && !fastSocialTurn && !realtimeOutput && preferences.data.thinkingFillerEnabled === true
+  if (!workMode && !realtimeOutput && preferences.data.thinkingFillerEnabled === true
     && (streamTtsEnabled || remoteTtsEnabled) && jevEnabled("thinkingFillerEnabled") && Date.now() - lastThinkingFillerAt > 30_000) {
-    const characterId = activeCharacter().id;
+    const character = activeCharacter();
+    const characterId = character.id;
+    const language = interfaceLanguage();
     const turnId = turnCoordinator.snapshot().id;
-    const candidates = safeFillerCandidates(activeCharacter().thinkingFillers)
-      .filter(text => text !== lastThinkingFillerIndex.get(characterId));
-    const decision = decideFiller(jevClient, requestText, { previousReply, candidates }).catch(() => ({ text: "" }));
+    const decision = decideFiller(jevClient, requestText, { previousReply, character, language,
+      recentFillers: recentThinkingFillers.get(characterId) || [],
+    }).catch(() => ({ text: "" }));
     thinkingFiller = new PendingFiller({ decision,
       isCurrent: () => turnCoordinator.snapshot().id === turnId && activeCharacter().id === characterId
-        && preferences.data.thinkingFillerEnabled === true && jevEnabled("thinkingFillerEnabled") && !currentRealtimeClient(),
+        && interfaceLanguage() === language && preferences.data.thinkingFillerEnabled === true
+        && jevEnabled("thinkingFillerEnabled") && !currentRealtimeClient(),
       emit: (text) => {
         lastThinkingFillerAt = Date.now();
-        lastThinkingFillerIndex.set(characterId, text);
+        recentThinkingFillers.set(characterId, [text, ...(recentThinkingFillers.get(characterId) || [])].slice(0, 3));
         sendStream({ phase: "announcement", kind: "filler", mode: "chat", text, displayText: text,
           speechSegments: expressiveWorkAnnouncementSegment(text), remoteTtsEnabled });
       },

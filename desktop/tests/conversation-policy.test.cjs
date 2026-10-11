@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { isFastSocialTurn, fastReasoningEffort, decideFiller, safeFillerCandidates, PendingFiller } = require('../lib/turn-policy.cjs');
+const { isFastSocialTurn, fastReasoningEffort, decideFiller, fillerCandidates, PendingFiller } = require('../lib/turn-policy.cjs');
 const { saveCharacterMemory, activeCharacterMemories, removeCharacterMemory, normalizeCharacterMemories } = require('../lib/character-memory.cjs');
 const { selectStartupTopic, markStartupOffered, COOLDOWN_MS } = require('../lib/startup-topic.cjs');
 
@@ -20,9 +20,10 @@ test('only standalone social turns reduce reasoning; confirmations and tool requ
   assert.equal(fastReasoningEffort('custom', ['medium']), undefined);
 });
 
-test('filler uses only supplied neutral phrases and high-confidence decisions', async () => {
-  const candidates = safeFillerCandidates(['少し考えるね。', '少し考えるね。', 'もう少しだけ待ってね。', '確認しているよ。', 'Almost there.', 'Give me a moment.']);
-  assert.deepEqual(candidates, ['少し考えるね。', 'Give me a moment.']);
+test('filler uses only supplied phrases and high-confidence need decisions', async () => {
+  const candidates = fillerCandidates({ thinkingFillers: ['少し考えるね。', '少し考えるね。'] });
+  assert.ok(candidates.length > 10);
+  assert.equal(candidates.filter(text => text === '少し考えるね。').length, 1);
   let probability = .9, selected = 'phrase_0';
   const client = { ask: async (_state, questions, timeout) => {
     assert.equal(timeout, 900); assert.equal(questions.needed.type, 'noul');
