@@ -29,7 +29,8 @@ test('filler uses only supplied neutral phrases and high-confidence decisions', 
     return { needed: { type: 'noul', noul: probability }, filler: { type: 'choice', choice: selected, probabilities: { [selected]: .5 } } };
   } };
   assert.equal((await decideFiller(client, '相談', { candidates })).text, candidates[0]);
-  probability = .5; assert.equal((await decideFiller(client, '相談', { candidates })).text, '');
+  probability = .7; assert.equal((await decideFiller(client, '相談', { candidates })).text, candidates[0]);
+  probability = .69; assert.equal((await decideFiller(client, '相談', { candidates })).text, '');
   selected = 'invented'; probability = 1; assert.equal((await decideFiller(client, '相談', { candidates })).text, '');
 });
 
@@ -38,7 +39,7 @@ test('filler loses races to answers, cancellation, changed turns and rejected de
     let callback, resolve, reject, current = true; const spoken = [];
     const decision = new Promise((yes, no) => { resolve = yes; reject = no; });
     const filler = new PendingFiller({ decision, emit: text => spoken.push(text), isCurrent: () => current,
-      setTimer: cb => { callback = cb; }, clearTimer: () => {} });
+      setTimer: (cb, delay) => { assert.equal(delay, 2000); callback = cb; }, clearTimer: () => {} });
     const running = callback();
     if (event === 'answer' || event === 'cancel') filler.stop();
     if (event === 'changed') current = false;

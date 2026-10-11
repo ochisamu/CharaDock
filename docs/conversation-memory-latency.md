@@ -14,7 +14,7 @@ Before display, the runtime checks current character, scope, history, active int
 
 ## Waiting utterances
 
-Decision assist and its “Brief waiting replies” setting must both be enabled. The selected decision provider judges whether a waiting reply is useful and separately chooses a neutral phrase from the character's filtered candidates. Speech requires at least 0.8 confidence in the need for a filler; a failed or invalid choice yields silence. The answer starts independently. The pending filler waits 2.6 seconds; first answer text, completion, failure or cancellation closes it. Decisions are bounded to 900 ms, failures yield silence, and spoken fillers have a 30-second cooldown. The same phrase is not selected consecutively.
+Decision assist and its “Brief waiting replies” setting must both be enabled. The selected decision provider judges whether a waiting reply is useful and separately chooses a neutral phrase from the character's filtered candidates. Speech requires at least 0.7 confidence in the need for a filler; a failed or invalid choice yields silence. The answer starts independently. The pending filler waits 2 seconds; first answer text, completion, failure or cancellation closes it. Decisions are bounded to 900 ms, failures yield silence, and spoken fillers have a 30-second cooldown. The same phrase is not selected consecutively.
 
 The existing shared announcement/speech queue delivers the phrase to desktop and Link; it is never saved as a conversation turn. Work keeps its existing grounded progress commentary. Live retains its own speech ownership and receives no extra filler.
 
@@ -32,3 +32,7 @@ Standalone greetings and thanks without attachments, explicit tool selection or 
 ### Verified on 2026-10-12
 
 All 1,142 desktop tests and 58 Python checks passed. The running Windows profile verified greeting effort `none`, audible greeting and memory-backed startup speech, persisted recent memory, repeated startup suppression, interruption, and paired Link conversation. The live comparison turn correctly produced no filler. Separate calls to the same configured decision provider rejected greetings and thanks and accepted a reflective question; positive filler delivery and late-event cancellation are covered by behavioral tests. Test preferences and conversation history were restored, and the normal app was restarted with the updated source. Sanitized reports and screenshots are under `work/evidence/conversation-memory-20261012/` (local, ignored by Git).
+
+### Filler tuning follow-up
+
+Lowered the need threshold from 0.8 to 0.7 and the wait from 2.6 to 2 seconds, retaining the 30-second cooldown and answer/cancellation suppression. All 1,200 tests passed again. In the real profile, the comparison decision now accepted a filler; the conversational test emitted none, so this run does not establish audible positive filler delivery. Greeting suppression, interruption, memory/startup speech and Link conversation passed. Original settings and history were restored before restarting the normal app. Report: `work/evidence/filler-tuning-20261012/verification.json`.
