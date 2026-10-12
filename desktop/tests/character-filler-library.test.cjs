@@ -19,7 +19,7 @@ test('generated vocabulary persists across restart, excludes common stock and is
   const { file, library } = setup(t, async () => { count++; return vocabulary('generated'); });
   assert.deepEqual(library.get(profile), []);
   const values = await library.ensure(profile);
-  assert.equal(values.length, 12);
+  assert.equal(values.length, FUNCTIONS.length * 2);
   const restarted = new CharacterFillerLibrary({ file, generate: () => assert.fail('cached') });
   assert.deepEqual(await restarted.ensure(profile), values);
   assert.deepEqual(fillerCandidates({ thinkingFillers: ['固定文'] }, { generated: values }), values);
@@ -64,7 +64,7 @@ test('generation failure backs off without blocking callers, then retries; closi
   const { library } = setup(t, async () => { count++; return count === 1 ? 'invalid' : vocabulary('ok'); }, { now: () => now, retryMs: 100 });
   assert.deepEqual(await library.ensure(profile), []);
   await library.ensure(profile); assert.equal(count, 1);
-  now = 101; assert.equal((await library.ensure(profile)).length, 12);
+  now = 101; assert.equal((await library.ensure(profile)).length, FUNCTIONS.length * 2);
   let resolve;
   const closed = setup(t, () => new Promise(done => { resolve = done; })).library;
   const job = closed.ensure(profile); await tick(); closed.close(); resolve(vocabulary('late')); await job;
@@ -76,7 +76,7 @@ test('invalid, duplicate or incomplete generated data and corrupt persisted reco
   const { file } = setup(t, async () => vocabulary('ok'));
   fs.writeFileSync(file, '{broken');
   const library = new CharacterFillerLibrary({ file, generate: async () => vocabulary('repaired') });
-  assert.equal((await library.ensure(profile)).length, 12);
+  assert.equal((await library.ensure(profile)).length, FUNCTIONS.length * 2);
 });
 
 
@@ -89,7 +89,7 @@ test('unwritable cache does not publish an unsaved library or retry on every sta
   assert.deepEqual(library.get(profile), []);
   await library.ensure(profile); assert.equal(calls, 1);
   library.save = save; now = 101;
-  assert.equal((await library.ensure(profile)).length, 12);
+  assert.equal((await library.ensure(profile)).length, FUNCTIONS.length * 2);
 });
 
 test('different characters generate serially and retain separate persisted vocabularies', async t => {

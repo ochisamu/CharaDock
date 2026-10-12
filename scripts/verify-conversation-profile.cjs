@@ -141,16 +141,25 @@ const keys = ['interactionMode', 'characterMemories', 'conversationHistories', '
   assert.equal(typeof decision.text, 'string');
   // Controlled slow backend start tests the waiting branch without replacing
   // either the real decision provider or the real answer/TTS providers.
-  qa.resetFillerCooldown(); delayNextTurnStartMs = 3500;
+  qa.resetFillerCooldown(); delayNextTurnStartMs = 8000;
   const fillerAt = Date.now();
-  await send('新しい趣味を始めたいけれど、好きなものが多くて決められない。何を軸に選ぶと続けやすいか、一緒に考えてもらえる？返事は120文字以内で。');
+  await send('今日の名古屋のニュースを教えて。返事は120文字以内で。');
   await settleAudio();
   const fillers = streams.filter(item => item.at >= fillerAt && item.kind === 'filler');
-  assert.equal(fillers.length, 1, 'Slow reflective turn should receive one model-selected filler');
+  assert.equal(fillers.length, 1, 'Slow news request should receive one model-selected filler');
   assert.ok(synthesized.some(item => item.at >= fillerAt && item.ok && item.text.includes(fillers[0].text)), 'Selected filler reaches real TTS');
   report.checks.filler = { passed: true, actualDecision: Boolean(decision.text), emitted: fillers.length,
     text: fillers[0].text, emissionMs: fillers[0].at - fillerAt, synthesized: true,
-    simulatedBackendStartDelayMs: 3500, noDuplicates: true }; write();
+    simulatedBackendStartDelayMs: 8000, noDuplicates: true }; write();
+  report.stage = 'filler-repeat'; write();
+  qa.resetFillerCooldown(); delayNextTurnStartMs = 8000;
+  const repeatAt = Date.now();
+  await send('今日の名古屋のニュース、交通の話題も知りたい。返事は120文字以内で。');
+  await settleAudio();
+  const repeated = streams.filter(item => item.at >= repeatAt && item.kind === 'filler');
+  assert.equal(repeated.length, 1);
+  assert.notEqual(repeated[0].text, fillers[0].text);
+  report.checks.fillerRepeat = { passed: true, first: fillers[0].text, next: repeated[0].text, emissionMs: repeated[0].at - repeatAt }; write();
   report.stage = 'cancel'; write();
   const cancelAt = Date.now(); const pending = send('将棋の歴史について長い解説を考えて。').catch(() => null);
   await wait(() => qa.busy()); await js('window.mascotDesktop.interruptChat()'); await pending; await sleep(3000);

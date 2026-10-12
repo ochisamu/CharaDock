@@ -19,14 +19,26 @@ function fastReasoningEffort(model, supported = []) {
 }
 
 class PendingFiller {
-  constructor({ decision, emit, isCurrent = () => true, delayMs = 2000, setTimer = setTimeout, clearTimer = clearTimeout }) {
-    this.closed = false;
-    this.clearTimer = clearTimer;
-    this.timer = setTimer(async () => {
-      const result = await Promise.resolve(decision).catch(() => null);
-      if (!this.closed && isCurrent() && result?.text) emit(result.text);
-      this.stop();
-    }, delayMs);
+  constructor({ decision, decide, emit, observe = () => {}, isCurrent = () => true, delayMs = 2000,
+    retryAtMs = [5000, 9000], now = Date.now, setTimer = setTimeout, clearTimer = clearTimeout }) {
+    this.closed = false; this.clearTimer = clearTimer;
+    const started = now();
+    const schedule = (index) => {
+      const target = index === 0 ? delayMs : retryAtMs[index - 1];
+      this.timer = setTimer(async () => {
+        if (this.closed || !isCurrent()) return this.stop();
+        const waitingMs = Math.max(0, now() - started);
+        let result;
+        try { result = await (decide ? decide({ waitingMs, attempt: index + 1 }) : decision); }
+        catch { result = { text: '', reason: 'decision_failed' }; }
+        if (this.closed || !isCurrent()) return this.stop();
+        try { observe({ attempt: index + 1, waitingMs, neededScore: result?.neededScore ?? null, reason: result?.reason || 'silent' }); } catch {}
+        if (result?.text) { emit(result.text); return this.stop(); }
+        if (decide && index < retryAtMs.length) schedule(index + 1);
+        else this.stop();
+      }, index === 0 ? delayMs : Math.max(0, target - (now() - started)));
+    };
+    schedule(0);
   }
   stop() { this.closed = true; this.clearTimer(this.timer); }
 }

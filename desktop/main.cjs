@@ -13627,6 +13627,7 @@ async function sendChatMessage(message, {
     workVoiceReporter.scheduleFallback(workAcknowledgement, realtimeOutput ? 600 : 6000);
   }
   let thinkingFiller = null;
+  const fillerObservedActions = new Set();
   if (!workMode && !realtimeOutput && preferences.data.thinkingFillerEnabled === true
     && (streamTtsEnabled || remoteTtsEnabled) && jevEnabled("thinkingFillerEnabled") && Date.now() - lastThinkingFillerAt > 30_000) {
     const character = activeCharacter();
@@ -13637,10 +13638,12 @@ async function sendChatMessage(message, {
     const candidates = fillerCandidates(character, { language,
       generated: getCharacterFillerLibrary().get(characterFillerProfile(character, language)),
     });
-    const decision = decideFiller(jevClient, requestText, { previousReply, character, language, candidates,
-      recentFillers: recentThinkingFillers.get(characterId) || [],
-    }).catch(() => ({ text: "" }));
-    thinkingFiller = new PendingFiller({ decision,
+    thinkingFiller = new PendingFiller({
+      decide: ({ waitingMs, attempt }) => decideFiller(jevClient, requestText, { previousReply, character, language, candidates,
+        waitingMs, attempt, observedActions: [...fillerObservedActions],
+        recentFillers: recentThinkingFillers.get(characterId) || [],
+      }),
+      observe: detail => diagnosticLog?.write("info", "chat-filler-decision", { turnId, ...detail }),
       isCurrent: () => turnCoordinator.snapshot().id === turnId && activeCharacter().id === characterId
         && interfaceLanguage() === language && preferences.data.thinkingFillerEnabled === true
         && jevEnabled("thinkingFillerEnabled") && !currentRealtimeClient(),
@@ -13651,12 +13654,17 @@ async function sendChatMessage(message, {
           speechSegments: expressiveWorkAnnouncementSegment(text), remoteTtsEnabled });
       },
     });
+  } else if (!workMode && !realtimeOutput) {
+    diagnosticLog?.write("info", "chat-filler-skipped", { reason:
+      preferences.data.thinkingFillerEnabled !== true ? "disabled"
+        : !(streamTtsEnabled || remoteTtsEnabled) ? "no_audio_route"
+          : !jevEnabled("thinkingFillerEnabled") ? "decision_unavailable" : "cooldown" });
   }
   const stopThinkingFiller = () => thinkingFiller?.stop();
   const onDelta = (delta, fullText) => {
     if (workMode) return;
-    stopThinkingFiller();
     const visibleText = cleanAssistantText(fullText, { streaming: true });
+    if (visibleText.trim()) stopThinkingFiller();
     const speechSegments = expressiveSpeechSegments(speechSegmenter.push(fullText));
     if (!streamTtsEnabled) {
       for (const segment of speechSegments) pushMascotExpression(segment.expression);
@@ -13860,7 +13868,10 @@ async function sendChatMessage(message, {
         requireMcpReady,
         onEvent: (event) => {
           observeMcpAppEvent(conversationClient, event, { mode: "chat", surface: "conversation" });
-          if (String(event.params?.item?.type || "") !== "webSearch" || searchingWeb) return;
+          if (String(event.params?.item?.type || "") !== "webSearch") return;
+          if (event.method === "item/started") fillerObservedActions.add("web_search_started");
+          if (event.method === "item/completed") fillerObservedActions.add("web_search_completed");
+          if (searchingWeb) return;
           searchingWeb = true;
           sendStream({ phase: "activity", text: mainText("Webを検索中…", "Searching the web…"), mode: "chat" });
         },

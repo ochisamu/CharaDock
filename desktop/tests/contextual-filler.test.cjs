@@ -22,7 +22,7 @@ test('all built-ins in both languages and new characters retain a broad contextu
 
 test('model receives effective persona, context and repetition evidence; no lexical intent routing', async () => {
   const character = { id: 'new-character', name: '先生', personality: '古風で穏やか', director: { speechStyle: '語尾はのう', relationship: '対等な友人' }, thinkingFillers: ['ほう、興味深いのう。'] };
-  const recentFillers = ['ほう、興味深いのう。'];
+  const recentFillers = ['前のひとことじゃ。'];
   const client = { ask: async (state, questions, timeout) => {
     assert.equal(timeout, 900);
     assert.equal(state.character.speechStyle, '語尾はのう');
@@ -30,12 +30,12 @@ test('model receives effective persona, context and repetition evidence; no lexi
     assert.equal(state.previousReply, '今日はどうだった？');
     assert.deepEqual(state.recentFillers, recentFillers);
     assert.deepEqual(state.runtime.observedActions, []);
-    assert.equal(questions.filler.criteria.phrase_0, recentFillers[0]); // retained, not deleted
+    assert.equal(questions.filler.criteria.phrase_0, character.thinkingFillers[0]);
     assert.ok(questions.filler.criteria.none);
-    // The model may choose even a repeated custom phrase if it fits best.
+    // The model chooses fresh character-authored wording.
     return answer('phrase_0');
   } };
-  assert.equal((await decideFiller(client, 'ありがとう', { character, previousReply: '今日はどうだった？', recentFillers })).text, recentFillers[0]);
+  assert.equal((await decideFiller(client, 'ありがとう', { character, previousReply: '今日はどうだった？', recentFillers })).text, character.thinkingFillers[0]);
 });
 
 test('model-selected contextual wording is authoritative, including silence and arbitrary imported phrases', async () => {
@@ -47,7 +47,7 @@ test('model-selected contextual wording is authoritative, including silence and 
   const rejectUnsafe = { ask: async (_state, questions) => {
     // Unsafe claims are judged semantically by the model, not a keyword list.
     assert.equal(questions.filler.criteria.phrase_3, candidates[3]);
-    assert.match(questions.filler.instructions, /Never select wording claiming/);
+    assert.match(questions.filler.instructions, /Never claim completion/);
     return answer('none');
   } };
   assert.equal((await decideFiller(rejectUnsafe, '調べて', { candidates })).text, '');
