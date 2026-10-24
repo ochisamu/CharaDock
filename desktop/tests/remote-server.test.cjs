@@ -202,6 +202,10 @@ test("remote server requires pairing, same-origin CSRF, and strips token from th
   assert.equal(beatriceAudio[0].remoteTokenHash, liveStarts[0].remoteTokenHash);
   assert.equal(beatriceAudio[0].audio, audio);
   assert.equal(beatriceAudio[0].sessionId, "beatrice-session");
+  const batchedAudio = Buffer.alloc(480 * 80 * 2).toString('base64');
+  assert.equal((await fetch(`${origin}/api/live/beatrice/audio`, { method: 'POST', headers: liveHeaders, body: JSON.stringify({ audio: batchedAudio, format: 'pcm16', sessionId: 'beatrice-session' }) })).status, 200);
+  assert.equal(beatriceAudio[1].format, 'pcm16');
+  assert.equal(beatriceAudio[1].audio, batchedAudio);
   assert.equal((await fetch(`${origin}/api/live/beatrice/stop`, { method: "POST", headers: liveHeaders, body: JSON.stringify({ sessionId: "beatrice-session" }) })).status, 200);
   assert.deepEqual(beatriceStops, [{ sessionId: "beatrice-session", remoteTokenHash: liveStarts[0].remoteTokenHash }]);
   assert.equal((await fetch(`${origin}/api/live/stop`, { method: "POST", headers: liveHeaders, body: JSON.stringify({ liveSessionId: "live-session" }) })).status, 200);

@@ -16,6 +16,7 @@ The default command uses the persistent isolated profile at `%LOCALAPPDATA%\Char
 ## Workflow
 
 1. Run `npm test` in WSL and stop on failures.
+   Use the patched Node version in `.node-version` (`nvm install && nvm use` when using nvm). The build rejects Node versions affected by CVE-2026-111497. If the Windows system Node is older, set `CHARADOCK_NODE` to a verified patched `node.exe` before invoking the batch file; the same security check runs on Windows.
 2. Resolve this skill's batch file with `wslpath -w` and invoke it from a Windows-backed working directory:
 
    ```bash

@@ -57,6 +57,12 @@ Codex設定では、app-serverから取得したプルダウンを使い、会�
 
 参照: [Sign in with ChatGPT](https://developers.openai.com/siwc/quickstart)、[app-server](https://developers.openai.com/siwc/token-sharing-open-source/codex-app-server)、[preview limitations](https://developers.openai.com/siwc/token-sharing-open-source/preview-limitations)。
 
+## Remote audio on variable networks
+
+CharaDock Linkの音声は、通常TTSの次の音声を再生中に先読みし、PCMとLive変換音声は約300msをためてから再生します。途切れが起きた場合は再開時のバッファを最大1秒まで増やします。対応ブラウザーではWebRTC受信バッファも回線の揺らぎに合わせて調整し、一時的な切断は8秒まで回復を待ちます。
+スマートフォンのBeatrice 2は接続完了時のPC側設定を優先し、先に音声トラックが届いても変換の初期化を省略しません。AudioWorkletで音声を取り出し、VPNが遅い場合はPCM16の送信を最大1秒分にまとめます。順序を保ち、古い80ms音声を捨てて追いつく方式は使いません。長い圏外・帯域不足まで補えるものではなく、変換に失敗した場合は原音への切り替え理由を表示します。
+通信エラー時は再接続を待ち、認証が拒否された場合だけ再ペアリングを案内します。`scripts/verify-remote-network-audio.cjs` はWindows Electronで `SOURCE PROFILE FRESH_OUTPUT` を渡し、コピーしたプロフィール・合成マイク・200msのHTTP遅延で実Live/Beatriceと通常TTSを検証します。元プロフィールは変更しません。
+
 ## Decision assist
 
 AI接続画面の **判断アシスト → 判断サービス** で **JEV · TypeSafe** と
@@ -69,6 +75,8 @@ PC・設定チャット・Link・ATOM Echo・RLCDから同じ判断クライア�
 切り替え中の古い判定は無効化し、接続失敗時に別サービスへ自動送信しません。
 
 Decisionsは `POST https://api.openai.com/v1/decisions` / `gpt-6-luna` を使います。
+LiveではCodexの音声接続を維持したまま、聞き取り途中の意味のある文と返答の文から表情・しぐさを更新します。判定は各発話で最大5回、途中の更新間隔は650ms以上に抑えます。音楽操作は確定したユーザー発話だけを使い、確定通知の重複やCodexのツール呼び出しが重なっても同じ操作を再実行しません。切断・セッション切り替え後の遅い判定は反映しません。
+公開Live APIの `session.triggers` は現在のCodex Liveでは未対応のため、CharaDockが文字起こしから外部Decisions APIを呼び出します。口の動きとまばたきは従来どおり音声・アニメーション側が管理します。
 既存の候補選択を `choice`、明示的な操作の確率判定を `predicate` に変換し、
 候補別の確率へ既存のしきい値を適用します（`confidence` とは区別します）。
 参照: [OpenAI Decisions guide](https://developers.openai.com/api/docs/guides/decisions)。
@@ -80,6 +88,7 @@ Decisionsは `POST https://api.openai.com/v1/decisions` / `gpt-6-luna` を使い
 検証スクリプト:
 - `scripts/decisions-ui-smoke.cjs`: 隔離プロフィール、合成キー・API応答で実Windows設定画面とIPCを検証。
 - `scripts/verify-decisions-profile.cjs`: Windows Electronで指定プロフィールの暗号化キーを読み、実APIを検証。引数は `SOURCE PROFILE FRESH_OUTPUT`。元プロフィールは変更しません。
+- `scripts/verify-live-decisions-profile.cjs`: プロフィールのコピーで実Codex Live・Decisionsと本番の文字起こし処理を検証します。音楽の実行先だけを記録用に差し替え、Windowsのプレイヤーは操作しません。`--activate` は通常プロフィールをDecisionsに切り替えて接続・設定保持を確認し、アプリを開いたままにします。
 
 ## Voice and animation
 

@@ -72,6 +72,8 @@ const { DecisionClient } = require("./lib/decision-client.cjs");
 const { expressiveCharacterEnabled, KOHAKU_EMOTIONS } = require("./lib/expressive-character.cjs");
 const { JevAddressGate } = require("./lib/jev-address-gate.cjs");
 const { JevMediaGate } = require("./lib/jev-media-gate.cjs");
+const { encodePcm, decodePcm } = require("./pcm-speech-player.js");
+const { LiveInputDecisions } = require("./lib/live-input-decisions.cjs");
 const { JevExpressionDirector } = require("./lib/jev-expression-director.cjs");
 const { createJevDebug, jevFailureReason } = require("./lib/jev-debug.cjs");
 const debugJev = createJevDebug({ isPackaged: () => app.isPackaged,
@@ -606,6 +608,7 @@ let remoteBeatriceOutputTimer = null;
 let remoteRealtimeSessionId = "";
 let remoteRealtimeOwnerHash = "";
 let remoteBeatriceSessionId = "";
+let remoteBeatricePcm16 = false;
 let remoteRealtimeStartReservation = "";
 let pendingScreenShare = null;
 let pendingBrowserUse = null;
@@ -2363,6 +2366,10 @@ async function startRemoteRealtime(payload = {}) {
       }
     }
     const result = await startCodexRealtimeVoice({ sdp: payload.sdp, remoteTokenHash }, "remote");
+    if (beatriceActive && (!beatriceHostClient?.ready || beatriceAudioOwner !== remoteTokenHash || !remoteBeatriceSessionId)) {
+      beatriceActive = false;
+      beatriceError = mainText("Beatrice 2の接続が終了したため元のLive音声で再生します。", "Beatrice 2 disconnected; using the original Live voice.");
+    }
     // A successful SDP exchange is enough to make the companion usable. Do
     // not leave it in the pre-connection busy state if the started event was
     // delivered before the phone's event stream was ready (or was delayed).
@@ -9270,9 +9277,21 @@ async function startCodexRealtimeVoice(payload, target = "control") {
   const jevMediaGate = new JevMediaGate({
     classify: text => classifyJevMedia(text),
     execute: (args, key) => mediaController.call(args, `live:${realtimeClient.threadId}:${key}`),
-    enabled: () => process.platform === "win32" && jevEnabled("jevMediaEnabled"),
+    enabled: () => activeRealtimeClient === realtimeClient && process.platform === "win32" && jevEnabled("jevMediaEnabled"),
   });
-  let jevUserTicket = null;
+  const liveInputDecisions = new LiveInputDecisions({
+    media: jevMediaGate,
+    active: () => activeRealtimeClient === realtimeClient,
+    expressionEnabled: () => jevEnabled("jevExpressionEnabled"),
+    expression: (text, options) => requestJevExpression(text, options),
+    cancelExpression: () => jevExpressionDirector.cancel(),
+    onReceipt: (result, ticket) => {
+      // Only a compact operation receipt, never player metadata or raw
+      // external text, is injected as trusted application context.
+      const receipt = JSON.stringify({ action: ticket.action, ok: result.ok === true, accepted: result.accepted === true });
+      return realtimeClient.appendRealtimeText(`CharaDock handled the current music command. Receipt: ${receipt}. Do not execute that command again. Acknowledge success only if ok and accepted are true; otherwise explain it could not be completed.`, "developer");
+    },
+  });
   let nativeWorkTurn = null;
   const pendingNativeConversationTurns = [];
   const nativeConversationTurnIds = new Set();
@@ -9827,7 +9846,7 @@ async function startCodexRealtimeVoice(payload, target = "control") {
       if (method === "turn/started") jevMediaGate.bind(String(params.turnId || params.turn?.id || ""));
       if (realtimeClient.threadId && jevEnabled("jevMediaEnabled")) jevLiveGates.set(String(realtimeClient.threadId), jevMediaGate);
       if (method === "thread/realtime/transcript/delta" && params.role === "user") {
-        if (!userTranscriptStartedAt) jevUserTicket = jevMediaGate.begin();
+        liveInputDecisions.delta(params.delta);
         if (!userTranscriptStartedAt) userTranscriptStartedAt = Date.now();
         if (workMode && !voiceFollowUpListeningShown && nativeWorkTurn?.run?.status === "running" && nativeWorkTurn?.turnId) {
           voiceFollowUpListeningShown = true;
@@ -9879,6 +9898,7 @@ async function startCodexRealtimeVoice(payload, target = "control") {
           ? require("./lib/jev-transcript-cue.cjs").nextTranscriptCue(assistantTranscript, assistantTranscript.text) : null;
         if (expressionCue) {
           assistantTranscript.cueRequested = true;
+          liveInputDecisions.assistantCue();
           requestJevExpression(expressionCue);
         }
         remoteBusy = true;
@@ -9925,7 +9945,10 @@ async function startCodexRealtimeVoice(payload, target = "control") {
           // event pin the mouth open or suppress normal blinking.
           if (jevEnabled("jevExpressionEnabled")) {
             const finalCue = require("./lib/jev-transcript-cue.cjs").nextTranscriptCue(assistantTranscript, assistantTranscript.text, { final: true });
-            if (finalCue) requestJevExpression(finalCue);
+            if (finalCue) {
+              liveInputDecisions.assistantCue();
+              requestJevExpression(finalCue);
+            }
           } else {
             localServer.pushInput({ ...currentCursorInput(), ...speechExpression(assistantTranscript.text, { characterId: activeCharacter().id }) });
           }
@@ -9978,26 +10001,17 @@ async function startCodexRealtimeVoice(payload, target = "control") {
         assistantTranscript.startedAt = 0;
       }
       if (method === "thread/realtime/transcript/done" && params.role === "user") {
-        if (!assistantTranscript.active) assistantTranscript.text = "";
-        const listeningReaction = messageExpression(params.text, { characterId: activeCharacter().id });
-        localServer.pushInput({
-          ...currentCursorInput(),
-          ...listeningReaction,
-          forceMouth: null,
-          forceEyesClosed: null,
-        });
         const request = String(params.text || "").trim();
-        if (request) {
-          const ticket = jevUserTicket || jevMediaGate.begin();
-          jevUserTicket = null;
-          jevMediaGate.finish(request, ticket).then(result => {
-            if (!result || jevMediaGate.current !== ticket) return;
-            // Only a compact operation receipt, never player metadata or raw
-            // external text, is injected as trusted application context.
-            const receipt = JSON.stringify({ action: ticket.action, ok: result.ok === true, accepted: result.accepted === true });
-            return realtimeClient.appendRealtimeText(`CharaDock handled the current music command. Receipt: ${receipt}. Do not execute that command again. Acknowledge success only if ok and accepted are true; otherwise explain it could not be completed.`, "developer");
-          }).catch(() => {});
-          requestJevExpression(request, { source: "user" });
+        if (!liveInputDecisions.finish(request)) return;
+        if (!assistantTranscript.active) assistantTranscript.text = "";
+        if (!jevEnabled("jevExpressionEnabled")) {
+          const listeningReaction = messageExpression(params.text, { characterId: activeCharacter().id });
+          localServer.pushInput({
+            ...currentCursorInput(),
+            ...listeningReaction,
+            forceMouth: null,
+            forceEyesClosed: null,
+          });
         }
         if (request) {
           const completedTurn = realtimeTurnBuffer.addUser(request, {
@@ -10021,7 +10035,7 @@ async function startCodexRealtimeVoice(payload, target = "control") {
         voiceFollowUpListeningShown = false;
       }
       if (["thread/realtime/error", "thread/realtime/closed"].includes(method)) {
-        jevMediaGate.close();
+        liveInputDecisions.close();
         if (jevLiveGates.get(String(realtimeClient.threadId)) === jevMediaGate) jevLiveGates.delete(String(realtimeClient.threadId));
         const terminalTurnPayload = settleStoppedRealtimeTurn(realtimeClient, {
           errorMessage: method.endsWith("error") ? String(forwarded?.params?.message || "") : "",
@@ -10067,6 +10081,7 @@ async function startCodexRealtimeVoice(payload, target = "control") {
     if (activeRealtimeClient === realtimeClient) activeRealtimeStarting = false;
     return result;
   } catch (error) {
+    liveInputDecisions.close();
     if (activeRealtimeWorkDispatcher === realtimeWorkDispatcher) {
       realtimeWorkDispatcher.close();
       activeRealtimeWorkDispatcher = null;
@@ -10215,6 +10230,7 @@ function stopBeatriceHost() {
   remoteBeatriceOutputFrames = [];
   remoteBeatriceOutputSamples = 0;
   remoteBeatriceSessionId = "";
+  remoteBeatricePcm16 = false;
 }
 
 async function stopRealtimeForBeatriceSettingsChange() {
@@ -10269,8 +10285,12 @@ function flushRemoteBeatriceOutput() {
   }
   remoteBeatriceOutputFrames = [];
   remoteBeatriceOutputSamples = 0;
+  let encoded;
+  try { encoded = remoteBeatricePcm16 ? encodePcm(combined) : Buffer.from(combined.buffer, combined.byteOffset, combined.byteLength).toString("base64"); }
+  catch { deliverBeatriceError("Beatrice 2 returned invalid audio samples."); return; }
   remoteServer?.publishTo(owner, "beatrice-audio", {
-    audio: Buffer.from(combined.buffer, combined.byteOffset, combined.byteLength).toString("base64"),
+    audio: encoded,
+    format: remoteBeatricePcm16 ? 'pcm16' : 'f32',
     sampleRate: BEATRICE_SAMPLE_RATE,
     sessionId: remoteBeatriceSessionId,
   });
@@ -10355,22 +10375,23 @@ function processRemoteBeatriceAudio(payload = {}) {
     throw Object.assign(new Error("Remote Beatrice session is not active."), { statusCode: 409 });
   }
   const encoded = String(payload.audio || "");
-  if (!encoded || encoded.length > 60_000 || !/^[A-Za-z0-9+/]+={0,2}$/.test(encoded)) {
+  if (!['pcm16', 'f32', undefined].includes(payload.format) || !encoded || encoded.length > 256_000 || !/^[A-Za-z0-9+/]+={0,2}$/.test(encoded)) {
     throw Object.assign(new Error("Invalid Beatrice audio data."), { statusCode: 400 });
   }
   const bytes = Buffer.from(encoded, "base64");
-  const blockBytes = BEATRICE_BLOCK_SAMPLES * Float32Array.BYTES_PER_ELEMENT;
-  if (!bytes.length || bytes.length > blockBytes * 16 || bytes.length % blockBytes) {
+  const blockBytes = BEATRICE_BLOCK_SAMPLES * (payload.format === 'pcm16' ? 2 : 4);
+  if (!bytes.length || bytes.length > blockBytes * 100 || bytes.length % blockBytes) {
     throw Object.assign(new Error("Invalid Beatrice audio length."), { statusCode: 400 });
   }
   const exact = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
-  const samples = new Float32Array(exact);
+  const samples = payload.format === 'pcm16' ? decodePcm(encoded) : new Float32Array(exact);
   for (const sample of samples) {
     if (!Number.isFinite(sample) || Math.abs(sample) > 8) throw Object.assign(new Error("Invalid Beatrice audio sample."), { statusCode: 400 });
   }
   let accepted = 0;
-  for (let offset = 0; offset < bytes.length; offset += blockBytes) {
-    const block = bytes.buffer.slice(bytes.byteOffset + offset, bytes.byteOffset + offset + blockBytes);
+  remoteBeatricePcm16 = payload.format === 'pcm16';
+  for (let offset = 0; offset < samples.length; offset += BEATRICE_BLOCK_SAMPLES) {
+    const block = samples.slice(offset, offset + BEATRICE_BLOCK_SAMPLES).buffer;
     if (beatriceHostClient.push(block)) accepted += 1;
   }
   if (!accepted) throw Object.assign(new Error("Beatrice audio host is unavailable."), { statusCode: 409 });

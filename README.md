@@ -139,7 +139,7 @@ Current pre-release builds are unsigned, so Windows may display a SmartScreen wa
 ### Requirements for running from source
 
 - Windows 10 / 11 x64
-- Node.js 22 or later; Node.js 24 is recommended
+- Node.js 22.23.4+, 24.22.1+, or 26.12.1+ on those release lines (`.node-version` pins the CI/build baseline; see [HTTP2Shell assessment](docs/security/http2shell.md))
 - A sign-in-capable [Codex CLI](https://github.com/openai/codex) installation for Codex features
 - Python 3.11 and [uv](https://docs.astral.sh/uv/) only when running Python validation
 

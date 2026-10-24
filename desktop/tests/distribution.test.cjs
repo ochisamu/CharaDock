@@ -649,7 +649,7 @@ test("remote access exposes compact avatar dialogue, device controls, and Live r
   assert.match(remoteJs, /!modeInitialized \|\| appState\?\.voice\?\.liveConnected/);
   assert.match(remoteJs, /liveSessionId: stoppedSessionId \|\| undefined/);
   assert.match(remoteJs, /charadock\.remote\.audio"\) !== "0"/);
-  assert.match(remoteJs, /gain\.gain\.value = audioEnabled && !liveBeatriceActive && !liveOutputSuppressed \? 1 : 0/);
+  assert.match(remoteJs, /gain\.gain\.value = audioEnabled && liveConversionConfirmed && !liveBeatriceActive && !liveOutputSuppressed \? 1 : 0/);
   assert.match(remoteJs, /setRemoteLiveOutputSuppressed\(Boolean\(params\.suppressed\) && method !== "thread\/realtime\/transcript\/done"\)/);
   assert.match(remoteJs, /\/api\/live\/beatrice\/audio/);
   assert.match(remoteJs, /\/api\/live\/beatrice\/stop/);
@@ -661,7 +661,8 @@ test("remote access exposes compact avatar dialogue, device controls, and Live r
   assert.match(remoteJs, /beginMobileStreamSpeech\(payload\.turnId\)/);
   assert.match(remoteJs, /queueMobileStreamSpeech\(payload, \{ finished: true \}\)/);
   assert.match(remoteJs, /playMobileTtsValue\(segment\.spokenText, token, caption => speechCaption\.audio\(caption \|\| segment\.caption\)\)/);
-  assert.match(remoteJs, /playAudioUrl\(chunk\.url, result\.playbackRate, \(\) => activate\(chunk\.text\), \(\) => token === mobileSpeechToken\)/);
+  assert.match(remoteJs, /playAudioUrl\(chunk\.url, next\.playbackRate \|\| result\.playbackRate, \(\) => activate\(chunk\.text\), \(\) => token === mobileSpeechToken\)/);
+  assert.match(remoteJs, /CharaDockPcmSpeech\.playChunks/);
   assert.doesNotMatch(remoteJs, /if \(audioRoute === "mobile-tts"\) speak\(value\)/);
   assert.match(remoteJs, /dictationArmed/);
   assert.match(remoteJs, /scheduleDictationResume/);

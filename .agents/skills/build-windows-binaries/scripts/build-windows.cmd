@@ -1,7 +1,7 @@
 @echo off
 setlocal EnableExtensions EnableDelayedExpansion
 
-set "CHARADOCK_NODE=C:\Program Files\nodejs\node.exe"
+if not defined CHARADOCK_NODE set "CHARADOCK_NODE=C:\Program Files\nodejs\node.exe"
 if not exist "%CHARADOCK_NODE%" (
   set "CHARADOCK_NODE="
   for /f "delims=" %%N in ('where node 2^>nul') do if not defined CHARADOCK_NODE set "CHARADOCK_NODE=%%N"
@@ -24,6 +24,11 @@ if not exist "%CHARADOCK_NPX%" (
 )
 
 pushd "%~dp0..\..\..\.." || exit /b 1
+"%CHARADOCK_NODE%" scripts\check-runtime-security.cjs
+if errorlevel 1 (
+  popd
+  exit /b 1
+)
 if not exist "node_modules\electron-builder\out\cli\cli.js" (
   echo electron-builder dependencies are missing. Run npm install in WSL first. 1>&2
   popd

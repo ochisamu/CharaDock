@@ -20,6 +20,7 @@ test('authored assets require pairing, cannot traverse or fetch retired/private 
   for(const file of ['drawn-pose-runtime.js','remote-authored-avatar.js','remote-speech-caption.js'])assert.equal((await fetch(origin+'/'+file)).status,200);
   const shell=await fetch(origin+'/').then(r=>r.text());assert.match(shell,/id="avatarAuthored"/);
   assert.match(shell,/drawn-pose-runtime\.js[\s\S]*remote-authored-avatar\.js[\s\S]*remote\.js/);
-  const sw=await fetch(origin+'/service-worker.js').then(r=>r.text());assert.match(sw,/charadock-link-speech-cpp-v11/);
+  const sw=await fetch(origin+'/service-worker.js').then(r=>r.text());assert.match(sw,/charadock-link-network-audio-v12/);assert.match(sw,/live-capture-worklet\.js/);
+  const capture=await fetch(origin+'/live-capture-worklet.js');assert.equal(capture.status,200);assert.match(await capture.text(),/registerProcessor/);
   assert.match(sw,/url\.pathname\.startsWith\("\/api\/"\)/);
 });

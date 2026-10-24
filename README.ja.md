@@ -138,7 +138,7 @@ AIニケちゃんは許可を受けて収録しています。クレジット: [
 ### ソースから起動する場合の必要環境
 
 - Windows 10 / 11 x64
-- Node.js 22以降（Node.js 24推奨）
+- Node.js 22.23.4以降、24.22.1以降、または26.12.1以降の各系列（CI・ビルドの基準は `.node-version`。[HTTP2Shellの調査結果](docs/security/http2shell.md)）
 - Codex機能を使う場合は、ログイン可能な[Codex CLI](https://github.com/openai/codex)
 - Python検査を行う場合のみPython 3.11と[uv](https://docs.astral.sh/uv/)
 

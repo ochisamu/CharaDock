@@ -11,6 +11,7 @@
   let audioEnabled = localStorage.getItem("charadock.remote.audio") !== "0";
   let audioContext = null;
   let pcmSpeechPlayback = null;
+  let mobileFetchController = null;
   let activeAudioSource = null;
   let mouthTimer = 0;
   let blinkTimer = 0;
@@ -78,11 +79,15 @@
   let liveBeatriceCaptureSamples = 0;
   let liveBeatriceCaptureOffset = 0;
   let liveBeatriceUploadQueue = [];
-  let liveBeatriceUploading = false;
-  let liveBeatriceNextPlaybackTime = 0;
+  let liveBeatriceUploader = null;
+  let liveBeatricePlaybackQueue = null;
+  let liveBeatriceCaptureTask = null;
+  let liveConversionConfirmed = false;
+  let liveBeatriceFailure = '';
+  let liveDisconnectTimer = 0;
+  let liveJitterTimer = 0;
   let liveBeatriceCaptionReady = false;
   let pendingLiveBeatriceCaption = "";
-  const liveBeatricePlaybackSources = new Set();
   const liveBeatriceLevelTimers = new Set();
   let liveBeatriceMouthCloseTimer = 0;
   let speechRecognition = null;
@@ -160,7 +165,7 @@
         signal: controller?.signal || fetchOptions.signal,
       });
       const body = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(body.error || `HTTP ${response.status}`);
+      if (!response.ok) throw Object.assign(new Error(body.error || `HTTP ${response.status}`), { status: response.status });
       return body;
     } catch (error) {
       if (controller?.signal.aborted) {
@@ -746,6 +751,9 @@
   const hasRemoteLiveTransport = () => Boolean(livePeer || liveStarting);
 
   function closeRemoteLivePeer() {
+    liveConversionConfirmed = false;
+    clearTimeout(liveDisconnectTimer); liveDisconnectTimer = 0;
+    clearInterval(liveJitterTimer); liveJitterTimer = 0;
     try { livePeer?.close(); } catch {}
     liveInputBridge?.close();
     for (const track of liveInputStream?.getTracks?.() || []) track.stop();
@@ -777,22 +785,18 @@
 
   function setRemoteLiveOutputSuppressed(suppressed) {
     liveOutputSuppressed = Boolean(suppressed);
+    if (liveOutputSuppressed) {
+      liveBeatricePlaybackQueue?.stop(); liveBeatricePlaybackQueue = null;
+      for (const timer of liveBeatriceLevelTimers) clearTimeout(timer);
+      liveBeatriceLevelTimers.clear();
+    }
     if (liveAudioGain && liveAudioContext) {
-      liveAudioGain.gain.setTargetAtTime(audioEnabled && !liveBeatriceActive && !liveOutputSuppressed ? 1 : 0, liveAudioContext.currentTime, .012);
+      liveAudioGain.gain.setTargetAtTime(audioEnabled && liveConversionConfirmed && !liveBeatriceActive && !liveOutputSuppressed ? 1 : 0, liveAudioContext.currentTime, .012);
     }
     if (liveBeatricePlaybackGain && liveAudioContext) {
       liveBeatricePlaybackGain.gain.setTargetAtTime(audioEnabled && !liveOutputSuppressed ? 1 : 0, liveAudioContext.currentTime, .012);
     }
     if (liveOutputSuppressed) resetRemoteMouth();
-  }
-
-  function floatSamplesBase64(samples) {
-    const bytes = new Uint8Array(samples.buffer, samples.byteOffset, samples.byteLength);
-    let binary = "";
-    for (let offset = 0; offset < bytes.length; offset += 0x4000) {
-      binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x4000));
-    }
-    return btoa(binary);
   }
 
   function base64FloatSamples(value) {
@@ -811,10 +815,14 @@
   }
 
   function stopLiveBeatricePipeline({ restoreRaw = false } = {}) {
+    liveBeatriceCaptureTask = null;
+    liveBeatriceUploader?.stop(); liveBeatriceUploader = null;
+    liveBeatricePlaybackQueue?.stop(); liveBeatricePlaybackQueue = null;
     liveBeatriceGeneration += 1;
     liveBeatriceActive = false;
     liveBeatriceSessionId = "";
     if (liveBeatriceProcessor) liveBeatriceProcessor.onaudioprocess = null;
+    if (liveBeatriceProcessor?.port) { liveBeatriceProcessor.port.onmessage = null; liveBeatriceProcessor.port.close(); }
     try { liveBeatriceProcessor?.disconnect(); } catch {}
     try { liveBeatriceSilence?.disconnect(); } catch {}
     try { liveBeatricePlaybackGain?.disconnect(); } catch {}
@@ -825,8 +833,6 @@
     liveBeatriceCaptureSamples = 0;
     liveBeatriceCaptureOffset = 0;
     liveBeatriceUploadQueue = [];
-    liveBeatriceUploading = false;
-    liveBeatriceNextPlaybackTime = 0;
     liveBeatriceCaptionReady = false;
     if (pendingLiveBeatriceCaption) speechCaption.live(pendingLiveBeatriceCaption);
     pendingLiveBeatriceCaption = "";
@@ -834,18 +840,14 @@
     liveBeatriceMouthCloseTimer = 0;
     for (const timer of liveBeatriceLevelTimers) clearTimeout(timer);
     liveBeatriceLevelTimers.clear();
-    for (const source of liveBeatricePlaybackSources) {
-      try { source.stop(); } catch {}
-      try { source.disconnect(); } catch {}
-    }
-    liveBeatricePlaybackSources.clear();
     if (restoreRaw && liveAudioGain && liveAudioContext) {
-      liveAudioGain.gain.setTargetAtTime(audioEnabled && !liveOutputSuppressed ? 1 : 0, liveAudioContext.currentTime, .015);
+      liveAudioGain.gain.setTargetAtTime(audioEnabled && liveConversionConfirmed && !liveOutputSuppressed ? 1 : 0, liveAudioContext.currentTime, .015);
     }
   }
 
   function failLiveBeatrice(message, failedSessionId = liveBeatriceSessionId) {
     if (!liveBeatriceActive) return;
+    liveBeatriceFailure = message || text('Beatrice 2を開始できませんでした', 'Beatrice 2 could not start');
     stopLiveBeatricePipeline({ restoreRaw: true });
     if (failedSessionId) {
       request("/api/live/beatrice/stop", {
@@ -857,28 +859,19 @@
   }
 
   async function pumpLiveBeatriceUploads() {
-    if (liveBeatriceUploading || !liveBeatriceActive || !liveBeatriceSessionId) return;
+    if (!liveBeatriceActive || !liveBeatriceSessionId) return;
     const generation = liveBeatriceGeneration;
     const sessionId = liveBeatriceSessionId;
-    liveBeatriceUploading = true;
-    try {
-      while (liveBeatriceActive
-        && generation === liveBeatriceGeneration
-        && sessionId === liveBeatriceSessionId
-        && liveBeatriceUploadQueue.length) {
-        const samples = liveBeatriceUploadQueue.shift();
-        await request("/api/live/beatrice/audio", {
+    if (!liveBeatriceUploader) liveBeatriceUploader = window.CharaDockPcmSpeech.createUploadQueue({
+      send: samples => request("/api/live/beatrice/audio", {
           method: "POST",
-          body: JSON.stringify({ audio: floatSamplesBase64(samples), sessionId }),
-        });
-      }
-    } catch (error) {
-      if (generation === liveBeatriceGeneration) {
+          body: JSON.stringify({ audio: window.CharaDockPcmSpeech.encodePcm(samples), format: 'pcm16', sessionId }),
+        }),
+      onError: error => { if (generation === liveBeatriceGeneration) {
         failLiveBeatrice(text(`Beatrice 2の変換を継続できません: ${error.message}`, `Beatrice 2 conversion stopped: ${error.message}`));
-      }
-    } finally {
-      if (generation === liveBeatriceGeneration) liveBeatriceUploading = false;
-    }
+      } },
+    });
+    for (const frame of liveBeatriceUploadQueue.splice(0)) liveBeatriceUploader.push(frame);
   }
 
   function pushLiveBeatriceSamples(samples) {
@@ -901,8 +894,8 @@
           liveBeatriceCaptureOffset = 0;
         }
       }
-      liveBeatriceUploadQueue.push(batch);
-      if (liveBeatriceUploadQueue.length > 10) liveBeatriceUploadQueue.shift();
+      if (liveBeatriceUploader) liveBeatriceUploader.push(batch);
+      else liveBeatriceUploadQueue.push(batch);
     }
     pumpLiveBeatriceUploads();
   }
@@ -932,10 +925,32 @@
   }
 
   function startLiveBeatriceCapture(source, context) {
-    const processor = context.createScriptProcessor(1024, 1, 1);
+    if (liveBeatriceProcessor) return Promise.resolve();
+    if (liveBeatriceCaptureTask) return liveBeatriceCaptureTask;
+    const task = createLiveBeatriceCapture(source, context);
+    liveBeatriceCaptureTask = task;
+    task.finally(() => { if (liveBeatriceCaptureTask === task) liveBeatriceCaptureTask = null; }).catch(() => {});
+    return task;
+  }
+
+  async function createLiveBeatriceCapture(source, context) {
+    const generation = liveBeatriceGeneration;
+    let processor;
+    if (context.audioWorklet && typeof AudioWorkletNode === 'function') {
+      await context.audioWorklet.addModule('/live-capture-worklet.js');
+      if (!liveBeatriceActive || generation !== liveBeatriceGeneration || source !== liveAudioSource) return;
+      processor = new AudioWorkletNode(context, 'charadock-live-capture');
+      processor.port.onmessage = ({ data }) => {
+        if (!liveBeatriceActive || generation !== liveBeatriceGeneration) return;
+        const samples = new Float32Array(data);
+        captureLiveBeatrice({ length: samples.length, numberOfChannels: 1, getChannelData: () => samples }, context.sampleRate);
+      };
+    } else {
+      processor = context.createScriptProcessor(1024, 1, 1);
+      processor.onaudioprocess = (event) => captureLiveBeatrice(event.inputBuffer, context.sampleRate);
+    }
     const silence = context.createGain();
     silence.gain.value = 0;
-    processor.onaudioprocess = (event) => captureLiveBeatrice(event.inputBuffer, context.sampleRate);
     source.connect(processor);
     processor.connect(silence);
     silence.connect(context.destination);
@@ -951,46 +966,34 @@
       || !liveAudioContext
       || !liveBeatricePlaybackGain
       || !liveBeatriceSessionId
-      || payload.sessionId !== liveBeatriceSessionId) return;
+      || payload.sessionId !== liveBeatriceSessionId || liveOutputSuppressed) return;
     try {
       const generation = liveBeatriceGeneration;
-      const samples = base64FloatSamples(payload.audio);
+      const samples = payload.format === 'pcm16' ? window.CharaDockPcmSpeech.decodePcm(payload.audio) : base64FloatSamples(payload.audio);
       const context = liveAudioContext;
-      const buffer = context.createBuffer(1, samples.length, Number(payload.sampleRate) || 48000);
-      buffer.copyToChannel(samples, 0);
-      const source = context.createBufferSource();
-      source.buffer = buffer;
-      source.connect(liveBeatricePlaybackGain);
-      if (!liveBeatriceNextPlaybackTime || liveBeatriceNextPlaybackTime < context.currentTime + .025) {
-        liveBeatriceNextPlaybackTime = context.currentTime + .085;
-      }
-      const playbackTime = liveBeatriceNextPlaybackTime;
-      source.start(playbackTime);
-      liveBeatriceNextPlaybackTime += buffer.duration;
-      liveBeatricePlaybackSources.add(source);
-      source.onended = () => {
-        liveBeatricePlaybackSources.delete(source);
-        if (!liveBeatricePlaybackSources.size) {
-          liveBeatriceCaptionReady = false;
-          releaseLiveBeatriceCaption();
-        }
-      };
-      let sum = 0;
-      for (const sample of samples) sum += sample * sample;
-      const rms = Math.sqrt(sum / Math.max(1, samples.length));
-      const levelTimer = setTimeout(() => {
-        liveBeatriceLevelTimers.delete(levelTimer);
-        if (!liveBeatriceActive || generation !== liveBeatriceGeneration) return;
-        liveBeatriceCaptionReady = true;
-        releaseLiveBeatriceCaption();
-        updateRemoteMouth(rms);
-        clearTimeout(liveBeatriceMouthCloseTimer);
-        liveBeatriceMouthCloseTimer = setTimeout(() => {
-          if (!liveBeatriceActive || generation !== liveBeatriceGeneration) return;
-          resetRemoteMouth();
-        }, buffer.duration * 1000 + 55);
-      }, Math.max(0, (playbackTime - context.currentTime) * 1000));
-      liveBeatriceLevelTimers.add(levelTimer);
+      if (!liveBeatricePlaybackQueue) liveBeatricePlaybackQueue = window.CharaDockPcmSpeech.createQueue({
+        context, destination: liveBeatricePlaybackGain, bufferMs: 300,
+        onIdle: () => { liveBeatriceCaptionReady = false; releaseLiveBeatriceCaption(); },
+        onSchedule: ({ samples, start: playbackTime, duration }) => {
+          let sum = 0;
+          for (const sample of samples) sum += sample * sample;
+          const rms = Math.sqrt(sum / Math.max(1, samples.length));
+          const levelTimer = setTimeout(() => {
+            liveBeatriceLevelTimers.delete(levelTimer);
+            if (!liveBeatriceActive || generation !== liveBeatriceGeneration) return;
+            liveBeatriceCaptionReady = true;
+            releaseLiveBeatriceCaption();
+            updateRemoteMouth(rms);
+            clearTimeout(liveBeatriceMouthCloseTimer);
+            liveBeatriceMouthCloseTimer = setTimeout(() => {
+              if (!liveBeatriceActive || generation !== liveBeatriceGeneration) return;
+              resetRemoteMouth();
+            }, duration * 1000 + 55);
+          }, Math.max(0, (playbackTime - context.currentTime) * 1000));
+          liveBeatriceLevelTimers.add(levelTimer);
+        },
+      });
+      liveBeatricePlaybackQueue.push(samples, { sampleRate: Number(payload.sampleRate) || 48000 });
     } catch (error) {
       failLiveBeatrice(text(`Beatrice 2の音声を再生できません: ${error.message}`, `Could not play Beatrice 2 audio: ${error.message}`));
     }
@@ -1010,11 +1013,14 @@
     source.connect(analyser);
     analyser.connect(gain);
     gain.connect(context.destination);
-    gain.gain.value = audioEnabled && !liveBeatriceActive && !liveOutputSuppressed ? 1 : 0;
+    gain.gain.value = audioEnabled && liveConversionConfirmed && !liveBeatriceActive && !liveOutputSuppressed ? 1 : 0;
     liveAudioContext = context;
     liveAudioSource = source;
     liveAudioGain = gain;
-    if (liveBeatriceActive) startLiveBeatriceCapture(source, context);
+    if (liveBeatriceActive) {
+      try { await startLiveBeatriceCapture(source, context); }
+      catch (error) { failLiveBeatrice(text(`Beatrice 2の音声入力を開始できません: ${error.message}`, `Beatrice 2 audio capture could not start: ${error.message}`)); }
+    }
     await context.resume();
     const samples = new Float32Array(analyser.fftSize);
     const animate = (now) => {
@@ -1067,6 +1073,8 @@
     stopDictation();
     stopMobileSpeech({ resumeDictation: false });
     stopLiveBeatricePipeline();
+    liveBeatriceFailure = '';
+    liveConversionConfirmed = false;
     setRemoteLiveOutputSuppressed(false);
     liveBeatriceActive = appState?.voice?.realtimeConversion === "beatrice-v2";
     primeAudioOutput().catch(() => {});
@@ -1111,22 +1119,40 @@
       }
       peer.createDataChannel("oai-events");
       peer.addEventListener("track", (event) => {
+        if (livePeer !== peer) return;
+        const receiver = event.receiver;
+        if (receiver && 'jitterBufferTarget' in receiver) {
+          try { receiver.jitterBufferTarget = 300; } catch {}
+          clearInterval(liveJitterTimer);
+          liveJitterTimer = setInterval(async () => {
+            try { const stats = await receiver.getStats();
+              if (livePeer !== peer) return;
+              stats.forEach(s => { if (s.type === 'inbound-rtp' && s.kind === 'audio') receiver.jitterBufferTarget = Math.min(1000, Math.max(300, (Number(s.jitter) || 0) * 3000 + 150)); });
+            } catch {}
+          }, 3000);
+        }
         const stream = event.streams[0] || new MediaStream([event.track]);
         const audio = $("#remoteLiveAudio");
         audio.srcObject = stream;
         audio.muted = true;
+        audio.play().catch(() => {});
         followLiveAudio(stream).catch(() => setResponseText(text("音声を再生できませんでした。画面を一度タップして、もう一度Liveを開始してください。", "Audio could not start. Tap the screen and start Live again.")));
         event.track.addEventListener("ended", () => {
           resetRemoteMouth();
         });
       });
       peer.addEventListener("connectionstatechange", () => {
-        if (["failed", "disconnected", "closed"].includes(peer.connectionState) && livePeer === peer) {
+        if (livePeer !== peer) return;
+        if (peer.connectionState === 'connected') { clearTimeout(liveDisconnectTimer); liveDisconnectTimer = 0; return; }
+        const endConnection = () => {
+          if (livePeer !== peer || !['failed', 'disconnected', 'closed'].includes(peer.connectionState)) return;
           const stoppedSessionId = liveSessionId;
           if (stoppedSessionId) request("/api/live/stop", { method: "POST", body: JSON.stringify({ liveSessionId: stoppedSessionId }) }).catch(() => {});
           closeRemoteLivePeer();
           setConnection(false, text("Live再接続待ち", "Live disconnected"));
-        }
+        };
+        if (peer.connectionState === 'disconnected' && !liveDisconnectTimer) liveDisconnectTimer = setTimeout(endConnection, 8000);
+        else if (['failed', 'closed'].includes(peer.connectionState)) endConnection();
       });
       const offer = await peer.createOffer();
       await peer.setLocalDescription(offer);
@@ -1146,13 +1172,25 @@
         throw new Error(text("Live接続が中断されました。", "Live connection was interrupted."));
       }
       liveSessionId = String(started?.liveSessionId || "");
+      liveConversionConfirmed = true;
+      // The start response is authoritative, including after a PC setting
+      // change that has not reached this phone's state stream yet.
+      liveBeatriceActive = started?.beatriceActive === true || Boolean(started?.beatriceError);
       if (liveBeatriceActive && !started?.beatriceActive) {
         failLiveBeatrice(started?.beatriceError || text("Beatrice 2を開始できないため元のLive音声を使います", "Beatrice 2 could not start; using the original Live voice"));
       } else if (liveBeatriceActive) {
         liveBeatriceSessionId = String(started?.beatriceSessionId || "");
         if (!liveBeatriceSessionId) failLiveBeatrice(text("Beatrice 2の音声セッションを確認できないため元のLive音声を使います", "Beatrice 2 audio session is unavailable; using the original Live voice"));
-        else pumpLiveBeatriceUploads();
+        else {
+          pumpLiveBeatriceUploads();
+          if (liveAudioGain && liveAudioContext) liveAudioGain.gain.setTargetAtTime(0, liveAudioContext.currentTime, .012);
+          if (liveAudioSource && liveAudioContext) {
+            try { await startLiveBeatriceCapture(liveAudioSource, liveAudioContext); }
+            catch (error) { failLiveBeatrice(text(`Beatrice 2の音声入力を開始できません: ${error.message}`, `Beatrice 2 audio capture could not start: ${error.message}`)); }
+          }
+        }
       }
+      if (!liveBeatriceActive) stopLiveBeatricePipeline({ restoreRaw: true });
       return true;
     } catch (error) {
       if (livePeer === peer) {
@@ -1348,6 +1386,7 @@
     $("#microphoneSecurityHint").textContent = microphoneAvailable()
       ? text("安全なHTTPS接続です。音声入力を利用できます。", "This is a secure HTTPS connection. Voice input is available.")
       : text("音声入力だけはHTTPSが必要です。通常のLAN接続は文字操作用としてそのまま使えます。Tailscale Serveは任意のHTTPS経路として利用できます。", "Voice input requires HTTPS. The regular LAN connection remains available for text control; Tailscale Serve is an optional secure route.");
+    if (liveBeatriceFailure && voice.liveConnected && voice.liveOwner === 'remote') $("#voiceRouteHint").textContent += ` ${liveBeatriceFailure}`;
     syncMicrophoneButton();
   }
 
@@ -1460,7 +1499,13 @@
     });
     eventSource.onerror = () => {
       setConnection(false, text("再接続中", "Reconnecting"));
-      refreshState().catch(() => showPairing(text("接続の有効期限が切れました。もう一度QRコードを読み取ってください。", "The connection expired. Scan the QR code again.")));
+      refreshState().catch((error) => {
+        // A temporary VPN outage is not an expired pairing. EventSource
+        // retries automatically; keep the existing audio session alive.
+        if (error.status === 401 || error.status === 403) {
+          showPairing(text("接続の有効期限が切れました。もう一度QRコードを読み取ってください。", "The connection expired. Scan the QR code again."));
+        }
+      });
     };
   }
 
@@ -1962,7 +2007,7 @@
     localStorage.setItem("charadock.remote.audio", audioEnabled ? "1" : "0");
     if (!audioEnabled) stopMobileSpeech();
     if (liveAudioGain && liveAudioContext) {
-      liveAudioGain.gain.setValueAtTime(audioEnabled && !liveBeatriceActive && !liveOutputSuppressed ? 1 : 0, liveAudioContext.currentTime);
+      liveAudioGain.gain.setValueAtTime(audioEnabled && liveConversionConfirmed && !liveBeatriceActive && !liveOutputSuppressed ? 1 : 0, liveAudioContext.currentTime);
     }
     if (liveBeatricePlaybackGain && liveAudioContext) {
       liveBeatricePlaybackGain.gain.setValueAtTime(audioEnabled && !liveOutputSuppressed ? 1 : 0, liveAudioContext.currentTime);
@@ -2024,6 +2069,7 @@
   }
 
   function stopMobileSpeech({ resumeDictation = true } = {}) {
+    mobileFetchController?.abort(); mobileFetchController = null;
     pcmSpeechPlayback?.stop(); pcmSpeechPlayback = null;
     request("/api/tts/cancel", { method: "POST", body: JSON.stringify({ streamId: "speech-cpp-pending" }) }).catch(() => {});
     mobileSpeechToken += 1;
@@ -2068,6 +2114,7 @@
     if (result?.pcmChunk) {
       audioContext ||= new AudioContext({ latencyHint: "interactive" });
       const player = window.CharaDockPcmSpeech.create({ context: audioContext,
+        bufferMs: 300,
         next: streamId => request("/api/tts/next",{method:"POST",body:JSON.stringify({streamId})}),
         cancel: () => result.streamId ? request("/api/tts/cancel",{method:"POST",body:JSON.stringify({streamId:result.streamId})}) : undefined,
         isCurrent: () => token === mobileSpeechToken,
@@ -2078,26 +2125,22 @@
       try { await player.play(result); return token === mobileSpeechToken; }
       finally { if (pcmSpeechPlayback === player) pcmSpeechPlayback = null; if (token === mobileSpeechToken) { activeMobileTtsStreamId = ""; resetRemoteMouth(); } }
     }
-    for (const chunk of window.CharaDockRemoteSpeechCaption.audioChunks(result, normalized)) {
-      if (token !== mobileSpeechToken) return false;
-      await playAudioUrl(chunk.url, result.playbackRate, () => activate(chunk.text), () => token === mobileSpeechToken);
-      if (token !== mobileSpeechToken) return false;
-      played = true;
-    }
-    let streamId = result?.streamId;
-    while (streamId && token === mobileSpeechToken) {
-      const next = await request("/api/tts/next", { method: "POST", body: JSON.stringify({ streamId }) });
-      if (token !== mobileSpeechToken) return false;
-      for (const chunk of window.CharaDockRemoteSpeechCaption.audioChunks(next, normalized)) {
-        if (token !== mobileSpeechToken) return false;
-        await playAudioUrl(chunk.url, next.playbackRate || result.playbackRate, () => activate(chunk.text), () => token === mobileSpeechToken);
-        if (token !== mobileSpeechToken) return false;
-        played = true;
-      }
-      if (next?.done) streamId = "";
-      activeMobileTtsStreamId = streamId;
-    }
-    activeMobileTtsStreamId = "";
+    const fetchController = new AbortController(); mobileFetchController = fetchController;
+    try { played = await window.CharaDockPcmSpeech.playChunks({ first: result, signal: fetchController.signal,
+      isCurrent: () => token === mobileSpeechToken,
+      next: streamId => request('/api/tts/next', { method: 'POST', body: JSON.stringify({ streamId }) }),
+      play: async next => {
+        let any = false;
+        for (const chunk of window.CharaDockRemoteSpeechCaption.audioChunks(next, normalized)) {
+          if (token !== mobileSpeechToken) return false;
+          await playAudioUrl(chunk.url, next.playbackRate || result.playbackRate, () => activate(chunk.text), () => token === mobileSpeechToken);
+          if (token !== mobileSpeechToken) return false;
+          any = true;
+        }
+        return any;
+      },
+    }); } finally { if (mobileFetchController === fetchController) mobileFetchController = null; }
+    if (token === mobileSpeechToken) activeMobileTtsStreamId = "";
     return played;
   }
 

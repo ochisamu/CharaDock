@@ -4,6 +4,13 @@ All notable changes to CharaDock will be documented here.
 
 ## Unreleased
 
+## 0.8.0 - 2026-10-25
+
+- Audit HTTP2Shell / CVE-2026-111497 against Electron's actual Chromium Brotli linkage: the official Electron 43.1.1 used by v0.7.1 already includes the decoder fix. Upgrade the bundled runtime to Electron 43.8.3, pin development/CI builds to patched Node 22.23.4, and reject affected build runtimes.
+- Improve CharaDock Link on variable VPN/mobile networks with adaptive audio buffering, TTS prefetch, ordered PCM16 Beatrice uploads, render-thread audio capture, and recovery from brief disconnects. Fix a startup race that could skip Beatrice conversion.
+- Add Decisions assistance to Codex Live transcripts for expressions and confirmed music commands, with duplicate operation prevention and session cancellation.
+- Include the current improvements since v0.7.1: mesh-avatar-studio avatar import/selection, speech.cpp Irodori voices and step controls, ChatGPT sign-in for Chat/Work, read-only Codex Companion, and more coherent character memory and waiting dialogue.
+
 ## 0.6.0 - 2026-09-06
 
 - Add RLCD 4.2 display/audio integration, manga artwork and expression frames, ambient clock, and USB-first automatic transport selection with Wi-Fi fallback.

@@ -43,6 +43,7 @@ test("IPC and Live hooks are restricted and generation requires emotion validati
     assert.ok(index >= 0); assert.match(source.slice(index, index + 160), /assertTrustedSender\(event\)/);
   }
   assert.match(source, /gate\.tool\(params\.arguments, String\(params\.turnId/);
-  assert.match(source, /transcript\/done" && params\.role === "user"[\s\S]*?jevMediaGate\.finish/);
+  assert.match(source, /transcript\/done" && params\.role === "user"[\s\S]*?liveInputDecisions\.finish/);
+  assert.match(source, /transcript\/delta" && params\.role === "user"[\s\S]*?liveInputDecisions\.delta\(params\.delta\)/);
   assert.match(source, /requireRlcd42: true, requireEmotions: true/);
 });

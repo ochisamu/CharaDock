@@ -47,13 +47,13 @@ function parseCookies(header) {
   }));
 }
 
-function jsonBody(request) {
+function jsonBody(request, maxBytes = MAX_BODY_BYTES) {
   return new Promise((resolve, reject) => {
     const chunks = [];
     let size = 0;
     request.on("data", (chunk) => {
       size += chunk.length;
-      if (size > MAX_BODY_BYTES) {
+      if (size > maxBytes) {
         reject(Object.assign(new Error("Request body is too large."), { statusCode: 413 }));
         request.destroy();
         return;
@@ -503,6 +503,7 @@ class RemoteCompanionServer {
     if (request.method === "GET" && url.pathname === "/remote.css") return this.sendStatic(response, "remote.css", "text/css; charset=utf-8");
     if (request.method === "GET" && url.pathname === "/remote-speech-caption.js") return this.sendStatic(response, "remote-speech-caption.js", "text/javascript; charset=utf-8");
     if (request.method === "GET" && url.pathname === "/remote.js") return this.sendStatic(response, "remote.js", "text/javascript; charset=utf-8");
+    if (request.method === "GET" && url.pathname === "/live-capture-worklet.js") return this.sendStatic(response, "live-capture-worklet.js", "text/javascript; charset=utf-8");
     if (request.method === "GET" && url.pathname === "/remote-mesh-avatar.js") return this.sendStatic(response, "remote-mesh-avatar.js", "text/javascript; charset=utf-8");
     if (request.method === "GET" && url.pathname === "/remote-authored-avatar.js") return this.sendStatic(response, "remote-authored-avatar.js", "text/javascript; charset=utf-8");
     if (request.method === "GET" && ["/mesh-avatar.js", "/mesh-avatar-runtime.js"].includes(url.pathname)) {
@@ -654,7 +655,7 @@ class RemoteCompanionServer {
 
     if (request.method === "POST" && ["/api/message", "/api/pet", "/api/interrupt", "/api/settings", "/api/approval", "/api/secure-handoff", "/api/live/start", "/api/live/stop", "/api/live/beatrice/audio", "/api/live/beatrice/stop", "/api/streaming-speech/start", "/api/streaming-speech/append", "/api/streaming-speech/finish", "/api/streaming-speech/cancel", "/api/tts", "/api/tts/next", "/api/tts/cancel", "/api/mcp-app/bridge", "/api/disconnect"].includes(url.pathname)) {
       const { session, tokenHash } = this.authenticate(request, { csrf: true });
-      const body = await jsonBody(request);
+      const body = await jsonBody(request, liveAudioRequest ? 300_000 : MAX_BODY_BYTES);
       if (url.pathname === "/api/message") {
         const result = await this.callbacks.sendMessage?.({
           message: body.message,
@@ -688,7 +689,7 @@ class RemoteCompanionServer {
       if (url.pathname === "/api/live/start") return this.sendJson(response, 200, await this.callbacks.startLive?.({ ...body, remoteTokenHash: tokenHash }));
       if (url.pathname === "/api/live/stop") return this.sendJson(response, 200, await this.callbacks.stopLive?.({ liveSessionId: body.liveSessionId, remoteTokenHash: tokenHash }));
       if (url.pathname === "/api/live/beatrice/audio") {
-        return this.sendJson(response, 200, await this.callbacks.processLiveBeatriceAudio?.({ audio: body.audio, sessionId: body.sessionId, remoteTokenHash: tokenHash }));
+        return this.sendJson(response, 200, await this.callbacks.processLiveBeatriceAudio?.({ audio: body.audio, format: body.format, sessionId: body.sessionId, remoteTokenHash: tokenHash }));
       }
       if (url.pathname === "/api/live/beatrice/stop") {
         return this.sendJson(response, 200, await this.callbacks.stopLiveBeatrice?.({ sessionId: body.sessionId, remoteTokenHash: tokenHash }));
