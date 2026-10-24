@@ -9,7 +9,7 @@ const discovery = { issuer: "https://auth.openai.com", authorization_endpoint: "
 const json = (value, status = 200) => new Response(JSON.stringify(value), { status, headers: { "Content-Type": "application/json" } });
 function fixture(t, options = {}) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "charadock-siwc-test-"));
-  const requests = [], opened = [], encryptionKey = crypto.randomBytes(32);
+  const requests = [], opened = [], cleanupClients = [], encryptionKey = crypto.randomBytes(32);
   const safeStorage = {
     isEncryptionAvailable: () => true,
     getSelectedStorageBackend: () => "dpapi",
@@ -27,8 +27,18 @@ function fixture(t, options = {}) {
       if (String(url).endsWith("/models")) return json({ models: [{slug:"allowed", display_name:"Allowed", visibility:"list"}, {slug:"hidden",visibility:"hide"}] });
       return json({access_token:"private-access", refresh_token:"private-refresh",id_token:"private-id",expires_in:3600,scope:PLAN_SCOPE});
     }, verifyIdentity: (token, audience, nonce) => ({ sub: "test-user", exp: Math.floor(Date.now()/1000)+3600, nonce }), ...options });
-  t.after(() => { client.dispose(); fs.rmSync(directory, {recursive:true,force:true}); });
-  return { client, directory, safeStorage, requests, opened };
+  t.after(async () => {
+    // Windows keeps the child's cwd locked until close, even after kill().
+    // Stop owned workers before deleting their fixture, in this same hook.
+    for (const worker of cleanupClients) {
+      const child = worker.proc;
+      const closed = child && child.exitCode === null ? new Promise(resolve => child.once('close', resolve)) : Promise.resolve();
+      worker.stop(); await closed;
+    }
+    client.dispose();
+    await fs.promises.rm(directory, {recursive:true,force:true,maxRetries:5,retryDelay:100});
+  });
+  return { client, directory, safeStorage, requests, opened, cleanupClients };
 }
 async function login(f) {
   await f.client.beginSignIn();
@@ -115,7 +125,7 @@ test("token rotation preserves thread identity without aborting the next turn; c
 test("app-server receives provider flags after its subcommand and uses the matching application name",async t=>{
   const f=fixture(t), fake=path.join(f.directory,"fake-server.cjs");
   fs.writeFileSync(fake,`const rl=require('node:readline').createInterface({input:process.stdin});rl.on('line',line=>{const message=JSON.parse(line);if(message.id)console.log(JSON.stringify({id:message.id,result:message.method==='initialize'?{args:process.argv.slice(2),client:message.params.clientInfo.name,token:process.env.CHARADOCK_CHATGPT_ACCESS_TOKEN,originator:process.env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE}:{}}));});`);
-  const client=new CodexAppServerClient({command:process.execPath,commandArgs:[fake],cwd:f.directory,accessTokenProvider:async()=>"dummy",authMode:"chatgpt",configOverrides:PROVIDER_ARGS,environment:{CODEX_INTERNAL_ORIGINATOR_OVERRIDE:"Codex Desktop"}}); t.after(()=>client.stop());
+  const client=new CodexAppServerClient({command:process.execPath,commandArgs:[fake],cwd:f.directory,accessTokenProvider:async()=>"dummy",authMode:"chatgpt",configOverrides:PROVIDER_ARGS,environment:{CODEX_INTERNAL_ORIGINATOR_OVERRIDE:"Codex Desktop"}}); f.cleanupClients.push(client);
   const original=client.request.bind(client); let init;
   client.request=async(...args)=>{const result=await original(...args);if(args[0]==="initialize")init=result;return result;};
   await client.ensureStarted(); assert.equal(init.client,"CharaDock"); assert.equal(init.token,"dummy"); assert.equal(init.args[0],"app-server"); assert.ok(init.args.indexOf(PROVIDER_ARGS[0])>init.args.indexOf("app-server"));
