@@ -10,6 +10,7 @@ if not defined CHARADOCK_NODE (
   echo Windows node.exe was not found. 1>&2
   exit /b 1
 )
+for %%N in ("%CHARADOCK_NODE%") do set "PATH=%%~dpN;%PATH%"
 
 set "CHARADOCK_NPM=%~dp0npm.cmd"
 set "CHARADOCK_NPM=%CHARADOCK_NODE:node.exe=npm.cmd%"

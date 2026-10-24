@@ -11,9 +11,12 @@ assertPatchedRuntime();
 assert.equal(process.versions.electron, '43.8.3');
 const archive = path.join(application, 'resources', 'app.asar');
 const wanted = [
-  'desktop/main.cjs', 'desktop/preload-mascot.cjs', 'desktop/pcm-speech-player.js',
+  'desktop/main.cjs', 'desktop/control.html', 'desktop/preload-mascot.cjs', 'desktop/pcm-speech-player.js',
   'desktop/lib/remote-server.cjs', 'desktop/lib/live-input-decisions.cjs',
   'desktop/remote/remote.js', 'desktop/remote/live-capture-worklet.js', 'desktop/remote/service-worker.js',
+  'desktop/tests/chatgpt-sign-in.test.cjs',
+  'desktop/tests/speech-cpp-settings.test.cjs',
+  '.agents/skills/build-windows-binaries/scripts/build-windows.cmd',
 ];
 for (const file of wanted) assert.deepEqual(extractFile(archive, path.normalize(file)), fs.readFileSync(path.join(source, file)), file);
 const metadata = JSON.parse(extractFile(archive, 'package.json'));

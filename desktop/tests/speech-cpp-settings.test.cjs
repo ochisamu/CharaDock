@@ -26,7 +26,7 @@ test("native model installation and removal are independent for Small and MF",t=
   const library=new EmbeddedTtsModels(directory,{platform:"win32"});
   for(const id of ["speech-cpp","speech-cpp-small"]){
     for(const file of requiredPaths(TTS_MODELS[id],path.join(directory,TTS_MODELS[id].directoryName))){fs.mkdirSync(path.dirname(file),{recursive:true});fs.writeFileSync(file,"fixture");}
-    assert.equal(library.status(id).installed,true);assert.ok(library.installedPaths(id).modelPath.endsWith(TTS_MODELS[id].files[0].relativePath));
+    assert.equal(library.status(id).installed,true);assert.ok(library.installedPaths(id).modelPath.endsWith(path.normalize(TTS_MODELS[id].files[0].relativePath)));
   }
   const small=library.installedPaths("speech-cpp-small");library.remove("speech-cpp");
   assert.equal(library.status("speech-cpp").installed,false);assert.equal(library.status("speech-cpp-small").installed,true);assert.deepEqual(library.installedPaths("speech-cpp-small"),small);
