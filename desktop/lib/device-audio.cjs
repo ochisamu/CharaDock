@@ -93,6 +93,59 @@ function resamplePcm16(samples, sourceRate, targetRate = 16_000) {
   return output;
 }
 
+// 49-tap Hann-windowed low-pass at 6.8 kHz. Decimate the 48 kHz
+// Realtime track only after removing energy that would alias below 8 kHz.
+const REALTIME_DECIMATION_TAPS = 49;
+const REALTIME_DECIMATION_DELAY = (REALTIME_DECIMATION_TAPS - 1) / 2;
+const realtimeDecimationCoefficients = Float64Array.from({ length: REALTIME_DECIMATION_TAPS }, (_, index) => {
+  const offset = index - REALTIME_DECIMATION_DELAY;
+  const frequency = 6800 / 48_000;
+  const sinc = offset ? Math.sin(2 * Math.PI * frequency * offset) / (Math.PI * offset) : 2 * frequency;
+  return sinc * (.5 - .5 * Math.cos(2 * Math.PI * index / (REALTIME_DECIMATION_TAPS - 1)));
+});
+const realtimeDecimationGain = realtimeDecimationCoefficients.reduce((sum, value) => sum + value, 0);
+for (let tap = 0; tap < REALTIME_DECIMATION_TAPS; tap += 1)
+  realtimeDecimationCoefficients[tap] /= realtimeDecimationGain;
+
+class Realtime48kTo16k {
+  constructor() {
+    this.history = new Float32Array(REALTIME_DECIMATION_TAPS);
+    this.cursor = 0;
+    this.phase = 0;
+    this.initialDelay = REALTIME_DECIMATION_DELAY / 3;
+  }
+
+  push(samples) {
+    const outputSamples = Math.max(0, Math.floor((samples.length + this.phase) / 3) - this.initialDelay);
+    const output = Buffer.allocUnsafe(2 * outputSamples);
+    let offset = 0;
+    for (const sample of samples) {
+      this.history[this.cursor] = sample;
+      this.cursor = (this.cursor + 1) % this.history.length;
+      this.phase += 1;
+      if (this.phase !== 3) continue;
+      this.phase = 0;
+      if (this.initialDelay) {
+        this.initialDelay -= 1;
+        continue;
+      }
+      let filtered = 0;
+      let cursor = this.cursor;
+      for (const coefficient of realtimeDecimationCoefficients) {
+        filtered += this.history[cursor] * coefficient;
+        if (++cursor === this.history.length) cursor = 0;
+      }
+      output.writeInt16LE(Math.max(-32768, Math.min(32767, Math.round(filtered * 32767))), offset);
+      offset += 2;
+    }
+    return output;
+  }
+
+  finish() {
+    return this.push(new Float32Array(REALTIME_DECIMATION_DELAY));
+  }
+}
+
 const DEFAULT_ATOM_ECHO_OUTPUT_PROFILE = Object.freeze({
   gain: .5,
   highPassHz: 240,
@@ -328,5 +381,6 @@ module.exports = {
   pcm16ToFloat32,
   processAtomEchoPcm16,
   resamplePcm16,
+  Realtime48kTo16k,
   waveDataUrlToPcm16,
 };

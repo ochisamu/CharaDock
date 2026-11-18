@@ -128,12 +128,14 @@ class Rlcd42SerialGateway {
     this.decoder = new DeviceProtocolV2Decoder();
     this.sequence = 0;
     this.sceneRevision = 0;
+    this.stateRevision = 0;
     this.pending = new Map();
     this.intentionalCloses = new WeakSet();
     this.reconnectTimer = null;
     this.heartbeatTimer = null;
     this.reconnectAttempt = 0;
     this.lastFrameAt = 0;
+    this.lastRoundTripAt = 0;
     this.lastHeartbeatAt = 0;
     this.connectGeneration = 0;
     this.operationQueue = Promise.resolve();
@@ -195,7 +197,7 @@ class Rlcd42SerialGateway {
   } = {}) {
     this.enabled = enabled === true;
     this.requestedPort = String(port || "").trim().slice(0, 120);
-    this.captureMode = captureMode === "hands-free" ? "hands-free" : "push-to-talk";
+    this.captureMode = ["hands-free", "camera-hands-free"].includes(captureMode) ? captureMode : "push-to-talk";
     this.vadThreshold = normalizeVadThreshold(vadThreshold);
     this.microphoneEnabled = microphoneEnabled !== false;
     this.connectGeneration += 1;
@@ -298,7 +300,7 @@ class Rlcd42SerialGateway {
     if (this.capabilities?.capabilities?.audio?.capture === true) {
       await this.writeWithAck(
         FRAME_TYPES.CAPTURE_CONFIG,
-        captureConfigPayload(this.captureMode, this.vadThreshold, { enabled: this.microphoneEnabled }),
+        this.captureConfigurationPayload(),
         { requireReady: false },
       );
     }
@@ -386,12 +388,20 @@ class Rlcd42SerialGateway {
     const tick = async () => {
       this.heartbeatTimer = null;
       if (!this.enabled || generation !== this.connectGeneration || this.connectionState !== "ready") return;
-      try {
-        await this.writeWithAck(FRAME_TYPES.HOST_HELLO, Buffer.alloc(0), { timeoutMs: this.heartbeatTimeoutMs });
-        this.lastHeartbeatAt = Date.now();
-      } catch (error) {
-        if (this.enabled && generation === this.connectGeneration) this.handlePortFailure(error);
-        return;
+      const probeAt = Date.now();
+      const audioLinkHealthy = this.activePlayback && probeAt - this.lastRoundTripAt < this.heartbeatIntervalMs;
+      if (!audioLinkHealthy) {
+        try {
+          await this.writeWithAck(FRAME_TYPES.HOST_HELLO, Buffer.alloc(0), { timeoutMs: this.heartbeatTimeoutMs });
+          this.lastHeartbeatAt = Date.now();
+        } catch (error) {
+          // A completed request while the probe was pending proves that this
+          // link is still working in both directions.
+          if (this.lastRoundTripAt <= probeAt) {
+            if (this.enabled && generation === this.connectGeneration) this.handlePortFailure(error);
+            return;
+          }
+        }
       }
       if (!this.enabled || generation !== this.connectGeneration || this.connectionState !== "ready") return;
       this.heartbeatTimer = setTimeout(tick, this.heartbeatIntervalMs);
@@ -495,7 +505,7 @@ class Rlcd42SerialGateway {
     const promise = new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(key);
-        reject(new Error(timeoutMessage));
+        reject(Object.assign(new Error(timeoutMessage), { code: "DEVICE_RESPONSE_TIMEOUT" }));
       }, timeoutMs);
       timer.unref?.();
       request = { resolve, reject, timer };
@@ -523,24 +533,52 @@ class Rlcd42SerialGateway {
     }
   }
 
-  async writeWithAck(type, payload, { timeoutMs = 4_000, requireReady = true } = {}) {
-    if (requireReady && this.connectionState !== "ready") throw new Error("RLCD 4.2の接続準備ができていません。");
-    const sequence = this.nextSequence();
-    const key = `ack:${sequence}`;
-    const command = Object.entries(FRAME_TYPES).find(([, value]) => value === type)?.[0] || String(type);
-    const pending = this.pendingResponse(key, timeoutMs, `RLCD 4.2への転送が時間切れになりました（${command} / ${this.transport}）。`);
-    pending.request.requestType = type;
-    try {
-      // A stalled socket write callback must not bypass the ACK deadline.
-      const [, response] = await Promise.all([
-        this.writeBytes(encodeFrame(type, sequence, payload)), pending.promise,
-      ]);
-      if (!response.accepted) throw Object.assign(new Error(responseError(response)), { deviceResponse: response });
+  async writeWithAck(type, payload, options = {}) {
+    const { retryTimeouts, shouldRetry, ...settings } = options;
+    if (!retryTimeouts?.length) {
+      const [response] = await this.writeFramesWithAck([{ type, payload }], settings);
       return response;
-    } catch (error) {
-      clearTimeout(pending.request.timer);
-      this.pending.delete(key);
-      throw error;
+    }
+    // Opt in only for commands the device can safely acknowledge twice.
+    const frame = { type, payload, sequence: this.nextSequence() };
+    const epoch = this.portEpoch;
+    for (const [index, timeoutMs] of retryTimeouts.entries()) {
+      try {
+        const [response] = await this.writeFramesWithAck([frame], { ...settings, timeoutMs });
+        return response;
+      } catch (error) {
+        if (error.code !== "DEVICE_RESPONSE_TIMEOUT" || index + 1 === retryTimeouts.length ||
+            this.portEpoch !== epoch || this.connectionState !== "ready" || shouldRetry?.() === false) throw error;
+      }
+    }
+  }
+
+  async writeFramesWithAck(frames, { timeoutMs = 4_000, requireReady = true } = {}) {
+    if (requireReady && this.connectionState !== "ready") throw new Error("RLCD 4.2の接続準備ができていません。");
+    const requests = [];
+    try {
+      const encoded = frames.map(({ type, payload, sequence = this.nextSequence() }) => {
+        const bytes = encodeFrame(type, sequence, payload);
+        const key = `ack:${sequence}`;
+        const command = Object.entries(FRAME_TYPES).find(([, value]) => value === type)?.[0] || String(type);
+        const pending = this.pendingResponse(key, timeoutMs, `RLCD 4.2への転送が時間切れになりました（${command} / ${this.transport}）。`);
+        pending.request.requestType = type;
+        requests.push({ key, ...pending });
+        return bytes;
+      });
+      // Use one socket write while retaining a separate ACK for each frame.
+      const [, ...responses] = await Promise.all([
+        this.writeBytes(encoded.length === 1 ? encoded[0] : Buffer.concat(encoded)),
+        ...requests.map(({ promise }) => promise),
+      ]);
+      const rejected = responses.find(response => !response.accepted);
+      if (rejected) throw Object.assign(new Error(responseError(rejected)), { deviceResponse: rejected });
+      return responses;
+    } finally {
+      for (const { key, request } of requests) {
+        clearTimeout(request.timer);
+        this.pending.delete(key);
+      }
     }
   }
 
@@ -559,6 +597,7 @@ class Rlcd42SerialGateway {
     if (responseRequest) {
       clearTimeout(responseRequest.timer);
       this.pending.delete(responseKey);
+      this.lastRoundTripAt = Date.now();
       responseRequest.resolve(frame);
       return;
     }
@@ -569,7 +608,8 @@ class Rlcd42SerialGateway {
       if (!request || !result || result.requestType !== request.requestType) return;
       clearTimeout(request.timer);
       this.pending.delete(key);
-      request.resolve({ ...result, responseType: frame.type, accepted: frame.type === FRAME_TYPES.ACK && result.accepted });
+      this.lastRoundTripAt = Date.now();
+      request.resolve({ ...result, sequence: frame.sequence, responseType: frame.type, accepted: frame.type === FRAME_TYPES.ACK && result.accepted });
       return;
     }
     if (frame.type === FRAME_TYPES.DEVICE_HELLO) {
@@ -609,6 +649,11 @@ class Rlcd42SerialGateway {
     }
     if (handleCaptureFrame(this, frame, FRAME_TYPES)) return;
     if (frame.type === FRAME_TYPES.INTERRUPT) {
+      const reason = ["unspecified", "capture-failure", "head-touch", "transport", "capture-changed"][frame.payload?.[0]] || "unspecified";
+      this.log("info", "device-interrupt", {
+        transport: this.transport, reason,
+        ...(reason === "head-touch" && frame.payload.length >= 2 ? { touchStrength: frame.payload[1] } : {}),
+      });
       resetCaptureQueue(this);
       this.playbackGeneration += 1;
       Promise.resolve(this.callbacks.onInterrupt()).catch((error) => this.reportCallbackError(error));
@@ -690,11 +735,25 @@ class Rlcd42SerialGateway {
   async setDeviceState(state) {
     const values = { idle: 0, listening: 1, thinking: 2, speaking: 3, error: 4 };
     const normalized = Object.prototype.hasOwnProperty.call(values, state) ? state : "idle";
-    await this.writeWithAck(FRAME_TYPES.STATE, Buffer.from([values[normalized]]));
+    const revision = ++this.stateRevision;
+    await this.writeWithAck(FRAME_TYPES.STATE, Buffer.from([values[normalized]]),
+      this.expectedBoard === "m5stack-stackchan-k151" ? {
+        retryTimeouts: [850, 1_600, 2_300],
+        shouldRetry: () => revision === this.stateRevision,
+      } : undefined);
+  }
+
+  captureConfigurationPayload() {
+    const capability = this.capabilities?.capabilities?.audio;
+    const cameraUnsupported = this.captureMode === "camera-hands-free" &&
+      this.capabilities?.capabilities?.camera?.conversationGate !== true;
+    const mode = cameraUnsupported || (this.expectedBoard === "m5stack-stackchan-k151" && capability?.handsFree !== true)
+      ? "push-to-talk" : this.captureMode;
+    return captureConfigPayload(mode, this.vadThreshold, { enabled: this.microphoneEnabled });
   }
 
   async setCaptureMode(mode, vadThreshold = this.vadThreshold, microphoneEnabled = this.microphoneEnabled) {
-    this.captureMode = mode === "hands-free" ? "hands-free" : "push-to-talk";
+    this.captureMode = ["hands-free", "camera-hands-free"].includes(mode) ? mode : "push-to-talk";
     this.vadThreshold = normalizeVadThreshold(vadThreshold);
     this.microphoneEnabled = microphoneEnabled !== false;
     if (this.connectionState === "ready") {
@@ -704,7 +763,7 @@ class Rlcd42SerialGateway {
       if (this.capabilities?.capabilities?.audio?.capture === true) {
         await this.writeWithAck(
           FRAME_TYPES.CAPTURE_CONFIG,
-          captureConfigPayload(this.captureMode, this.vadThreshold, { enabled: this.microphoneEnabled }),
+          this.captureConfigurationPayload(),
         );
       }
     }
@@ -727,12 +786,14 @@ class Rlcd42SerialGateway {
     return { device: this.device ? { ...this.device } : null, ssid: network };
   }
 
-  async stopPlayback() {
+  async stopPlayback({ preserveVoiceMotion = false } = {}) {
     this.playbackGeneration += 1;
     this.activePlayback = null;
     if (this.connectionState !== "ready") return { interrupted: true };
-    await this.writeWithAck(FRAME_TYPES.AUDIO_STOP, Buffer.alloc(0), { timeoutMs: 5_000 }).catch(() => {});
-    await this.setDeviceState("idle").catch(() => {});
+    const keepMotion = preserveVoiceMotion && this.capabilities?.capabilities?.audio?.preserveVoiceMotionOnReset === true;
+    await this.writeWithAck(FRAME_TYPES.AUDIO_STOP, keepMotion ? Buffer.from([1]) : Buffer.alloc(0),
+      { timeoutMs: 5_000 }).catch(() => {});
+    if (!keepMotion) await this.setDeviceState("idle").catch(() => {});
     return { interrupted: true };
   }
 
@@ -794,7 +855,19 @@ class Rlcd42SerialGateway {
     return { interrupted: false };
   }
 
-  async playPcm16(pcm, sampleRate = PLAYBACK_SAMPLE_RATE) {
+  async transferPcm16Playback(bytes, generation) {
+    for (let offset = 0; offset < bytes.length; offset += PLAYBACK_CHUNK_BYTES) {
+      if (generation !== this.playbackGeneration) return { interrupted: true };
+      const result = await this.writePcm16PlaybackChunk(
+        bytes.subarray(offset, offset + PLAYBACK_CHUNK_BYTES),
+        generation,
+      );
+      if (result.interrupted) return result;
+    }
+    return { interrupted: false };
+  }
+
+  async playPcm16(pcm, sampleRate = PLAYBACK_SAMPLE_RATE, options) {
     const bytes = Buffer.isBuffer(pcm) ? pcm : Buffer.from(pcm || []);
     if (!bytes.length || bytes.length % 2) throw new Error("RLCD 4.2へ送るPCM音声が正しくありません。");
     // Normal TTS must not fall back to the Live/unknown-length protocol:
@@ -804,7 +877,7 @@ class Rlcd42SerialGateway {
     const bufferBytes = 512 * 1024;
     if (bytes.length > bufferBytes) {
       for (let offset = 0; offset < bytes.length; offset += bufferBytes) {
-        const result = await this.playPcm16(bytes.subarray(offset, offset + bufferBytes), sampleRate);
+        const result = await this.playPcm16(bytes.subarray(offset, offset + bufferBytes), sampleRate, options);
         if (result.interrupted) return result;
       }
       return { interrupted: false };
@@ -814,15 +887,9 @@ class Rlcd42SerialGateway {
     // ownership before awaiting so a partial start is cleaned up as well.
     const expectedGeneration = this.playbackGeneration + 1;
     try {
-      const generation = await this.beginPcm16Playback(sampleRate, totalSamples);
-      for (let offset = 0; offset < bytes.length; offset += PLAYBACK_CHUNK_BYTES) {
-        if (generation !== this.playbackGeneration) return { interrupted: true };
-        const result = await this.writePcm16PlaybackChunk(
-          bytes.subarray(offset, offset + PLAYBACK_CHUNK_BYTES),
-          generation,
-        );
-        if (result.interrupted) return result;
-      }
+      const generation = await this.beginPcm16Playback(sampleRate, totalSamples, options);
+      const transfer = await this.transferPcm16Playback(bytes, generation);
+      if (transfer.interrupted) return transfer;
       return await this.endPcm16Playback(generation);
     } catch (error) {
       if (this.playbackGeneration === expectedGeneration) {

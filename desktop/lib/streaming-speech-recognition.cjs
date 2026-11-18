@@ -26,6 +26,17 @@ const STREAMING_PARTIAL_INITIAL_SAMPLES = Math.round(TARGET_SAMPLE_RATE * .32);
 const STREAMING_PARTIAL_INTERVAL_SAMPLES = Math.round(TARGET_SAMPLE_RATE * .4);
 const REAZONSPEECH_END_PADDING_SAMPLES = Math.round(TARGET_SAMPLE_RATE * .9);
 
+function withAbort(promise, signal) {
+  if (!signal) return promise;
+  return new Promise((resolve, reject) => {
+    const abort = () => reject(signal.reason || new Error("音声入力を中止しました。"));
+    if (signal.aborted) { abort(); return; }
+    signal.addEventListener("abort", abort, { once: true });
+    Promise.resolve(promise).then(value => { signal.removeEventListener("abort", abort); resolve(value); },
+      error => { signal.removeEventListener("abort", abort); reject(error); });
+  });
+}
+
 function padWaveform(samples, padding) {
   const padded = new Float32Array(samples.length + padding * 2);
   padded.set(samples, padding);
@@ -85,12 +96,15 @@ class SimulatedStreamingSession {
     initialSamples = STREAMING_PARTIAL_INITIAL_SAMPLES,
     intervalSamples = STREAMING_PARTIAL_INTERVAL_SAMPLES,
     now = () => performance.now(),
+    enhanceFinal = null,
   } = {}) {
     this.transcribe = transcribe;
     this.queueInference = queueInference;
     this.initialSamples = initialSamples;
     this.intervalSamples = intervalSamples;
     this.now = now;
+    this.enhanceFinal = enhanceFinal;
+    this.controller = new AbortController();
     this.chunks = [];
     this.totalSamples = 0;
     this.lastDecodedSamples = 0;
@@ -117,8 +131,17 @@ class SimulatedStreamingSession {
     let result;
     const startedAt = this.now();
     try {
-      result = await this.queueInference(() => this.transcribe(snapshot));
+      result = await withAbort(this.queueInference(async () => {
+        this.controller.signal.throwIfAborted();
+        const samples = final && this.enhanceFinal
+          ? await this.enhanceFinal(snapshot, this.controller.signal) : snapshot;
+        this.controller.signal.throwIfAborted();
+        const value = await this.transcribe(samples);
+        this.controller.signal.throwIfAborted();
+        return value;
+      }), this.controller.signal);
     } catch (error) {
+      if (this.controller.signal.aborted) throw this.controller.signal.reason;
       // Short prefixes can be below an offline recognizer's minimum duration.
       // Keep a partial miss from tearing down the microphone session; final
       // decoding still reports actual model/runtime errors to the user.
@@ -158,6 +181,7 @@ class SimulatedStreamingSession {
   }
 
   cancel() {
+    this.controller.abort(new Error("音声入力を中止しました。"));
     this.closed = true;
     this.chunks = [];
   }
@@ -168,6 +192,7 @@ class StreamingSpeechRecognition {
     fetchImpl = globalThis.fetch,
     modelId = DEFAULT_STREAMING_SPEECH_MODEL_ID,
     sherpaBaseDirectory = path.join(baseDirectory, "..", "sherpa-onnx-models"),
+    enhanceFinal = null,
   } = {}) {
     this.baseDirectory = path.resolve(baseDirectory);
     this.modelId = modelForId(modelId)?.id || DEFAULT_STREAMING_SPEECH_MODEL_ID;
@@ -178,6 +203,7 @@ class StreamingSpeechRecognition {
     this.sessions = new Map();
     this.inferenceQueue = Promise.resolve();
     this.preparePromises = new Map();
+    this.enhanceFinal = enhanceFinal;
   }
 
   get model() {
@@ -302,6 +328,7 @@ class StreamingSpeechRecognition {
         sampleRate: TARGET_SAMPLE_RATE,
       }),
       (task) => this.queueInference(task),
+      { enhanceFinal: this.enhanceFinal },
     );
   }
 
@@ -341,9 +368,13 @@ class StreamingSpeechRecognition {
     const id = String(sessionId || "").trim();
     const entry = this.sessions.get(id);
     if (!entry) throw new Error("音声認識セッションが見つかりません。もう一度マイクを開始してください。");
-    this.sessions.delete(id);
-    const result = await entry.session.finish();
-    return { sessionId: id, modelId: entry.modelId, ...result };
+    entry.finishing ||= entry.session.finish();
+    try {
+      const result = await entry.finishing;
+      return { sessionId: id, modelId: entry.modelId, ...result };
+    } finally {
+      if (this.sessions.get(id) === entry) this.sessions.delete(id);
+    }
   }
 
   cancel(sessionId) {
@@ -358,7 +389,7 @@ class StreamingSpeechRecognition {
   close() {
     for (const entry of this.sessions.values()) entry.session.cancel();
     this.sessions.clear();
-    this.inferenceQueue = Promise.resolve();
+    // Keep queued native inference serialized until its underlying call settles.
   }
 
   async transcribe(payload = {}, modelId = this.modelId) {

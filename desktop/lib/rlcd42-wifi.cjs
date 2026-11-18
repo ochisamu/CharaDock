@@ -198,7 +198,7 @@ class Rlcd42WifiGateway {
     this.enabled = enabled === true;
     this.expectedDeviceId = nextDeviceId;
     this.pairingToken = nextToken;
-    this.captureMode = captureMode === "hands-free" ? "hands-free" : "push-to-talk";
+    this.captureMode = ["hands-free", "camera-hands-free"].includes(captureMode) ? captureMode : "push-to-talk";
     this.vadThreshold = normalizeVadThreshold(vadThreshold);
     this.microphoneEnabled = microphoneEnabled !== false;
     await this.inner.setCaptureMode(this.captureMode, this.vadThreshold, this.microphoneEnabled);
@@ -405,7 +405,7 @@ class Rlcd42WifiGateway {
   }
 
   async setCaptureMode(mode, vadThreshold = this.vadThreshold, microphoneEnabled = this.microphoneEnabled) {
-    this.captureMode = mode === "hands-free" ? "hands-free" : "push-to-talk";
+    this.captureMode = ["hands-free", "camera-hands-free"].includes(mode) ? mode : "push-to-talk";
     this.vadThreshold = normalizeVadThreshold(vadThreshold);
     this.microphoneEnabled = microphoneEnabled !== false;
     if (this.status().connected) {
@@ -446,9 +446,21 @@ class Rlcd42WifiGateway {
     if (typeof this.inner.setMotionEnabled !== "function") throw new Error("This device has no servo control.");
     return this.inner.setMotionEnabled(enabled);
   }
+  useNativeFace() { return this.inner.useNativeFace?.(); }
+  startCameraPreview() { return this.inner.startCameraPreview?.(); }
+  setCameraControls(...args) { return this.inner.setCameraControls?.(...args); }
+  setHomePitch(degrees) { return this.inner.setHomePitch?.(degrees); }
+  finishCurrentCapture() { return this.inner.finishCurrentCapture?.(); }
+  abortCurrentCapture() { return this.inner.abortCurrentCapture?.(); }
+  sendConversationExpression(value, options) { return this.inner.sendConversationExpression?.(value, options); }
+  sendVoiceMotion(id) { return this.inner.sendVoiceMotion?.(id); }
+  sendConversationGesture(gesture) { return this.inner.sendConversationGesture?.(gesture); }
   setDeviceState(...args) { return this.inner.setDeviceState(...args); }
   stopPlayback(...args) { return this.inner.stopPlayback(...args); }
+  writePcm16PlaybackBatch(...args) { return this.inner.writePcm16PlaybackBatch(...args); }
   playPcm16(...args) { return this.inner.playPcm16(...args); }
+  stagePcm16(...args) { return this.inner.stagePcm16?.(...args); }
+  playStagedPcm16(...args) { return this.inner.playStagedPcm16(...args); }
   beginPcm16Playback(...args) { return this.inner.beginPcm16Playback(...args); }
   writePcm16PlaybackChunk(...args) { return this.inner.writePcm16PlaybackChunk(...args); }
   endPcm16Playback(...args) { return this.inner.endPcm16Playback(...args); }

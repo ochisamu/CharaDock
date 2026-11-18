@@ -4,6 +4,13 @@ All notable changes to CharaDock will be documented here.
 
 ## Unreleased
 
+## 0.9.0 - 2026-11-18
+
+- Add StackChan K151 support across USB and Wi-Fi, with a native animated face, camera-assisted hands-free conversation, face tracking, physical voice commands, and on-device privacy controls. Pair with CharaDock ESP32 firmware v0.9.0.
+- Stream spoken phrases to StackChan as text becomes ready, stage the next phrase during playback, and recover conversation state when Live ends without a reply. Add context-aware thinking cues for long waits in standard TTS.
+- Add LivLiv and VRM support to character appearance in the desktop app and CharaDock Link. Include a bundled LivLiv version of Kohaku.
+- Improve local speech options, including Haru-based Japanese speech enhancement and Beatrice routing.
+
 ## 0.8.0 - 2026-10-25
 
 - Audit HTTP2Shell / CVE-2026-111497 against Electron's actual Chromium Brotli linkage: the official Electron 43.1.1 used by v0.7.1 already includes the decoder fix. Upgrade the bundled runtime to Electron 43.8.3, pin development/CI builds to patched Node 22.23.4, and reject affected build runtimes.

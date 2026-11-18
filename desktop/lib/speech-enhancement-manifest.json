@@ -1,0 +1,46 @@
+{
+  "id": "re-use",
+  "label": "RE-USE · 音声入力のノイズ低減",
+  "description": "録音を端末内で整えてからローカル認識します。",
+  "directoryName": "re-use-v0.11.0",
+  "downloadBytes": 68245016,
+  "platforms": [
+    "win32"
+  ],
+  "sourceUrl": "https://github.com/nyosegawa/speech.cpp",
+  "licenseUrl": "https://huggingface.co/sakasegawa/NVIDIA-NemotronLabs-RE-USE-GGUF/resolve/117011d06bba5522006f5fcfeadfdb714b58b236/LICENSE.OpenMDW-1.1",
+  "runtime": {
+    "archiveName": "speech-0.11.0-windows-x64-vulkan.zip",
+    "url": "https://github.com/nyosegawa/speech.cpp/releases/download/v0.11.0/speech-0.11.0-windows-x64-vulkan.zip",
+    "bytes": 29718214,
+    "sha256": "b64f498179fc46d08149317eaea9fe6f24e6fa0cd194557b374c97e76ccc9c67"
+  },
+  "files": [
+    {
+      "name": "NVIDIA-NemotronLabs-RE-USE-10M-F32.gguf",
+      "relativePath": "NVIDIA-NemotronLabs-RE-USE-10M-F32.gguf",
+      "url": "https://huggingface.co/sakasegawa/NVIDIA-NemotronLabs-RE-USE-GGUF/resolve/117011d06bba5522006f5fcfeadfdb714b58b236/NVIDIA-NemotronLabs-RE-USE-10M-F32.gguf",
+      "bytes": 38519136,
+      "sha256": "827faf209c6988b9cfd07b08ee7f212a7b2eeb7870a25380df671d55338b3879"
+    },
+    {
+      "name": "LICENSE.OpenMDW-1.1",
+      "relativePath": "LICENSE.OpenMDW-1.1",
+      "url": "https://huggingface.co/sakasegawa/NVIDIA-NemotronLabs-RE-USE-GGUF/resolve/117011d06bba5522006f5fcfeadfdb714b58b236/LICENSE.OpenMDW-1.1",
+      "bytes": 2619,
+      "sha256": "2ab44b68365473c112f5092211a38f231cb23e50de68b75a13369adbd76a74df"
+    },
+    {
+      "name": "README.md",
+      "relativePath": "README.md",
+      "url": "https://huggingface.co/sakasegawa/NVIDIA-NemotronLabs-RE-USE-GGUF/resolve/117011d06bba5522006f5fcfeadfdb714b58b236/README.md",
+      "bytes": 5047,
+      "sha256": "99389cfbdfc963b3430fe0364ef2f9d6d6dea4bf6e709466dacb4507518c5c7b"
+    }
+  ],
+  "engine": "speech-cpp",
+  "reuseDirectoryNames": [
+    "re-use-v0.10.1"
+  ],
+  "incrementalDownloadBytes": 29718214
+}

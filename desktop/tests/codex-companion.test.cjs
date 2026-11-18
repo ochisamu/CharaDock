@@ -113,7 +113,8 @@ test('main and renderer keep Companion read-only and off at restart', async () =
     assert.match(code, /assertConversationRole\(\)/);
   }
   assert.match(main, /async function esp32PttStart[^]*codexCompanion.state.enabled \|\| companionTransitioning\) return false/);
-  assert.match(main, /suppress: \(\) => codexCompanion.state.enabled/);
+  assert.match(main, /suppress: \(\) => esp32SpeechSuppressed\(deviceKind\)/);
+  assert.match(main, /function esp32SpeechSuppressed\(deviceKind\) \{[\s\S]*?return codexCompanion.state.enabled/);
   assert.match(main, /companion:start[^]*assertTrustedSender/);
   assert.doesNotMatch(main, /preferences.patch\(\{[^}]*companionEnabled/);
 });

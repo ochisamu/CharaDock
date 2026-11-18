@@ -43,6 +43,7 @@ CharaDock is an unofficial derivative of [rotejin/PuruPuruPNGTuber](https://gith
 
 ### Motion that belongs on the desktop
 
+- Import local VRM avatars with bust-up framing, audio-driven lip sync and model expressions on desktop and Link; [VRM guide](docs/vrm-avatar.md)
 - Transparent, frameless, always-on-top character window
 - Breathing, blinking, hair motion, quiet idle gaze, and three-stage lip sync driven by the real audio waveform
 - Mouse tracking only while the pointer is over the character
@@ -209,7 +210,7 @@ See the [CharaDock Privacy Policy](https://ochisamu.github.io/CharaDock/privacy.
 
 ### Codex app-server
 
-CharaDock starts the local `codex app-server --stdio` process. Codex manages the ChatGPT authentication token; CharaDock never receives it. Models returned by app-server appear in a dropdown, and conversation and work can use separate models and reasoning-effort settings.
+CharaDock starts the local `codex app-server --stdio` process. Codex manages the ChatGPT authentication token; CharaDock never receives it. Models returned by app-server appear in a dropdown, and conversation and work can use separate models and reasoning-effort settings. The catalog refreshes at startup, after sign-in, and when opening AI Connection settings, so newly listed models appear without a CharaDock update. GPT-6.1 Terra is also selectable explicitly with the Codex login; account access and a sufficiently recent Codex runtime are required. Catalog refreshes preserve saved/current selections and discard replies from a previous connection.
 
 GPT-Live / Codex Voice is experimental and its availability depends on the account and upstream implementation. Realtime starts as a new empty task only when recording is enabled. In Work it connects to a workspace-write task scoped to the selected folder, and voice-requested work is also saved to history.
 

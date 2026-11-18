@@ -4,6 +4,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const vm = require("node:vm");
+const { StreamingReplyPhrases } = require("../lib/speech-stream.cjs");
 const main = fs.readFileSync(path.join(__dirname, "../main.cjs"), "utf8");
 
 test("completed captions expire and no longer seed a later utterance", () => {
@@ -27,15 +28,16 @@ test("completed captions expire and no longer seed a later utterance", () => {
   assert.equal(timer, null); assert.equal(ctx.rlcd42LastDisplayText, "新しい回答");
 });
 
-test("RLCD commits each audio sentence before playback, including streamed tail", async () => {
+function playbackHarness() {
   const events = [];
   let held = false;
   const holds = [];
   const ctx = vm.createContext({
     speechCpp: { cancelOwner() {} },
     RLCD42_TTS_OWNER_ID: "test", rlcd42SpeechGeneration: 0, atomEchoReplyGeneration: 0,
-    rlcd42SpeechActive: false, rlcd42SpeechStream: null, rlcd42PlaybackCaption: "",
+    rlcd42SpeechActive: false, rlcd42SpeechStream: null, rlcd42SpeechPhrases: null, rlcd42PlaybackCaption: "",
     configuredSpeechText: (text) => text, rlcd42SpeakerSelected: () => true,
+    stackchanProfile: () => false, rlcd42Profile: () => ({}),
     characterTtsSettings: () => ({ provider: "test" }), activeCharacter: () => ({ id: "test" }),
     synthesizeConfiguredTts: async () => ({ audioDataUrls: ["a", "b"], audioTexts: ["一文目。", "二文目。"], streamId: "tail" }),
     nextIrodoriTtsChunk: async () => {
@@ -61,9 +63,13 @@ test("RLCD commits each audio sentence before playback, including streamed tail"
   });
   vm.runInContext(main.slice(main.indexOf("function publishSpeechCaption("), main.indexOf("function rlcd42SpeakerSelected(")), ctx);
   vm.runInContext(main.slice(main.indexOf("async function stopRlcd42Speech("), main.indexOf("async function esp32PttEnd(")), ctx);
+  return { ctx, events, holds };
+}
+
+test("RLCD commits each audio sentence before playback, including streamed tail", async () => {
+  const { ctx, events, holds } = playbackHarness();
   const result = await ctx.playRlcd42Speech("回答全文");
   assert.deepEqual(holds, [true, false], "one output lease spans the entire reply");
-  assert.equal(held, false);
   assert.equal(result.spoken, true);
   assert.deepEqual(events.slice(0, 9), [
     ["scene", "一文目。"], ["caption", "一文目。"], ["audio", "a"],
@@ -72,6 +78,84 @@ test("RLCD commits each audio sentence before playback, including streamed tail"
   ]);
   assert.equal(events.at(-1)[0], "done");
   assert.equal(ctx.rlcd42PlaybackCaption, "");
+});
+
+test("StackChan finishes streaming speech independently of the caption acknowledgement", async () => {
+  const { ctx, events } = playbackHarness();
+  ctx.stackchanProfile = () => true;
+  ctx.stackchanGestures = { active: true, generation: 0, reset() {} };
+  ctx.splitIrodoriText = (text) => [text];
+  ctx.requestLiveExpressionCue = () => {};
+  ctx.jevEnabled = () => false;
+  ctx.syncRlcd42Scene = async () => { throw new Error("caption acknowledgement lost"); };
+  ctx.scheduleRlcd42SceneSync = (delay) => {
+    if (delay === 0) events.push(["scene", ctx.rlcd42PlaybackCaption]);
+  };
+  assert.equal((await ctx.playRlcd42Speech("回答全文")).spoken, true);
+  assert.deepEqual(events.filter(([type]) => type === "audio"), [["audio", "a"], ["audio", "b"], ["audio", "c"]]);
+  assert.equal(events.filter(([type]) => type === "scene").length, 3);
+});
+
+test("StackChan plays a rejected staged phrase through the normal audio path", async () => {
+  const { ctx, events } = playbackHarness();
+  ctx.stackchanProfile = () => true;
+  ctx.stackchanGestures = { active: true, generation: 0, reset() {} };
+  ctx.splitIrodoriText = text => [text];
+  ctx.requestLiveExpressionCue = () => {};
+  ctx.jevEnabled = () => false;
+  ctx.rlcd42Gateway.status = () => ({
+    connected: true, capabilities: { audio: { playback: true, stagedPlaybackSamples: 100 } },
+  });
+  ctx.rlcd42Gateway.stagePcm16 = async (pcm) => ({ pcm });
+  ctx.rlcd42Gateway.playStagedPcm16 = async ({ pcm }) => {
+    events.push(["stage-refused", pcm]);
+    return { stagedRejected: true };
+  };
+  ctx.rlcd42Gateway.playPcm16 = async (pcm, _rate, options) => {
+    events.push(["audio", pcm]);
+    options.onPlaybackCommitted({});
+    return {};
+  };
+  assert.equal((await ctx.playRlcd42Speech("回答全文")).spoken, true);
+  assert.deepEqual(events.filter(([type]) => type === "audio" || type === "stage-refused"), [
+    ["audio", "a"], ["stage-refused", "b"], ["audio", "b"], ["stage-refused", "c"], ["audio", "c"],
+  ]);
+});
+
+test("RLCD prepares the next Chat phrase as the current phrase plays", async () => {
+  const { ctx, events, holds } = playbackHarness();
+  const first = "先に一文を読み上げるよ。";
+  const second = "次の文が届いたよ。";
+  const phrases = new StreamingReplyPhrases();
+  let firstPlaying, secondPrepared, release;
+  const playing = new Promise(resolve => { firstPlaying = resolve; });
+  const prepared = new Promise(resolve => { secondPrepared = resolve; });
+  const drain = new Promise(resolve => { release = resolve; });
+  ctx.synthesizeConfiguredTts = async (text, _owner, { wholeSentence }) => {
+    assert.equal(wholeSentence, true);
+    if (text === second) secondPrepared();
+    return { audioDataUrls: [text] };
+  };
+  ctx.rlcd42Gateway.playPcm16 = async (text) => {
+    events.push(["audio", text]);
+    if (text === first) {
+      firstPlaying();
+      await drain;
+    }
+    return { interrupted: false };
+  };
+  phrases.push(first);
+  const playback = ctx.playRlcd42Speech("", "test", { phrases });
+  await playing;
+  phrases.push(first + second);
+  await prepared;
+  assert.deepEqual(events.filter(([type]) => type === "audio"), [["audio", first]]);
+  phrases.finish(first + second);
+  release();
+  assert.equal((await playback).spoken, true);
+  assert.deepEqual(events.filter(([type]) => type === "caption" || type === "audio"),
+    [["caption", first], ["audio", first], ["caption", second], ["audio", second]]);
+  assert.deepEqual(holds, [true, false]);
 });
 
 test("caption window previews without advancing, keeps repeats, and bounds old context", () => {
@@ -101,7 +185,9 @@ test("caption window previews without advancing, keeps repeats, and bounds old c
 test("left navigation has a distinct existing icon for every destination", () => {
   const html = fs.readFileSync(path.join(__dirname, "../control.html"), "utf8");
   const icons = [...html.matchAll(/class="nav-tab[^"]*"[^>]*><span class="ui-symbol ui-symbol-([\w-]+)"/g)].map((m) => m[1]);
-  assert.ok(icons.length >= 10);
+  const sidebar = html.match(/<nav class="nav-tabs"[\s\S]*?<\/nav>/)?.[0] || "";
+  assert.ok(sidebar);
+  assert.equal(icons.length, [...sidebar.matchAll(/<button\b/g)].length);
   assert.equal(new Set(icons).size, icons.length);
   for (const icon of icons) assert.ok(fs.existsSync(path.join(__dirname, "../../assets/ui/icons", `${icon}.svg`)));
 });

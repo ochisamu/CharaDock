@@ -27,21 +27,23 @@ class Rlcd42Hub {
     this.wifiSetupStatus = {};
     this.lastError = "";
     this.onStatus = onStatus;
+    this.onReady = onReady;
+    this.logger = logger;
+    this.readySource = "";
+    this.readyGeneration = 0;
     this.onInterrupt = onInterrupt;
 
     const active = (source) => this.inputSource === source || (!this.inputSource && this.activeSource() === source);
     const callbacks = (source) => ({
       onInput: async (event) => this.activeSource() === source ? onInput?.(event) : undefined,
-      onPttStart: async () => {
-        if (!this.enabled || !this.microphoneEnabled || this.activeSource() !== source) return;
+      onPttStart: async (options) => {
+        if (!this.enabled || !this.microphoneEnabled || this.activeSource() !== source) return false;
         const previous = this.inputCapture;
         if (previous && !previous.endPending) throw new Error("RLCD 4.2 is already capturing audio.");
         const capture = { source, endPending: false, finished: false };
         this.inputCapture = capture;
         this.inputSource = source;
-        try {
-          return await onPttStart?.();
-        } catch (error) {
+        const restorePrevious = () => {
           // Main may reject a follow-up while the previous STT is finishing.
           // Preserve that response's interrupt owner unless it completed or
           // this attempted start was itself interrupted/replaced.
@@ -49,6 +51,13 @@ class Rlcd42Hub {
             this.inputCapture = previous;
             this.inputSource = previous.source;
           }
+        };
+        try {
+          const accepted = await onPttStart?.(options);
+          if (accepted === false) restorePrevious();
+          return accepted;
+        } catch (error) {
+          restorePrevious();
           throw error;
         }
       },
@@ -83,7 +92,6 @@ class Rlcd42Hub {
         // microphone UI or admit a second conversation input.
         logger?.("info", "rlcd42-standby-capture-status", { ...status, source });
       },
-      onReady: async (status) => this.activeSource() === source ? onReady?.({ ...status, source }) : undefined,
       onStatus: () => {
         if (source === "wifi" && this.serialPolicyConfigured && !this.configuring) {
           this.syncSerialPolicy().catch((error) => logger?.("warn", "rlcd42-usb-policy-failed", { error: error.message }));
@@ -94,7 +102,7 @@ class Rlcd42Hub {
             logger?.("warn", `RLCD ${source} capture disconnect cleanup failed: ${error.message}`);
           });
         }
-        this.onStatus(this.status());
+        this.notifyStatus();
       },
       logger,
     });
@@ -103,11 +111,28 @@ class Rlcd42Hub {
       ...callbacks("usb"),
       onWifiStatus: async (status) => {
         this.wifiSetupStatus = status && typeof status === "object" ? { ...status } : {};
-        this.onStatus(this.status());
+        this.notifyStatus();
         return onWifiStatus?.(this.wifiSetupStatus);
       },
     });
     this.wifi = new Rlcd42WifiGateway({ ...callbacks("wifi"), GatewayClass, expectedBoard });
+  }
+
+  notifyStatus() {
+    const status = this.status();
+    const source = status.enabled ? status.transport : "";
+    if (source !== this.readySource) {
+      this.readySource = source;
+      const generation = ++this.readyGeneration;
+      const isCurrent = () => this.readyGeneration === generation && this.enabled && this.activeSource() === source;
+      if (source && this.onReady) {
+        // A connected standby link can take ownership without handshaking again.
+        Promise.resolve().then(() => isCurrent() && this.onReady({ ...status, source, isCurrent })).catch(error => {
+          if (isCurrent()) this.logger?.("warn", "rlcd42-active-session-setup-failed", { source, error: error.message });
+        });
+      }
+    }
+    this.onStatus(status);
   }
 
   releaseInput(capture) {
@@ -186,12 +211,12 @@ class Rlcd42Hub {
   } = {}) {
     this.enabled = enabled === true;
     this.transportPreference = ["usb", "wifi"].includes(transport) ? transport : "auto";
-    this.captureMode = captureMode === "hands-free" ? "hands-free" : "push-to-talk";
+    this.captureMode = ["hands-free", "camera-hands-free"].includes(captureMode) ? captureMode : "push-to-talk";
     this.vadThreshold = Math.max(80, Math.min(800, Math.round(Number(vadThreshold) || 120)));
     this.microphoneEnabled = microphoneEnabled !== false;
     if (!this.enabled) {
       await this.disconnect();
-      this.onStatus(this.status());
+      this.notifyStatus();
       return this.status();
     }
 
@@ -201,6 +226,11 @@ class Rlcd42Hub {
     this.serialOptions = { port, captureMode: this.captureMode, vadThreshold: this.vadThreshold, microphoneEnabled: this.microphoneEnabled };
     this.hasPairing = Boolean(deviceId && token);
     const serialMicrophone = this.transportPreference !== "wifi" && this.microphoneEnabled;
+    if (!this.shouldEnableSerial() && this.serial.status().connected) {
+      await this.serial.releaseUsbToWifi?.()?.catch(error => {
+        this.logger?.("warn", "rlcd42-usb-release-failed", { error: error.message });
+      });
+    }
     const results = await Promise.allSettled([
       this.serial.configure({
         enabled: this.shouldEnableSerial(),
@@ -221,7 +251,7 @@ class Rlcd42Hub {
     this.configuring = false;
     await this.syncSerialPolicy();
     if (results.every((result) => result.status === "rejected")) throw results[0].reason;
-    this.onStatus(this.status());
+    this.notifyStatus();
     return this.status();
   }
 
@@ -253,7 +283,7 @@ class Rlcd42Hub {
   }
 
   async setCaptureMode(mode, vadThreshold = this.vadThreshold, microphoneEnabled = this.microphoneEnabled) {
-    this.captureMode = mode === "hands-free" ? "hands-free" : "push-to-talk";
+    this.captureMode = ["hands-free", "camera-hands-free"].includes(mode) ? mode : "push-to-talk";
     this.vadThreshold = Math.max(80, Math.min(800, Math.round(Number(vadThreshold) || 120)));
     this.microphoneEnabled = microphoneEnabled !== false;
     await Promise.all([
@@ -273,12 +303,12 @@ class Rlcd42Hub {
   clearError() {
     if (!this.lastError) return;
     this.lastError = "";
-    this.onStatus(this.status());
+    this.notifyStatus();
   }
 
   reportError(error) {
     this.lastError = String(error?.message || error || "").slice(0, 500);
-    this.onStatus(this.status());
+    this.notifyStatus();
   }
 
   requireGateway() {
@@ -290,14 +320,28 @@ class Rlcd42Hub {
   sendPortrait(...args) { return this.requireGateway().sendPortrait(...args); }
   sendPortraitFrame(...args) { return this.requireGateway().sendPortraitFrame(...args); }
   sendScene(...args) { return this.requireGateway().sendScene(...args); }
-  setDeviceState(...args) { return this.requireGateway().setDeviceState(...args); }
+  async setDeviceState(...args) { return this.requireGateway().setDeviceState(...args); }
   playPcm16(...args) { return this.requireGateway().playPcm16(...args); }
 
-  async stopPlayback() {
+  async stagePcm16(pcm, playback) {
+    const gateway = this.requireGateway();
+    const staged = await gateway.stagePcm16?.(pcm, playback);
+    return staged && { gateway, staged };
+  }
+
+  playStagedPcm16(handle, options) {
+    if (handle.gateway !== this.activeGateway()) return { interrupted: true };
+    return handle.gateway.playStagedPcm16(handle.staged, options);
+  }
+
+  async stopPlayback(options) {
     const gateways = [this.wifi, this.serial].filter((gateway) => gateway.status().connected);
-    await Promise.all(gateways.map((gateway) => gateway.stopPlayback().catch(() => {})));
+    await Promise.all(gateways.map((gateway) => gateway.stopPlayback(options).catch(() => {})));
     return { interrupted: Boolean(gateways.length) };
   }
+
+  finishCurrentCapture() { return this.activeGateway()?.finishCurrentCapture?.(); }
+  abortCurrentCapture() { return this.activeGateway()?.abortCurrentCapture?.(); }
 
   async beginPcm16Playback(sampleRate) {
     const gateway = this.requireGateway();
@@ -308,6 +352,11 @@ class Rlcd42Hub {
   async writePcm16PlaybackChunk(pcm, session) {
     if (!session?.gateway || session.gateway !== this.activeGateway()) return { interrupted: true };
     return session.gateway.writePcm16PlaybackChunk(pcm, session.generation);
+  }
+
+  async writePcm16PlaybackBatch(chunks, session) {
+    if (!session?.gateway || session.gateway !== this.activeGateway()) return { interrupted: true };
+    return session.gateway.writePcm16PlaybackBatch(chunks, session.generation);
   }
 
   async endPcm16Playback(session) {

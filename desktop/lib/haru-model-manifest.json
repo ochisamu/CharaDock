@@ -1,0 +1,49 @@
+{
+  "id": "haru-4b",
+  "label": "Haru 4B · Q8_0",
+  "description": "日本語に対応するローカル音声会話モデル。",
+  "directoryName": "haru-4b-q8-v0.11.0",
+  "downloadBytes": 6652841888,
+  "platforms": [
+    "win32"
+  ],
+  "sourceUrl": "https://huggingface.co/sakasegawa/Haru-4B-GGUF",
+  "licenseUrl": "https://huggingface.co/sakasegawa/Haru-4B-GGUF/resolve/fc026182f7bbfaa0400b2d44358a5e9e327b957f/LICENSE-APACHE-2.0",
+  "runtime": {
+    "archiveName": "speech-0.11.0-windows-x64-vulkan.zip",
+    "url": "https://github.com/nyosegawa/speech.cpp/releases/download/v0.11.0/speech-0.11.0-windows-x64-vulkan.zip",
+    "bytes": 29718214,
+    "sha256": "b64f498179fc46d08149317eaea9fe6f24e6fa0cd194557b374c97e76ccc9c67"
+  },
+  "files": [
+    {
+      "name": "Haru-4B-Q8_0.gguf",
+      "relativePath": "Haru-4B-Q8_0.gguf",
+      "url": "https://huggingface.co/sakasegawa/Haru-4B-GGUF/resolve/fc026182f7bbfaa0400b2d44358a5e9e327b957f/Haru-4B-Q8_0.gguf",
+      "bytes": 6623102720,
+      "sha256": "c372a527e63ca4251429a48863535b8bca03ebd6f414bbf31f28a9d175349934"
+    },
+    {
+      "name": "LICENSE-APACHE-2.0",
+      "relativePath": "LICENSE-APACHE-2.0",
+      "url": "https://huggingface.co/sakasegawa/Haru-4B-GGUF/resolve/fc026182f7bbfaa0400b2d44358a5e9e327b957f/LICENSE-APACHE-2.0",
+      "bytes": 11357,
+      "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+    },
+    {
+      "name": "LICENSE-MIT",
+      "relativePath": "LICENSE-MIT",
+      "url": "https://huggingface.co/sakasegawa/Haru-4B-GGUF/resolve/fc026182f7bbfaa0400b2d44358a5e9e327b957f/LICENSE-MIT",
+      "bytes": 1066,
+      "sha256": "98a96c38494df4963951e32b81ec4effebe4c8a812ab8d9e7d185d59e86fe2fc"
+    },
+    {
+      "name": "README.md",
+      "relativePath": "README.md",
+      "url": "https://huggingface.co/sakasegawa/Haru-4B-GGUF/resolve/fc026182f7bbfaa0400b2d44358a5e9e327b957f/README.md",
+      "bytes": 8531,
+      "sha256": "3cb0b87f478b171c884b646f7c1ca99ee882ab880101042348adec37264492a5"
+    }
+  ],
+  "engine": "speech-cpp"
+}

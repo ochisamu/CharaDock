@@ -912,6 +912,9 @@
   const meshAvatar = window.CharaDockMeshAvatar.create({engine: window.MeshAvatarStudio,
     onError: error => console.warn("Mesh avatar unavailable; retaining standard appearance", error)});
   if (URL_PARAMS.has("mesh-avatar-preview")) window.CharaDockMeshPreview = meshAvatar;
+  const livlivAvatar = window.CharaDockLivlivAvatar.create({engine: window.LivLivPlayer, onError: error => console.warn("LivLiv avatar unavailable", error)});
+  window.CharaDockLivlivSnapshot = () => livlivAvatar.snapshot();
+  if (URL_PARAMS.has("livliv-avatar-preview")) window.CharaDockLivlivPreview = livlivAvatar;
   let obsPerformanceCharacter = "";
   let kohakuMotionEnabled = false;
   let kohakuMotionPlayer = null;
@@ -6990,11 +6993,13 @@
       es.addEventListener("open", () => {
         obsExternalInput.connected = true;
       });
+      es.addEventListener("livliv-command", event => {try{livlivAvatar.command(JSON.parse(event.data));}catch{}});
       es.addEventListener("input", (event) => {
         try {
           obsLastEventId = Math.max(obsLastEventId, Math.round(Number(event.lastEventId) || 0));
           const data = sanitizeImportedJsonValue(JSON.parse(event.data));
           meshAvatar.expression({ ...data, characterId: obsPerformanceCharacter });
+          livlivAvatar.expression({ ...data, characterId: obsPerformanceCharacter });
           if (kohakuMotionEnabled && ["nikePerformance", "emotion", "reaction"].some(key => Object.hasOwn(data, key))) {
             kohakuMotionPendingInput = { ...data, receivedAt: performance.now() };
             if (kohakuMotionPlayer) {
@@ -7190,6 +7195,7 @@
   async function applyObsSnapshot(snapshot) {
     if (!snapshot || snapshot.type !== "purupuru-obs-snapshot") return false;
     void meshAvatar.sync(snapshot.meshAvatar, String(snapshot.characterId || ""));
+    void livlivAvatar.sync(snapshot.livlivAvatar, String(snapshot.characterId || ""));
     if (obsPerformanceCharacter !== String(snapshot?.characterId || "")) {
       nikePerformance.reset();
       nikePerformanceOutput = nikePerformance.update(performance.now());
@@ -12823,10 +12829,10 @@
     return drawIndependentAvatarFrame(frozen);
   }
 
-  function drawMeshAvatar() {
+  function drawMeshAvatar(controller = meshAvatar) {
     if (!imagesReady) return false;
     const frozen = shouldFreezeCharacterMotion();
-    const frame = meshAvatar.draw({mouth: frozen ? 0 : Number.isInteger(obsExternalInput.forceMouth) ? mouthState / 2 : mouthTargetForVoiceLevel(voiceLevel),
+    const frame = controller.draw({mouth: frozen ? 0 : Number.isInteger(obsExternalInput.forceMouth) ? mouthState / 2 : mouthTargetForVoiceLevel(voiceLevel),
       level: frozen ? 0 : voiceLevel, blink: !frozen && blinkClosed,
       gazeX: obsExternalInput.targetX / 3, gazeY: obsExternalInput.targetY / 3,
       motion: state, reduced: performanceReducedMotion.matches || frozen});
@@ -12859,7 +12865,7 @@
     resizeCanvas();
     drawBackground();
     drawItemLayers(ctx, "stageBack");
-    if (drawMeshAvatar() || drawKohakuAuthoredMotion()) return;
+    if (drawMeshAvatar(livlivAvatar) || drawMeshAvatar() || drawKohakuAuthoredMotion()) return;
     if (!imagesReady) {
       drawLoading();
       return;

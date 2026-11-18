@@ -611,7 +611,7 @@ test("remote access exposes compact avatar dialogue, device controls, and Live r
   const remoteCss = fs.readFileSync(path.join(projectRoot, "desktop", "remote", "remote.css"), "utf8");
   const remoteJs = fs.readFileSync(path.join(projectRoot, "desktop", "remote", "remote.js"), "utf8");
   const main = fs.readFileSync(path.join(projectRoot, "desktop", "main.cjs"), "utf8");
-  assert.match(controlHtml, /data-page="remote"><span class="ui-symbol ui-symbol-device-link"[^>]*><\/span>CharaDock Link/);
+  assert.match(controlHtml, /data-page="remote"><span class="ui-symbol ui-symbol-device-link"[^>]*><\/span>端末連携/);
   for (const id of ["remoteDeviceList", "remotePcAudioToggle", "remoteResponseModeSelect", "remotePairingCode", "remotePairingTransport", "remotePairingRouteHint", "remotePortInput", "remoteTailscaleHttpsPortInput", "startRemoteTailscaleButton", "stopRemoteTailscaleButton"]) assert.match(controlHtml, new RegExp(`id="${id}"`));
   assert.match(controlJs, /revokeRemoteSession\(device\.id\)/);
   assert.match(controlJs, /startRemoteTailscale\(\)/);
@@ -696,9 +696,9 @@ test("ESP32 devices have a scalable settings page independent of CharaDock Link"
   const main = fs.readFileSync(path.join(projectRoot, "desktop", "main.cjs"), "utf8");
   const liveBridge = fs.readFileSync(path.join(projectRoot, "desktop", "atom-echo-live.js"), "utf8");
   const remoteSettings = html.match(/data-page-panel="remote"[\s\S]*?(?=<section class="page" data-page-panel="esp32")/)?.[0] || "";
-  const atomSettings = html.match(/data-page-panel="esp32"[\s\S]*?(?=<section class="page" data-page-panel="character")/)?.[0] || "";
+  const atomSettings = html.match(/data-page-panel="esp32"[\s\S]*?(?=<section class="settings-group" data-settings-group="skills")/)?.[0] || "";
   assert.match(html, /data-page="remote"[\s\S]*CharaDock Link/);
-  assert.match(html, /data-page="esp32"[\s\S]*ESP32デバイス/);
+  assert.match(html, /data-page="esp32">専用デバイス<\/button>/);
   assert.doesNotMatch(remoteSettings, /id="atomEchoAudioOutputTitle"/);
   assert.match(atomSettings, /id="atomEchoEnabledSettings"[\s\S]*id="atomEchoAudioOutputTitle"/);
   assert.match(atomSettings, /id="atomEchoAudioOutputTitle"[\s\S]*内蔵スピーカー[\s\S]*id="testAtomEchoSpeakerButton"/);
@@ -709,9 +709,10 @@ test("ESP32 devices have a scalable settings page independent of CharaDock Link"
   assert.match(atomSettings, /id="rlcd42Card"[\s\S]*RLCD 4\.2/);
   assert.match(atomSettings, /id="rlcd42TransportSelect"[\s\S]*id="rlcd42WifiSsidInput"[\s\S]*id="rlcd42PortSelect"[\s\S]*id="provisionRlcd42WifiButton"/);
   assert.match(atomSettings, /id="rlcd42ArtStyleSelect"[\s\S]*漫画インク（推奨）[\s\S]*id="rlcd42CaptionModeSelect"/);
-  assert.match(atomSettings, /id="rlcd42AudioTitle"[\s\S]*id="rlcd42SpeakerToggle"[\s\S]*id="testRlcd42SpeakerButton"/);
+  assert.match(atomSettings, /id="rlcd42QuickControls"[\s\S]*id="rlcd42MicrophoneToggle"[\s\S]*id="rlcd42SpeakerToggle"[\s\S]*id="stackchanCameraToggle"[\s\S]*id="rlcd42AudioTitle"[\s\S]*id="testRlcd42SpeakerButton"/);
   assert.match(atomSettings, /id="rlcd42MicrophoneToggle"[\s\S]*id="rlcd42CaptureModeSelect"[\s\S]*ハンズフリー[\s\S]*id="rlcd42VadThresholdInput"[\s\S]*id="rlcd42LiveIdleTimeoutToggle"/);
-  assert.match(atomSettings, /id="rlcd42SensorStrip"[\s\S]*id="syncRlcd42DisplayButton"/);
+  assert.match(atomSettings, /id="rlcd42ArtStyleSelect"[\s\S]*id="rlcd42CaptionModeSelect"[\s\S]*id="syncRlcd42DisplayButton"/);
+  assert.match(atomSettings, /<details id="rlcd42SensorDetails"[^>]*>[\s\S]*id="rlcd42SensorStrip"/);
   assert.match(atomSettings, /id="characterDeviceBoardSelect"[\s\S]*m5stack-stackchan-k151/);
   assert.match(atomSettings, /id="stackchanMotionEnable"[\s\S]*id="stackchanMotionDisable"/);
   assert.doesNotMatch(atomSettings, /検討中/);
@@ -719,7 +720,7 @@ test("ESP32 devices have a scalable settings page independent of CharaDock Link"
   assert.match(main, /deviceProfiles[\s\S]*RLCD42_PROFILE_ID/);
   assert.match(main, /syncRlcd42Presentation/);
   assert.match(main, /playRlcd42Speech[\s\S]*resamplePcm16[\s\S]*playPcm16/);
-  assert.match(main, /onPttStart: async \(\) => esp32InputStart\("rlcd42"\)[\s\S]*onPcmChunk: async \(chunk\) => esp32InputGate\("rlcd42"\).chunk\(chunk\)/);
+  assert.match(main, /onPttStart: async \(options\) => esp32InputStart\("rlcd42", options\)[\s\S]*onPcmChunk: async \(chunk\) => esp32InputGate\("rlcd42"\).chunk\(chunk\)/);
   assert.match(main, /rlcd42LiveAudioRoute = new AtomEchoLiveAudioRoute\(\{[\s\S]*processorOptions: rlcd42OutputProfile/);
   assert.match(main, /rlcd42:testSpeaker/);
   assert.match(main, /ipcMain\.handle\("rlcd42:stopSpeaker"[\s\S]*?assertTrustedAppSender\(event\)/);
@@ -803,7 +804,7 @@ test("Streamable HTTP MCP settings support scoped Chat, Work, and Live use witho
   const preload = fs.readFileSync(path.join(projectRoot, "desktop", "preload-control.cjs"), "utf8");
   const main = fs.readFileSync(path.join(projectRoot, "desktop", "main.cjs"), "utf8");
   const preferences = fs.readFileSync(path.join(projectRoot, "desktop", "lib", "preferences.cjs"), "utf8");
-  assert.match(html, /<p class="nav-section-label">拡張<\/p>[\s\S]{0,500}data-page="skills"[\s\S]{0,500}data-page="mcp"/);
+  assert.match(html, /data-settings-group="skills"[^>]*>[\s\S]*?<nav class="settings-subnav"[^>]*>[\s\S]*?data-page="skills"[\s\S]*?data-page="mcp"/);
   assert.match(html, /data-page-panel="mcp"[\s\S]*id="mcpServersCard"/);
   const connectionPage = html.match(/data-page-panel="connection"[\s\S]*?(?=<section class="page" data-page-panel="desktop")/)?.[0] || "";
   assert.doesNotMatch(connectionPage, /id="mcpServersCard"/);

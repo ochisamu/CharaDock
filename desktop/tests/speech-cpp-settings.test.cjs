@@ -31,3 +31,23 @@ test("native model installation and removal are independent for Small and MF",t=
   const small=library.installedPaths("speech-cpp-small");library.remove("speech-cpp");
   assert.equal(library.status("speech-cpp").installed,false);assert.equal(library.status("speech-cpp-small").installed,true);assert.deepEqual(library.installedPaths("speech-cpp-small"),small);
 });
+
+test("managed native runtime upgrade migrates only known installed paths", t => {
+  const directory=fs.mkdtempSync(path.join(os.tmpdir(),"native-upgrade-"));t.after(()=>fs.rmSync(directory,{recursive:true,force:true}));
+  const library=new EmbeddedTtsModels(directory,{platform:"win32"});
+  for(const id of ["speech-cpp","speech-cpp-small"]) for(const file of requiredPaths(TTS_MODELS[id],path.join(directory,TTS_MODELS[id].directoryName))){fs.mkdirSync(path.dirname(file),{recursive:true});fs.writeFileSync(file,"fixture");}
+  const mf=TTS_MODELS['speech-cpp'],small=TTS_MODELS['speech-cpp-small'];
+  const oldMf=path.join(directory,mf.reuseDirectoryNames[0]),oldSmall=path.join(directory,small.reuseDirectoryNames[0]);
+  const patch=library.upgradedSpeechCppPaths({executablePath:path.join(oldMf,'runtime','speech.exe'),modelPath:path.join(oldMf,mf.files[0].relativePath),smallModelPath:path.join(oldSmall,small.files[0].relativePath)});
+  assert.equal(patch.speechCppExecutablePath,library.installedPaths('speech-cpp').executablePath);
+  assert.equal(patch.speechCppModelPath,library.installedPaths('speech-cpp').modelPath);
+  assert.equal(patch.speechCppSmallModelPath,library.installedPaths('speech-cpp-small').modelPath);
+  assert.deepEqual(library.upgradedSpeechCppPaths({executablePath:'custom/speech.exe',modelPath:'custom/model.gguf',smallModelPath:'custom/small.gguf'}),{});
+});
+test("noise reduction preference persists and rejects non-boolean settings", t => {
+  const directory=fs.mkdtempSync(path.join(os.tmpdir(),"enhancement-settings-"));t.after(()=>fs.rmSync(directory,{recursive:true,force:true}));
+  const file=path.join(directory,'preferences.json'),prefs=new Preferences(file);
+  assert.equal(prefs.publicState().speechEnhancementEnabled,false);
+  prefs.patch({speechEnhancementEnabled:true});prefs.patch({speechEnhancementEnabled:'false'});
+  assert.equal(new Preferences(file).publicState().speechEnhancementEnabled,true);
+});

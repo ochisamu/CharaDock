@@ -114,6 +114,8 @@ const DEFAULTS = Object.freeze({
   englishPronunciationEnabled: true,
   englishPronunciationDictionary: "",
   speechInputProvider: "browser",
+  speechEnhancementEnabled: false,
+  haruOutputVoice: "original",
   realtimeAutoStartOnText: true,
   realtimeAutoStartOnPet: false,
   sherpaModelId: "reazonspeech-ja-int8",
@@ -203,8 +205,10 @@ function normalizeDeviceProfiles(value) {
       captionMode: profile.captionMode === "off" ? "off" : "auto",
       speakerEnabled: typeof profile.speakerEnabled === "boolean" ? profile.speakerEnabled : true,
       outputGain: Math.max(50, Math.min(150, Math.round(Number(profile.outputGain) || 100))),
+      ...(type === "m5stack-stackchan-k151" ? { homePitch: Math.max(5, Math.min(20, Math.round(Number(profile.homePitch) || 8))), cameraEnabled: profile.cameraEnabled !== false, faceTrackingEnabled: profile.faceTrackingEnabled === true, ...typeof profile.motionAllowed === "boolean" && { motionAllowed: profile.motionAllowed } } : {}),
       microphoneEnabled: typeof profile.microphoneEnabled === "boolean" ? profile.microphoneEnabled : true,
-      captureMode: type !== "m5stack-stackchan-k151" && profile.captureMode === "hands-free" ? "hands-free" : "push-to-talk",
+      captureMode: type === "m5stack-stackchan-k151" && profile.captureMode === "camera-hands-free"
+        ? "camera-hands-free" : profile.captureMode === "hands-free" ? "hands-free" : "push-to-talk",
       vadThreshold: Math.max(80, Math.min(800, Math.round(Number(profile.vadThreshold) || 120))),
       deviceId: (type === "m5stack-stackchan-k151" ? /^stackchan-[a-f0-9]{12}$/ : /^cd-rlcd-[a-f0-9]{12}$/).test(String(profile.deviceId || "").toLowerCase())
         ? String(profile.deviceId).toLowerCase()
@@ -402,7 +406,7 @@ class Preferences {
       this.data.codexAuthMode = ["chatgpt", "codex"].includes(parsed.codexAuthMode) ? parsed.codexAuthMode
         : parsed.backend === "openai" ? "chatgpt" : "codex";
       // Migrate the former single Codex model setting without discarding it.
-      for (const key of ["jevEnabled", "jevMediaEnabled", "jevExpressionEnabled", "jevNikePerformanceEnabled", "jevKohakuPerformanceEnabled", "thinkingFillerEnabled"]) {
+      for (const key of ["speechEnhancementEnabled", "jevEnabled", "jevMediaEnabled", "jevExpressionEnabled", "jevNikePerformanceEnabled", "jevKohakuPerformanceEnabled", "thinkingFillerEnabled"]) {
         if (typeof this.data[key] !== "boolean") this.data[key] = DEFAULTS[key];
       }
       if (typeof parsed.codexModel === "string") {
@@ -417,7 +421,7 @@ class Preferences {
       if (typeof this.data.realtimeAutoStartOnPet !== "boolean") this.data.realtimeAutoStartOnPet = false;
       if (typeof this.data.workNetworkAccess !== "boolean") this.data.workNetworkAccess = false;
       if (!["ja", "en"].includes(this.data.language)) this.data.language = "ja";
-      this.data.characterAvatarSelections = Object.fromEntries(Object.entries(this.data.characterAvatarSelections || {}).filter(([id,value]) => /^[a-zA-Z0-9_-]{1,100}$/.test(id) && (value === "standard" || typeof value === "string" && /^[a-f0-9-]{36}$/.test(value))));
+      this.data.characterAvatarSelections = Object.fromEntries(Object.entries(this.data.characterAvatarSelections || {}).filter(([id,value]) => /^[a-zA-Z0-9_-]{1,100}$/.test(id) && (value === "standard" || id === "amber-avatar" && value === "livliv-kohaku" || typeof value === "string" && /^[a-f0-9-]{36}$/.test(value))));
       if (!["jev", "decisions"].includes(this.data.decisionProvider)) this.data.decisionProvider = "jev";
       if (!["off", "standard", "strict", "living"].includes(this.data.jevAddressMode)) this.data.jevAddressMode = "off";
       if (!["manual", "vad"].includes(this.data.voiceActivationMode)) this.data.voiceActivationMode = "vad";
@@ -647,6 +651,8 @@ class Preferences {
       if (!["realtime", "streaming-local", "sherpa-onnx", "browser"].includes(this.data.speechInputProvider)) {
         this.data.speechInputProvider = "browser";
       }
+      this.data.speechEnhancementEnabled = this.data.speechEnhancementEnabled === true;
+      this.data.haruOutputVoice = this.data.haruOutputVoice === "beatrice-v2" ? "beatrice-v2" : "original";
       if (this.data.streamingSpeechModelId !== "reazonspeech-streaming") {
         this.data.streamingSpeechModelId = "reazonspeech-streaming";
       }
@@ -730,9 +736,10 @@ class Preferences {
         if (key === "backend") { this.data.backend = "codex"; continue; }
         if (key === "codexAuthMode" && !["chatgpt", "codex"].includes(values[key])) continue;
         if (key === "speechInputProvider" && !["realtime", "streaming-local", "sherpa-onnx", "browser"].includes(values[key])) continue;
+        if (key === "haruOutputVoice" && !["original", "beatrice-v2"].includes(values[key])) continue;
         if (key === "decisionProvider" && !["jev", "decisions"].includes(values[key])) continue;
         if (key === "jevAddressMode" && !["off", "standard", "strict", "living"].includes(values[key])) continue;
-        if (["jevEnabled", "jevMediaEnabled", "jevExpressionEnabled", "jevNikePerformanceEnabled", "jevKohakuPerformanceEnabled", "thinkingFillerEnabled"].includes(key) && typeof values[key] !== "boolean") continue;
+        if (["speechEnhancementEnabled", "jevEnabled", "jevMediaEnabled", "jevExpressionEnabled", "jevNikePerformanceEnabled", "jevKohakuPerformanceEnabled", "thinkingFillerEnabled"].includes(key) && typeof values[key] !== "boolean") continue;
         if (key === "speechCppModelVariant") { this.data[key] = speechCppVariant(values[key]); continue; }
         if (["speechCppMfSteps", "speechCppSmallSteps"].includes(key)) { this.data[key] = speechCppSteps(values[key], key === "speechCppMfSteps" ? 6 : 16); continue; }
         this.data[key] = key === "deviceProfiles" ? normalizeDeviceProfiles(values[key]) : values[key];

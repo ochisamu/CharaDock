@@ -450,7 +450,7 @@ class RemoteCompanionServer {
     const body = fs.readFileSync(target);
     response.writeHead(200, {
       ...securityHeaders(contentType),
-      "Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; connect-src 'self'; media-src 'self' data: blob:; font-src 'self'; frame-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'",
+      "Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; connect-src 'self' blob:; media-src 'self' data: blob:; font-src 'self'; frame-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'",
     });
     response.end(body);
   }
@@ -498,7 +498,8 @@ class RemoteCompanionServer {
     const url = new URL(request.url, this.origin());
     const liveAudioRequest = request.method === "POST" && url.pathname === "/api/live/beatrice/audio";
     const streamingSpeechChunkRequest = request.method === "POST" && url.pathname === "/api/streaming-speech/append";
-    this.enforceRateLimit(request, liveAudioRequest ? "live-audio" : streamingSpeechChunkRequest ? "streaming-speech" : "all", liveAudioRequest || streamingSpeechChunkRequest ? 1200 : 180);
+    const avatarSettingsRequest=request.method==='POST'&&url.pathname==='/api/livliv/settings';
+    this.enforceRateLimit(request, avatarSettingsRequest ? 'avatar-settings' : liveAudioRequest ? "live-audio" : streamingSpeechChunkRequest ? "streaming-speech" : "all", avatarSettingsRequest || liveAudioRequest || streamingSpeechChunkRequest ? 1200 : 180);
     if (request.method === "GET" && url.pathname === "/") return this.sendStatic(response, "index.html", "text/html; charset=utf-8");
     if (request.method === "GET" && url.pathname === "/remote.css") return this.sendStatic(response, "remote.css", "text/css; charset=utf-8");
     if (request.method === "GET" && url.pathname === "/remote-speech-caption.js") return this.sendStatic(response, "remote-speech-caption.js", "text/javascript; charset=utf-8");
@@ -506,6 +507,11 @@ class RemoteCompanionServer {
     if (request.method === "GET" && url.pathname === "/live-capture-worklet.js") return this.sendStatic(response, "live-capture-worklet.js", "text/javascript; charset=utf-8");
     if (request.method === "GET" && url.pathname === "/remote-mesh-avatar.js") return this.sendStatic(response, "remote-mesh-avatar.js", "text/javascript; charset=utf-8");
     if (request.method === "GET" && url.pathname === "/remote-authored-avatar.js") return this.sendStatic(response, "remote-authored-avatar.js", "text/javascript; charset=utf-8");
+    if (request.method === "GET" && ["/vrm.js", "/livliv.js", "/livliv-avatar-runtime.js", "/livliv-controls.js", "/livliv-controls-ui.js", "/livliv-controls.css"].includes(url.pathname)) {
+      const file = url.pathname === "/vrm.js" ? "vendor/livliv-player/vrm.js" : url.pathname === "/livliv.js" ? "vendor/livliv-player/livliv.js" : "desktop" + url.pathname;
+      const body = fs.readFileSync(path.resolve(this.rootDir,"..","..",file));
+      response.writeHead(200,{...securityHeaders(url.pathname.endsWith(".css")?"text/css; charset=utf-8":"text/javascript; charset=utf-8"),"Content-Security-Policy":"default-src 'none'"});response.end(body);return;
+    }
     if (request.method === "GET" && ["/mesh-avatar.js", "/mesh-avatar-runtime.js"].includes(url.pathname)) {
       const file = url.pathname === "/mesh-avatar.js" ? "vendor/mesh-avatar-studio/mesh-avatar.js" : "desktop/mesh-avatar-runtime.js";
       const body = fs.readFileSync(path.resolve(this.rootDir, "..", "..", file));
@@ -519,7 +525,7 @@ class RemoteCompanionServer {
     }
     if (request.method === "GET" && url.pathname === "/mcp-app-host.js") {
       const body = fs.readFileSync(path.resolve(this.rootDir, "..", "mcp-app-host.js"));
-      response.writeHead(200, { ...securityHeaders("text/javascript; charset=utf-8"), "Content-Security-Policy": "default-src 'none'" });
+      response.writeHead(200, { ...securityHeaders(url.pathname.endsWith(".css")?"text/css; charset=utf-8":"text/javascript; charset=utf-8"), "Content-Security-Policy": "default-src 'none'" });
       response.end(body);
       return;
     }
@@ -605,6 +611,13 @@ class RemoteCompanionServer {
       return;
     }
 
+    if (request.method === "GET" && url.pathname.startsWith("/api/livliv/")) {
+      this.authenticate(request);
+      const match = url.pathname.match(/^\/api\/livliv\/(kohaku|[a-f0-9-]{36})\/([a-zA-Z0-9_][a-zA-Z0-9_./-]*\.(?:json|png|webp|vrm))$/);
+      const asset = match ? await this.callbacks.getLivlivAsset?.(match[1], match[2]) : null;
+      if (!asset?.body) throw Object.assign(new Error("Avatar asset not found."),{statusCode:404});
+      response.writeHead(200,{...securityHeaders(asset.contentType),"Content-Security-Policy":"default-src 'none'"});response.end(asset.body);return;
+    }
     if (request.method === "GET" && url.pathname.startsWith("/api/mesh/")) {
       this.authenticate(request);
       const parts = decodeURIComponent(url.pathname).match(/^\/api\/mesh\/([a-f0-9-]{36})\/(rig\.json|built\/[a-zA-Z0-9_/-]+\.(?:json|png))$/);
@@ -653,9 +666,19 @@ class RemoteCompanionServer {
       return;
     }
 
-    if (request.method === "POST" && ["/api/message", "/api/pet", "/api/interrupt", "/api/settings", "/api/approval", "/api/secure-handoff", "/api/live/start", "/api/live/stop", "/api/live/beatrice/audio", "/api/live/beatrice/stop", "/api/streaming-speech/start", "/api/streaming-speech/append", "/api/streaming-speech/finish", "/api/streaming-speech/cancel", "/api/tts", "/api/tts/next", "/api/tts/cancel", "/api/mcp-app/bridge", "/api/disconnect"].includes(url.pathname)) {
+    if(request.method==='POST'&&url.pathname==='/api/livliv/import'){
+      this.authenticate(request,{csrf:true});this.enforceRateLimit(request,'livliv-import',3);
+      const characterId=url.searchParams.get('characterId');let bytes=0;const chunks=[];
+      for await(const chunk of request){bytes+=chunk.length;if(bytes>128*1024*1024)throw Object.assign(Error('モデルは128MB以下にしてください。'),{statusCode:413});chunks.push(chunk);}
+      return this.sendJson(response,200,{state:await this.callbacks.importLivliv?.(Buffer.concat(chunks),characterId)});
+    }
+    if (request.method === "POST" && ["/api/livliv/settings", "/api/livliv/command", "/api/livliv/remove", "/api/appearance", "/api/message", "/api/pet", "/api/interrupt", "/api/settings", "/api/approval", "/api/secure-handoff", "/api/live/start", "/api/live/stop", "/api/live/beatrice/audio", "/api/live/beatrice/stop", "/api/streaming-speech/start", "/api/streaming-speech/append", "/api/streaming-speech/finish", "/api/streaming-speech/cancel", "/api/tts", "/api/tts/next", "/api/tts/cancel", "/api/mcp-app/bridge", "/api/disconnect"].includes(url.pathname)) {
       const { session, tokenHash } = this.authenticate(request, { csrf: true });
       const body = await jsonBody(request, liveAudioRequest ? 300_000 : MAX_BODY_BYTES);
+      if (url.pathname === '/api/livliv/remove') return this.sendJson(response, 200, { state: await this.callbacks.removeVrm(body) });
+      if(url.pathname==='/api/livliv/settings')return this.sendJson(response,200,{state:await this.callbacks.setLivlivControls?.(body)});
+      if(url.pathname==='/api/livliv/command')return this.sendJson(response,200,await this.callbacks.livlivCommand?.(body));
+      if(url.pathname==='/api/appearance')return this.sendJson(response,200,{state:await this.callbacks.selectAppearance?.(body)});
       if (url.pathname === "/api/message") {
         const result = await this.callbacks.sendMessage?.({
           message: body.message,

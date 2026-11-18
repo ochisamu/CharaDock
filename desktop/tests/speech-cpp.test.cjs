@@ -38,6 +38,22 @@ test("cancelling an owner during warmup settles before ready and never synthesiz
   assert.equal(client.cancelOwner(2),false);assert.equal(client.cancelOwner(1),true);
   assert.equal((await pending).done,true);assert.equal(child.messages.length,0);client.stop();
 });
+test("device playback combines all PCM fragments of a sentence and keeps sentence boundaries", async () => {
+  const child = fakeWorker({ onRequest: response });
+  const client = new SpeechCppClient({ spawnImpl: () => child });
+  try {
+    const first = await client.start({ ...options, ownerId: 7, wholeSentence: true,
+      chunks: [{ text: "なるほど。" }, { text: "次の文。" }] });
+    assert.equal(first.audioTexts[0], "なるほど。");
+    assert.equal(Buffer.from(first.pcmChunk, "base64").length, 1920);
+    assert.ok(first.streamId);
+    const last = await client.next(first.streamId, 7);
+    assert.equal(last.audioText, "次の文。");
+    assert.equal(Buffer.from(last.pcmChunk, "base64").length, 1920);
+    assert.equal(last.done, true);
+    assert.equal(client.streams.size, 0);
+  } finally { client.stop(); }
+});
 test("cancellation stops a pending read and rejects late audio",async()=>{
   const child=fakeWorker({onRequest(m,c){if(m.type==="synthesize")c.send({type:"chunk",id:m.id,seq:0,pcm});}});
   const client=new SpeechCppClient({spawnImpl:()=>child});
@@ -254,4 +270,13 @@ test("selected MF and Small step counts reach real synthesis without changing ca
       assert.deepEqual(requests.map(m=>m.text),["音声テストです。","これからよろしくね。"]);
     } finally {client.stop();}
   }
+});
+
+test("speech.cpp 0.11.0 protocol 4 keeps native synthesis compatible", async () => {
+  const child = fakeWorker({ ready: false, onRequest: response }); const client = new SpeechCppClient({ spawnImpl: () => child });
+  try {
+    const pending = client.start({ ...options, ownerId: 77, chunks: [{ text: '最新版です。' }] });
+    child.send({ type: 'ready', protocol: 4, version: '0.11.0', model: { sample_rate: 48000 } });
+    const first = await pending; assert.equal(first.sampleRate, 48000); assert.ok(first.pcmChunk);
+  } finally { client.stop(); }
 });

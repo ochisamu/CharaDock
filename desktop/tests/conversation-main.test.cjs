@@ -5,6 +5,7 @@ const path = require("node:path");
 const vm = require("node:vm");
 const test = require("node:test");
 const routes = require("../lib/conversation-submit.cjs");
+const { StreamingReplyPhrases } = require("../lib/speech-stream.cjs");
 
 const main = fs.readFileSync(path.join(__dirname, "../main.cjs"), "utf8");
 // Exercise the production wiring with actual client references (including
@@ -59,11 +60,14 @@ function speechHarness(overrides = {}) {
     codexCompanion: { state: { enabled: false } },
     companionTransitioning: false,
     ...require("../lib/atom-echo-conversation-route.cjs"),
+    StreamingReplyPhrases,
     atomEchoCapture: null, atomEchoRecognizingCapture: null,
     atomEchoTurnGeneration: 0, atomEchoReplyGeneration: 0,
+    rlcd42SpeechPhrases: null, stackchanLiveReplyWait: null, rlcd42SpeakerSelected: () => true,
     rlcd42LastDisplayText: "", rlcd42VoiceStage: "", rlcd42LastSceneSignature: "",
     preferences: { data: { interactionMode: "chat", streamingSpeechModelId: "test" } },
-    esp32VoiceGateway: () => gateway, esp32VoiceLabel: () => "RLCD",
+    esp32VoiceGateway: () => gateway, esp32VoiceLabel: () => "RLCD", esp32SpeechOutput: () => {},
+    stackchanProfile: () => false, rlcd42Profile: () => ({}), stackchanPrivacyMuted: false,
     mainText: (ja) => ja, scheduleRlcd42SceneSync: () => {},
     atomEchoUsesRealtime: () => false,
     normalConversationSubmitRouteForMode: () => "new-turn",
@@ -77,8 +81,8 @@ function speechHarness(overrides = {}) {
     playRlcd42Speech: async (text) => { spoken.push(text); },
     ...overrides,
   });
-  vm.runInContext(main.slice(main.indexOf("async function esp32PttStart("), main.indexOf("async function esp32PcmChunk("))
-    + main.slice(main.indexOf("async function esp32PttEnd("), main.indexOf("async function esp32Interrupt(")), ctx);
+  vm.runInContext(main.slice(main.indexOf("async function setEsp32VoiceState("), main.indexOf("async function esp32PcmChunk("))
+    + main.slice(main.indexOf("function cancelStackchanLiveReplyWait("), main.indexOf("async function esp32Interrupt(")), ctx);
   return { ctx, gateway, states, cancelled, spoken };
 }
 
@@ -256,6 +260,44 @@ test("interrupted device reply never starts late playback", async () => {
   assert.equal(h.spoken.length, 0);
 });
 
+for (const board of ["StackChan", "RLCD 4.2"]) {
+  test(`${board} starts a completed Chat phrase early and never replays the full reply`, async () => {
+    const first = deferred(), answer = deferred();
+    const heard = [];
+    let starts = 0;
+    const h = speechHarness({
+      stackchanProfile: () => board === "StackChan",
+      stackchanGestures: { beginTurn() {}, waitForReply() {}, reset() {} },
+      RLCD42_TTS_OWNER_ID: "stackchan",
+      handleMascotConversation: async (_text, { onReplyText }) => {
+        onReplyText("川沿いを散歩");
+        assert.equal(starts, 0);
+        onReplyText("川沿いを散歩したよ。");
+        await answer.promise;
+        const text = "川沿いを散歩したよ。また一緒に行こうね";
+        onReplyText(text, { final: true });
+        return { text };
+      },
+      playRlcd42Speech: async (_text, _owner, { phrases }) => {
+        starts++;
+        for await (const phrase of phrases) {
+          heard.push(phrase);
+          first.resolve();
+        }
+        return { spoken: true };
+      },
+    });
+    await h.ctx.esp32PttStart("rlcd42");
+    const spoken = h.ctx.esp32PttEnd("rlcd42");
+    await first.promise;
+    assert.deepEqual(heard, ["川沿いを散歩したよ。"]);
+    answer.resolve();
+    await spoken;
+    assert.equal(starts, 1);
+    assert.deepEqual(heard, ["川沿いを散歩したよ。", "また一緒に行こうね"]);
+  });
+}
+
 test("late synthesis cannot replace the active RLCD stream cancellation handle", async () => {
   const oldSynthesis = deferred(), oldStarted = deferred(), playback = deferred(), playing = deferred();
   const cancelled = [];
@@ -264,8 +306,9 @@ test("late synthesis cannot replace the active RLCD stream cancellation handle",
     speechCpp: { cancelOwner() {} },
     RLCD42_TTS_OWNER_ID: "rlcd", rlcd42SpeechGeneration: 0, atomEchoReplyGeneration: 0,
     rlcd42PlaybackCaption: "", syncRlcd42Scene: async () => {},
+    stackchanProfile: () => false, rlcd42Profile: () => ({}),
     publishSpeechCaption: () => {}, scheduleRlcd42SceneSync: () => {},
-    rlcd42SpeechActive: false, rlcd42SpeechStream: null,
+    rlcd42SpeechActive: false, rlcd42SpeechStream: null, rlcd42SpeechPhrases: null,
     configuredSpeechText: (text) => text, rlcd42SpeakerSelected: () => true,
     characterTtsSettings: () => ({ provider: "local" }), activeCharacter: () => ({ id: "test" }),
     synthesizeConfiguredTts: (text) => {
@@ -316,6 +359,30 @@ test("speaker waits for input and abandons speech on cancellation or timeout", a
   assert.equal(await ctx.waitForEsp32PlaybackSlot(() => true, 0), false);
 });
 
+test("overlong StackChan audio clears the listening state and tells the device to stop capture", async () => {
+  const trace = [];
+  const ctx = vm.createContext({
+    atomEchoTurnGeneration: 1,
+    atomEchoCapture: { deviceKind: "rlcd42", generation: 1, samples: 480000, mode: "standard", sessionId: "noise",
+      gateway: {
+        abortCurrentCapture: async () => trace.push("abort-device"),
+        setDeviceState: async (state) => trace.push(state),
+      },
+    },
+    esp32InputGate: () => ({ cancel: () => trace.push("gate") }),
+    streamingSpeechRecognition: { cancel: (id) => trace.push(id) },
+    rlcd42VoiceStage: "listening", rlcd42LastSceneSignature: "prior",
+    scheduleRlcd42SceneSync: () => trace.push("scene"), mainText: ja => ja,
+    pcm16Samples: () => [0],
+  });
+  vm.runInContext(main.slice(main.indexOf("async function releaseOverlongDeviceCapture("),
+    main.indexOf("async function waitForEsp32PlaybackSlot(")), ctx);
+  await assert.rejects(ctx.esp32PcmChunk(Buffer.alloc(2)), /30/);
+  assert.equal(ctx.atomEchoCapture, null);
+  assert.equal(ctx.rlcd42VoiceStage, "");
+  assert.deepEqual(trace, ["gate", "noise", "scene", "abort-device", "idle"]);
+});
+
 test("follow-up promoted to a new turn supersedes the old device answer", async () => {
   const oldAnswer = deferred(), submitted = deferred();
   const h = speechHarness({ handleMascotConversation: () => { submitted.resolve(); return oldAnswer.promise; } });
@@ -330,4 +397,57 @@ test("follow-up promoted to a new turn supersedes the old device answer", async 
   oldAnswer.resolve({ text: "古い返事" });
   await old;
   assert.deepEqual(h.spoken, ["次の返事"]);
+});
+
+test("StackChan listens promptly after confirmed speaker drain and retains echo protection on failure", () => {
+  let now = 1000;
+  const ctx = vm.createContext({
+    Date: { now: () => now }, stackchanProfile: () => true, rlcd42Profile: () => ({}),
+    codexCompanion: { state: { enabled: false } },
+  });
+  vm.runInContext(main.slice(main.indexOf("function esp32SpeechOutput("), main.indexOf("function esp32InputGate(")), ctx);
+  ctx.esp32SpeechOutput(true);
+  assert.equal(ctx.esp32SpeechSuppressed("rlcd42"), true);
+  ctx.esp32SpeechOutput(false, { stackchanDrain: true });
+  now += 170;
+  assert.equal(ctx.esp32SpeechSuppressed("rlcd42"), false);
+  assert.equal(ctx.esp32SpeechSuppressed("atom-echo"), true);
+  ctx.esp32SpeechOutput(true);
+  ctx.esp32SpeechOutput(false);
+  now += 170;
+  assert.equal(ctx.esp32SpeechSuppressed("rlcd42"), true);
+});
+
+test("StackChan arms the local end detector for hands-free standard TTS and Live", async () => {
+  const begun = [];
+  const ctx = vm.createContext({
+    rlcd42Profile: () => ({ microphoneEnabled: true }),
+    stackchanProfile: () => true,
+    rlcd42CaptureModeForDevice: () => "hands-free",
+    stackchanPrivacyMuted: false,
+    rlcd42LiveAudioRoute: { active: () => false },
+    rlcd42Gateway: { status: () => ({ capabilities: { audio: { captureFinalize: true } } }) },
+    atomEchoUsesRealtime: () => false,
+    warmStackchanStandardVoice() {},
+    esp32InputGate: () => ({ begin: (options) => begun.push(options) }),
+  });
+  vm.runInContext(main.slice(main.indexOf("async function esp32InputStart("), main.indexOf("function pcm16Samples(")), ctx);
+  await ctx.esp32InputStart("rlcd42");
+  ctx.atomEchoUsesRealtime = () => true;
+  await ctx.esp32InputStart("rlcd42");
+  await ctx.esp32InputStart("rlcd42", { manual: true });
+  assert.deepEqual(begun.map(({ bypass, handsfree, localEndpoint }) => [bypass, handsfree, localEndpoint]),
+    [[false, true, true], [false, true, true], [true, false, false]]);
+});
+
+test("a missed StackChan display state ACK does not abort an accepted capture", async () => {
+  const h = speechHarness({
+    stackchanProfile: () => true,
+    stackchanGestures: { beginTurn() {}, waitForReply() {} },
+  });
+  h.gateway.setDeviceState = async () => { throw new Error("display ACK missing"); };
+  await h.ctx.esp32PttStart("rlcd42");
+  assert.equal(h.ctx.atomEchoCapture?.mode, "standard");
+  await h.ctx.esp32PttEnd("rlcd42");
+  assert.deepEqual(h.spoken, ["返事です"]);
 });

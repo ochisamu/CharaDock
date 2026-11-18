@@ -32,7 +32,7 @@ const guard=setTimeout(()=>{console.error('Decisions UI QA timeout');app.exit(1)
   for(let i=0;i<200;i++) {win=BrowserWindow.getAllWindows().find(w=>w.webContents.getURL().includes('/control.html')&&!w.webContents.isLoading());if(win)break;await sleep(150);}
   assert.ok(win);const js=code=>win.webContents.executeJavaScript(code);
   await sleep(800);
-  await js(`document.querySelector('[data-page="connection"]').click()`);
+  await js(`document.querySelector('[data-page="assist"]').click()`);
   await js(`document.querySelector('#apiKeyInput').value='synthetic-openai-key';document.querySelector('#saveApiKeyButton').click()`);await sleep(150);
   await js(`window.mascotDesktop.setJevConfig({apiKey:'synthetic-jev-key',enabled:true})`);
   await sleep(200);

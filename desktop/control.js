@@ -8,6 +8,17 @@
   const $$ = (selector) => [...document.querySelectorAll(selector)];
   const localized = (japanese, english) => state?.language === "en" ? english : japanese;
   let state = null;
+  const livlivControls=window.CharaDockLivlivControlsUI.create({container:$('#livlivControls'),
+    onPatch:input=>api.setLivlivControls(input),onCommand:input=>api.livlivCommand(input),onSnapshot:input=>api.saveLivlivSnapshot(input),
+    onRemove: async input => {
+      try {
+        state = await api.removeVrmAvatar(input);
+        syncUi();
+        setStatus($('#characterAppearanceStatus'), localized('VRMを削除し、標準の見た目に戻しました。', 'VRM removed. The original appearance is now selected.'));
+      } catch (error) {
+        setStatus($('#characterAppearanceStatus'), error.message, true);
+      }
+    }});
   let companionBusy = false;
   function renderCodexCompanion(snapshot = state?.codexCompanion || {}) {
     const labels = { idle: "待機中", unknown: "状態未確認", running: "作業中", "needs-input": "入力待ち", completed: "完了", interrupted: "中断", error: "エラー" };
@@ -145,6 +156,7 @@
   let liveAccount = null;
   let loginPollEpoch = 0;
   let codexModels = [];
+  let codexModelsRefreshEpoch = 0;
   let realtimeVoices = { voices: [], defaultVoice: "cove", loaded: false };
   const realtimeVoiceProfiles = Object.freeze({
     arbor: { impression: "中性的", description: "気さくで万能" },
@@ -173,34 +185,58 @@
     "followSpeed", "breathStrength", "rollStrength", "pyokoStrength", "hairSpring", "hairWarp",
   ];
   const settingsSearchItems = Object.freeze([
-    { page: "chat", target: "#chatLog", ja: "Chat履歴", en: "Chat history", detailJa: "過去のChatとWorkを見る", detailEn: "Review past chats and work", keywords: "chat conversation history work 作業" , popular: true },
-    { page: "chat", target: "#chatWorkProjectSelect", ja: "作業先プロジェクト", en: "Work project", detailJa: "キャラクターホームや担当プロジェクトを切り替える", detailEn: "Switch between Character Home and attached projects", keywords: "directory folder project home output 成果物 担当 ホーム" },
-    { page: "remote", target: "#remoteAccessCard", ja: "リモートアクセス", en: "Remote access", detailJa: "同じWi-FiからChatとWorkを操作", detailEn: "Use Chat and Work from the same Wi-Fi", keywords: "remote mobile lan qr smartphone スマホ リモート", popular: true },
-    { page: "esp32", target: "#atomEchoCard", ja: "ESP32デバイス", en: "ESP32 devices", detailJa: "ATOM Echoなどの専用デバイスを管理", detailEn: "Manage ATOM Echo and other companion devices", keywords: "atom echo stackchan rlcd wifi device voice satellite ハンズフリー", popular: true },
-    { page: "character", target: "#characterLibraryTitle", ja: "キャラクター一覧", en: "Character library", detailJa: "使うキャラクターを切り替える", detailEn: "Switch the active character", keywords: "avatar select library キャラ", popular: true },
-    { page: "character", target: "#characterAppearanceTitle", ja: "見た目・Mesh Avatarの読み込み", en: "Appearance and Mesh Avatar import", detailJa: "同じキャラの見た目を切り替える", detailEn: "Switch this character’s appearance", keywords: "mesh avatar studio import appearance 見た目 素材 インポート 読み込み" },
-    { page: "character", target: "#characterProfileCard", ja: "名前・性格・メモリ", en: "Name, personality, and memory", detailJa: "選択中のキャラクターを編集", detailEn: "Edit the selected character", keywords: "profile persona memory bubble 名前 性格 記憶 吹き出し" },
-    { page: "character", target: "#characterContinuation", ja: "キャラクター継続モード", en: "Character Continuation", detailJa: "前回の目的と次の一手を確認・編集", detailEn: "Review and edit the previous goal and next step", keywords: "continuation resume summary 継続 再開 前回 次の一手", popular: true },
-    { page: "character", target: "#motionEditorTitle", ja: "キャラクターの動き", en: "Character motion", detailJa: "サイズ、追従、呼吸、髪揺れ", detailEn: "Size, tracking, breathing, and hair motion", keywords: "motion animation lip sync hair blink マウス リップシンク", popular: true },
-    { page: "character", target: "#characterAddTitle", ja: "キャラクターを追加", en: "Add a character", detailJa: ".purupuruまたは画像から作成", detailEn: "Import .purupuru or create from an image", keywords: "import image generator purupuru 画像 追加" },
-    { page: "skills", target: "#skillAssignmentCard", ja: "キャラクターのSkills", en: "Character skills", detailJa: "全キャラまたはキャラごとにSkillを割り当てる", detailEn: "Assign skills globally or per character", keywords: "skill capabilities workflow 得意 能力 割り当て", popular: true },
-    { page: "skills", target: "#skillLibraryCard", ja: "Skillを追加", en: "Add a skill", detailJa: "OpenAI・Anthropic公式カタログ、またはGitHub URLから追加", detailEn: "Add from the OpenAI and Anthropic catalogs or a GitHub URL", keywords: "skill install github url openai anthropic curated 追加", popular: true },
-    { page: "voice", target: "#voiceInputCard", ja: "音声入力", en: "Voice input", detailJa: "認識方式、VAD、自動送信", detailEn: "Recognition, VAD, and auto-send", keywords: "microphone stt sherpa vad realtime マイク 音声認識", popular: true },
-    { page: "voice", target: "#characterVoiceCard", ja: "キャラクターの声", en: "Character voice", detailJa: "Liveまたは通常TTSの声を選ぶ", detailEn: "Choose a Live or standard TTS voice", keywords: "tts live realtime speaker voice 読み上げ", popular: true },
-    { page: "voice", target: "#realtimeVoiceSettings", ja: "Realtimeの声", en: "Realtime voice", detailJa: "GPT-Liveの声と声変換", detailEn: "GPT-Live voice and conversion", keywords: "codex live openai beatrice" },
-    { page: "voice", target: "#beatriceLibraryCard", ja: "Beatrice 2", en: "Beatrice 2", detailJa: "公式本体と変換モデルを参照", detailEn: "Link the official runtime and models", keywords: "vst voice conversion 声変換 model" },
-    { page: "voice", target: "#standardTtsSettings", ja: "通常TTSと音声モデル", en: "Standard TTS and voice models", detailJa: "Irodori、SBV2、Kokoroなど", detailEn: "Irodori, SBV2, Kokoro, and more", keywords: "irodori sbv2 kokoro piper supertonic style bert model" },
-    { page: "connection", target: ".backend-grid", ja: "AI接続方式", en: "AI connection method", detailJa: "ChatGPT専用接続またはCodexログイン", detailEn: "CharaDock ChatGPT connection or Codex sign-in", keywords: "backend provider login api", popular: true },
-    { page: "connection", target: "#codexSettings", ja: "Codexのモデルと推論", en: "Codex model and reasoning", detailJa: "会話・作業ごとに設定", detailEn: "Configure chat and work separately", keywords: "app server model effort thinking 推論" },
-    { page: "mcp", target: "#mcpAssignmentCard", ja: "MCP連携", en: "MCP connections", detailJa: "全キャラまたはキャラごとにChat・Work・Liveへ外部ツールを割り当てる", detailEn: "Assign external tools to Chat, Work, and Live globally or per character", keywords: "mcp model context protocol streamable http api key ツール 接続 server 割り当て", popular: true },
-    { page: "connection", target: "#jevSettings", ja: "判断アシストのAPIキー", en: "Decision assist API key", detailJa: "Decisions専用のOpenAI APIキー", detailEn: "OpenAI API key for Decisions only", keywords: "key decisions 判断" },
-    { page: "desktop", target: "#languageSettingsCard", ja: "表示言語", en: "Display language", detailJa: "日本語とEnglishを切り替える", detailEn: "Switch between Japanese and English", keywords: "language english japanese 日本語 英語" },
-    { page: "desktop", target: "#windowSettingsCard", ja: "キャラクターの操作", en: "Character interaction", detailJa: "自動退避、クリック透過、最前面", detailEn: "Auto-hide, click-through, and always-on-top", keywords: "auto hide pointer click through lock window 透過 固定", popular: true },
-    { page: "desktop", target: "#mascotWindowCard", ja: "ウィンドウの位置とサイズ", en: "Window position and size", detailJa: "モニター、表示、位置を調整", detailEn: "Adjust display, visibility, and position", keywords: "monitor display size position モニター" },
-    { page: "desktop", target: ".shortcut-card", ja: "キーボードショートカット", en: "Keyboard shortcuts", detailJa: "すばやく表示と操作を切り替える", detailEn: "Quickly toggle display and interaction", keywords: "keyboard hotkey ctrl key" },
-    { page: "support", target: "#reopenOnboardingButton", ja: "初回セットアップ", en: "Initial setup", detailJa: "セットアップをもう一度行う", detailEn: "Run guided setup again", keywords: "onboarding wizard reset setup", popular: true },
-    { page: "support", target: ".support-update-card", ja: "アプリのアップデート", en: "App updates", detailJa: "最新版とプレリリースを確認", detailEn: "Check stable and prerelease versions", keywords: "update release version beta 最新 バージョン", popular: true },
-    { page: "support", target: ".support-diagnostics-card", ja: "診断とログ", en: "Diagnostics and logs", detailJa: "不具合調査用の情報をまとめる", detailEn: "Collect troubleshooting information", keywords: "support log zip gpu error サポート" },
+    { target: "#chatLog", ja: "Chat履歴", en: "Chat history", keywords: "conversation history 過去 ログ" },
+    { target: "#characterLibraryTitle", ja: "キャラクターを切り替える", en: "Switch character", keywords: "avatar select library キャラ", popular: true },
+    { target: "#characterAppearanceTitle", ja: "アバターを読み込む", en: "Import an avatar", keywords: "vrm livliv mesh avatar studio import appearance 見た目 素材 インポート" },
+    { target: "#characterModelControls", fallback: "#characterAppearanceSelect", ja: "読み込んだアバターの調整・削除", en: "Adjust or remove an imported avatar", keywords: "vrm livliv model framing camera lens 150mm 150 mm expression delete remove バストアップ リップシンク 焦点距離 カメラ 構図" },
+    { target: "#characterExpressionPreview", ja: "表情を試す", en: "Preview expressions", keywords: "expression preview リップシンク 表情 プレビュー" },
+    { target: "#characterPerformanceSettings", ja: "身振りと表現拡張", en: "Gestures and performance", keywords: "pose gesture nike kohaku しぐさ ニケ コハク JEV Decisions" },
+    { target: "#characterProfileCard", ja: "名前と性格", en: "Name and personality", keywords: "profile persona director プロフィール 話し方" },
+    { target: "#characterMemoryDetails", ja: "キャラクターの記憶", en: "Character memory", keywords: "memory forget メモリ 忘れる 消去" },
+    { target: "#characterAddDetails", ja: "キャラクターを追加", en: "Add a character", keywords: "import image generator purupuru 画像" },
+    { target: "#characterManagement", ja: "キャラクターの初期化・削除", en: "Reset or delete a character", keywords: "delete remove reset 元に戻す" },
+    { target: "#voiceInputCard", ja: "マイクと音声認識", en: "Microphone and speech recognition", keywords: "stt sherpa vad realtime 音声入力", popular: true },
+    { target: "#voiceCaptureDetails", fallback: "#speechInputProviderSelect", ja: "マイク感度と自動送信の待ち時間", en: "Microphone sensitivity and auto-send delay", keywords: "vad countdown threshold カウントダウン" },
+    { target: "#speechNoiseDetails", ja: "音声入力のノイズ低減", en: "Microphone noise reduction", keywords: "re-use reuse denoise ノイズオフ" },
+    { target: "#handsFreeAddressSettings", ja: "ハンズフリーの呼びかけ判定", en: "Hands-free address detection", keywords: "vad jev decisions リビング 独り言" },
+    { target: "#characterVoiceCard", ja: "キャラクターの声", en: "Character voice", keywords: "tts live realtime speaker voice 読み上げ", popular: true },
+    { target: "#haruSettings", ja: "Haru 4Bでローカル音声会話", en: "Local voice chat with Haru 4B", keywords: "haru speech.cpp duplex local ハル 音声会話 ローカル" },
+    { target: "#codexLiveSettings", ja: "Liveのログインと声", en: "Live sign-in and voice", keywords: "codex gpt-live realtime chatgpt sign-in 接続 音声" },
+    { target: "#liveAutoStartDetails", ja: "PCでのLive自動開始", en: "Auto-start Live on the PC", keywords: "auto start microphone text tap マイク テキスト タップ" },
+    { target: "#beatriceLibraryDetails", ja: "Beatrice 2の本体とモデル", en: "Beatrice 2 runtime and models", keywords: "vst voice conversion 声変換" },
+    { target: "#standardVoiceDetails", ja: "通常TTSと音声モデル", en: "Standard TTS and voice models", keywords: "irodori sbv2 kokoro piper supertonic style bert model 読み上げ" },
+    { target: "#speechCppQualitySettings", fallback: "#ttsProviderSelect", ja: "speech.cppのStep数", en: "speech.cpp inference steps", keywords: "irodori mf model step steps ステップ 音質" },
+    { target: "#pronunciationSettings", ja: "発音辞書", en: "Pronunciation dictionary", keywords: "english pronunciation dictionary 読み方 英単語" },
+    { target: ".backend-grid", ja: "ChatGPT・Codexログイン", en: "ChatGPT and Codex sign-in", keywords: "backend provider login ai connection 接続 api", popular: true },
+    { target: "#codexSettings", ja: "Chatのモデルと推論", en: "Chat model and reasoning", keywords: "app server model effort thinking 推論" },
+    { target: "#characterWorkspaceCard", ja: "Workの作業先プロジェクト", en: "Work project folder", keywords: "directory folder project home output 成果物 担当 ホーム", popular: true },
+    { target: "#characterContinuation", ja: "作業の続きと起動時の声かけ", en: "Work continuation and startup greeting", keywords: "continuation resume summary 継続 再開 前回 次の一手" },
+    { target: "#codexWorkSettings", ja: "Workのモデルと推論", en: "Work model and reasoning", keywords: "model effort thinking 推論" },
+    { target: "#codexWorkNetworkAccessToggle", ja: "Workの外部ネットワーク接続", en: "Work network access", keywords: "network api permissions 権限 ネットワーク" },
+    { target: "#jevSettings", ja: "判断サービスとAPIキー", en: "Decision service and API key", keywords: "key decisions jev 判断アシスト", popular: true },
+    { target: "#decisionFeaturesTitle", ja: "判断アシストで使う機能", en: "Decision Assist features", keywords: "music media expression fillers 音楽 メディア 表情 フィラー" },
+    { target: "#companionSetupCard", ja: "Codex Companion", en: "Codex Companion", keywords: "codex desktop companion コンパニオン" },
+    { target: "#remoteAccessCard", ja: "スマートフォンをペアリング", en: "Pair a smartphone", keywords: "remote mobile lan qr smartphone リモート スマホ Link", popular: true },
+    { target: "#remoteNetworkDetails", fallback: "#remoteAccessToggle", ja: "LinkのネットワークとTailscale", en: "Link network and Tailscale", keywords: "vpn https port lan wi-fi wifi ポート ネットワーク リモート" },
+    { target: "#atomEchoCard", ja: "ATOM Echo", en: "ATOM Echo", keywords: "esp32 wifi voice satellite デバイス スピーカー" },
+    { target: "#atomEchoSetupDetails", fallback: "#atomEchoEnabledToggle", ja: "ATOM EchoのWi-Fi設定", en: "ATOM Echo Wi-Fi setup", keywords: "esp32 usb wifi wi-fi setup ワイファイ" },
+    { target: "#rlcd42SetupDetails", fallback: "#rlcd42EnabledToggle", ja: "会話デバイスのWi-Fi設定", en: "Conversation device Wi-Fi setup", keywords: "stackchan rlcd esp32 usb wifi wi-fi setup 電子ペーパー ワイファイ" },
+    { target: "#rlcd42SensorDetails", fallback: "#rlcd42EnabledToggle", ja: "RLCD 4.2のセンサーとスリープ", en: "RLCD 4.2 sensors and sleep", keywords: "esp32 sensor sleep 省電力" },
+    { target: "#skillAssignmentCard", ja: "キャラクターのSkills", en: "Character skills", keywords: "skill capabilities workflow 得意 能力 割り当て" },
+    { target: "#skillLibraryCard", ja: "Skillを追加", en: "Add a skill", keywords: "skill install github url openai anthropic curated 追加" },
+    { target: "#mcpAssignmentCard", ja: "MCP連携", en: "MCP connections", keywords: "mcp model context protocol streamable http api key ツール 接続 server 割り当て" },
+    { target: "#mascotWindowCard", ja: "ウィンドウの表示と位置", en: "Window visibility and position", keywords: "monitor display size position top lock snap モニター 最前面 固定" },
+    { target: "#windowSettingsCard", ja: "クリック透過とマウス操作", en: "Click-through and pointer controls", keywords: "auto hide pointer click through tracking 退避 透過 追従" },
+    { target: "#motionEditorTitle", ja: "キャラクターサイズと動き", en: "Character size and motion", keywords: "avatar motion animation scale 大きさ サイズ" },
+    { target: "#faceMotionSettings", ja: "顔が向く範囲", en: "Head movement range", keywords: "motion tracking left right up down 視線 左右 上下" },
+    { target: "#motionTextureSettings", ja: "追従・呼吸・髪揺れ", en: "Tracking, breathing, and hair motion", keywords: "motion spring animation hair 揺れ しなり 体 弾み" },
+    { target: "#bubbleLayoutSettings", ja: "吹き出しの位置と幅", en: "Speech bubble position and width", keywords: "speech bubble position layout 左 上" },
+    { target: "#shortcutSettings", ja: "キーボードショートカット", en: "Keyboard shortcuts", keywords: "keyboard hotkey ctrl key" },
+    { target: "#languageSettingsCard", ja: "表示言語と起動設定", en: "Language and startup", keywords: "language english japanese boot 日本語 英語 自動起動" },
+    { target: "#reopenOnboardingButton", ja: "初回セットアップ", en: "Initial setup", keywords: "onboarding wizard reset setup" },
+    { target: "#appUpdateCard", ja: "アプリのアップデート", en: "App updates", keywords: "update release version beta 最新 バージョン チャンネル" },
+    { target: ".support-diagnostics-card", ja: "診断とログ", en: "Diagnostics and logs", keywords: "support log zip gpu error サポート" },
+    { target: "#licenseDetails", ja: "ライセンス", en: "Licenses", keywords: "license legal privacy terms プライバシー 利用規約" },
   ]);
   let settingsSearchMatches = [];
   let settingsSearchActiveIndex = -1;
@@ -983,6 +1019,64 @@
     hint.textContent = `${model.description || "日本語音声認識モデル"}。初回ダウンロード約${downloadMb}MB。認識処理と音声データは端末内で完結します。`;
   }
 
+  let haruBusy = false;
+
+  function syncHaruUi(model = state?.haru || {}) {
+    const voice = $("#haruOutputVoiceSelect");
+    voice.value = state?.haruOutputVoice === "beatrice-v2" ? "beatrice-v2" : "original";
+    const convert = voice.value === "beatrice-v2";
+    const beatrice = state?.beatrice;
+    const setupRequired = convert && !beatrice?.ready;
+    const label = beatrice?.models?.find(model => model.id === beatrice.selectedModelId);
+    const speaker = label?.voices?.find(voice => voice.id === beatrice.selectedVoiceId);
+    const voiceStatus = $("#haruBeatriceStatus");
+    voiceStatus.hidden = !convert;
+    voiceStatus.textContent = setupRequired
+      ? localized("先にBeatrice 2の本体とモデルを設定してください。", "Set up the Beatrice 2 runtime and model first.")
+      : [label?.name, speaker?.name].filter(Boolean).join(" · ") || localized("キャラクターのBeatrice設定を使います。", "Uses this character's Beatrice settings.");
+    $("#haruBeatriceSetup").hidden = !setupRequired;
+    voice.disabled = haruBusy;
+    const progress = $("#haruProgress");
+    progress.hidden = !model.downloading;
+    if (model.progress?.phase === "downloading") {
+      progress.value = Math.min(100, 100 * model.progress.receivedBytes / model.downloadBytes);
+    } else {
+      progress.removeAttribute("value");
+    }
+    $("#haruDownloadButton").hidden = model.supported !== true || Boolean(model.installed);
+    $("#haruOpenButton").hidden = !model.installed;
+    $("#haruRemoveButton").hidden = !model.installed;
+    for (const button of $$("#haruSettings button")) button.disabled = haruBusy || Boolean(model.downloading);
+    $("#haruOpenButton").disabled ||= setupRequired;
+    setStatus($("#haruStatus"), model.downloading
+      ? localized("Haru 4Bを準備しています…", "Preparing Haru 4B…")
+      : model.installed ? localized("Haru 4B Q8_0を使えます。", "Haru 4B Q8_0 is ready.")
+      : model.supported === false ? localized("自動導入はWindows版で使えます。", "Automatic setup is available on Windows.") : "");
+  }
+
+  function syncSpeechEnhancementUi(model = state?.speechEnhancement || {}) {
+    const local = ["streaming-local", "sherpa-onnx"].includes($("#speechInputProviderSelect").value);
+    const toggle = $("#speechEnhancementToggle");
+    toggle.checked = state?.speechEnhancementEnabled === true;
+    const progress = model.progress;
+    const usable = model.installed || model.upgradeAvailable;
+    toggle.disabled = !local || !usable || model.downloading;
+    $("#speechEnhancementStatus").textContent = model.downloading
+      ? localized("ノイズ低減モデルを準備しています…", "Preparing the noise reduction model…")
+      : model.installed ? localized("RE-USEを使えます", "RE-USE is ready")
+      : model.upgradeAvailable ? localized("モデルを再利用してspeech.cpp v0.11.0へ更新できます。", "Update to speech.cpp v0.11.0 using the existing model.")
+      : localized("モデルと音声エンジンを追加します（約68MB）", "Add the model and speech engine (about 68 MB)");
+    $("#speechEnhancementProgress").hidden = !model.downloading;
+    $("#speechEnhancementProgress").value = Math.min(100, 100 * (progress?.receivedBytes || 0) / (progress?.totalBytes || model.downloadBytes || 1));
+    $("#speechEnhancementDownloadButton").hidden = Boolean(model.installed);
+    $("#speechEnhancementDownloadButton").disabled = model.downloading || model.supported === false;
+    $("#speechEnhancementDownloadButton").textContent = model.upgradeAvailable
+      ? localized("speech.cppを更新（約30MB）", "Update speech.cpp (about 30 MB)")
+      : localized("モデルをダウンロード", "Download model");
+    $("#speechEnhancementRemoveButton").hidden = !usable;
+    $("#speechEnhancementRemoveButton").disabled = Boolean(model.downloading);
+  }
+
   function syncStreamingSpeechModelUi(model = {}) {
     const status = $("#streamingSpeechModelStatus");
     const progress = $("#streamingSpeechModelProgress");
@@ -1080,6 +1174,7 @@
       else if (model.installed) setStatus(status, `${model.label || "サンプルモデル"} · 導入済み`);
       else if (model.upgradeAvailable) setStatus(status, model.provider === "piper-plus"
         ? localized("旧版が導入されています。Piper Plus v2.0.0へ更新できます。", "An older runtime is installed. Update to Piper Plus v2.0.0.")
+        : model.provider?.startsWith("speech-cpp") ? localized("モデルを再利用してspeech.cppを更新できます。", "Update speech.cpp using the existing model.")
         : localized("旧V4モデルが導入されています。V4.1へ差分更新できます。", "An older V4 model is installed. You can update it to V4.1."));
       else setStatus(status, "サンプルモデルはまだダウンロードされていません。");
     }
@@ -1088,7 +1183,7 @@
     remove.hidden = !model.installed && !model.upgradeAvailable;
     remove.disabled = Boolean(model.downloading);
     const incrementalSize = downloadSizeLabel(model.incrementalDownloadBytes);
-    const upgradeVersion = model.provider === "piper-plus" ? "v2.0.0" : "V4.1";
+    const upgradeVersion = model.provider === "piper-plus" ? "v2.0.0" : model.provider?.startsWith("speech-cpp") ? "v0.11.0" : "V4.1";
     download.textContent = model.upgradeAvailable
       ? localized(`${upgradeVersion}へ更新（通常約${incrementalSize}）`, `Update to ${upgradeVersion} (usually about ${incrementalSize})`)
       : `ダウンロード（約${size}）`;
@@ -1099,9 +1194,10 @@
 
   function setCodexModelOptions(select, selectedValue) {
     const value = String(selectedValue || "");
-    const knownModels = { "gpt-6-astra": "GPT-6 Astra", "gpt-6-sol": "GPT-6 Sol", "gpt-6-luna": "GPT-6 Luna" };
+    const knownModels = { "gpt-6-astra": "GPT-6 Astra", "gpt-6-sol": "GPT-6 Sol", "gpt-6.1-terra": "GPT-6.1 Terra", "gpt-6-luna": "GPT-6 Luna" };
     select.replaceChildren(new Option("既定（GPT-6 Astra）", ""));
     for (const model of codexModels) {
+      if (!model || typeof model.model !== "string" || !model.model.trim() || model.hidden) continue;
       if ([...select.options].some((option) => option.value === model.model)) continue;
       const label = Object.hasOwn(knownModels, model.model) ? knownModels[model.model] : model.displayName || model.model;
       const option = new Option(label, model.model);
@@ -1123,15 +1219,35 @@
   }
 
   async function refreshCodexModels() {
+    const epoch = ++codexModelsRefreshEpoch;
+    const authMode = state.codexAuthMode;
+    const loginEpoch = loginPollEpoch;
+    const statuses = [$("#chatModelStatus"), $("#workModelStatus")];
+    const isCurrent = () => epoch === codexModelsRefreshEpoch && authMode === state.codexAuthMode && loginEpoch === loginPollEpoch;
+    const render = () => {
+      for (const [selector, saved] of [["#codexChatModelInput", state.codexChatModel], ["#codexWorkModelInput", state.codexWorkModel]]) {
+        const select = $(selector);
+        // A catalog refresh must not undo a selection whose save is still pending.
+        setCodexModelOptions(select, select.value ?? saved ?? state.codexModel ?? "");
+      }
+    };
     try {
       const models = await api.getCodexModels();
-      codexModels = Array.isArray(models) ? models.filter((model) => model?.model && !model.hidden) : [];
-      setCodexModelOptions($("#codexChatModelInput"), state.codexChatModel || state.codexModel || "");
-      setCodexModelOptions($("#codexWorkModelInput"), state.codexWorkModel || state.codexModel || "");
+      if (!isCurrent()) return;
+      codexModels = Array.isArray(models) ? models.filter((model) => typeof model?.model === "string" && model.model.trim() && !model.hidden) : [];
+      render();
+      for (const status of statuses) if (status.dataset.catalogError) {
+        delete status.dataset.catalogError;
+        setStatus(status, "");
+      }
     } catch (error) {
-      setCodexModelOptions($("#codexChatModelInput"), state.codexChatModel || state.codexModel || "");
-      setCodexModelOptions($("#codexWorkModelInput"), state.codexWorkModel || state.codexModel || "");
-      setStatus($("#connectionStatus"), `モデル一覧を取得できません: ${error.message}`, true);
+      if (!isCurrent()) return;
+      render();
+      const message = localized("Codexのモデル一覧を取得できません", "Could not load Codex models") + ": " + error.message;
+      for (const status of statuses) {
+        status.dataset.catalogError = "true";
+        setStatus(status, message, true);
+      }
     }
   }
 
@@ -1369,7 +1485,6 @@
 
   function syncVoiceRoutingUi() {
     const live = state.backend === "codex" && state.speechInputProvider === "realtime";
-    const realtimePanel = $("#realtimeVoiceSettings");
     const standardPanel = $("#standardTtsSettings");
     const providerNames = {
       system: "Windows標準",
@@ -1380,7 +1495,7 @@
       "irodori-webgpu": "Irodori TTS", "speech-cpp": "Irodori TTS · speech.cpp",
       "sbv2-jp-extra": "Style-Bert-VITS2 JP-Extra",
     };
-    $("#voiceRoutingBadge").textContent = live ? "LIVE" : "通常TTS";
+    $("#voiceRoutingBadge").textContent = live ? "LIVE" : localized("通常TTS", "Standard TTS");
     $("#voiceRoutingTitle").textContent = live
       ? `GPT-Live · ${(state.realtimeVoice || "cove").replace(/^./, (value) => value.toUpperCase())}${state.realtimeVoiceConversion === "beatrice-v2" ? " → Beatrice 2" : ""}`
       : `${providerNames[state.ttsProvider] || "通常TTS"}${state.ttsEnabled ? " · 読み上げON" : " · 読み上げOFF"}`;
@@ -1394,11 +1509,26 @@
           : livePetAutoStart
             ? localized("キャラタップでマイク付きLiveを開始します。テキストは未接続時のみ通常TTSです。", "Tapping the character starts Live with the microphone. Text uses standard TTS only while disconnected.")
             : localized("音声ボタンでLiveを開始します。未接続時のテキストとタップは通常TTSです。", "Use the voice button to start Live. Text and taps use standard TTS while disconnected.")
-      : localized("通常会話の返答を選択中の音声合成で読み上げます。GPT-Liveの声は使いません。", "Normal replies use the selected speech synthesizer. The GPT-Live voice is not used.");
-    realtimePanel.classList.toggle("is-active", live);
-    realtimePanel.classList.toggle("is-inactive", !live);
-    standardPanel.classList.toggle("is-active", !live);
-    standardPanel.classList.toggle("is-inactive", live);
+      : localized("通常会話の返答をこの音声方式で読み上げます。", "This synthesizer reads standard conversation replies aloud.");
+    const liveDetails = $("#liveVoiceDetails");
+    const standardDetails = $("#standardVoiceDetails");
+    const activeDetails = live ? liveDetails : standardDetails;
+    const inactiveDetails = live ? standardDetails : liveDetails;
+    const route = live ? "live" : "standard";
+    const voiceCard = $("#characterVoiceCard");
+    const alternate = $("#alternateVoiceSettingsButton");
+    alternate.dataset.settingsJump = "#" + inactiveDetails.id;
+    alternate.textContent = live ? localized("通常TTSの設定を見る", "View standard TTS") : localized("GPT-Liveを設定", "GPT-Live settings");
+    $("#liveVoiceEnableHint").hidden = live;
+    $("#standardVoiceEnableHint").hidden = !live;
+    if (voiceCard.dataset.route !== route) {
+      if (inactiveDetails.nextElementSibling === activeDetails) inactiveDetails.before(activeDetails);
+      activeDetails.open = true;
+      inactiveDetails.open = false;
+      voiceCard.dataset.route = route;
+    }
+    liveDetails.classList.toggle("is-active", live);
+    standardDetails.classList.toggle("is-active", !live);
     standardPanel.disabled = live;
     $("#realtimeVoiceSelect").disabled = !live;
     $("#realtimeAutoStartSettings").classList.toggle("is-disabled", !live);
@@ -1421,29 +1551,25 @@
     }
   }
 
-  function settingsPageLabel(page) {
-    const labels = {
-      chat: ["Chat", "Chat"],
-      remote: ["リモート", "Remote"],
-      esp32: ["ESP32デバイス", "ESP32 Devices"],
-      character: ["キャラクター", "Character"],
-      skills: ["Skills", "Skills"],
-      mcp: ["MCP連携", "MCP Connections"],
-      voice: ["音声", "Voice"],
-      connection: ["AI接続", "AI Connection"],
-      desktop: ["デスクトップ", "Desktop"],
-      support: ["サポート", "Support"],
-    };
-    const label = labels[page] || [page, page];
-    return localized(label[0], label[1]);
+  function settingsPanel(page) {
+    return $$("[data-page-panel]").find((panel) => panel.dataset.pagePanel === page);
+  }
+
+  function settingsPageLabel(panel) {
+    const page = panel.dataset.pagePanel;
+    const group = panel.closest("[data-settings-group]");
+    const category = group?.dataset.settingsGroup || page;
+    const primary = $$(".nav-tab").find((button) => button.dataset.page === category)?.textContent.trim();
+    const secondary = group && [...group.querySelectorAll(".settings-subnav button")].find((button) => button.dataset.page === page)?.textContent.trim();
+    return secondary ? [primary, secondary].join(" › ") : primary || page;
   }
 
   function closeSettingsSearch({ clear = false } = {}) {
     const input = $("#settingsSearchInput");
-    const results = $("#settingsSearchResults");
     if (clear) input.value = "";
-    results.hidden = true;
+    $("#settingsSearchResults").hidden = true;
     input.setAttribute("aria-expanded", "false");
+    input.removeAttribute("aria-activedescendant");
     settingsSearchMatches = [];
     settingsSearchActiveIndex = -1;
   }
@@ -1456,66 +1582,91 @@
       const active = buttonIndex === settingsSearchActiveIndex;
       button.classList.toggle("is-active", active);
       button.setAttribute("aria-selected", String(active));
-      if (active) button.scrollIntoView({ block: "nearest" });
+      if (active) {
+        $("#settingsSearchInput").setAttribute("aria-activedescendant", button.id);
+        button.scrollIntoView({ block: "nearest" });
+      }
     });
   }
 
-  function jumpToSettingsTarget(selector, { highlight = true } = {}) {
-    const source = document.querySelector(selector);
-    if (!source) return;
-    const target = source.matches(".card, section, .backend-grid, .character-section-heading")
-      ? source
-      : source.closest(".card, section, .backend-grid, .character-section-heading") || source;
-    target.setAttribute("data-settings-search-target", "");
-    target.scrollIntoView({
-      block: "start",
-      behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
-    });
-    if (!highlight) return;
-    target.classList.remove("settings-focus-flash");
+  function jumpToSettingsTarget(source, fallback) {
+    const panel = source.closest("[data-page-panel]");
+    if (!panel || !showPage(panel.dataset.pagePanel)) return;
+    const hidden = source.closest("[hidden]");
+    const target = hidden ? fallback || hidden.closest(".card") || panel : source;
+    if (target.matches("details")) target.open = true;
+    for (let details = target.parentElement?.closest("details"); details; details = details.parentElement?.closest("details")) {
+      details.open = true;
+    }
+    const heading = target.matches("details") ? target.querySelector(":scope > summary")
+      : target.matches(".card, section, .backend-grid, .character-section-heading") ? target.querySelector("h2, h3, h4, legend")
+      : null;
+    const control = heading || target;
+    if (control.tabIndex < 0) control.tabIndex = -1;
+    control.focus({ preventScroll: true });
+    const destination = target.closest(".switch-row") || target;
+    destination.classList.remove("settings-focus-flash");
     requestAnimationFrame(() => {
-      target.classList.add("settings-focus-flash");
-      setTimeout(() => target.classList.remove("settings-focus-flash"), 1100);
+      if (!panel.classList.contains("is-active")) return;
+      const scroller = $(".main-panel");
+      const header = panel.closest("[data-settings-group]")?.querySelector(".settings-group-header")
+        || panel.querySelector(".page-header");
+      const offset = header?.offsetHeight || 0;
+      const top = destination.getBoundingClientRect().top - scroller.getBoundingClientRect().top;
+      scroller.scrollTo({
+        top: scroller.scrollTop + top - offset - 14,
+        behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth",
+      });
+      destination.classList.add("settings-focus-flash");
+      setTimeout(() => destination.classList.remove("settings-focus-flash"), 1100);
     });
   }
 
   function navigateToSetting(item) {
-    showPage(item.page);
     closeSettingsSearch({ clear: true });
-    $("#settingsSearchInput").blur();
-    requestAnimationFrame(() => jumpToSettingsTarget(item.target));
+    jumpToSettingsTarget(item.source, item.fallback && $(item.fallback));
   }
 
   function renderSettingsSearch(query = "") {
     const results = $("#settingsSearchResults");
     const input = $("#settingsSearchInput");
-    const normalized = String(query).trim().toLocaleLowerCase(state?.language === "en" ? "en-US" : "ja-JP");
-    settingsSearchMatches = settingsSearchItems.filter((item) => {
-      if (!normalized) return item.popular;
-      const haystack = [item.ja, item.en, item.detailJa, item.detailEn, item.keywords, settingsPageLabel(item.page)].join(" ").toLocaleLowerCase();
-      return haystack.includes(normalized);
-    }).slice(0, 8);
+    const terms = query.normalize("NFKC").toLowerCase().trim().split(/\s+/).filter(Boolean);
+    const matching = settingsSearchItems.flatMap((item) => {
+      if (!terms.length && !item.popular) return [];
+      const source = $(item.target);
+      const panel = source?.closest("[data-page-panel]");
+      if (!panel) return [];
+      const page = settingsPageLabel(panel);
+      const title = [item.ja, item.en].join(" ").normalize("NFKC").toLowerCase();
+      const text = [title, item.keywords, page].join(" ").normalize("NFKC").toLowerCase();
+      if (!terms.every((term) => text.includes(term))) return [];
+      const rank = terms.filter((term) => title.includes(term)).length;
+      return [{ ...item, source, page, rank }];
+    });
+    settingsSearchMatches = matching.sort((first, second) => second.rank - first.rank).slice(0, 8);
     settingsSearchActiveIndex = -1;
+    input.removeAttribute("aria-activedescendant");
     results.replaceChildren();
     if (!settingsSearchMatches.length) {
       const empty = document.createElement("p");
       empty.className = "settings-search-empty";
+      empty.setAttribute("role", "status");
       empty.textContent = localized("一致する設定がありません", "No matching settings");
       results.appendChild(empty);
     } else {
       settingsSearchMatches.forEach((item, index) => {
         const button = document.createElement("button");
         button.type = "button";
+        button.id = "settingsSearchResult-" + index;
+        button.tabIndex = -1;
         button.className = "settings-search-result";
         button.setAttribute("role", "option");
         button.setAttribute("aria-selected", "false");
         const title = document.createElement("strong");
         title.textContent = localized(item.ja, item.en);
-        const detail = document.createElement("small");
-        detail.textContent = localized(item.detailJa, item.detailEn);
-        const page = document.createElement("em");
-        page.textContent = settingsPageLabel(item.page);
-        button.append(title, detail, page);
+        const page = document.createElement("small");
+        page.textContent = item.page;
+        button.append(title, page);
         button.addEventListener("pointerenter", () => setSettingsSearchActive(index));
         button.addEventListener("click", () => navigateToSetting(item));
         results.appendChild(button);
@@ -1525,36 +1676,34 @@
     input.setAttribute("aria-expanded", "true");
   }
 
-  function organizeSettingsLayout() {
-    const characterPage = $('[data-page-panel="character"]');
-    const addGroup = characterPage?.querySelector(".character-add-group");
-    if (characterPage && addGroup) characterPage.appendChild(addGroup);
-    const voiceStack = $(".voice-settings-stack");
-    const beatriceLibrary = $("#beatriceLibraryCard");
-    if (voiceStack && beatriceLibrary) voiceStack.appendChild(beatriceLibrary);
-    for (const item of settingsSearchItems) document.querySelector(item.target)?.setAttribute("data-settings-search-target", "");
-  }
-
   function showPage(name) {
+    const panel = settingsPanel(name);
+    if (!panel) return false;
     const scroller = $(".main-panel");
-    const activePanel = $('[data-page-panel].is-active');
-    const previousName = activePanel?.dataset.pagePanel;
-    if (previousName && previousName !== name) sessionStorage.setItem(`charadock.pageScroll.${previousName}`, String(scroller.scrollTop));
+    const previous = $("[data-page-panel].is-active")?.dataset.pagePanel;
+    const group = panel.closest("[data-settings-group]");
+    const category = group?.dataset.settingsGroup || name;
+    if (previous && previous !== name) sessionStorage.setItem("charadock.pageScroll." + previous, String(scroller.scrollTop));
     sessionStorage.setItem("charadock.activePage", name);
-    $$(".nav-tab").forEach((button) => {
-      const active = button.dataset.page === name;
+    if (group) sessionStorage.setItem("charadock.groupPage." + category, name);
+    $$("[data-settings-group]").forEach((element) => { element.hidden = element !== group; });
+    $$(".nav-tab, .settings-subnav button").forEach((button) => {
+      const active = button.dataset.page === (button.classList.contains("nav-tab") ? category : name);
       button.classList.toggle("is-active", active);
       if (active) button.setAttribute("aria-current", "page");
       else button.removeAttribute("aria-current");
     });
-    $$("[data-page-panel]").forEach((panel) => {
-      const active = panel.dataset.pagePanel === name;
-      panel.classList.toggle("is-active", active);
-      panel.setAttribute("aria-hidden", String(!active));
+    $$("[data-page-panel]").forEach((element) => {
+      element.classList.toggle("is-active", element === panel);
+      element.setAttribute("aria-hidden", String(element !== panel));
     });
-    if (previousName !== name) requestAnimationFrame(() => {
-      scroller.scrollTop = Number(sessionStorage.getItem(`charadock.pageScroll.${name}`)) || 0;
-    });
+    if (previous !== name) {
+      scroller.scrollTop = Number(sessionStorage.getItem("charadock.pageScroll." + name)) || 0;
+      if (name === "connection" || name === "work") void refreshCodexModels();
+      if (name === "support" && !lastDiagnostics) void refreshSupportDiagnostics();
+      if (name === "skills" && !trustedSkillCatalogLoaded) void loadTrustedSkills();
+    }
+    return true;
   }
 
   function appendMessage(role, text, thinking = false) {
@@ -2284,19 +2433,55 @@
       : localized("この範囲にはまだ継続記録がありません。", "There is no continuation record for this scope yet."));
   }
 
+  const characterIdentityFields = ["characterNameInput", "characterPersonalityInput"];
+  const characterDisplayFields = ["bubbleLeftInput", "bubbleTopInput", "bubbleWidthInput", ...motionFields.map((key) => key + "Input")];
+  let characterEditorScope = "";
+
+  function syncCharacterField(id, saved, scopeChanged) {
+    const input = document.getElementById(id);
+    const value = String(saved);
+    if (scopeChanged || input.dataset.savedValue !== value) input.value = value;
+    input.dataset.savedValue = value;
+  }
+
+  function acceptCharacterEdits(fields) {
+    for (const id of fields) delete document.getElementById(id).dataset.savedValue;
+  }
+
   function syncCharacterEditor() {
     const character = currentCharacter();
     if (!character) return;
-    $("#characterNameInput").value = character.name || "";
-    $("#characterPersonalityInput").value = character.personality || "";
+    const scope = character.id + ":" + (state.language || "ja");
+    const scopeChanged = characterEditorScope !== scope;
+    characterEditorScope = scope;
+    if (scopeChanged) {
+      setStatus($("#characterProfileStatus"), "");
+      setStatus($("#characterDisplayStatus"), "");
+      setStatus($("#characterMemoryStatus"), "");
+    }
+    syncCharacterField("characterNameInput", character.name || "", scopeChanged);
+    syncCharacterField("characterPersonalityInput", character.personality || "", scopeChanged);
     $("#characterAppearanceTitle").textContent = localized("見た目", "Appearance");
     $("#characterAppearanceLabel").textContent = localized("表示するアバター", "Avatar appearance");
     $("#importMeshAvatarButton").textContent = localized("Mesh Avatarを読み込む", "Import Mesh Avatar");
-    $("#characterAppearanceHint").textContent = localized("Mesh Avatar Studioのプロジェクトフォルダーを選びます。見た目を切り替えても、このキャラの名前・性格・声・会話は共通です。", "Select a Mesh Avatar Studio project folder. All appearances share this character’s name, personality, voice and conversations.");
+    $("#characterAppearanceHint").textContent = localized(
+      "見た目を切り替えても、声・性格・会話は引き継がれます。",
+      "Voice, personality, and conversations carry over when you switch appearances."
+    );
     const appearanceSelect = $("#characterAppearanceSelect");
     appearanceSelect.replaceChildren();
     for (const option of state.avatarAppearance?.options || [{id:"standard",label:localized("標準の見た目","Original appearance")}]) appearanceSelect.add(new Option(option.label,option.id));
     appearanceSelect.value = state.avatarAppearance?.selected || "standard";
+    $("#importLivlivAvatarButton").textContent=localized("VRM・LivLivを読み込む","Import VRM / LivLiv");
+    const model = state.avatarAppearance?.livliv;
+    const modelControls = $("#characterModelControls");
+    const modelKey = model ? `${character.id}:${model.id}:${model.version}` : "";
+    if (modelControls.dataset.modelKey !== modelKey) {
+      modelControls.open = false;
+      modelControls.dataset.modelKey = modelKey;
+    }
+    modelControls.hidden = !model;
+    livlivControls.sync(model, character.id, state.language);
     const director = character.director || {};
     $("#characterDirectorRoleSummary").textContent = director.role || localized("役割はまだ設定されていません。", "No role has been set yet.");
     $("#characterDirectorCustomizationBadge").textContent = director.customized
@@ -2309,15 +2494,14 @@
     if (!$("#characterDirectorDialog").hidden && directorEditingLocked) {
       setStatus($("#characterDirectorStatus"), localized("現在の応答が終わると保存できます。", "You can save after the current response finishes."));
     }
-    $("#bubbleLeftInput").value = character.ui?.bubbleLeft ?? 18;
-    $("#bubbleTopInput").value = character.ui?.bubbleTop ?? 24;
-    $("#bubbleWidthInput").value = character.ui?.bubbleWidth ?? 68;
+    syncCharacterField("bubbleLeftInput", character.ui?.bubbleLeft ?? 18, scopeChanged);
+    syncCharacterField("bubbleTopInput", character.ui?.bubbleTop ?? 24, scopeChanged);
+    syncCharacterField("bubbleWidthInput", character.ui?.bubbleWidth ?? 68, scopeChanged);
     for (const key of motionFields) {
-      $(`#${key}Input`).value = character.motion?.[key] ?? (key === "avatarSize" ? 100 : 30);
+      syncCharacterField(key + "Input", character.motion?.[key] ?? (key === "avatarSize" ? 100 : 30), scopeChanged);
     }
     const credits = Array.isArray(character.credits) ? character.credits : [];
-    const creditCard = $("#characterCredit");
-    creditCard.hidden = !credits.length;
+    $("#characterCreditsDetails").hidden = !credits.length;
     $("#characterCreditText").textContent = String(character.creditText || "");
     const creditLinks = $("#characterCreditLinks");
     creditLinks.replaceChildren();
@@ -2335,7 +2519,6 @@
     renderCharacterMemories();
     renderContinuationEditor();
     syncMotionReadouts();
-    setStatus($("#characterProfileStatus"), `${character.name}の設定`);
   }
 
   const characterDirectorListFields = Object.freeze({
@@ -2896,7 +3079,7 @@
       const character = currentCharacter();
       if (!character) return;
       api.previewCharacterMotion({ id: character.id, motion: currentMotionValues() }).catch((error) => {
-        setStatus($("#characterProfileStatus"), error.message, true);
+        setStatus($("#characterDisplayStatus"), error.message, true);
       });
     });
   }
@@ -3378,7 +3561,7 @@
             if (project.id !== workspace.activeProjectId) state = await api.activateWorkProject(project.id);
             else await api.openWorkDirectory();
             syncUi();
-          } catch (error) { setStatus($("#characterProfileStatus"), error.message, true); }
+          } catch (error) { setStatus($("#characterWorkspaceStatus"), error.message, true); }
           finally { use.disabled = false; }
         });
         actions.appendChild(use);
@@ -3391,7 +3574,7 @@
         detach.addEventListener("click", async () => {
           if (!window.confirm(localized(`「${project.name}」をこのキャラの担当から外しますか？\n元のフォルダーやファイルは削除されません。`, `Remove “${project.name}” from this character?\nThe original folder and files will not be deleted.`))) return;
           try { state = await api.detachWorkProject(project.id); syncUi(); }
-          catch (error) { setStatus($("#characterProfileStatus"), error.message, true); }
+          catch (error) { setStatus($("#characterWorkspaceStatus"), error.message, true); }
         });
         actions.appendChild(detach);
       }
@@ -3613,6 +3796,10 @@
     const enabled = Boolean(atom.enabled);
     $("#atomEchoEnabledToggle").checked = enabled;
     $("#atomEchoEnabledSettings").hidden = !enabled;
+    const setupDetails = $("#atomEchoSetupDetails");
+    const needsWifi = enabled && ["setup-required", "usb-ready"].includes(atom.connectionState) && !atom.wifiSsid;
+    if (needsWifi && setupDetails.dataset.needsWifi !== "true") setupDetails.open = true;
+    setupDetails.dataset.needsWifi = String(needsWifi);
     $("#atomEchoLiveIdleTimeoutToggle").checked = atom.liveIdleTimeoutEnabled === true;
     renderAtomEchoPorts();
     const captureMode = atom.captureMode === "hands-free" ? "hands-free" : "push-to-talk";
@@ -3758,7 +3945,7 @@
   function renderRlcd42VadStatus() {
     const rlcd = state?.rlcd42 || {};
     const enabled = rlcd.microphoneEnabled !== false;
-    const handsFree = enabled && rlcd.captureMode === "hands-free";
+    const handsFree = enabled && ["hands-free", "camera-hands-free"].includes(rlcd.captureMode);
     const settings = $("#rlcd42VadThresholdSettings");
     const input = $("#rlcd42VadThresholdInput");
     settings.classList.toggle("is-disabled", !handsFree);
@@ -3771,7 +3958,11 @@
     if (!enabled) message = localized("マイクは停止しています。", "The microphone is off.");
     else if (!rlcd.microphoneReady && rlcd.connected) {
       message = localized("マイク対応のCharaDockファームウェアへ更新してください。", "Update to the microphone-enabled CharaDock firmware.");
-    } else if (!handsFree) message = localized("KEYを押している間だけ録音します。", "Recording runs only while KEY is held.");
+    } else if (rlcd.captureMode === "camera-hands-free" && !rlcd.cameraHandsFreeReady) {
+      message = localized("顔と声で会話を始めるには対応ファームウェアが必要です。", "Camera-assisted conversation requires compatible firmware.");
+    } else if (!handsFree) message = rlcd.boardType === "m5stack-stackchan-k151"
+      ? localized("頭に触れている間だけ録音します。", "Recording runs while you hold the head sensor.")
+      : localized("KEYを押している間だけ録音します。", "Recording runs only while KEY is held.");
     else if (status?.calibrationChunks) message = localized("周囲の音を確認しています…", "Measuring ambient sound…");
     else if (status?.monitoring || status?.active) {
       message = localized(
@@ -3782,20 +3973,63 @@
     setStatus($("#rlcd42VadStatus"), message, Boolean(enabled && rlcd.connected && !rlcd.microphoneReady));
   }
 
+  function activeCharacterDeviceName() {
+    return state?.rlcd42?.boardType === "m5stack-stackchan-k151" ? "StackChan" : "RLCD 4.2";
+  }
+
   function syncRlcd42Ui() {
     const rlcd = state?.rlcd42 || {};
     const enabled = Boolean(rlcd.enabled);
     const stackchan = rlcd.boardType === "m5stack-stackchan-k151";
     $("#characterDeviceBoardSelect").value = stackchan ? "m5stack-stackchan-k151" : "waveshare-rlcd-4.2";
     $("#characterDeviceBoardSelect").disabled = enabled;
-    $("#rlcd42Title").textContent = stackchan ? "StackChan" : "RLCD 4.2";
+    $("#rlcd42Title").textContent = activeCharacterDeviceName();
     $("#stackchanFeatureNote").hidden = !stackchan;
     $("#stackchanMotionControls").hidden = !stackchan;
     $("#stackchanMotionEnable").disabled = !rlcd.connected;
     $("#stackchanMotionDisable").disabled = !rlcd.connected;
+    $("#stackchanMotionStatus").textContent = rlcd.connected && rlcd.motionEnabled
+      ? localized("首の動き：オン", "Head movement on") : localized("首の動き：オフ", "Head movement off");
+    $("#stackchanPitchSettings").hidden = !stackchan || !rlcd.homePitchReady;
+    $("#stackchanPitchLabel").textContent = localized("首の基本角度", "Head resting angle");
+    $("#stackchanPitchHelp").textContent = localized("数値を上げると上を向きます。動きを有効にすると適用されます。", "Higher values look upward. Applies when head movement is enabled.");
+    const pitch = $("#stackchanPitchInput");
+    if (document.activeElement !== pitch) pitch.value = String(rlcd.homePitch ?? 8);
+    $("#stackchanPitchValue").textContent = pitch.value + "°";
+    updateRangeProgress(pitch);
     $("#rlcd42ArtStyleSelect").closest("section").hidden = stackchan;
-    $("#rlcd42SensorStrip").hidden = stackchan;
-    $("#rlcd42CaptureModeSelect").querySelector('[value="hands-free"]').disabled = stackchan;
+    $("#rlcd42SensorDetails").hidden = stackchan;
+    $("#rlcd42CaptureModeSelect").querySelector('[value="hands-free"]').disabled = stackchan && !rlcd.handsFreeReady;
+    const cameraMode = $("#rlcd42CaptureModeSelect").querySelector('[value="camera-hands-free"]');
+    cameraMode.hidden = !stackchan;
+    cameraMode.disabled = !rlcd.cameraHandsFreeReady;
+    cameraMode.textContent = localized("顔と声で会話を始める", "Start conversations with face and voice");
+    $("#stackchanCameraControls").hidden = !stackchan;
+    $("#stackchanCameraPreview").disabled = !rlcd.cameraPreviewReady;
+    $("#rlcd42QuickControls").hidden = !enabled;
+    $("#rlcd42QuickTitle").textContent = stackchan
+      ? localized("本体のマイク・スピーカー・カメラ", "Device mic, speaker and camera")
+      : localized("本体のマイクとスピーカー", "Device mic and speaker");
+    $("#rlcd42QuickMicrophoneLabel").textContent = localized("マイク", "Microphone");
+    $("#rlcd42QuickSpeakerLabel").textContent = localized("スピーカー", "Speaker");
+    $("#stackchanQuickCamera").hidden = !stackchan;
+    $("#stackchanQuickCameraLabel").textContent = localized("カメラ", "Camera");
+    const privacyMuted = rlcd.privacyMuted === true;
+    const privacyStatus = $("#stackchanPrivacyStatus");
+    privacyStatus.hidden = !stackchan;
+    privacyStatus.textContent = privacyMuted
+      ? localized("一括オフ中。画面右上の鍵を長押しすると解除します。", "All off. Hold the lock on the device screen to restore access.")
+      : localized("本体の画面右上の鍵を長押しすると、3つをまとめてオフにできます。", "Hold the lock on the device screen to switch all three off.");
+    $("#rlcd42MicrophoneToggle").disabled = privacyMuted;
+    $("#rlcd42SpeakerToggle").disabled = privacyMuted;
+    $("#stackchanCameraToggle").checked = !privacyMuted && rlcd.cameraEnabled !== false;
+    $("#stackchanCameraToggle").disabled = privacyMuted || (rlcd.connected && !rlcd.cameraControlsReady);
+    $("#stackchanTrackFaceLabel").textContent = localized("顔に首を向ける", "Turn toward faces");
+    $("#stackchanTrackFaceHelp").textContent = localized(
+      "待機中に本体内で顔の位置を検出します。首の動きとカメラがオンのときに動きます。",
+      "Detects face position on the device while idle. Requires head movement and camera access.");
+    $("#stackchanTrackFaceToggle").checked = rlcd.faceTrackingEnabled === true;
+    $("#stackchanTrackFaceToggle").disabled = privacyMuted || !rlcd.cameraControlsReady || rlcd.cameraEnabled === false;
     $("#rlcd42CaptureModeSelect").querySelector('[value="push-to-talk"]').textContent = stackchan ? "頭に触れたまま話す" : "KEYを押して話す";
     $("#rlcd42EnabledToggle").checked = enabled;
     $("#rlcd42EnabledSettings").hidden = !enabled;
@@ -3804,13 +4038,15 @@
     $("#rlcd42TransportSelect").value = ["usb", "wifi"].includes(rlcd.transportPreference) ? rlcd.transportPreference : "auto";
     $("#rlcd42ArtStyleSelect").value = rlcd.artStyle === "manga" ? "manga" : "illustration";
     $("#rlcd42CaptionModeSelect").value = rlcd.captionMode === "off" ? "off" : "auto";
-    $("#rlcd42SpeakerToggle").checked = rlcd.speakerEnabled !== false;
+    $("#rlcd42SpeakerToggle").checked = !privacyMuted && rlcd.speakerEnabled !== false;
     const outputGainInput = $("#rlcd42OutputGainInput");
     if (document.activeElement !== outputGainInput) outputGainInput.value = String(Math.max(50, Math.min(150, Number(rlcd.outputGain) || 100)));
     $("#rlcd42OutputGainOutput").textContent = `${Math.round(Number(outputGainInput.value) || 100)}%`;
     updateRangeProgress(outputGainInput);
-    $("#rlcd42MicrophoneToggle").checked = rlcd.microphoneEnabled !== false;
-    $("#rlcd42CaptureModeSelect").value = rlcd.captureMode === "hands-free" ? "hands-free" : "push-to-talk";
+    $("#rlcd42MicrophoneToggle").checked = !privacyMuted && rlcd.microphoneEnabled !== false;
+    $("#rlcd42CaptureModeSelect").value = rlcd.captureMode || "push-to-talk";
+    const cameraConversation = rlcd.captureMode === "camera-hands-free";
+    const handsFree = rlcd.captureMode === "hands-free" || cameraConversation;
     $("#rlcd42CaptureModeSelect").disabled = rlcd.microphoneEnabled === false;
     const vadThresholdInput = $("#rlcd42VadThresholdInput");
     if (document.activeElement !== vadThresholdInput) vadThresholdInput.value = String(Math.max(80, Math.min(800, Number(rlcd.vadThreshold) || 120)));
@@ -3818,16 +4054,23 @@
     updateRangeProgress(vadThresholdInput);
     renderRlcd42VadStatus();
 
+    const activeTransport = rlcd.connected && ["usb", "wifi"].includes(rlcd.transport) ? rlcd.transport : "";
+    const transportLabel = activeTransport === "usb" ? "USB" : activeTransport === "wifi" ? "Wi-Fi" : "";
     const badge = $("#rlcd42StatusBadge");
     const labels = {
       off: localized("停止中", "Off"),
       connecting: localized("接続中", "Connecting"),
       "setup-required": localized("初期設定", "Setup required"),
       "usb-ready": localized("USB接続", "USB connected"),
-      ready: rlcd.wirelessConnected ? localized("Wi-Fi接続", "Wi-Fi connected") : localized("接続済み", "Connected"),
+      ready: transportLabel ? localized(`${transportLabel}接続`, `${transportLabel} connected`) : localized("接続済み", "Connected"),
       error: localized("要確認", "Needs attention"),
     };
     badge.textContent = labels[rlcd.connectionState] || labels.off;
+    const connectionDetail = activeTransport === "usb" ? rlcd.port : activeTransport === "wifi" ? rlcd.wifiSsid : "";
+    $("#rlcd42ActiveConnection").textContent = transportLabel
+      ? localized(`現在の接続 ${transportLabel}${connectionDetail ? `（${connectionDetail}）` : ""}`,
+        `Current connection ${transportLabel}${connectionDetail ? ` (${connectionDetail})` : ""}`)
+      : localized("現在は接続されていません", "No active connection");
     badge.classList.toggle("is-ready", Boolean(rlcd.connected));
     badge.classList.toggle("is-warning", rlcd.connectionState === "error");
     $("#syncRlcd42DisplayButton").disabled = !rlcd.connected;
@@ -3842,9 +4085,9 @@
     let setupMessage = "";
     if (setup.error) setupMessage = setup.error;
     else if (setup.phase === "connected" || setup.connected) setupMessage = localized("Wi-Fi設定を保存し、ネットワークへ接続しました。", "Wi-Fi settings were saved and the device joined the network.");
-    else if (setup.phase === "connecting") setupMessage = localized("RLCD 4.2をWi-Fiへ接続しています…", "Connecting RLCD 4.2 to Wi-Fi…");
+    else if (setup.phase === "connecting") setupMessage = localized(`${activeCharacterDeviceName()}をWi-Fiへ接続しています…`, `Connecting ${activeCharacterDeviceName()} to Wi-Fi…`);
     else if (rlcd.usb?.connected) setupMessage = localized("USBを認識しました。Wi-Fi情報を入力して設定できます。", "USB detected. Enter Wi-Fi details to configure the device.");
-    else setupMessage = localized("初回設定するときだけRLCD 4.2をUSB接続します。", "Connect RLCD 4.2 over USB only for initial setup.");
+    else setupMessage = localized(`初回設定では${activeCharacterDeviceName()}をUSBで接続します。`, `Connect ${activeCharacterDeviceName()} over USB for initial setup.`);
     setStatus($("#rlcd42WifiSetupStatus"), setupMessage, Boolean(setup.error));
 
     let audioMessage;
@@ -3877,18 +4120,18 @@
     $("#rlcd42Firmware").textContent = String(rlcd.device?.firmware || "--");
 
     let message = String(rlcd.error || "");
-    if (!message && rlcd.wirelessConnected) {
+    if (!message && activeTransport === "wifi") {
       const route = rlcd.inputMode === "live"
         ? rlcd.beatriceActive ? "GPT-Live · Beatrice 2" : "GPT-Live"
         : rlcd.interactionMode === "work" ? "Work · キャラクターTTS" : "Chat · キャラクターTTS";
       message = localized(
-        `${rlcd.wifiSsid || "Wi-Fi"}から無線接続中 · ${route} · ${rlcd.captureMode === "hands-free" ? "そのまま話しかけられます。" : "KEYを押したまま話してください。"}`,
-        `Connected wirelessly through ${rlcd.wifiSsid || "Wi-Fi"} · ${route} · ${rlcd.captureMode === "hands-free" ? "Just start speaking." : "Hold KEY while speaking."}`,
+        `${rlcd.wifiSsid || "Wi-Fi"}から無線接続中 · ${route} · ${cameraConversation ? "本体に顔を向けて話してください。" : handsFree ? "そのまま話しかけられます。" : stackchan ? "頭に触れたまま話してください。" : "KEYを押したまま話してください。"}`,
+        `Connected wirelessly through ${rlcd.wifiSsid || "Wi-Fi"} · ${route} · ${cameraConversation ? "Face StackChan and speak." : handsFree ? "Just start speaking." : stackchan ? "Hold the head sensor while speaking." : "Hold KEY while speaking."}`,
       );
     } else if (!message && rlcd.connected) {
       message = localized(
-        `${rlcd.port || "USB"}で接続中です。${rlcd.captureMode === "hands-free" ? "そのまま話しかけられます。" : "KEYを押したまま話してください。"}`,
-        `Connected through ${rlcd.port || "USB"}. ${rlcd.captureMode === "hands-free" ? "Just start speaking." : "Hold KEY while speaking."}`,
+        `${rlcd.port || "USB"}で接続中です。${cameraConversation ? "本体に顔を向けて話してください。" : handsFree ? "そのまま話しかけられます。" : stackchan ? "頭に触れたまま話してください。" : "KEYを押したまま話してください。"}`,
+        `Connected through ${rlcd.port || "USB"}. ${cameraConversation ? "Face StackChan and speak." : handsFree ? "Just start speaking." : stackchan ? "Hold the head sensor while speaking." : "Hold KEY while speaking."}`,
       );
     } else if (!message && rlcd.paired) {
       message = localized(`${rlcd.wifiSsid || "設定済みWi-Fi"}上のRLCD 4.2を待っています…`, `Waiting for RLCD 4.2 on ${rlcd.wifiSsid || "the configured Wi-Fi"}…`);
@@ -3929,9 +4172,7 @@
         port: $("#rlcd42PortSelect").value,
         artStyle: $("#rlcd42ArtStyleSelect").value,
         captionMode: $("#rlcd42CaptionModeSelect").value,
-        speakerEnabled: $("#rlcd42SpeakerToggle").checked,
         outputGain: Number($("#rlcd42OutputGainInput").value),
-        microphoneEnabled: $("#rlcd42MicrophoneToggle").checked,
         captureMode: $("#rlcd42CaptureModeSelect").value,
         vadThreshold: Number($("#rlcd42VadThresholdInput").value),
         liveIdleTimeoutEnabled: $("#rlcd42LiveIdleTimeoutToggle").checked,
@@ -3949,7 +4190,7 @@
   async function provisionRlcd42Wifi() {
     const button = $("#provisionRlcd42WifiButton");
     button.disabled = true;
-    setStatus($("#rlcd42WifiSetupStatus"), localized("Wi-Fi情報をRLCD 4.2へ安全に渡しています…", "Sending Wi-Fi settings directly to RLCD 4.2…"));
+    setStatus($("#rlcd42WifiSetupStatus"), localized(`Wi-Fi情報を${activeCharacterDeviceName()}へ送信しています…`, `Sending Wi-Fi settings to ${activeCharacterDeviceName()}…`));
     try {
       state = await api.provisionRlcd42Wifi({
         ssid: $("#rlcd42WifiSsidInput").value,
@@ -3970,7 +4211,7 @@
   }
 
   function syncJevUi() {
-    for (const element of $$("#jevSettings [data-jev-ja]")) {
+    for (const element of $$("[data-jev-ja]")) {
       element.textContent = localized(element.dataset.jevJa, element.dataset.jevEn);
     }
     const decisions = state?.decisionProvider === "decisions";
@@ -4006,17 +4247,14 @@
     $("#saveJevApiKeyButton").disabled = jevBusy || !$("#jevApiKeyInput").value.trim();
     $("#clearJevApiKeyButton").disabled = jevBusy || !state?.jevApiKeyConfigured;
     $("#testJevConnectionButton").disabled = jevBusy || !enabled || !decisionKeyConfigured() || (!decisions && Boolean($("#jevApiKeyInput").value.trim()));
-    $("#jevApiKeyState").textContent = decisions
-      ? state?.hasApiKey ? localized("Decisions APIキー設定済み", "Decisions API key configured")
-        : localized("下の欄でOpenAI APIキーを設定してください", "Set an OpenAI API key below")
-      : !state?.jevApiKeyConfigured
+    $("#jevApiKeyState").textContent = !state?.jevApiKeyConfigured
       ? localized("APIキー未設定", "API key not configured")
       : state.jevApiKeyPersistence === "encrypted"
         ? localized("APIキー設定済み（暗号化保存）", "API key configured (encrypted storage)")
         : localized("APIキー設定済み（今回のみ）", "API key configured (this session only)");
   }
 
-  async function saveJevConfig(keyAction) {
+  async function saveJevConfig(keyAction, status = $("#jevStatus")) {
     if (jevBusy) return;
     const payload = {
       provider: $("#decisionProviderSelect").value,
@@ -4039,9 +4277,9 @@
     try {
       state = await api.setJevConfig(payload);
       syncUi();
-      setStatus($("#jevStatus"), localized("判断アシスト設定を保存しました。", "Decision assist settings saved."));
+      setStatus(status, localized("判断アシスト設定を保存しました。", "Decision assist settings saved."));
     } catch {
-      setStatus($("#jevStatus"), localized("判断アシスト設定を保存できませんでした。", "Could not save decision assist settings."), true);
+      setStatus(status, localized("判断アシスト設定を保存できませんでした。", "Could not save decision assist settings."), true);
     } finally {
       jevBusy = false;
       syncJevUi();
@@ -4185,7 +4423,9 @@
     $("#voiceAutoSendDelaySelect").disabled = !$("#voiceAutoSendToggle").checked || !$("#voiceAutoSendCountdownToggle").checked;
     syncSherpaModelUi(state.sherpaModel);
     syncStreamingSpeechModelUi(state.streamingSpeechModel);
+    syncSpeechEnhancementUi();
     syncVoiceRoutingUi();
+    syncHaruUi();
     $("#positionLockedToggle").checked = Boolean(state.positionLocked);
     $("#edgeSnapToggle").checked = Boolean(state.edgeSnap);
     const displaySelect = $("#displaySelect");
@@ -4333,6 +4573,7 @@
       realtimeAutoStartOnPet: $("#realtimeAutoStartOnPetToggle").checked,
       sherpaModelId: $("#sherpaModelSelect").value || state?.sherpaModelId,
       streamingSpeechModelId: $("#streamingSpeechModelSelect").value || state?.streamingSpeechModelId,
+      speechEnhancementEnabled: $("#speechEnhancementToggle").checked,
       speechLanguage: state?.speechLanguage || "ja-JP",
       voiceActivationMode: $("#voiceActivationModeSelect").value,
       vadSensitivity: $("#vadSensitivitySelect").value,
@@ -5051,7 +5292,7 @@
         const result = await api.synthesizeTts(text);
         if (result?.error) throw new Error(result.error);
         if (result?.externalPlayback === "rlcd42") {
-          if (token === speechPlaybackToken) setStatus($("#ttsStatus"), localized("RLCD 4.2で再生しました。", "Played on RLCD 4.2."));
+          if (token === speechPlaybackToken) setStatus($("#ttsStatus"), localized(`${activeCharacterDeviceName()}で再生しました。`, `Played on ${activeCharacterDeviceName()}.`));
           return;
         }
         const sources = result?.audioDataUrls || [];
@@ -5643,20 +5884,49 @@
       $("#"+id).addEventListener("click", async () => {
         try {
           state = await api.setRlcd42Config({ motionEnabled });
-          setStatus($("#rlcd42Status"), motionEnabled ? "首振りを有効にしました。再接続時はOFFに戻ります。" : "首振りを停止しました。");
+          setStatus($("#rlcd42Status"), motionEnabled
+            ? localized("会話に合わせた動きを有効にしました。再接続時に解除されます。", "Conversation gestures are enabled until the next connection.")
+            : localized("会話に合わせた動きを停止しました。", "Conversation gestures stopped."));
         } catch(error) { setStatus($("#rlcd42Status"), error.message, true); }
       });
     }
+    $("#stackchanPitchInput").addEventListener("input", (event) => {
+      $("#stackchanPitchValue").textContent = event.target.value + "°";
+      updateRangeProgress(event.target);
+    });
+    $("#stackchanPitchInput").addEventListener("change", async (event) => {
+      try {
+        state = await api.setRlcd42Config({ homePitch: Number(event.target.value) });
+        syncRlcd42Ui();
+      } catch (error) { setStatus($("#rlcd42Status"), error.message, true); }
+    });
     $("#rlcd42ArtStyleSelect").addEventListener("change", saveRlcd42Settings);
     $("#rlcd42CaptionModeSelect").addEventListener("change", saveRlcd42Settings);
-    $("#rlcd42SpeakerToggle").addEventListener("change", saveRlcd42Settings);
+    const deviceSwitches = {
+      rlcd42MicrophoneToggle: "microphoneEnabled",
+      rlcd42SpeakerToggle: "speakerEnabled",
+      stackchanCameraToggle: "cameraEnabled",
+      stackchanTrackFaceToggle: "faceTrackingEnabled",
+    };
+    for (const [id, key] of Object.entries(deviceSwitches)) {
+      const input = $("#" + id);
+      input.addEventListener("change", async () => {
+        try {
+          state = await api.setRlcd42Config({ [key]: input.checked });
+          syncUi();
+        } catch (error) {
+          state = await api.getState().catch(() => state);
+          syncRlcd42Ui();
+          setStatus($("#rlcd42Status"), error.message, true);
+        }
+      });
+    }
     $("#rlcd42OutputGainInput").addEventListener("input", () => {
       const input = $("#rlcd42OutputGainInput");
       $("#rlcd42OutputGainOutput").textContent = `${Math.round(Number(input.value) || 100)}%`;
       updateRangeProgress(input);
     });
     $("#rlcd42OutputGainInput").addEventListener("change", saveRlcd42Settings);
-    $("#rlcd42MicrophoneToggle").addEventListener("change", saveRlcd42Settings);
     $("#rlcd42CaptureModeSelect").addEventListener("change", saveRlcd42Settings);
     $("#rlcd42LiveIdleTimeoutToggle").addEventListener("change", saveRlcd42Settings);
     $("#rlcd42VadThresholdInput").addEventListener("input", () => {
@@ -5667,6 +5937,15 @@
     $("#rlcd42VadThresholdInput").addEventListener("change", saveRlcd42Settings);
     $("#refreshRlcd42PortsButton").addEventListener("click", refreshRlcd42Ports);
     $("#provisionRlcd42WifiButton").addEventListener("click", provisionRlcd42Wifi);
+    $("#stackchanCameraPreview").addEventListener("click", async () => {
+      const status = $("#stackchanCameraStatus");
+      try {
+        await api.startStackchanCameraPreview();
+        setStatus(status, localized("本体に最大15秒表示します。", "Shows on the device for up to 15 seconds."));
+      } catch {
+        setStatus(status, localized("待機中にもう一度お試しください。", "Try again while StackChan is idle."));
+      }
+    });
     $("#testRlcd42SpeakerButton").addEventListener("click", async () => {
       const button = $("#testRlcd42SpeakerButton");
       button.disabled = true;
@@ -5674,7 +5953,7 @@
       try {
         state = await api.testRlcd42Speaker();
         syncUi();
-        setStatus($("#rlcd42AudioStatus"), localized("RLCD 4.2からテスト音声を再生しました。", "The test voice played on RLCD 4.2."));
+        setStatus($("#rlcd42AudioStatus"), localized(`${activeCharacterDeviceName()}からテスト音声を再生しました。`, `The test voice played on ${activeCharacterDeviceName()}.`));
       } catch (error) {
         setStatus($("#rlcd42AudioStatus"), error.message, true);
       } finally {
@@ -5691,7 +5970,7 @@
       try {
         state = await api.syncRlcd42Display();
         syncUi();
-        setStatus($("#rlcd42Status"), localized("選択中のキャラクターをRLCD 4.2へ同期しました。", "The selected character is now synced to RLCD 4.2."));
+        setStatus($("#rlcd42Status"), localized(`選択中のキャラクターを${activeCharacterDeviceName()}へ同期しました。`, `The selected character is now synced to ${activeCharacterDeviceName()}.`));
       } catch (error) {
         setStatus($("#rlcd42Status"), error.message, true);
       } finally {
@@ -5790,27 +6069,39 @@
         syncGeneratorUi();
       }
     });
-    $$(".nav-tab").forEach((button) => {
+    $$(".nav-tab, .settings-subnav button").forEach((button) => {
       button.addEventListener("click", () => {
-        showPage(button.dataset.page);
-        if (button.dataset.page === "support" && !lastDiagnostics) refreshSupportDiagnostics();
-        if (button.dataset.page === "skills" && !trustedSkillCatalogLoaded) loadTrustedSkills();
+        closeSettingsSearch();
+        const page = button.dataset.page;
+        const rememberedPage = button.classList.contains("nav-tab") ? sessionStorage.getItem("charadock.groupPage." + page) : null;
+        const rememberedGroup = settingsPanel(rememberedPage)?.closest("[data-settings-group]");
+        showPage(rememberedGroup?.dataset.settingsGroup === page ? rememberedPage : page);
       });
       button.addEventListener("keydown", (event) => {
-        if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
+        const sidebar = button.classList.contains("nav-tab");
+        const forward = sidebar ? "ArrowDown" : "ArrowRight";
+        const backward = sidebar ? "ArrowUp" : "ArrowLeft";
+        if (![forward, backward, "Home", "End"].includes(event.key)) return;
         event.preventDefault();
-        const tabs = $$(".nav-tab");
-        const current = tabs.indexOf(button);
-        const index = event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1 : (current + (event.key === "ArrowDown" ? 1 : -1) + tabs.length) % tabs.length;
-        tabs[index].focus();
-        tabs[index].click();
+        const buttons = [...button.closest("nav").querySelectorAll("button[data-page]")];
+        const current = buttons.indexOf(button);
+        const step = event.key === forward ? 1 : -1;
+        const index = event.key === "Home" ? 0 : event.key === "End" ? buttons.length - 1
+          : (current + step + buttons.length) % buttons.length;
+        buttons[index].focus();
+        buttons[index].click();
       });
     });
-    $$('[data-settings-jump]').forEach((button) => button.addEventListener("click", () => jumpToSettingsTarget(button.dataset.settingsJump)));
+    $$("[data-settings-jump]").forEach((button) => button.addEventListener("click", () => {
+      const source = $(button.dataset.settingsJump);
+      if (source) jumpToSettingsTarget(source);
+    }));
     const settingsSearchInput = $("#settingsSearchInput");
     settingsSearchInput.addEventListener("focus", () => renderSettingsSearch(settingsSearchInput.value));
     settingsSearchInput.addEventListener("input", () => renderSettingsSearch(settingsSearchInput.value));
     settingsSearchInput.addEventListener("keydown", (event) => {
+      if (event.isComposing) return;
+      if (event.key === "Tab") closeSettingsSearch();
       if (event.key === "Escape") {
         event.preventDefault();
         closeSettingsSearch({ clear: true });
@@ -5824,7 +6115,10 @@
         if (item) navigateToSetting(item);
         return;
       }
-      setSettingsSearchActive(settingsSearchActiveIndex + (event.key === "ArrowDown" ? 1 : -1));
+      const forward = event.key === "ArrowDown";
+      const index = settingsSearchActiveIndex < 0 ? (forward ? 0 : settingsSearchMatches.length - 1)
+        : settingsSearchActiveIndex + (forward ? 1 : -1);
+      setSettingsSearchActive(index);
     });
     document.addEventListener("keydown", (event) => {
       if (!$("#mcpServerDialog").hidden && event.key === "Escape") {
@@ -5901,13 +6195,11 @@
     });
     $("#chatManageSkillsButton").addEventListener("click", () => {
       closeChatAddPopover();
-      showPage("skills");
-      requestAnimationFrame(() => jumpToSettingsTarget("#skillAssignmentCard", { highlight: false }));
+      jumpToSettingsTarget($("#skillAssignmentCard"));
     });
     $("#chatManageMcpButton").addEventListener("click", () => {
       closeChatAddPopover();
-      showPage("mcp");
-      requestAnimationFrame(() => jumpToSettingsTarget("#mcpAssignmentCard", { highlight: false }));
+      jumpToSettingsTarget($("#mcpAssignmentCard"));
     });
     $("#chatSkillPickerSearch").addEventListener("input", () => {
       chatSkillPickerIndex = 0;
@@ -5949,8 +6241,8 @@
       try { state = await api.chooseWorkDirectory(); syncUi(); } catch (error) { setStatus($("#chatStatus"), error.message, true); }
     });
     $("#addCharacterProjectButton").addEventListener("click", async () => {
-      try { state = await api.chooseWorkDirectory(); syncUi(); setStatus($("#characterProfileStatus"), localized("担当プロジェクトを追加しました。", "Project attached.")); }
-      catch (error) { setStatus($("#characterProfileStatus"), error.message, true); }
+      try { state = await api.chooseWorkDirectory(); syncUi(); setStatus($("#characterWorkspaceStatus"), localized("担当プロジェクトを追加しました。", "Project attached.")); }
+      catch (error) { setStatus($("#characterWorkspaceStatus"), error.message, true); }
     });
     $("#closeArtifactPreviewButton").addEventListener("click", closeArtifactPreview);
     $("#openPreviewArtifactButton").addEventListener("click", async () => {
@@ -6017,25 +6309,51 @@
       $("#chatLog").replaceChildren();
       appendMessage("assistant", "新しい会話を始めよう。何を話す？");
     });
-    $("#saveCharacterProfileButton").addEventListener("click", async () => {
-      const character = currentCharacter();
+    $("#saveCharacterProfileButton").addEventListener("click", async (event) => {
+      const button = event.currentTarget;
+      const scope = characterEditorScope;
+      button.disabled = true;
       try {
         state = await api.configureCharacter({
-          id: character.id,
+          id: currentCharacter().id,
           name: $("#characterNameInput").value,
           personality: $("#characterPersonalityInput").value,
+        });
+        if (characterEditorScope === scope) acceptCharacterEdits(characterIdentityFields);
+        syncUi();
+        if (characterEditorScope === scope) setStatus($("#characterProfileStatus"), localized("名前と性格を保存しました。", "Name and personality saved."));
+      } catch (error) {
+        setStatus($("#characterProfileStatus"), error.message, true);
+      } finally {
+        button.disabled = false;
+      }
+    });
+    $("#saveCharacterDisplayButton").addEventListener("click", async (event) => {
+      const button = event.currentTarget;
+      const scope = characterEditorScope;
+      button.disabled = true;
+      try {
+        state = await api.configureCharacter({
+          id: currentCharacter().id,
           ui: {
-            bubbleLeft: Number($("#bubbleLeftInput").value),
-            bubbleTop: Number($("#bubbleTopInput").value),
-            bubbleWidth: Number($("#bubbleWidthInput").value),
+            bubbleLeft: $("#bubbleLeftInput").valueAsNumber,
+            bubbleTop: $("#bubbleTopInput").valueAsNumber,
+            bubbleWidth: $("#bubbleWidthInput").valueAsNumber,
           },
           motion: currentMotionValues(),
         });
+        if (characterEditorScope === scope) acceptCharacterEdits(characterDisplayFields);
         syncUi();
-        setStatus($("#characterProfileStatus"), "保存して会話へ反映しました。");
+        if (characterEditorScope === scope) setStatus($("#characterDisplayStatus"), localized("表示と動きを保存しました。", "Appearance and motion saved."));
       } catch (error) {
-        setStatus($("#characterProfileStatus"), error.message, true);
+        setStatus($("#characterDisplayStatus"), error.message, true);
+      } finally {
+        button.disabled = false;
       }
+    });
+    $('#importLivlivAvatarButton').addEventListener('click',async()=>{
+      const button=$('#importLivlivAvatarButton');button.disabled=true;
+      try{state=await api.importLivlivAvatar();syncUi();}catch(error){setStatus($('#characterAppearanceStatus'),error.message,true);}finally{button.disabled=false;}
     });
     $("#importMeshAvatarButton").addEventListener("click", async () => {
       const button = $("#importMeshAvatarButton"); button.disabled = true;
@@ -6052,10 +6370,11 @@
     $("#resetCharacterProfileButton").addEventListener("click", async () => {
       try {
         state = await api.configureCharacter({ id: currentCharacter().id, reset: true });
+        characterEditorScope = "";
         syncUi();
-        setStatus($("#characterProfileStatus"), "初期設定へ戻しました。");
+        setStatus($("#characterManagementStatus"), "初期設定へ戻しました。");
       } catch (error) {
-        setStatus($("#characterProfileStatus"), error.message, true);
+        setStatus($("#characterManagementStatus"), error.message, true);
       }
     });
     $("#characterMemoryList").addEventListener("click", async (event) => {
@@ -6065,10 +6384,10 @@
       try {
         state = await api.removeMemory(button.dataset.memoryId);
         syncUi();
-        setStatus($("#characterProfileStatus"), "このキャラのメモリから削除しました。");
+        setStatus($("#characterMemoryStatus"), "このキャラのメモリから削除しました。");
       } catch (error) {
         button.disabled = false;
-        setStatus($("#characterProfileStatus"), error.message, true);
+        setStatus($("#characterMemoryStatus"), error.message, true);
       }
     });
     $("#clearCharacterMemoriesButton").addEventListener("click", async () => {
@@ -6080,9 +6399,9 @@
       try {
         state = await api.clearMemories();
         syncUi();
-        setStatus($("#characterProfileStatus"), `${character.name}のメモリをすべて削除しました。`);
+        setStatus($("#characterMemoryStatus"), `${character.name}のメモリをすべて削除しました。`);
       } catch (error) {
-        setStatus($("#characterProfileStatus"), error.message, true);
+        setStatus($("#characterMemoryStatus"), error.message, true);
       }
     });
     const changeContinuationStartupSpeech = async (event) => {
@@ -6156,10 +6475,10 @@
         if (realtimePeerConnection || realtimeStarting) await stopCodexRealtimeVoice({ quiet: true });
         state = await api.removeCharacter(character.id);
         syncUi();
-        setStatus($("#characterProfileStatus"), `${character.name}を削除しました。`);
+        setStatus($("#characterManagementStatus"), `${character.name}を削除しました。`);
       } catch (error) {
         button.disabled = false;
-        setStatus($("#characterProfileStatus"), error.message, true);
+        setStatus($("#characterManagementStatus"), error.message, true);
       }
     });
     $$('input[name="codexAuthMode"]').forEach((input) => input.addEventListener("change", async () => {
@@ -6546,6 +6865,7 @@
       });
     }
     $("#speechInputProviderSelect").addEventListener("change", async () => {
+      syncSpeechEnhancementUi();
       $("#sherpaOnnxSettings").hidden = $("#speechInputProviderSelect").value !== "sherpa-onnx";
       $("#streamingSpeechSettings").hidden = $("#speechInputProviderSelect").value !== "streaming-local";
       $("#voiceActivationSettings").hidden = !["streaming-local", "sherpa-onnx"].includes($("#speechInputProviderSelect").value);
@@ -6558,25 +6878,86 @@
         }
         await saveSettings();
       } catch (error) {
-        setStatus($("#connectionStatus"), error.message, true);
+        setStatus($("#voiceInputStatus"), error.message, true);
       }
     });
+    const haruVoice = $("#haruOutputVoiceSelect");
+    haruVoice.addEventListener("change", async () => {
+      const previousVoice = state.haruOutputVoice;
+      const nextVoice = haruVoice.value;
+      state.haruOutputVoice = nextVoice;
+      syncHaruUi();
+      try {
+        await api.setHaruOutputVoice(nextVoice);
+      } catch (error) {
+        if (state.haruOutputVoice === nextVoice) state.haruOutputVoice = previousVoice;
+        syncHaruUi();
+        setStatus($("#haruStatus"), error.message, true);
+      }
+    });
+    for (const [selector, action] of [
+      ["#haruDownloadButton", async () => { state.haru = await api.downloadHaru(); }],
+      ["#haruOpenButton", async () => {
+        setStatus($("#haruStatus"), localized("Haru 4Bを起動しています…", "Starting Haru 4B…"));
+        await api.openHaru();
+      }],
+      ["#haruRemoveButton", async () => {
+        if (window.confirm(localized("Haru 4Bのモデルを端末から削除しますか？", "Delete the Haru 4B model from this device?"))) {
+          state.haru = await api.removeHaru();
+        }
+      }],
+    ]) {
+      $(selector).addEventListener("click", async () => {
+        haruBusy = true;
+        syncHaruUi();
+        let failure;
+        try { await action(); } catch (error) { failure = error; }
+        finally {
+          haruBusy = false;
+          syncHaruUi();
+          if (failure) setStatus($("#haruStatus"), failure.message, true);
+        }
+      });
+    }
+    $("#speechEnhancementToggle").addEventListener("change", async () => {
+      try {
+        if (streamingSpeechSessionId) await stopStreamingSpeechInput({ cancel: true });
+        await saveSettings();
+      } catch (error) { setStatus($("#voiceInputStatus"), error.message, true); }
+    });
+    $("#speechEnhancementDownloadButton").addEventListener("click", async () => {
+      try {
+        syncSpeechEnhancementUi({ ...(state.speechEnhancement || {}), downloading: true });
+        state.speechEnhancement = await api.downloadSpeechEnhancement();
+      } catch (error) {
+        state.speechEnhancement = { ...state.speechEnhancement, downloading: false, progress: null };
+        setStatus($("#voiceInputStatus"), error.message, true);
+      }
+      finally { syncSpeechEnhancementUi(); }
+    });
+    $("#speechEnhancementRemoveButton").addEventListener("click", async () => {
+      if (!window.confirm(localized("RE-USEのノイズ低減モデルを削除しますか？", "Delete the RE-USE noise reduction model?"))) return;
+      try { state.speechEnhancement = await api.removeSpeechEnhancement(); }
+      catch (error) { setStatus($("#voiceInputStatus"), error.message, true); }
+      finally { syncSpeechEnhancementUi(); }
+    });
     $("#sherpaModelSelect").addEventListener("change", () => {
-      saveSettings().catch((error) => setStatus($("#ttsStatus"), error.message, true));
+      saveSettings().catch((error) => setStatus($("#voiceInputStatus"), error.message, true));
     });
     $("#streamingSpeechModelSelect").addEventListener("change", async () => {
       try {
         await saveSettings();
         syncStreamingSpeechModelUi(state.streamingSpeechModel);
+        syncSpeechEnhancementUi();
       } catch (error) {
-        setStatus($("#connectionStatus"), error.message, true);
+        setStatus($("#voiceInputStatus"), error.message, true);
       }
     });
     ["#voiceActivationModeSelect", "#vadSensitivitySelect", "#voiceAutoSendToggle", "#voiceAutoSendCountdownToggle", "#voiceAutoSendDelaySelect"].forEach((selector) => $(selector).addEventListener("change", () => {
-      saveSettings().catch((error) => setStatus($("#connectionStatus"), error.message, true));
+      saveSettings().catch((error) => setStatus($("#voiceInputStatus"), error.message, true));
     }));
     ["#realtimeAutoStartOnTextToggle", "#realtimeAutoStartOnPetToggle"].forEach((selector) => $(selector).addEventListener("change", () => {
-      saveSettings().catch((error) => setStatus($("#connectionStatus"), error.message, true));
+      saveSettings().catch((error) => setStatus($("#realtimeVoiceStatus"), error.message, true));
     }));
     $("#sherpaModelDownloadButton").addEventListener("click", async () => {
       try {
@@ -6600,9 +6981,11 @@
         syncStreamingSpeechModelUi({ ...(state.streamingSpeechModel || {}), downloading: true, downloadingModelId: modelId, progress: { modelId, phase: "downloading", receivedBytes: 0, totalBytes: state.streamingSpeechModel?.models?.find((item) => item.modelId === modelId)?.downloadBytes || 1 } });
         state.streamingSpeechModel = await api.downloadStreamingSpeechModel(modelId);
         syncStreamingSpeechModelUi(state.streamingSpeechModel);
+        syncSpeechEnhancementUi();
       } catch (error) {
         syncStreamingSpeechModelUi(state.streamingSpeechModel);
-        setStatus($("#connectionStatus"), error.message, true);
+        syncSpeechEnhancementUi();
+        setStatus($("#voiceInputStatus"), error.message, true);
       }
     });
     $("#streamingSpeechModelRemoveButton").addEventListener("click", async () => {
@@ -6613,8 +6996,9 @@
       try {
         state.streamingSpeechModel = await api.removeStreamingSpeechModel(modelId);
         syncStreamingSpeechModelUi(state.streamingSpeechModel);
+        syncSpeechEnhancementUi();
       } catch (error) {
-        setStatus($("#connectionStatus"), error.message, true);
+        setStatus($("#voiceInputStatus"), error.message, true);
       }
     });
     ["#speechCppStepsInput", "#styleBertVits2UrlInput", "#styleBertVits2ModelIdInput", "#styleBertVits2SpeedInput", "#sbv2ModelSelect", "#sbv2StyleSelect", "#sbv2StyleWeightInput", "#sbv2SpeedInput", "#sbv2DeviceSelect", "#piperPlusSpeedInput", "#piperPlusReferenceEnabledInput", "#supertonicVoiceSelect", "#supertonicSpeedInput", "#supertonicStepsInput", "#kokoroVoiceSelect", "#kokoroSpeedInput", "#kokoroDeviceSelect", "#irodoriSpeedInput", "#irodoriSamplingModeSelect", "#irodoriStepsInput", "#irodoriSeedInput", "#irodoriCaptionInput", "#irodoriAutoEmotionToggle", "#irodoriEmotionStrengthSelect", "#englishPronunciationDictionaryInput"]
@@ -6631,16 +7015,21 @@
       }
     });
     $("#mouseFollowToggle").addEventListener("change", () => {
-      sessionStorage.setItem("charadock.activePage", "character");
-      saveSettings().catch((error) => setStatus($("#characterProfileStatus"), error.message, true));
+      saveSettings().catch((error) => setStatus($("#pointerSettingsStatus"), error.message, true));
     });
-    ["#codexChatModelInput", "#codexChatReasoningEffortSelect", "#codexWorkModelInput", "#codexWorkReasoningEffortSelect", "#codexWorkNetworkAccessToggle"]
-      .forEach((selector) => $(selector).addEventListener("change", saveSettings));
+    for (const [selectors, status] of [
+      ["#codexChatModelInput, #codexChatReasoningEffortSelect", "#chatModelStatus"],
+      ["#codexWorkModelInput, #codexWorkReasoningEffortSelect, #codexWorkNetworkAccessToggle", "#workModelStatus"],
+    ]) {
+      $$(selectors).forEach((field) => field.addEventListener("change", () => {
+        saveSettings().catch((error) => setStatus($(status), error.message, true));
+      }));
+    }
     $("#displaySelect").addEventListener("change", saveSettings);
     motionFields.forEach((key) => $(`#${key}Input`).addEventListener("input", () => {
       syncMotionReadouts();
       previewCharacterMotion();
-      setStatus($("#characterProfileStatus"), "プレビュー中。保存すると次回起動後も反映されます。");
+      setStatus($("#characterDisplayStatus"), localized("プレビュー中。保存すると次回も反映されます。", "Previewing. Save to keep these settings."));
     }));
     async function saveDecisionKey(clear = false) {
       jevBusy = true; syncJevUi();
@@ -6670,13 +7059,18 @@
     for (const button of $$("[data-jev-preview]")) button.addEventListener("click", async () => {
       try {
         await api.previewJevPerformance(button.dataset.jevPreview);
-        setStatus($("#jevStatus"), localized("例文を選択したサービスで判定しています（音声なし）。", "Classifying a sample with the selected service (no audio)."));
+        setStatus($("#characterPerformanceStatus"), localized("例文を選択したサービスで判定しています（音声なし）。", "Classifying a sample with the selected service (no audio)."));
       } catch {
-        setStatus($("#jevStatus"), localized("標準AIニケちゃんを選び、表現拡張とAPIキーを確認してください。", "Select built-in AI Nike and check performance settings and the API key."), true);
+        setStatus($("#characterPerformanceStatus"), localized("選択中のキャラの表現拡張と、判断サービスのAPIキーを確認してください。", "Check performance settings for the active character and the decision service API key."), true);
       }
     });
-    for (const selector of ["#decisionProviderSelect", "#jevEnabledToggle", "#jevMediaEnabledToggle", "#jevExpressionEnabledToggle", "#thinkingFillerEnabledToggle", "#jevNikePerformanceEnabledToggle", "#jevKohakuPerformanceEnabledToggle", "#jevAddressModeSelect"]) {
-      $(selector).addEventListener("change", () => saveJevConfig());
+    for (const [selectors, status] of [
+      ["#decisionProviderSelect, #jevEnabledToggle", "#jevStatus"],
+      ["#jevMediaEnabledToggle, #jevExpressionEnabledToggle, #thinkingFillerEnabledToggle", "#decisionFeaturesStatus"],
+      ["#jevNikePerformanceEnabledToggle, #jevKohakuPerformanceEnabledToggle", "#characterPerformanceStatus"],
+      ["#jevAddressModeSelect", "#handsFreeAddressStatus"],
+    ]) {
+      $$(selectors).forEach((field) => field.addEventListener("change", () => saveJevConfig(undefined, $(status))));
     }
     $("#jevApiKeyInput").addEventListener("input", () => {
       setStatus($("#jevStatus"), "");
@@ -6769,8 +7163,7 @@
     $("#onboardingOpenGeneratorButton").addEventListener("click", async () => {
       state = await api.completeOnboarding(true);
       syncOnboarding();
-      showPage("character");
-      setTimeout(() => $("#avatarGeneratorCard").scrollIntoView({ behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "start" }), 30);
+      jumpToSettingsTarget($("#avatarGeneratorCard"));
     });
     $("#onboardingFirstWorkGoal").addEventListener("input", syncOnboardingStepAvailability);
     $$("input[name='onboardingDelivery']").forEach((input) => input.addEventListener("change", () => {
@@ -6847,6 +7240,10 @@
       if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
       else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
     });
+    window.addEventListener("pagehide", () => {
+      const page = $("[data-page-panel].is-active")?.dataset.pagePanel;
+      if (page) sessionStorage.setItem("charadock.pageScroll." + page, String($(".main-panel").scrollTop));
+    });
     document.addEventListener("visibilitychange", async () => {
       if (!document.hidden) {
         state = await api.getState();
@@ -6857,20 +7254,19 @@
 
   async function init() {
     if (!api) throw new Error("Electron bridge is unavailable");
-    const characterVoiceCard = $("#characterVoiceCard");
-    $("#characterVoiceMount").appendChild(characterVoiceCard);
-    $("#speechInputMount").appendChild($(".speech-input-settings"));
-    organizeSettingsLayout();
     state = await api.getState();
-    api.onNavigateSettings?.((payload = {}) => {
-      const page = String(payload.page || "");
-      if (!["chat", "remote", "esp32", "character", "skills", "mcp", "voice", "connection", "desktop", "support"].includes(page)) return;
-      showPage(page);
-      if (page === "skills") queueMicrotask(() => loadTrustedSkills());
+    api.onNavigateSettings?.(({ page } = {}) => showPage(page));
+    api.onHaruProgress?.((model) => {
+      state.haru = model;
+      syncHaruUi(model);
     });
     api.onSherpaModelProgress((model) => {
       state.sherpaModel = model;
       syncSherpaModelUi(model);
+    });
+    api.onSpeechEnhancementProgress((model) => {
+      state.speechEnhancement = model;
+      syncSpeechEnhancementUi(model);
     });
     api.onStreamingSpeechModelProgress((model) => {
       state.streamingSpeechModel = model;
@@ -6916,12 +7312,10 @@
     if (state?.atomEcho?.enabled) queueMicrotask(() => refreshAtomEchoPorts());
     if (state?.rlcd42?.enabled) queueMicrotask(() => refreshRlcd42Ports());
     const page = sessionStorage.getItem("charadock.activePage") || "chat";
-    showPage(["chat", "remote", "esp32", "character", "skills", "mcp", "voice", "connection", "desktop", "support"].includes(page) ? page : "chat");
-    if (page === "support") refreshSupportDiagnostics();
-    if (page === "skills") queueMicrotask(() => loadTrustedSkills());
+    if (!showPage(page)) showPage("chat");
     refreshCodexAccount();
     refreshLiveAccount();
-    refreshCodexModels();
+    if (page !== "connection" && page !== "work") refreshCodexModels();
     refreshRealtimeVoices();
   }
 

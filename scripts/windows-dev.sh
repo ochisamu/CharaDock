@@ -35,7 +35,21 @@ launcher_windows="${mirror_windows}\\scripts\\windows-dev.cmd"
 dependency_stamp="$mirror_wsl/.charadock-dev-dependencies.sha256"
 
 echo "Building the typed CharaDock runtime..."
-(cd "$project_root" && npm run runtime:build)
+(
+  cd "$project_root"
+  if ! node scripts/check-runtime-security.cjs >/dev/null 2>&1; then
+    # npm may have been launched from a shell that did not load nvm.
+    node_version="$(tr -d '\r\n' < .node-version)"
+    node_bin="${NVM_DIR:-$HOME/.nvm}/versions/node/v${node_version}/bin"
+    if [[ -x "$node_bin/node" && -x "$node_bin/npm" ]]; then
+      export PATH="$node_bin:$PATH"
+      hash -r
+    else
+      echo "Install the project Node.js version with nvm install, then retry." >&2
+    fi
+  fi
+  npm run runtime:build
+)
 
 mkdir -p "$mirror_wsl"
 echo "Syncing CharaDock source to $mirror_windows"

@@ -5,9 +5,9 @@
 })(typeof globalThis!=='undefined'?globalThis:this,()=>{
   'use strict';
   function create({canvas,shell,runtime,engine,raf=fn=>requestAnimationFrame(fn),cancel=id=>cancelAnimationFrame(id),
-    visible=()=>!document.hidden,reduced=()=>matchMedia('(prefers-reduced-motion: reduce)').matches,onError=()=>{}}) {
+    descriptorKey='meshAvatar',className='is-mesh',visible=()=>!document.hidden,reduced=()=>matchMedia('(prefers-reduced-motion: reduce)').matches,onError=()=>{}}) {
     const ctx=canvas.getContext('2d'); let frame=null,settings={},mouth=0,level=0,blink=false;
-    const expose=active=>{canvas.hidden=!active;shell.classList.toggle('is-mesh',active);};
+    const expose=active=>{canvas.hidden=!active;shell.classList.toggle(className,active);};
     const controller=runtime.create({engine,onError:error=>{stop();expose(false);onError(error);}});
     function stop(){if(frame!==null)cancel(frame);frame=null;}
     function draw(){
@@ -23,11 +23,11 @@
     async function sync(character){
       settings=character?.motion || {};
       const before=controller.status().identity;
-      const loading=controller.sync(character?.meshAvatar,character?.id || '');
+      const loading=controller.sync(character?.[descriptorKey],character?.id || '');
       if(before!==controller.status().identity){stop();expose(false);mouth=level=0;blink=false;}
       await loading;resume();
     }
-    return {sync,expression:controller.expression,visibility:resume,
+    return {sync,expression:controller.expression,command:input=>controller.command?.(input),snapshot:()=>controller.snapshot?.(),visibility:resume,
       audio(stage,rms){mouth=({closed:0,half:.5,open:1})[stage]??0;level=Math.max(0,Math.min(1,Number(rms)||0));},
       blink(value){blink=Boolean(value);},dispose(){stop();controller.dispose();expose(false);},status:controller.status};
   }

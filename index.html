@@ -9,7 +9,7 @@
   <meta name="color-scheme" content="light" />
   <meta
     http-equiv="Content-Security-Policy"
-    content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; connect-src 'self' ws://localhost:* ws://127.0.0.1:*; worker-src 'self' blob:; img-src 'self' data: blob:; media-src 'self' blob: data:; style-src 'self'; object-src 'none'; base-uri 'none'"
+    content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; connect-src 'self' blob: ws://localhost:* ws://127.0.0.1:*; worker-src 'self' blob:; img-src 'self' data: blob:; media-src 'self' blob: data:; style-src 'self'; object-src 'none'; base-uri 'none'"
   />
   <title>ぷるぷるPNGTuber</title>
   <link rel="icon" href="./app-icon.ico" sizes="32x32" />
@@ -957,6 +957,9 @@
   <script src="./drawn-pose-runtime.js" defer></script>
   <script src="./vendor/mesh-avatar-studio/mesh-avatar.js" defer></script>
   <script src="./desktop/mesh-avatar-runtime.js" defer></script>
+  <script src="./vendor/livliv-player/livliv.js" defer></script>
+  <script src="./desktop/livliv-controls.js" defer></script>
+  <script src="./desktop/livliv-avatar-runtime.js" defer></script>
   <script src="./app.js" defer></script>
 </body>
 </html>

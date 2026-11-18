@@ -40,5 +40,29 @@ async function main() {
     assert.equal(accepted, expected, name);
     console.log(`${name}: ${accepted ? "accepted" : "rejected"}`);
   }
+
+  // Both StackChan modes should close their local endpoint after speech even
+  // if keyboard-like transients continue in the room.
+  const noisyTail = Buffer.alloc(16_000 * 2 * 4);
+  for (let offset = 3_200; offset < noisyTail.length; offset += 8_960) {
+    noisyTail.writeInt16LE(6_000, offset);
+    noisyTail.writeInt16LE(-5_000, offset + 2);
+  }
+  let admitted = 0, ended = 0, requested = false, consumed = 0;
+  const endpoint = new DeviceSpeechGate({
+    createVad: async () => { await vad.start("normal"); return vad; },
+    onStart: () => { admitted += 1; }, onChunk: () => {},
+    onEnd: () => { ended += 1; }, requestEnd: () => { requested = true; },
+  });
+  await endpoint.begin({ handsfree: true, localEndpoint: true });
+  const recorded = Buffer.concat([speech, noisyTail]);
+  for (; consumed < recorded.length && !requested; consumed += 640)
+    await endpoint.chunk(recorded.subarray(consumed, consumed + 640));
+  await endpoint.end();
+  assert.equal(admitted, 1, "speech must enter the conversation once");
+  assert.equal(ended, 1, "accepted speech must finalize once");
+  assert.ok(requested && consumed < speech.length + 16_000 * 2 * 3,
+    "ongoing keyboard-like pulses must not prolong the endpoint: " + JSON.stringify({requested, consumed, speech: speech.length}));
+  console.log("speech followed by keyboard-like pulses: endpoint finalized");
 }
 main().catch((error) => { console.error(error); process.exitCode = 1; });

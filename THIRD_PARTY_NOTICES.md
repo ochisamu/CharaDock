@@ -378,13 +378,23 @@ The engine, rig validation and lighting code under `vendor/mesh-avatar-studio` c
 
 ## Optional speech.cpp voice engine
 
-CharaDock downloads the official, unmodified speech.cpp **v0.8.3** Windows x64 Vulkan runtime from [nyosegawa/speech.cpp](https://github.com/nyosegawa/speech.cpp/releases/tag/v0.8.3). The archive and the Irodori Small / Small MF GGUF weights are version pinned and SHA-256 verified. Executables, model weights, and user reference audio are stored in the selected application profile, outside this source repository.
+CharaDock downloads the official, unmodified speech.cpp **v0.11.0** Windows x64 Vulkan runtime from [nyosegawa/speech.cpp](https://github.com/nyosegawa/speech.cpp/releases/tag/v0.11.0). The archive and the Irodori Small / Small MF GGUF weights are version pinned and SHA-256 verified. Executables, model weights, and user reference audio are stored in the selected application profile, outside this source repository.
 
 - speech.cpp: MIT, Copyright (c) 2026 Sakasegawa. Full license: [speech-cpp-MIT.txt](vendor/speech-cpp-licenses/speech-cpp-MIT.txt).
-- ggml, pinned upstream submodule `353b63b439f27ab2cc19dac97ab1681ba6d2d084`: MIT. Full license: [ggml-MIT.txt](vendor/speech-cpp-licenses/ggml-MIT.txt).
+- ggml, pinned upstream submodule `79b50d239d0b88852814c873db0d85d43ed66d9b`: MIT. Full license: [ggml-MIT.txt](vendor/speech-cpp-licenses/ggml-MIT.txt).
 - cpp-httplib: MIT. Full license: [cpp-httplib-MIT.txt](vendor/speech-cpp-licenses/cpp-httplib-MIT.txt).
 - miniaudio: upstream MIT / public-domain license text: [miniaudio.txt](vendor/speech-cpp-licenses/miniaudio.txt).
 
 These notices are packaged with CharaDock and copied beside the downloaded runtime. The model's original license files and conversion model card are downloaded beside its GGUF under `licenses/model/`. [Aratako/Irodori-TTS-v4.1-Small-MF](https://huggingface.co/Aratako/Irodori-TTS-v4.1-Small-MF) is MIT licensed; the conversion also supplies an Apache-2.0 license. Reference audio must be owned or permitted by the speaker. Follow the model card's restrictions against impersonation without explicit consent and deceptive use.
 
 The optional standard Small GGUF is distributed by [sakasegawa/Irodori-TTS-v4.1-Small-GGUF](https://huggingface.co/sakasegawa/Irodori-TTS-v4.1-Small-GGUF), pinned to revision `3ebbd5ad88a3847c52f9e158d9dbe35178de5b98`. Its model card and MIT / Apache-2.0 license files are downloaded and verified with the model. It uses the same unmodified speech.cpp runtime and runtime notices.
+Haru 4B local voice chat optionally downloads [sakasegawa/Haru-4B-GGUF](https://huggingface.co/sakasegawa/Haru-4B-GGUF) at revision fc026182f7bbfaa0400b2d44358a5e9e327b957f (Q8_0), with the model card and the accompanying Apache-2.0 and MIT license files. The model and runtime are verified by SHA-256 and installed in the application profile.
+
+
+## LivLiv Player
+
+Copyright 2026 LivLiv. Apache License 2.0. This product includes software developed by LivLiv (https://livliv.ai). Pinned source and a local manual-frame patch are in `vendor/livliv-player`; see its LICENSE, NOTICE and UPSTREAM.md. No LivLiv featured characters or hosted generator are bundled. The Kohaku model is locally derived from existing CharaDock artwork and retains the project character terms.
+
+## Local VRM renderer
+
+The optional local VRM renderer bundles [Three.js](https://github.com/mrdoob/three.js) 0.180.0 (Copyright Three.js authors) and [@pixiv/three-vrm](https://github.com/pixiv/three-vrm) 3.5.5 (Copyright pixiv Inc.), including its MIT-licensed companion packages. Complete notices and exact versions are retained in [vrm-licenses](vendor/livliv-player/vrm-licenses/README.md) and distributed with `vendor/livliv-player/vrm.js`. It loads only when a VRM appearance is selected. User-imported VRM files and their embedded author/usage metadata remain in the application profile and are not bundled with CharaDock.

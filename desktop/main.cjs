@@ -199,7 +199,7 @@ const {
 const { screenShareConversationAction } = require("./lib/screen-share-intent.cjs");
 const { computerContinuationAction, computerConversationAction, normalizeComputerToolName } = require("./lib/computer-use-intent.cjs");
 const { runWindowsInput } = require("./lib/windows-input.cjs");
-const { StreamingTextSegmenter, sanitizeSpeechText } = require("./lib/speech-stream.cjs");
+const { StreamingTextSegmenter, StreamingReplyPhrases, sanitizeSpeechText } = require("./lib/speech-stream.cjs");
 const {
   isMissingActiveTurnError,
   normalConversationSubmitRoute,
@@ -279,16 +279,21 @@ const {
 } = require("./lib/beatrice-v2.cjs");
 const { MascotStaticServer } = require("./lib/static-server.cjs");
 const { MeshAvatarStore } = require("./lib/mesh-avatar-store.cjs");
-let meshAvatarStore;
+let meshAvatarStore, livlivAvatarStore, livlivControlStore;
+const {LivlivAvatarStore}=require('./lib/livliv-avatar-store.cjs');
+const {LivlivControlStore}=require('./lib/livliv-control-store.cjs');
+const { APPEARANCE: LIVLIV_KOHAKU, kohakuLivliv } = require("./lib/livliv-avatar.cjs");
 const { kohakuPackage, remoteExpression, remoteTtsWithExpression } = require("./lib/remote-kohaku.cjs");
 const { RemoteCompanionServer, isPrivateIpv4 } = require("./lib/remote-server.cjs");
 const { AtomEchoHub } = require("./lib/atom-echo-hub.cjs");
 const { AtomEchoLiveAudioRoute } = require("./lib/atom-echo-live-audio.cjs");
 const { Rlcd42Hub } = require("./lib/rlcd42-hub.cjs");
-const { StackchanSerialGateway, STACKCHAN_BOARD } = require("./lib/stackchan-serial.cjs");
-const { renderStackchanPortrait } = require("./lib/stackchan-portrait.cjs");
+const { StackchanSerialGateway, STACKCHAN_BOARD, STACKCHAN_LIVE_PLAYBACK_OPTIONS } = require("./lib/stackchan-serial.cjs");
+const { FRAME_TYPES } = require("./lib/device-protocol-v2.cjs");
+const { StackchanConversationGestures } = require("./lib/stackchan-gestures.cjs");
 const { renderCharacterPortraitFrames } = require("./lib/rlcd42-monochrome.cjs");
 const { buildRlcd42Scene, liveCaptionWindow } = require("./lib/rlcd42-presentation.cjs");
+const { stackchanVoiceMotion, StackchanLiveMotionInput } = require("./lib/stackchan-voice-motion.cjs");
 const { createNowPlayingMonitor } = require("./lib/device-now-playing.cjs");
 const { LiveIdleTimer } = require("./lib/live-idle-timer.cjs");
 const {
@@ -309,7 +314,8 @@ const {
 const { EmbeddedSherpaOnnx } = require("./lib/sherpa-embedded.cjs");
 const { EmbeddedSherpaVad, SILERO_VAD_PROFILES } = require("./lib/sherpa-vad.cjs");
 const { DeviceSpeechGate } = require("./lib/device-speech-gate.cjs");
-const { StreamingSpeechRecognition } = require("./lib/streaming-speech-recognition.cjs");
+const { StreamingSpeechRecognition, resampleLinear } = require("./lib/streaming-speech-recognition.cjs");
+const { SpeechEnhancement } = require("./lib/speech-enhancement.cjs");
 const { supertonicStatus, validateSupertonicDirectory } = require("./lib/supertonic-tts.cjs");
 const { synthesizeSupertonicInWorker } = require("./lib/supertonic-worker-client.cjs");
 const { IRODORI_CHUNK_LENGTH, IRODORI_CHUNK_OVERFLOW, irodoriModelStatus, splitIrodoriText, validateIrodoriModelDirectory } = require("./lib/irodori-webgpu.cjs");
@@ -492,6 +498,7 @@ let rlcd42SyncGeneration = 0;
 let rlcd42SpeechGeneration = 0;
 let rlcd42SpeechActive = false;
 let rlcd42SpeechStream = null;
+let rlcd42SpeechPhrases = null;
 const rlcd42PortraitCache = new Map();
 let atomEchoCapture = null;
 let atomEchoTurnGeneration = 0;
@@ -503,6 +510,9 @@ let atomEchoLiveReady = false;
 let atomEchoLivePendingCommands = [];
 let atomEchoLiveAudioRoute = null;
 let rlcd42LiveAudioRoute = null;
+let stackchanPrivacyMuted = false;
+let stackchanLiveReplyWait = null;
+const stackchanLiveMotionInput = new StackchanLiveMotionInput();
 let atomEchoLiveIdleTimer = null;
 let atomEchoLiveStatus = { state: "idle", error: "", beatrice: false };
 let atomEchoVadStatus = null;
@@ -535,6 +545,11 @@ let codexLoginClient;
 let embeddedSherpaOnnx;
 let embeddedSherpaVad;
 let streamingSpeechRecognition;
+let speechEnhancement;
+let haruServer;
+let haruWindow;
+let haruWindowOpening;
+let haruVoiceProxy;
 let embeddedTtsModels;
 let irodoriVoiceLibrary;
 let sbv2ModelLibrary;
@@ -1671,7 +1686,13 @@ function sanitizedMotion(motion, fallback) {
 function characterAppearance(characterId = preferences.data.characterId) {
   const selection = preferences.data.characterAvatarSelections?.[characterId] || "standard";
   const mesh = meshAvatarStore?.descriptor(characterId, selection) || null;
-  return { selected: mesh ? selection : "standard", options: [{ id: "standard", label: mainText("標準の見た目", "Original appearance") }, ...(meshAvatarStore?.list(characterId) || [])], mesh };
+  let livliv = characterId === "amber-avatar" && selection === LIVLIV_KOHAKU ? kohakuLivliv(projectRoot).descriptor : livlivAvatarStore?.descriptor(characterId,selection) || null;
+  if(livliv)livliv={...livliv,controls:livlivControlStore?.get(characterId,livliv.id)};
+  return { selected: livliv ? selection : mesh ? selection : "standard", options: [{ id: "standard", label: mainText("標準の見た目", "Original appearance") }, ...(characterId === "amber-avatar" ? [{ id: LIVLIV_KOHAKU, label: mainText("LivLiv · コハク（試作）", "LivLiv · Kohaku (prototype)") }] : []), ...(meshAvatarStore?.list(characterId) || []), ...(livlivAvatarStore?.list(characterId) || [])], mesh, livliv };
+}
+function readSelectedLivlivAsset(id, file) {
+  if (characterAppearance().livliv?.id !== id) return null;
+  return id === "kohaku" ? kohakuLivliv(projectRoot).read(file) : livlivAvatarStore?.read(preferences.data.characterId,id,file) || null;
 }
 function readSelectedMeshAsset(id, file) {
   const characterId = preferences.data.characterId;
@@ -1684,6 +1705,27 @@ function selectCharacterAppearance(characterId, selection) {
   preferences.patch({ characterAvatarSelections: { ...preferences.data.characterAvatarSelections, [characterId]: selection } });
   if (preferences.data.characterId === characterId) localServer.setSnapshot(buildAvatarSnapshot(characterId));
   return broadcastAppState();
+}
+function removeVrmAppearance(input) {
+  const characterId = preferences.data.characterId;
+  const descriptor = characterAppearance(characterId).livliv;
+  livlivControlStore.assertScope(characterId, descriptor, input);
+  livlivAvatarStore.removeVrm(characterId, descriptor.id);
+  return selectCharacterAppearance(characterId, 'standard');
+}
+function patchLivlivControls(input){
+ const characterId=preferences.data.characterId;
+ livlivControlStore.patch(characterId,characterAppearance().livliv,input);
+ localServer.setSnapshot(buildAvatarSnapshot(characterId));
+ return broadcastAppState();
+}
+function sendLivlivCommand(input){
+ const command=livlivControlStore.command(preferences.data.characterId,characterAppearance().livliv,input);
+ localServer.publish('livliv-command',command);remoteServer?.publish('livliv-command',command);return {ok:true};
+}
+async function importLivlivModel(input,characterId=preferences.data.characterId){
+ const imported=await livlivAvatarStore.import(input,characterId);
+ return selectCharacterAppearance(characterId,imported.id);
 }
 function buildAvatarSnapshot(characterId, motionOverride = null) {
   const character = characterById(characterId);
@@ -1713,7 +1755,8 @@ function buildAvatarSnapshot(characterId, motionOverride = null) {
     createdAt: new Date().toISOString(),
     characterId: character.id,
     meshAvatar: characterAppearance(character.id).mesh,
-    kohakuMotionEnabled: !characterAppearance(character.id).mesh && character.id === "amber-avatar" && nikePerformanceEnabled(character.id),
+    livlivAvatar: characterAppearance(character.id).livliv,
+    kohakuMotionEnabled: characterAppearance(character.id).selected === "standard" && character.id === "amber-avatar" && nikePerformanceEnabled(character.id),
     settings,
     avatarImages,
   };
@@ -2003,7 +2046,7 @@ function remoteAvatarAssetKeys() {
 }
 
 function remoteKohakuDescriptor(character) {
-  if (characterAppearance(character.id).mesh || character.id !== 'amber-avatar' || !nikePerformanceEnabled(character.id)) return null;
+  if (characterAppearance(character.id).selected !== 'standard' || character.id !== 'amber-avatar' || !nikePerformanceEnabled(character.id)) return null;
   try { return { manifestUrl: '/api/authored/manifest.json', version: kohakuPackage(projectRoot).version }; }
   catch { return null; } // Keep the standard Link avatar available on asset failure.
 }
@@ -2156,6 +2199,8 @@ function publicRemoteState(context = {}) {
       touchHeadRatio: character.touchHeadRatio,
       authoredMotion: remoteKohakuDescriptor(character),
       meshAvatar: characterAppearance(character.id).mesh,
+      livlivAvatar: characterAppearance(character.id).livliv,
+      avatarAppearance: characterAppearance(character.id),
     },
     characters: allCharacters().map((item) => {
       const effective = effectiveCharacter(item);
@@ -2557,6 +2602,12 @@ function createRemoteServer(address, sessionMinutes = preferences.data.remoteSes
     callbacks: {
       getState: publicRemoteState,
       getMeshAsset: readSelectedMeshAsset,
+      getLivlivAsset: readSelectedLivlivAsset,
+      setLivlivControls: input => {patchLivlivControls(input);return publicRemoteState();},
+      livlivCommand: sendLivlivCommand,
+      removeVrm: input => { removeVrmAppearance(input); return publicRemoteState(); },
+      importLivliv: async (body,characterId) => {if(characterId!==preferences.data.characterId)throw Error('キャラクターが変わりました。');await importLivlivModel(body,characterId);return publicRemoteState();},
+      selectAppearance: input => {if(input.characterId!==preferences.data.characterId)throw Error('キャラクターが変わりました。');selectCharacterAppearance(input.characterId,String(input.selection||''));return publicRemoteState();},
       getAuthoredAsset: (file) => remoteKohakuDescriptor(activeCharacter()) ? kohakuPackage(projectRoot).read(file) : null,
       getAvatarAsset: (key) => {
         const filename = AVATAR_IMAGE_FILES[key] || OPTIONAL_AVATAR_IMAGE_FILES[key];
@@ -2706,7 +2757,9 @@ function atomEchoOutputProfile() {
 }
 
 function rlcd42OutputProfile() {
-  const outputGain = Math.max(.5, Math.min(1.5, (Number(rlcd42Profile().outputGain) || 100) / 100));
+  const profile = rlcd42Profile();
+  const stackchan = stackchanProfile(profile);
+  const outputGain = Math.max(.5, Math.min(1.5, (Number(profile.outputGain) || 100) / 100));
   return {
     // The RLCD 4.2 has its own ES8311/NS4150 speaker path and does not need
     // the aggressive voice-band shaping used to protect ATOM Echo's tiny
@@ -2716,12 +2769,13 @@ function rlcd42OutputProfile() {
     gain: 1,
     highPassHz: 100,
     bodyEqDb: 0,
-    presenceEqDb: 0,
-    compressorRatio: 1,
-    compressorMakeupDb: 0,
+    presenceEqDb: stackchan ? 1.5 : 0,
+    compressorThresholdDb: -18,
+    compressorRatio: stackchan ? 1.8 : 1,
+    compressorMakeupDb: stackchan ? 4 : 0,
     outputGain,
-    limiterThreshold: .88,
-    limiterCeiling: .95,
+    limiterThreshold: stackchan ? .82 : .88,
+    limiterCeiling: stackchan ? .90 : .95,
     fadeMs: 8,
   };
 }
@@ -2772,11 +2826,24 @@ function ensureAtomEchoLiveSession(deviceKind = "atom-echo") {
   atomEchoLiveStatus = { state: "connecting", error: "", beatrice: characterTtsSettings().realtimeVoiceConversion === "beatrice-v2" };
   sendAtomEchoLiveCommand({
     type: "start",
+    stackchan: deviceKind === "rlcd42" && stackchanProfile(rlcd42Profile()),
     beatrice: atomEchoLiveStatus.beatrice,
     selectedSkillIds: [],
     selectedMcpServerIds: [],
   });
   broadcastAppState();
+}
+
+function prepareStackchanHandsFreeLive() {
+  const profile = rlcd42Profile();
+  if (!stackchanProfile(profile) || !profile.enabled || profile.microphoneEnabled === false ||
+      stackchanPrivacyMuted || !atomEchoUsesRealtime() || !rlcd42Gateway?.status().connected ||
+      !["hands-free", "camera-hands-free"].includes(rlcd42CaptureModeForDevice(profile))) return;
+  try {
+    ensureAtomEchoLiveSession("rlcd42");
+  } catch {
+    // Another Live or Work session keeps ownership. The next utterance can try again.
+  }
 }
 
 async function closeAtomEchoLiveAfterIdle() {
@@ -2863,6 +2930,36 @@ function publicAtomEchoState() {
 // One active display/conversation satellite, separately retained pairings.
 let RLCD42_PROFILE_ID = "rlcd42-default";
 const stackchanProfile = (profile) => profile?.type === "m5stack-stackchan-k151";
+const stackchanGestures = new StackchanConversationGestures({
+  sendExpression: (value, options) => {
+    if (!stackchanProfile(rlcd42Profile())) return;
+    rlcd42Gateway?.activeGateway()?.sendConversationExpression?.(value, options)?.catch(error => {
+      diagnosticLog?.write("warn", "stackchan-expression-send-failed", String(error?.message || error));
+    });
+  },
+  send: gesture => {
+    if (!stackchanProfile(rlcd42Profile())) return;
+    const gateway = rlcd42Gateway?.activeGateway();
+    gateway?.sendConversationGesture?.(gesture)?.catch(error => {
+      diagnosticLog?.write("warn", "stackchan-gesture-send-failed", String(error?.message || error));
+    });
+  },
+});
+
+function requestLiveExpressionCue(text, target, { later = false } = {}) {
+  const generation = stackchanGestures.generation;
+  const stackchan = target === "rlcd42" && stackchanProfile(rlcd42Profile());
+  const onApplied = expression => {
+    if (generation !== stackchanGestures.generation) return;
+    if (later) stackchanGestures.observePhrase(text, expression, { atPause: true });
+    else stackchanGestures.observeExpression(expression, generation);
+  };
+  if (stackchan && !jevEnabled("jevExpressionEnabled")) {
+    if (later) onApplied(speechExpression(text, { characterId: activeCharacter().id }));
+    return;
+  }
+  requestJevExpression(text, stackchan ? { onApplied } : undefined);
+}
 const characterDeviceIdValid = (id, profile = rlcd42Profile()) =>
   (stackchanProfile(profile) ? /^stackchan-[a-f0-9]{12}$/ : /^cd-rlcd-[a-f0-9]{12}$/).test(String(id || "").toLowerCase());
 
@@ -2878,12 +2975,20 @@ function rlcd42Profile() {
     captionMode: "auto",
     speakerEnabled: true,
     outputGain: 100,
+    homePitch: 8,
+    cameraEnabled: true,
+    faceTrackingEnabled: false,
     microphoneEnabled: true,
     captureMode: "push-to-talk",
     vadThreshold: 120,
     deviceId: "",
     wifiSsid: "",
   };
+}
+
+function rlcd42CaptureModeForDevice(profile) {
+  return profile.cameraEnabled === false && profile.captureMode === "camera-hands-free"
+    ? "push-to-talk" : profile.captureMode;
 }
 
 function publicRlcd42State() {
@@ -2915,7 +3020,7 @@ function publicRlcd42State() {
     speakerEnabled: profile.speakerEnabled !== false,
     outputGain: Math.max(50, Math.min(150, Math.round(Number(profile.outputGain) || 100))),
     microphoneEnabled: profile.microphoneEnabled !== false,
-    captureMode: profile.captureMode === "hands-free" ? "hands-free" : "push-to-talk",
+    captureMode: profile.captureMode,
     vadThreshold: Math.max(80, Math.min(800, Math.round(Number(profile.vadThreshold) || 120))),
     deviceId: profile.deviceId || runtime.device?.deviceId || "",
     paired: Boolean(profile.deviceId && preferences?.getDevicePairingToken(RLCD42_PROFILE_ID)),
@@ -2932,6 +3037,16 @@ function publicRlcd42State() {
     streamingSpeechReady: Boolean(speechStatus?.installed),
     streamingSpeechModel: speechStatus?.label || speechStatus?.modelId || "",
     microphoneReady: Boolean(runtime.connected && runtime.capabilities?.audio?.capture),
+    handsFreeReady: !stackchanProfile(profile) || runtime.capabilities?.audio?.handsFree === true,
+    cameraEnabled: profile.cameraEnabled !== false,
+    faceTrackingEnabled: profile.faceTrackingEnabled === true,
+    privacyMuted: Boolean(runtime.connected && stackchanProfile(profile) && stackchanPrivacyMuted),
+    cameraControlsReady: Boolean(runtime.connected && runtime.capabilities?.camera?.controls),
+    cameraHandsFreeReady: Boolean(profile.cameraEnabled !== false && stackchanProfile(profile) && runtime.capabilities?.camera?.conversationGate),
+    cameraPreviewReady: Boolean(!stackchanPrivacyMuted && profile.cameraEnabled !== false && runtime.connected && runtime.capabilities?.camera?.localPreview),
+    homePitch: profile.homePitch ?? 8,
+    homePitchReady: Boolean(runtime.connected && runtime.capabilities?.motion?.homePitch),
+    motionEnabled: Boolean(runtime.connected && runtime.capabilities?.motion?.enabled),
     playbackReady: Boolean(runtime.connected && runtime.capabilities?.audio?.playback),
     ttsReady: characterTtsSettings().provider !== "system",
     ttsProvider: characterTtsSettings().provider,
@@ -3055,8 +3170,7 @@ async function syncRlcd42Presentation({ includePortrait = true } = {}) {
   let portraitMetrics = null;
   let animationFrames = [];
   if (includePortrait && stackchanProfile(rlcd42Profile())) {
-    const colour = renderStackchanPortrait(characterAssetDirectory(character));
-    if (colour) await rlcd42Gateway.sendPortrait(colour);
+    await rlcd42Gateway.activeGateway()?.useNativeFace?.();
   }
   if (includePortrait && !stackchanProfile(rlcd42Profile())) {
     const pack = rlcd42PortraitPackForCharacter(character, rlcd42Profile().artStyle);
@@ -3110,16 +3224,30 @@ function createRlcd42Gateway() {
         const muted = event.event === 7;
         if (meetingMuted === muted) return;
         meetingMuted = muted;
+        if (stackchanProfile(rlcd42Profile())) {
+          stackchanPrivacyMuted = muted;
+          broadcastAppState();
+          if (!muted) {
+            prepareStackchanHandsFreeLive();
+            return;
+          }
+        }
         await esp32Interrupt("rlcd42");
         if (muted && activeRealtimeTarget === "rlcd42")
           await stopActiveRealtime().catch(() => {});
+        return;
+      }
+      if (event.event === 9 && event.button === 0 && event.durationMs <= 1) {
+        const profile = rlcd42Profile();
+        if (stackchanProfile(profile) && profile.cameraEnabled !== false && !stackchanPrivacyMuted)
+          await configureRlcd42({ faceTrackingEnabled: event.durationMs === 1 });
         return;
       }
       if (event.event === 1) scheduleRlcd42SceneSync(4_500, { force: true });
       else if (event.event === 5) scheduleRlcd42SceneSync(15_000, { force: true });
       else if (event.event === 6) scheduleRlcd42PresentationSync();
     },
-    onPttStart: async () => esp32InputStart("rlcd42"),
+    onPttStart: async (options) => esp32InputStart("rlcd42", options),
     onPcmChunk: async (chunk) => esp32InputGate("rlcd42").chunk(chunk),
     onPttEnd: async () => esp32InputGate("rlcd42").end(),
     onInterrupt: async () => esp32Interrupt("rlcd42"),
@@ -3150,20 +3278,53 @@ function createRlcd42Gateway() {
       }
       broadcastAppState();
     },
-    onReady: async () => {
+    onReady: async ({ isCurrent, source }) => {
       // A reconnect is a new device session: resend a complete portrait and
       // scene snapshot instead of relying on pre-disconnect incremental state.
       rlcd42NowPlaying.stop();
       updateRlcd42NowPlaying();
       scheduleRlcd42PresentationSync();
+      const profile = rlcd42Profile();
+      if (stackchanProfile(profile)) {
+        const gateway = rlcd42Gateway?.activeGateway();
+        stackchanPrivacyMuted = gateway?.status().capabilities?.privacy?.muted === true;
+        meetingMuted = stackchanPrivacyMuted;
+        broadcastAppState();
+        // USB can remain authoritative briefly after its cable disappears.
+        // Retry rejected Wi-Fi setup frames until the device moves ownership.
+        const setupDelays = source === "wifi" ? [0, 250, 500, 1_000, 1_500] : [0, 250, 750];
+        for (const [attempt, delay] of setupDelays.entries()) {
+          if (delay) await new Promise(resolve => setTimeout(resolve, delay));
+          if (!isCurrent()) return;
+          try {
+            await gateway.setHomePitch?.(rlcd42Profile().homePitch ?? 8);
+            if (!isCurrent()) return;
+            const allowed = rlcd42Profile().motionAllowed;
+            if (typeof allowed === "boolean") await gateway.setMotionEnabled?.(allowed);
+            if (!isCurrent()) return;
+            const current = rlcd42Profile();
+            await gateway.setCameraControls?.(current.cameraEnabled !== false, current.faceTrackingEnabled === true);
+            if (isCurrent()) {
+              prepareStackchanHandsFreeLive();
+              warmStackchanStandardVoice();
+            }
+            return;
+          } catch (error) {
+            if (attempt === setupDelays.length - 1) throw error;
+          }
+        }
+      }
     },
     onStatus: () => {
       const transport = rlcd42Gateway?.status().transport || "";
+      if (!transport) stackchanPrivacyMuted = false;
       updateRlcd42NowPlaying();
       if (transport && transport !== rlcd42LastTransport) {
+        stackchanGestures.reset();
         rlcd42LastTransport = transport;
         scheduleRlcd42SceneSync(0, { force: true });
       } else if (!transport) {
+        if (rlcd42LastTransport) stackchanGestures.reset();
         rlcd42LastTransport = "";
       }
       if (preferences) broadcastAppState();
@@ -3200,9 +3361,12 @@ async function configureRlcd42(patch = {}) {
   const transport = ["usb", "wifi"].includes(patch.transport ?? previous.transport)
     ? (patch.transport ?? previous.transport)
     : "auto";
-  const captureMode = type !== STACKCHAN_BOARD && (patch.captureMode ?? previous.captureMode) === "hands-free" ? "hands-free" : "push-to-talk";
+  const requestedCapture = patch.captureMode ?? previous.captureMode;
+  const captureMode = type === STACKCHAN_BOARD && requestedCapture === "camera-hands-free"
+    ? "camera-hands-free" : requestedCapture === "hands-free" ? "hands-free" : "push-to-talk";
   const vadThreshold = Math.max(80, Math.min(800, Math.round(Number(patch.vadThreshold ?? previous.vadThreshold) || 120)));
   const outputGain = Math.max(50, Math.min(150, Math.round(Number(patch.outputGain ?? previous.outputGain) || 100)));
+  const homePitch = Math.max(5, Math.min(20, Math.round(Number(patch.homePitch ?? previous.homePitch) || 8)));
   const profile = {
     type,
     name: type === STACKCHAN_BOARD ? "StackChan" : "RLCD 4.2",
@@ -3215,6 +3379,13 @@ async function configureRlcd42(patch = {}) {
       ? patch.speakerEnabled
       : previous.speakerEnabled !== false,
     outputGain,
+    ...(type === STACKCHAN_BOARD ? {
+      homePitch,
+      cameraEnabled: typeof patch.cameraEnabled === "boolean" ? patch.cameraEnabled : previous.cameraEnabled !== false,
+      faceTrackingEnabled: typeof patch.faceTrackingEnabled === "boolean" ? patch.faceTrackingEnabled : previous.faceTrackingEnabled === true,
+      ...(typeof patch.motionEnabled === "boolean" ? { motionAllowed: patch.motionEnabled }
+        : typeof previous.motionAllowed === "boolean" ? { motionAllowed: previous.motionAllowed } : {}),
+    } : {}),
     microphoneEnabled: typeof patch.microphoneEnabled === "boolean"
       ? patch.microphoneEnabled
       : previous.microphoneEnabled !== false,
@@ -3225,7 +3396,15 @@ async function configureRlcd42(patch = {}) {
       : "",
     wifiSsid: String(previous.wifiSsid || "").replace(/[\u0000-\u001f\u007f]/g, "").slice(0, 32),
   };
-  if ((!profile.enabled || !profile.microphoneEnabled) && atomEchoCapture?.deviceKind === "rlcd42") {
+  preferences.patch({
+    atomEchoLiveIdleTimeoutEnabled: liveIdleTimeoutEnabled,
+    deviceProfiles: {
+      ...(preferences.data.deviceProfiles || {}),
+      [RLCD42_PROFILE_ID]: profile,
+    },
+  });
+  if ((!profile.enabled || !profile.microphoneEnabled)
+      && (atomEchoCapture?.deviceKind === "rlcd42" || atomEchoRecognizingCapture?.deviceKind === "rlcd42")) {
     await esp32Interrupt("rlcd42");
   }
   if (!profile.enabled && activeRealtimeTarget === "rlcd42") await stopActiveRealtime().catch(() => {});
@@ -3235,16 +3414,13 @@ async function configureRlcd42(patch = {}) {
     atomEchoLiveStatus = { state: "idle", error: "", beatrice: false };
     activeEsp32VoiceDevice = "";
   }
-  if ((!profile.enabled || !profile.speakerEnabled) && (rlcd42SpeechActive || rlcd42SpeechStream)) {
+  if (previous.speakerEnabled !== false && !profile.speakerEnabled && activeRealtimeTarget === "rlcd42")
+    await rlcd42LiveAudioRoute?.interrupt().catch(() => {});
+  if ((!profile.enabled || !profile.speakerEnabled) && (rlcd42SpeechActive || rlcd42SpeechStream))
     await stopRlcd42Speech();
-  }
-  preferences.patch({
-    atomEchoLiveIdleTimeoutEnabled: liveIdleTimeoutEnabled,
-    deviceProfiles: {
-      ...(preferences.data.deviceProfiles || {}),
-      [RLCD42_PROFILE_ID]: profile,
-    },
-  });
+  if (profile.enabled && stackchanProfile(profile) &&
+      (previous.cameraEnabled !== profile.cameraEnabled || previous.faceTrackingEnabled !== profile.faceTrackingEnabled))
+    await rlcd42Gateway.activeGateway()?.setCameraControls?.(profile.cameraEnabled, profile.faceTrackingEnabled);
   atomEchoLiveIdleTimer?.setEnabled(liveIdleTimeoutEnabled, {
     arm: liveIdleTimeoutEnabled && isEsp32VoiceTarget(activeRealtimeTarget) && !atomEchoCapture,
   });
@@ -3259,14 +3435,14 @@ async function configureRlcd42(patch = {}) {
       port: profile.port,
       deviceId: profile.deviceId,
       token: preferences.getDevicePairingToken(RLCD42_PROFILE_ID),
-      captureMode: profile.captureMode,
+      captureMode: rlcd42CaptureModeForDevice(profile),
       vadThreshold: profile.vadThreshold,
       microphoneEnabled: profile.microphoneEnabled,
     });
-  } else if (profile.enabled && (previous.captureMode !== profile.captureMode
+  } else if (profile.enabled && (rlcd42CaptureModeForDevice(previous) !== rlcd42CaptureModeForDevice(profile)
     || previous.vadThreshold !== profile.vadThreshold
     || previous.microphoneEnabled !== profile.microphoneEnabled)) {
-    await rlcd42Gateway.setCaptureMode(profile.captureMode, profile.vadThreshold, profile.microphoneEnabled);
+    await rlcd42Gateway.setCaptureMode(rlcd42CaptureModeForDevice(profile), profile.vadThreshold, profile.microphoneEnabled);
   }
   if (profile.enabled && rlcd42Gateway.status().connected
     && !reconnect && previous.artStyle !== profile.artStyle) {
@@ -3287,10 +3463,13 @@ async function configureRlcd42(patch = {}) {
     captureMode: profile.captureMode,
     vadThreshold: profile.vadThreshold,
   });
-  // Session-only opt-in. Never persist or resend servo power after reconnect.
   if (stackchanProfile(profile) && typeof patch.motionEnabled === "boolean") {
     await rlcd42Gateway.requireGateway().setMotionEnabled(patch.motionEnabled);
   }
+  if (stackchanProfile(profile) && typeof patch.homePitch === "number")
+    await rlcd42Gateway.activeGateway()?.setHomePitch?.(homePitch);
+  if (previous.captureMode !== profile.captureMode || previous.microphoneEnabled !== profile.microphoneEnabled)
+    prepareStackchanHandsFreeLive();
   return broadcastAppState();
 }
 
@@ -3334,9 +3513,19 @@ async function provisionRlcd42Wifi(patch = {}) {
   return broadcastAppState();
 }
 
-function esp32SpeechOutput(active) {
+function esp32SpeechOutput(active, { stackchanDrain = false } = {}) {
   esp32SpeechOutput.count = Math.max(0, (esp32SpeechOutput.count || 0) + (active ? 1 : -1));
-  esp32SpeechOutput.until = Date.now() + 800;
+  const now = Date.now();
+  esp32SpeechOutput.until = now + 800;
+  // StackChan owns both the speaker drain and hardware microphone rearm.
+  // Keep a short acoustic tail after a confirmed drain for that device.
+  esp32SpeechOutput.stackchanUntil = stackchanDrain ? now + 120 : esp32SpeechOutput.until;
+}
+
+function esp32SpeechSuppressed(deviceKind) {
+  const stackchan = deviceKind === "rlcd42" && stackchanProfile(rlcd42Profile());
+  const tailUntil = stackchan ? esp32SpeechOutput.stackchanUntil : esp32SpeechOutput.until;
+  return codexCompanion.state.enabled || Boolean(esp32SpeechOutput.count) || Date.now() < (tailUntil || 0);
 }
 
 function esp32InputGate(deviceKind) {
@@ -3349,13 +3538,23 @@ function esp32InputGate(deviceKind) {
       await vad.start("normal");
       return vad;
     },
-    suppress: () => codexCompanion.state.enabled || Boolean(esp32SpeechOutput.count) || Date.now() < (esp32SpeechOutput.until || 0),
+    suppress: () => esp32SpeechSuppressed(deviceKind),
     onStart: async (options) => {
       diagnosticLog?.write("info", "esp32-silero-accepted", { deviceKind });
-      await esp32PttStart(deviceKind, options);
+      return esp32PttStart(deviceKind, options);
     },
     onChunk: (bytes) => esp32PcmChunk(bytes),
     onEnd: () => esp32PttEnd(deviceKind),
+    requestEnd: async () => {
+      const capture = atomEchoCapture;
+      try {
+        await esp32VoiceGateway(deviceKind)?.finishCurrentCapture?.();
+      } catch (error) {
+        if (capture?.deviceKind === deviceKind && atomEchoCapture === capture)
+          await esp32Interrupt(deviceKind);
+        throw error;
+      }
+    },
     onReject: async (reason, metrics) => {
       diagnosticLog?.write("info", "esp32-silero-rejected", { deviceKind, reason, ...metrics });
       // Rejection is not an input error. Preserve an existing answer owner.
@@ -3369,10 +3568,32 @@ function esp32InputGate(deviceKind) {
   return gates.get(deviceKind);
 }
 
-async function esp32InputStart(deviceKind) {
-  const handsfree = (deviceKind === "rlcd42" ? rlcd42Profile().captureMode
-    : preferences.data.atomEchoCaptureMode) === "hands-free";
-  return esp32InputGate(deviceKind).begin({ bypass: atomEchoUsesRealtime(), handsfree });
+async function esp32InputStart(deviceKind, { manual = false } = {}) {
+  const profile = deviceKind === "rlcd42" ? rlcd42Profile() : null;
+  if (profile && (profile.microphoneEnabled === false || stackchanPrivacyMuted)) return false;
+  const stackchan = profile && stackchanProfile(profile);
+  const mode = profile ? rlcd42CaptureModeForDevice(profile) : preferences.data.atomEchoCaptureMode;
+  const handsfree = !manual && ["hands-free", "camera-hands-free"].includes(mode);
+  if (stackchan && handsfree && atomEchoUsesRealtime() && rlcd42LiveAudioRoute?.active()) {
+    await rlcd42Gateway?.activeGateway()?.abortCurrentCapture?.()?.catch(() => {});
+    return false;
+  }
+  const realtime = atomEchoUsesRealtime();
+  if (stackchan && !realtime) warmStackchanStandardVoice();
+  const localEndpoint = Boolean(stackchan && handsfree &&
+    rlcd42Gateway?.status().capabilities?.audio?.captureFinalize);
+  return esp32InputGate(deviceKind).begin({ bypass: realtime && !localEndpoint, handsfree, localEndpoint });
+}
+
+async function setEsp32VoiceState(deviceKind, gateway, state) {
+  const update = gateway?.setDeviceState(state);
+  if (deviceKind === "rlcd42" && stackchanProfile(rlcd42Profile())) {
+    void update?.catch(error => diagnosticLog?.write("warn", "stackchan-voice-state-failed", {
+      state, error: String(error?.message || error),
+    }));
+    return;
+  }
+  await update;
 }
 
 function pcm16Samples(bytes) {
@@ -3384,7 +3605,8 @@ function pcm16Samples(bytes) {
 }
 
 async function esp32PttStart(deviceKind = "atom-echo", { handsfree = false } = {}) {
-  if (codexCompanion.state.enabled || companionTransitioning) return false;
+  if (codexCompanion.state.enabled || companionTransitioning
+      || (deviceKind === "rlcd42" && (stackchanPrivacyMuted || rlcd42Profile().microphoneEnabled === false))) return false;
   const gateway = esp32VoiceGateway(deviceKind);
   const label = esp32VoiceLabel(deviceKind);
   if (!gateway?.status().connected) throw new Error(`${label}が接続されていません。`);
@@ -3407,6 +3629,11 @@ async function esp32PttStart(deviceKind = "atom-echo", { handsfree = false } = {
     ensureAtomEchoLiveSession(deviceKind);
     const generation = ++atomEchoTurnGeneration;
     atomEchoCapture = { generation, mode: "live", samples: 0, deviceKind, gateway };
+    if (deviceKind === "rlcd42" && stackchanProfile(rlcd42Profile())) {
+      cancelStackchanLiveReplyWait();
+      stackchanGestures.beginTurn();
+      stackchanLiveMotionInput.begin();
+    }
     sendAtomEchoLiveCommand({ type: "input-start" });
     if (deviceKind === "rlcd42") {
       rlcd42VoiceStage = "listening";
@@ -3414,7 +3641,7 @@ async function esp32PttStart(deviceKind = "atom-echo", { handsfree = false } = {
       scheduleRlcd42SceneSync(0, { force: true });
     }
     try {
-      await gateway.setDeviceState("listening");
+      await setEsp32VoiceState(deviceKind, gateway, "listening");
     } catch (error) {
       if (generation !== atomEchoTurnGeneration) return;
       atomEchoCapture = null;
@@ -3461,7 +3688,10 @@ async function esp32PttStart(deviceKind = "atom-echo", { handsfree = false } = {
     "Download a streaming speech recognition model in Voice settings.",
   ));
   const generation = ++atomEchoTurnGeneration;
-  if (captureRoute.route === "new-turn") atomEchoReplyGeneration += 1;
+  if (!captureRoute.followUp) {
+    atomEchoReplyGeneration += 1;
+    if (deviceKind === "rlcd42" && stackchanProfile(rlcd42Profile())) stackchanGestures.beginTurn();
+  }
   const sessionId = `${deviceKind}:${Date.now().toString(36)}:${generation.toString(36)}`;
   const capture = atomEchoCapture = {
     generation, mode: "standard", sessionId, samples: 0, handsfree,
@@ -3469,7 +3699,8 @@ async function esp32PttStart(deviceKind = "atom-echo", { handsfree = false } = {
     submitRoute: captureRoute.route, interactionMode, deviceKind, gateway,
   };
   try {
-    if (deviceKind === "rlcd42") await stopRlcd42Speech();
+    if (deviceKind === "rlcd42" && (!captureRoute.followUp || esp32SpeechOutput.count))
+      await stopRlcd42Speech();
     if (capture !== atomEchoCapture || generation !== atomEchoTurnGeneration) return;
     await startStreamingSpeechSession(sessionId, preferences.data.streamingSpeechModelId);
     if (capture !== atomEchoCapture || generation !== atomEchoTurnGeneration) {
@@ -3481,7 +3712,7 @@ async function esp32PttStart(deviceKind = "atom-echo", { handsfree = false } = {
       rlcd42LastSceneSignature = "";
       scheduleRlcd42SceneSync(0, { force: true });
     }
-    await gateway.setDeviceState("listening");
+    await setEsp32VoiceState(deviceKind, gateway, "listening");
     diagnosticLog?.write("info", "esp32-ptt-start", {
       deviceKind,
       transport: gateway.status().transport,
@@ -3502,6 +3733,22 @@ async function esp32PttStart(deviceKind = "atom-echo", { handsfree = false } = {
   }
 }
 
+async function releaseOverlongDeviceCapture(capture) {
+  atomEchoCapture = null;
+  esp32InputGate(capture.deviceKind).cancel();
+  if (capture.mode === "live") sendAtomEchoLiveCommand({ type: "interrupt" });
+  else streamingSpeechRecognition.cancel(capture.sessionId);
+  const gateway = capture.gateway || esp32VoiceGateway(capture.deviceKind);
+  if (capture.deviceKind === "rlcd42") {
+    rlcd42VoiceStage = "";
+    rlcd42LastSceneSignature = "";
+    scheduleRlcd42SceneSync(0, { force: true });
+    await gateway?.abortCurrentCapture?.()?.catch(() => {});
+  }
+  if (capture.generation === atomEchoTurnGeneration && !atomEchoCapture)
+    await gateway?.setDeviceState("idle").catch(() => {});
+}
+
 async function esp32PcmChunk(bytes) {
   const capture = atomEchoCapture;
   if (!capture || capture.generation !== atomEchoTurnGeneration) return;
@@ -3510,8 +3757,7 @@ async function esp32PcmChunk(bytes) {
     if (!pcm.length || pcm.length % 2) throw new Error("ESP32デバイスの音声チャンクが正しくありません。");
     capture.samples += pcm.length / 2;
     if (capture.samples > 16_000 * 30) {
-      atomEchoCapture = null;
-      sendAtomEchoLiveCommand({ type: "interrupt" });
+      await releaseOverlongDeviceCapture(capture);
       throw new Error(mainText("1回の発話は30秒以内にしてください。", "Keep one utterance under 30 seconds."));
     }
     sendAtomEchoLiveCommand({
@@ -3523,8 +3769,7 @@ async function esp32PcmChunk(bytes) {
   const samples = pcm16Samples(bytes);
   capture.samples += samples.length;
   if (capture.samples > 16_000 * 30) {
-    streamingSpeechRecognition.cancel(capture.sessionId);
-    atomEchoCapture = null;
+    await releaseOverlongDeviceCapture(capture);
     throw new Error(mainText("1回の発話は30秒以内にしてください。", "Keep one utterance under 30 seconds."));
   }
   try {
@@ -3630,6 +3875,11 @@ function syncRlcd42LiveCaption(target, message = {}) {
   if (target !== "rlcd42") return;
   const phase = message.phase;
   if (["start", "follow-up", "interrupted", "cancelled", "error"].includes(phase)) {
+    if (["interrupted", "cancelled", "error"].includes(phase) && stackchanProfile(rlcd42Profile())) {
+      cancelStackchanLiveReplyWait();
+      if (rlcd42VoiceStage === "waiting") rlcd42VoiceStage = "";
+      stackchanGestures.reset();
+    }
     rlcd42LiveCaption = "";
     rlcd42LastDisplayText = "";
     scheduleRlcd42CaptionExpiry(-1);
@@ -3637,10 +3887,13 @@ function syncRlcd42LiveCaption(target, message = {}) {
     return;
   }
   if (phase !== "realtime-caption" && phase !== "done") return;
+  if (stackchanProfile(rlcd42Profile()))
+    stackchanGestures.observeSpeech(message.text || message.displayText, { final: message.final === true || phase === "done" });
   const caption = liveCaptionWindow(message.displayText || message.text);
   if (caption) {
     rlcd42LiveCaption = caption;
     rlcd42LastDisplayText = caption;
+    if (stackchanLiveReplyWait && !rlcd42SpeakerSelected()) cancelStackchanLiveReplyWait();
     if (!atomEchoCapture && !atomEchoRecognizingCapture) rlcd42VoiceStage = "";
   }
   const final = message.final === true || phase === "done";
@@ -3680,12 +3933,14 @@ function publishSpeechCaption(payload = {}, preview = false) {
 
 function rlcd42SpeakerSelected() {
   const profile = rlcd42Profile();
-  return profile.enabled && profile.speakerEnabled !== false;
+  return profile.enabled && profile.speakerEnabled !== false && !stackchanPrivacyMuted;
 }
 
 async function stopRlcd42Speech() {
   speechCpp.cancelOwner(RLCD42_TTS_OWNER_ID);
   rlcd42SpeechGeneration += 1;
+  rlcd42SpeechPhrases?.cancel();
+  rlcd42SpeechPhrases = null;
   const activeStream = rlcd42SpeechStream;
   const wasActive = rlcd42SpeechActive || Boolean(activeStream);
   rlcd42SpeechStream = null;
@@ -3699,9 +3954,11 @@ async function stopRlcd42Speech() {
   return { interrupted: wasActive };
 }
 
-async function playRlcd42Speech(text, ownerId = RLCD42_TTS_OWNER_ID) {
+async function playRlcd42Speech(text, ownerId = RLCD42_TTS_OWNER_ID, {
+  phrases, expectedReplyGeneration = atomEchoReplyGeneration, stageAudio = true,
+} = {}) {
   const spokenText = configuredSpeechText(String(text || "").slice(0, 4_000));
-  if (!spokenText) return { externalPlayback: "rlcd42", spoken: false };
+  if (!spokenText && !phrases) return { externalPlayback: "rlcd42", spoken: false };
   if (!rlcd42SpeakerSelected()) throw new Error(mainText(
     "RLCD 4.2の音声出力が選択されていません。",
     "RLCD 4.2 speaker output is not selected.",
@@ -3720,45 +3977,154 @@ async function playRlcd42Speech(text, ownerId = RLCD42_TTS_OWNER_ID) {
     "RLCD 4.2 needs PCM audio. Choose a standard TTS provider such as Irodori TTS for the character voice.",
   ));
 
-  await stopRlcd42Speech();
+  const stopping = stopRlcd42Speech();
+  const stoppedGeneration = rlcd42SpeechGeneration;
+  await stopping;
+  if (stoppedGeneration !== rlcd42SpeechGeneration || expectedReplyGeneration !== atomEchoReplyGeneration) {
+    return { externalPlayback: "rlcd42", spoken: false, interrupted: true };
+  }
   const generation = ++rlcd42SpeechGeneration;
-  const replyGeneration = atomEchoReplyGeneration;
-  const isCurrent = () => generation === rlcd42SpeechGeneration && replyGeneration === atomEchoReplyGeneration;
+  let closed = false;
+  const isCurrent = () => !closed && generation === rlcd42SpeechGeneration && expectedReplyGeneration === atomEchoReplyGeneration;
   rlcd42SpeechActive = true;
+  rlcd42SpeechPhrases = phrases || null;
   let streamId = "";
   let played = false;
   let outputHeld = false;
-  try {
-    const result = await synthesizeConfiguredTts(spokenText, ownerId, { enabled: true });
-    let sources = Array.isArray(result?.audioDataUrls) ? result.audioDataUrls : [];
-    let captions = result?.audioTexts || [];
-    streamId = String(result?.streamId || "");
-    if (!isCurrent()) {
-      if (streamId) cancelIrodoriTtsStream(streamId, ownerId);
-      return { externalPlayback: "rlcd42", spoken: false, interrupted: true };
+  let speakerDrained = false;
+  const releaseOutput = () => esp32SpeechOutput(false, { stackchanDrain: stackchan && speakerDrained &&
+    status.capabilities?.audio?.playbackStatus === true });
+  let textLength = 0;
+  const stackchan = stackchanProfile(rlcd42Profile());
+  const wholeSentence = stackchan || Boolean(phrases);
+  const supportsStaging = stageAudio && stackchan &&
+    Number(rlcd42Gateway.status().capabilities?.audio?.stagedPlaybackSamples) > 0;
+  const startedAt = Date.now();
+  let openingCue = true;
+  const makeCue = (text) => {
+    if (!stackchan) return null;
+    const cue = { expression: null };
+    if (!openingCue && jevEnabled("jevExpressionEnabled")) {
+      void jevExpressionDirector.prepare(text).then(id => {
+        if (isCurrent()) cue.expression = jevExpressionDirector.takePrepared(id)?.expression || null;
+      }).catch(() => {});
     }
-    if (streamId) rlcd42SpeechStream = { id: streamId, ownerId };
-    if (!sources.length) throw new Error(mainText(
-      "選択中の音声からPCM WAVを生成できませんでした。",
-      "The selected voice did not produce PCM WAV audio.",
-    ));
-
-    while (sources.length) {
-      for (const [sourceIndex, source] of sources.entries()) {
-        // Synthesis can finish while a spoken follow-up is recording. Do not
-        // overwrite its listening state or feed our speaker back into STT.
-        if (!await waitForEsp32PlaybackSlot(isCurrent)) {
-          return { externalPlayback: "rlcd42", spoken: false, interrupted: true };
+    openingCue = false;
+    return cue;
+  };
+  async function* readAudio() {
+    for await (const entry of phrases || [spokenText]) {
+      if (!isCurrent()) return;
+      const filler = Boolean(entry.filler);
+      const phrase = filler ? entry.value : entry;
+      if (filler && phrases.hasAnswer) continue;
+      const firstPhrase = !filler && textLength === 0;
+      if (stackchan && firstPhrase) requestLiveExpressionCue(splitIrodoriText(phrase)[0] || phrase, "rlcd42");
+      if (!filler) textLength += phrase.length;
+      const synthesisStartedAt = Date.now();
+      const result = await synthesizeConfiguredTts(phrase, ownerId, {
+        enabled: true, wholeSentence,
+        onEngineReady: stackchan ? (detail) => diagnosticLog?.write("info", "stackchan-tts-engine-ready", detail) : undefined,
+      });
+      streamId = String(result?.streamId || "");
+      if (!isCurrent()) {
+        if (streamId) cancelIrodoriTtsStream(streamId, ownerId);
+        return;
+      }
+      rlcd42SpeechStream = streamId ? { id: streamId, ownerId } : null;
+      const sources = Array.isArray(result?.audioDataUrls) ? result.audioDataUrls : [];
+      if (!sources.length) throw new Error(mainText(
+        "選択中の音声からPCM WAVを生成できませんでした。",
+        "The selected voice did not produce PCM WAV audio.",
+      ));
+      if (stackchan) diagnosticLog?.write("info", "stackchan-tts-generated", {
+        synthesisMs: Date.now() - synthesisStartedAt, sinceReplySpeechMs: Date.now() - startedAt, filler,
+      });
+      if (filler && phrases.hasAnswer) {
+        if (streamId) cancelIrodoriTtsStream(streamId, ownerId);
+        streamId = "";
+        rlcd42SpeechStream = null;
+        continue;
+      }
+      for (const [index, source] of sources.entries()) {
+        const caption = result?.audioTexts?.[index] || phrase;
+        yield { source, caption, cue: makeCue(caption), filler };
+      }
+      while (streamId && isCurrent()) {
+        const next = await nextIrodoriTtsChunk(streamId, ownerId);
+        if (!isCurrent()) return;
+        if (next?.done) {
+          streamId = "";
+          rlcd42SpeechStream = null;
         }
-        const decoded = decodePcmWaveDataUrl(source);
-        const resampled = resamplePcm16(decoded.samples, decoded.sampleRate, 16_000);
-        const pcm = processAtomEchoPcm16(resampled, { sampleRate: 16_000, ...rlcd42OutputProfile() });
-        if (!pcm.length) continue;
-        const caption = String(captions[sourceIndex] || spokenText);
+        if (next?.audioDataUrl) {
+          const caption = next.audioText || phrase;
+          yield { source: next.audioDataUrl, caption, cue: makeCue(caption), filler };
+        }
+      }
+    }
+  }
+  const audio = readAudio();
+  const nextAudio = () => audio.next().then(item => {
+    if (!item.done && isCurrent()) {
+      const decoded = decodePcmWaveDataUrl(item.value.source);
+      const resampled = resamplePcm16(decoded.samples, decoded.sampleRate, 16_000);
+      item.value.pcm = processAtomEchoPcm16(resampled, { sampleRate: 16_000, ...rlcd42OutputProfile() });
+    }
+    return { item };
+  }).catch(error => ({ error }));
+  try {
+    if (stackchan && !stackchanGestures.active) stackchanGestures.beginTurn();
+    const stackchanGestureTurn = stackchan ? stackchanGestures.generation : null;
+    let activeCue = null;
+    const onPlaybackReady = (phrase, cue) => {
+      if (!isCurrent() || cue === activeCue ||
+          stackchanGestureTurn !== stackchanGestures.generation) return;
+      if (activeCue === null) {
+        stackchanGestures.observeSpeech(phrase, { final: true });
+      } else {
+        stackchanGestures.observePhrase(phrase, cue?.expression || speechExpression(phrase, { characterId: activeCharacter().id }));
+      }
+      activeCue = cue;
+      stackchanGestures.playbackReady();
+    };
+
+    let outcome = await nextAudio();
+    while (isCurrent()) {
+      if (outcome.error) throw outcome.error;
+      if (outcome.item.done) break;
+      const { pcm, caption, cue, filler } = outcome.item.value;
+      const prefetched = wholeSentence ? nextAudio() : null;
+      let stagedNext = null;
+      let playbackFinished = false;
+      const stageFollowingPhrase = (playback) => {
+        if (!supportsStaging || !prefetched || !isCurrent() || stagedNext) return;
+        stagedNext = prefetched.then(async next => {
+          const bytes = next.item?.value?.pcm;
+          if (bytes?.length && isCurrent() && !playbackFinished)
+            next.staged = await rlcd42Gateway.stagePcm16(bytes, playback);
+          return next;
+        }).catch(error => {
+          if (isCurrent()) diagnosticLog?.write("warn", "stackchan-tts-stage-fallback", String(error?.message || error));
+          return prefetched;
+        });
+      };
+      // Synthesis can finish while a spoken follow-up is recording. Do not
+      // overwrite its listening state or feed our speaker back into STT.
+      if (!await waitForEsp32PlaybackSlot(isCurrent)) {
+        return { externalPlayback: "rlcd42", spoken: false, interrupted: true };
+      }
+      if (filler && phrases.hasAnswer) {
+        outcome = await (prefetched || nextAudio());
+        continue;
+      }
+      if (pcm?.length) {
+        rlcd42VoiceStage = "playing";
         rlcd42PlaybackCaption = publishSpeechCaption({ text: caption, source: "rlcd42" }, true) || caption;
-        // Commit the matching sentence before AUDIO_BEGIN. Full response
-        // deltas are retained separately and cannot overwrite this caption.
-        await syncRlcd42Scene({ force: true });
+        // StackChan can announce speaker activity even when a caption ACK
+        // is missing. The reflective panel needs its caption before playback.
+        if (stackchan) scheduleRlcd42SceneSync(0, { force: true });
+        else await syncRlcd42Scene({ force: true });
         // Scene transfer is asynchronous too: speech may have started while
         // its ACK was in flight. Recheck the microphone/turn gate afterwards.
         if (!await waitForEsp32PlaybackSlot(isCurrent))
@@ -3769,35 +4135,56 @@ async function playRlcd42Speech(text, ownerId = RLCD42_TTS_OWNER_ID) {
         // and subsequent synthesis, not just while each individual WAV plays.
         // Manual PTT still bypasses suppression in DeviceSpeechGate.
         if (!outputHeld) { esp32SpeechOutput(true); outputHeld = true; }
-        const playback = await rlcd42Gateway.playPcm16(pcm, 16_000);
+        speakerDrained = false;
+        const options = stackchan ? {
+          onPlaybackReady: () => onPlaybackReady(caption, cue),
+          onPlaybackCommitted: stageFollowingPhrase,
+        } : undefined;
+        let playback = outcome.staged
+          ? await rlcd42Gateway.playStagedPcm16(outcome.staged, options)
+          : await rlcd42Gateway.playPcm16(pcm, 16_000, options);
+        if (playback?.stagedRejected) {
+          if (!await waitForEsp32PlaybackSlot(isCurrent))
+            return { externalPlayback: "rlcd42", spoken: false, interrupted: true };
+          playback = await rlcd42Gateway.playPcm16(pcm, 16_000, options);
+        }
+        playbackFinished = true;
         if (playback?.interrupted || !isCurrent()) {
           return { externalPlayback: "rlcd42", spoken: false, interrupted: true };
         }
+        speakerDrained = true;
         played = true;
+        // Between a filler and a still-pending reply, release the speaker
+        // mute and return to waiting so a spoken follow-up can be accepted.
+        if (filler && !phrases.hasAnswer && isCurrent()) {
+          releaseOutput();
+          outputHeld = false;
+          rlcd42PlaybackCaption = "";
+          rlcd42VoiceStage = "waiting";
+          stackchanGestures.waitForReply();
+          scheduleRlcd42SceneSync(0, { force: true });
+        }
       }
-      if (!streamId) break;
-      const next = await nextIrodoriTtsChunk(streamId, ownerId);
-      if (!isCurrent()) {
-        return { externalPlayback: "rlcd42", spoken: false, interrupted: true };
-      }
-      sources = next?.audioDataUrl ? [next.audioDataUrl] : [];
-      captions = [next?.audioText || ""];
-      if (next?.done) {
-        streamId = "";
-        rlcd42SpeechStream = null;
-      }
+      outcome = await (stagedNext || prefetched || nextAudio());
     }
+    if (!isCurrent()) return { externalPlayback: "rlcd42", spoken: false, interrupted: true };
     diagnosticLog?.write("info", "rlcd42-speech-played", {
       characterId: activeCharacter().id,
       provider: characterTtsSettings().provider,
-      textLength: spokenText.length,
+      textLength,
     });
     return { externalPlayback: "rlcd42", spoken: played, interrupted: false };
   } finally {
-    if (outputHeld) esp32SpeechOutput(false);
+    closed = true;
+    phrases?.cancel();
+    if (outputHeld) releaseOutput();
     if (streamId) cancelIrodoriTtsStream(streamId, ownerId);
+    void audio.return().catch(() => {});
     if (generation === rlcd42SpeechGeneration) {
+      if (phrases) speechCpp.cancelOwner(ownerId);
+      if (stackchanProfile(rlcd42Profile())) stackchanGestures.reset();
       rlcd42SpeechStream = null;
+      rlcd42SpeechPhrases = null;
       rlcd42SpeechActive = false;
       if (rlcd42PlaybackCaption) rlcd42LastDisplayText = rlcd42PlaybackCaption;
       rlcd42PlaybackCaption = "";
@@ -3808,6 +4195,39 @@ async function playRlcd42Speech(text, ownerId = RLCD42_TTS_OWNER_ID) {
   }
 }
 
+function cancelStackchanLiveReplyWait() {
+  const turn = stackchanLiveReplyWait;
+  stackchanLiveReplyWait = null;
+  clearTimeout(turn?.timer);
+  return turn;
+}
+
+function scheduleStackchanLiveReplyDeadline(turn, waitMs) {
+  clearTimeout(turn.timer);
+  turn.timer = setTimeout(() => {
+    if (stackchanLiveReplyWait !== turn) return;
+    cancelStackchanLiveReplyWait();
+    if (turn.capture.generation !== atomEchoTurnGeneration || atomEchoCapture) return;
+    stackchanLiveMotionInput.cancel();
+    stackchanGestures.reset();
+    rlcd42VoiceStage = "";
+    rlcd42LastDisplayText = rlcd42LiveCaption || turn.motionAnswer ||
+      mainText("もう一度話しかけてね。", "Please try speaking again.");
+    rlcd42LastSceneSignature = "";
+    sendAtomEchoLiveCommand({ type: "interrupt" });
+    void rlcd42LiveAudioRoute?.interrupt().catch(() => {});
+    turn.gateway?.setDeviceState("idle").catch(() => {});
+    atomEchoLiveIdleTimer?.touch();
+    scheduleRlcd42SceneSync(0, { force: true });
+    scheduleRlcd42CaptionExpiry();
+    diagnosticLog?.write("warn", "stackchan-live-input-settled-without-reply", {
+      recognized: turn.recognized, motionCompleted: Boolean(turn.motionAnswer),
+      elapsedMs: Date.now() - turn.endedAt,
+    });
+  }, waitMs);
+  turn.timer.unref?.();
+}
+
 async function esp32PttEnd(deviceKind = "atom-echo") {
   const capture = atomEchoCapture;
   if (capture?.deviceKind && capture.deviceKind !== deviceKind) return;
@@ -3815,7 +4235,21 @@ async function esp32PttEnd(deviceKind = "atom-echo") {
   if (!capture || capture.generation !== atomEchoTurnGeneration) return;
   const gateway = capture.gateway || esp32VoiceGateway(deviceKind);
   if (capture.mode === "live") {
-    await gateway?.setDeviceState("thinking");
+    if (deviceKind === "rlcd42" && stackchanProfile(rlcd42Profile())) {
+      cancelStackchanLiveReplyWait();
+      const turn = stackchanLiveReplyWait = {
+        capture, gateway, endedAt: Date.now(), recognized: Boolean(capture.heardTranscript),
+      };
+      rlcd42VoiceStage = "waiting";
+      rlcd42LastSceneSignature = "";
+      scheduleRlcd42SceneSync(0, { force: true });
+      scheduleStackchanLiveReplyDeadline(turn, atomEchoLiveStatus.state === "live" ? 12_000 : 27_000);
+      stackchanLiveMotionInput.end();
+    } else if (deviceKind === "rlcd42") {
+      rlcd42VoiceStage = "";
+    }
+    await setEsp32VoiceState(deviceKind, gateway, "thinking");
+    if (deviceKind === "rlcd42" && stackchanProfile(rlcd42Profile())) stackchanGestures.waitForReply();
     atomEchoLiveIdleTimer?.touch();
     diagnosticLog?.write("info", "esp32-live-ptt-end", { deviceKind, samples: capture.samples });
     return;
@@ -3827,9 +4261,35 @@ async function esp32PttEnd(deviceKind = "atom-echo") {
   }
   let speechRecognized = false;
   let replyReceived = false;
+  let streamedPlayback = null;
+  const deviceSpeech = deviceKind === "rlcd42" && rlcd42SpeakerSelected();
+  const stackchan = deviceKind === "rlcd42" && stackchanProfile(rlcd42Profile());
+  const phrases = deviceSpeech ? new StreamingReplyPhrases({ openingClause: stackchan }) : null;
+  const startPlayback = () => {
+    streamedPlayback ??= playRlcd42Speech("", RLCD42_TTS_OWNER_ID, {
+      phrases, expectedReplyGeneration: capture.replyGeneration,
+    }).then(result => ({ result }), error => ({ error }));
+  };
+  const currentReply = () => capture.replyGeneration === atomEchoReplyGeneration && rlcd42SpeakerSelected();
+  const onReplyText = phrases && ((text, { final = false } = {}) => {
+    if (!currentReply()) return;
+    if (final) {
+      if (phrases.finish(text)) startPlayback();
+    } else {
+      const firstAnswerPhrase = !phrases.hasAnswer;
+      if (!phrases.push(text)) return;
+      if (firstAnswerPhrase) diagnosticLog?.write("info", "rlcd42-reply-speech-queued-before-completion");
+      startPlayback();
+    }
+  });
+  const onDeviceFiller = phrases && stackchan ? (text => {
+    if (!currentReply() || atomEchoCapture || atomEchoRecognizingCapture || !phrases.offerFiller(text)) return false;
+    startPlayback();
+    return true;
+  }) : null;
   atomEchoRecognizingCapture = capture;
   try {
-    await gateway?.setDeviceState("thinking");
+    await setEsp32VoiceState(deviceKind, gateway, "thinking");
     const transcription = await finishStreamingSpeechSession(capture.sessionId);
     if (capture.generation !== atomEchoTurnGeneration) return;
     const message = String(transcription?.text || "").trim().slice(0, 12_000);
@@ -3850,6 +4310,7 @@ async function esp32PttEnd(deviceKind = "atom-echo") {
       return;
     }
     speechRecognized = true;
+    if (deviceKind === "rlcd42" && stackchanProfile(rlcd42Profile())) stackchanGestures.waitForReply();
     diagnosticLog?.write("info", "esp32-transcribed", {
       deviceKind,
       length: message.length,
@@ -3871,7 +4332,8 @@ async function esp32PttEnd(deviceKind = "atom-echo") {
     }
     const result = await handleMascotConversation(
       message,
-      atomEchoStandardDeliveryOptions(capture.submitRoute),
+      { ...atomEchoStandardDeliveryOptions(capture.submitRoute), onReplyText, onDeviceFiller,
+        stackchanVoice: stackchan },
     );
     replyReceived = true;
     if (capture.replyGeneration !== atomEchoReplyGeneration) return;
@@ -3879,7 +4341,7 @@ async function esp32PttEnd(deviceKind = "atom-echo") {
       // The active Work/Chat turn remains the only answer owner. Keep the LED in
       // its working state; the original ATOM turn will play the final response.
       if (deviceKind === "rlcd42") rlcd42VoiceStage = "";
-      await gateway?.setDeviceState("thinking");
+      await setEsp32VoiceState(deviceKind, gateway, "thinking");
       scheduleRlcd42SceneSync(0, { force: true });
       diagnosticLog?.write("info", "esp32-follow-up-accepted", { deviceKind, mode: result.mode || "steer" });
       return;
@@ -3891,11 +4353,15 @@ async function esp32PttEnd(deviceKind = "atom-echo") {
       rlcd42LastSceneSignature = "";
       scheduleRlcd42SceneSync(0, { force: true });
     }
-    if (speech) {
+    if ((speech && (deviceKind !== "rlcd42" || rlcd42SpeakerSelected())) || streamedPlayback) {
       if (deviceKind === "rlcd42") {
-        if (!atomEchoCapture && !atomEchoRecognizingCapture) rlcd42VoiceStage = "playing";
-        scheduleRlcd42SceneSync(0, { force: true });
-        await playRlcd42Speech(speech);
+        if (streamedPlayback) {
+          phrases.finish(speech);
+          const outcome = await streamedPlayback;
+          if (outcome.error) throw outcome.error;
+        } else {
+          await playRlcd42Speech(speech);
+        }
         if (capture.replyGeneration === atomEchoReplyGeneration && !atomEchoCapture && !atomEchoRecognizingCapture) {
           rlcd42VoiceStage = "";
           scheduleRlcd42SceneSync(0, { force: true });
@@ -3908,6 +4374,8 @@ async function esp32PttEnd(deviceKind = "atom-echo") {
       scheduleRlcd42SceneSync(0, { force: true });
     }
   } catch (error) {
+    phrases?.cancel();
+    if (rlcd42SpeechPhrases === phrases && streamedPlayback) await stopRlcd42Speech().catch(() => {});
     streamingSpeechRecognition.cancel(capture.sessionId);
     // Cancelled or replaced recognition must not overwrite a newer capture's
     // state (nor bubble up through the transport's global error callback).
@@ -3924,6 +4392,7 @@ async function esp32PttEnd(deviceKind = "atom-echo") {
     }
     throw error;
   } finally {
+    phrases?.cancel();
     if (atomEchoRecognizingCapture === capture) atomEchoRecognizingCapture = null;
   }
 }
@@ -3945,6 +4414,10 @@ function scheduleRlcd42VoiceRecovery(capture, gateway, stage) {
 }
 
 function invalidateEsp32SpeechInput() {
+  if (cancelStackchanLiveReplyWait()) {
+    stackchanLiveMotionInput.cancel();
+    if (rlcd42VoiceStage === "waiting") rlcd42VoiceStage = "";
+  }
   if (typeof esp32InputGate === "function") {
     for (const gate of esp32InputGate.instances?.values() || []) gate.cancel();
   }
@@ -3958,6 +4431,10 @@ function invalidateEsp32SpeechInput() {
 }
 
 async function esp32Interrupt(deviceKind = "atom-echo") {
+  if (deviceKind === "rlcd42") {
+    stackchanLiveMotionInput.cancel();
+    cancelStackchanLiveReplyWait();
+  }
   if (deviceKind === "rlcd42") syncRlcd42LiveCaption(deviceKind, { phase: "interrupted" });
   invalidateEsp32SpeechInput();
   esp32LiveAudioRoute(activeRealtimeTarget || deviceKind)?.interrupt().catch(() => {});
@@ -4422,6 +4899,8 @@ function publicAppState() {
     canGenerateCharacters: preferences.data.backend === "codex",
     sherpaModel: embeddedSherpaOnnx?.status() || { installed: false, downloading: false, progress: null },
     streamingSpeechModel: streamingSpeechRecognition?.status() || { installed: false, downloading: false, progress: null, models: [] },
+    haru: haruServer?.status(),
+    speechEnhancement: speechEnhancement?.status() || { installed: false, downloading: false },
     piperPlus: {
       ...piperPlusStatus(activePiperPlusOptions()),
       sampleModel: embeddedTtsModels?.status("piper-plus") || null,
@@ -6072,6 +6551,102 @@ function artifactPreviewBoundsNearMascot() {
   return { x: Math.round(x), y: Math.round(y), width: Math.round(width), height: Math.round(height) };
 }
 
+async function showHaruWindow(useBeatrice) {
+  if (haruWindow && !haruWindow.isDestroyed()) {
+    if (Boolean(haruVoiceProxy) !== useBeatrice) {
+      throw new Error(mainText("声を切り替えるにはHaruの会話画面を閉じてください。", "Close the Haru window to switch voices."));
+    }
+    haruWindow.show();
+    return;
+  }
+  const character = activeCharacter();
+  const beatrice = useBeatrice ? activeBeatriceStatus(character.id) : null;
+  if (beatrice && !beatrice.ready) {
+    throw new Error(mainText("Beatrice 2の本体とモデルを設定してください。", "Set up the Beatrice 2 runtime and model."));
+  }
+  const speechOrigin = await haruServer.start({
+    language: interfaceLanguage(),
+    name: character.name,
+    persona: character.personality,
+  });
+  if (beatrice) {
+    const { startHaruVoiceProxy } = require("./lib/haru-beatrice.cjs");
+    const options = beatriceHostOptions(beatrice, characterTtsSettings(character.id));
+    haruVoiceProxy = await startHaruVoiceProxy(speechOrigin,
+      callbacks => new BeatriceHostClient({ ...options, ...callbacks }),
+      mainText(
+        "Beatrice 2で声を変換できませんでした。モデルの設定を確認するか、Haruの元の声を選んでください。",
+        "Beatrice 2 could not convert the voice. Check the model settings or choose Haru's original voice.",
+      ));
+  }
+  const origin = haruVoiceProxy?.origin || speechOrigin;
+  const partition = session.fromPartition("haru-local");
+  let microphoneAllowed = false;
+  const matchesOrigin = url => url === origin || url?.startsWith(origin + "/");
+  const matchesAudio = (contents, requestingOrigin, media) =>
+    Boolean(haruWindow && !haruWindow.isDestroyed() && contents === haruWindow.webContents
+      && matchesOrigin(contents.getURL()) && matchesOrigin(requestingOrigin) && media === "audio");
+  partition.setPermissionCheckHandler((contents, permission, origin, details) =>
+    microphoneAllowed && permission === "media" && matchesAudio(contents, origin, details.mediaType));
+  partition.setPermissionRequestHandler((contents, permission, callback, details) => {
+    if (permission !== "media" || !details.isMainFrame || details.mediaTypes?.length !== 1
+      || !matchesAudio(contents, details.requestingUrl, details.mediaTypes[0])) return callback(false);
+    if (microphoneAllowed) return callback(true);
+    const window = haruWindow;
+    void dialog.showMessageBox(window, {
+      type: "question",
+      message: mainText("Haru 4Bの会話でマイクを使いますか？", "Allow Haru 4B to use the microphone?"),
+      detail: mainText("音声はこのPC上で処理されます。", "Audio is processed on this PC."),
+      buttons: [mainText("許可", "Allow"), mainText("キャンセル", "Cancel")],
+      defaultId: 0,
+      cancelId: 1,
+    }).then(({ response }) => {
+      microphoneAllowed = response === 0 && haruWindow === window;
+      callback(microphoneAllowed);
+    }, () => callback(false));
+  });
+  const socketOrigin = origin.replace("http:", "ws:");
+  partition.webRequest.onBeforeRequest((details, callback) => {
+    const allowed = matchesOrigin(details.url) || details.url.startsWith(socketOrigin + "/")
+      || details.url.startsWith("blob:" + origin + "/");
+    callback({ cancel: !allowed });
+  });
+  const window = new BrowserWindow({
+    width: 980, height: 800, show: false,
+    title: useBeatrice ? "Haru 4B · Beatrice 2 · CharaDock" : "Haru 4B · CharaDock",
+    parent: controlWindow,
+    webPreferences: { session: partition, nodeIntegration: false, contextIsolation: true, sandbox: true },
+  });
+  haruWindow = window;
+  window.setMenuBarVisibility(false);
+  window.on("page-title-updated", event => event.preventDefault());
+  window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+  window.webContents.on("will-navigate", (event, url) => { if (!matchesOrigin(url)) event.preventDefault(); });
+  window.webContents.on("will-redirect", (event, url) => { if (!matchesOrigin(url)) event.preventDefault(); });
+  window.once("closed", () => {
+    haruWindow = null;
+    haruVoiceProxy?.stop();
+    haruVoiceProxy = null;
+    partition.webRequest.onBeforeRequest(null);
+    partition.setPermissionCheckHandler(null);
+    partition.setPermissionRequestHandler(null);
+    haruServer.stop();
+  });
+  window.webContents.on("render-process-gone", () => window.destroy());
+  try {
+    await window.loadURL(origin);
+    const tabOpened = await window.webContents.executeJavaScript(
+      "Boolean(document.querySelector('#tab-talk') && (document.querySelector('#tab-talk').click(), true))",
+    );
+    if (!tabOpened) throw new Error("The speech.cpp Talk page is unavailable.");
+    window.show();
+  } catch (error) {
+    if (!window.isDestroyed()) window.destroy();
+    haruServer.stop();
+    throw error;
+  }
+}
+
 function secureWindow(window, allowedPrefix) {
   secureWindowNavigation(window.webContents, {
     allowedPrefix,
@@ -7204,6 +7779,7 @@ async function runSmokeTest() {
     preferences.patch({ interactionMode: "chat" });
     broadcastAppState();
     const continuationEditorReady = await controlWindow.webContents.executeJavaScript(`(async () => {
+      document.querySelector('.settings-subnav [data-page="work"]').click();
       await window.mascotDesktop.setContinuationStartupSpeech(true);
       const saved = await window.mascotDesktop.saveContinuationSummary({
         goal: 'ニュース検索の当日性を改善する',
@@ -7217,6 +7793,7 @@ async function runSmokeTest() {
       section.scrollIntoView({ block: 'center' });
       await new Promise((resolve) => setTimeout(resolve, 120));
       return Boolean(
+        section.getClientRects().length > 0 &&
         saved.continuation?.summary?.nextStep === '判定処理を実装する' &&
         document.querySelector('#continuationNextStepInput').value === '判定処理を実装する' &&
         saved.continuation?.startupSpeechEnabled !== false &&
@@ -7279,8 +7856,13 @@ async function runSmokeTest() {
     const keys = ['avatarSize', 'rangeLeft', 'rangeRight', 'rangeUp', 'rangeDown', 'followSpeed', 'breathStrength', 'rollStrength', 'pyokoStrength', 'hairSpring', 'hairWarp'];
     const ready = keys.every((key) => document.querySelector('#' + key + 'Input')?.value && document.querySelector('#' + key + 'Output')?.textContent) &&
       document.querySelector('#purupuruImportButton') && document.querySelector('#purupuruImportInput')?.accept.includes('.purupuru');
-    document.querySelector('.profile-editor').scrollIntoView({ block: 'start' });
-    return ready;
+    const search = document.querySelector('#settingsSearchInput');
+    search.focus();
+    search.value = '顔が向く範囲';
+    search.dispatchEvent(new Event('input', { bubbles: true }));
+    search.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    return ready && document.querySelector('[data-page-panel="desktop"]').classList.contains('is-active') &&
+      document.querySelector('#faceMotionSettings').open && document.querySelector('#rangeLeftInput').getClientRects().length > 0;
   })()`);
   if (!motionControlsReady) throw new Error("character motion controls check failed");
   const previewRangeLeft = Math.min(100, Math.max(0, Number(activeCharacter().motion.rangeLeft) + 1));
@@ -7339,7 +7921,7 @@ async function runSmokeTest() {
     const work = document.querySelector('#codexWorkModelInput');
     return chat?.tagName === 'SELECT' && work?.tagName === 'SELECT' &&
       chat.options[0]?.value === '' && work.options[0]?.value === '' &&
-      [chat, work].every(select => ['gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna'].every(id =>
+      [chat, work].every(select => ['gpt-6-astra', 'gpt-6-sol', 'gpt-6.1-terra', 'gpt-6-luna'].every(id =>
         [...select.options].some(option => option.value === id)));
   })()`);
   if (!codexModelPickersReady) throw new Error("Codex model dropdown check failed");
@@ -7403,7 +7985,7 @@ async function runSmokeTest() {
   if (!supportPageReady) throw new Error("support diagnostics page check failed");
   fs.writeFileSync(path.join(outputDir, "control-support.png"), (await controlWindow.capturePage()).toPNG());
   const sherpaSettingsReady = await controlWindow.webContents.executeJavaScript(`(() => {
-    document.querySelector('[data-page="voice"]').click();
+    document.querySelector('.settings-subnav [data-page="voice-input"]').click();
     const provider = document.querySelector('#speechInputProviderSelect');
     provider.value = 'sherpa-onnx';
     const activation = document.querySelector('#voiceActivationSettings');
@@ -7435,7 +8017,8 @@ async function runSmokeTest() {
   await new Promise((resolve) => setTimeout(resolve, 120));
   fs.writeFileSync(path.join(outputDir, "control-desktop-streaming-speech.png"), (await controlWindow.capturePage()).toPNG());
   const characterVoicePageOpened = await controlWindow.webContents.executeJavaScript(`(async () => {
-    document.querySelector('[data-page="voice"]').click();
+    document.querySelector('.settings-subnav [data-page="voice"]').click();
+    document.querySelector('#standardVoiceDetails').open = true;
     await new Promise((resolve) => setTimeout(resolve, 80));
     return document.querySelector('#characterVoiceCard')?.closest('[data-page-panel="voice"]')?.classList.contains('is-active');
   })()`);
@@ -7525,6 +8108,7 @@ async function runSmokeTest() {
   const previousMouseFollow = Boolean(preferences.data.mouseFollow);
   let settingsReloaded = waitForNextPageLoad(controlWindow);
   await controlWindow.webContents.executeJavaScript(`(() => {
+    document.querySelector('.nav-tab[data-page="desktop"]').click();
     const toggle = document.querySelector('#mouseFollowToggle');
     toggle.checked = ${JSON.stringify(!previousMouseFollow)};
     toggle.dispatchEvent(new Event('change', { bubbles: true }));
@@ -7535,8 +8119,8 @@ async function runSmokeTest() {
   if (mascotWindow.isAlwaysOnTop()) throw new Error("mouse-follow setting caused mascot to cover settings");
   await new Promise((resolve) => setTimeout(resolve, 250));
   await capturePaintedWindow(controlWindow, "mouse-follow toggled control window");
-  const characterPageRestored = await controlWindow.webContents.executeJavaScript("document.querySelector('[data-page-panel=\"character\"]')?.classList.contains('is-active')");
-  if (!characterPageRestored) throw new Error("settings reload did not restore the character page");
+  const desktopPageRestored = await controlWindow.webContents.executeJavaScript("document.querySelector('[data-page-panel=\"desktop\"]')?.classList.contains('is-active')");
+  if (!desktopPageRestored) throw new Error("settings reload did not restore Display and Controls");
   settingsReloaded = waitForNextPageLoad(controlWindow);
   await controlWindow.webContents.executeJavaScript(`(() => {
     const toggle = document.querySelector('#mouseFollowToggle');
@@ -7649,12 +8233,12 @@ async function runSmokeTest() {
       broadcastAppState();
       await new Promise((resolve) => setTimeout(resolve, 220));
       const characterWorkspaceVisible = await controlWindow.webContents.executeJavaScript(`(async () => {
-        document.querySelector('[data-page="character"]').click();
+        document.querySelector('.settings-subnav [data-page="work"]').click();
         const section = document.querySelector('#characterWorkspaceTitle').closest('.character-workspace');
         section.scrollIntoView({ block: 'center' });
         await new Promise((resolve) => setTimeout(resolve, 220));
         const text = section.textContent;
-        return text.includes('キャラクターホーム') && text.includes(${JSON.stringify(path.basename(previewWorkspace))}) &&
+        return section.getClientRects().length > 0 && text.includes('キャラクターホーム') && text.includes(${JSON.stringify(path.basename(previewWorkspace))}) &&
           section.querySelectorAll('.character-project-row').length >= 2;
       })()`);
       if (!characterWorkspaceVisible) throw new Error("Character Home and attached project were not visible in settings");
@@ -8620,7 +9204,22 @@ async function synthesizeSbv2Tts(text) {
   return { audioDataUrls, audioTexts, device: actualDevice };
 }
 
-function synthesizeConfiguredTts(text, ownerId = 0, { enabled = preferences.data.ttsEnabled } = {}) {
+function warmStackchanStandardVoice() {
+  if (quitting || atomEchoUsesRealtime() || !rlcd42SpeakerSelected()) return;
+  const provider = characterTtsSettings().provider;
+  if (provider === "sbv2-jp-extra") {
+    const model = activeSbv2Model();
+    if (model && sbv2ModelLibrary.isReady(model)) {
+      void sbv2Worker.prewarm({ modelPath: sbv2ModelLibrary.modelPath(model), device: preferences.data.sbv2Device })
+        .catch(error => diagnosticLog?.write("warn", "stackchan-voice-prewarm-failed", String(error?.message || error)));
+    }
+  } else if (provider === "speech-cpp") {
+    const options = activeSpeechCppOptions();
+    if (speechCppStatus(options).ready) void speechCpp.ensureWorker(options).catch(() => {});
+  }
+}
+
+function synthesizeConfiguredTts(text, ownerId = 0, { enabled = preferences.data.ttsEnabled, wholeSentence = false, onEngineReady } = {}) {
   const characterTts = characterTtsSettings();
   if (!enabled || !remoteTtsProviderSupported(characterTts.provider)) {
     return Promise.resolve({ audioDataUrls: [] });
@@ -8661,7 +9260,7 @@ function synthesizeConfiguredTts(text, ownerId = 0, { enabled = preferences.data
     const chunks = splitIrodoriText(spokenText).map(text => ({ text, instructions: dynamicIrodoriCaption(characterTts.irodoriCaption, text, {
       enabled: characterTts.irodoriAutoEmotion, strength: characterTts.irodoriEmotionStrength,
     }).caption }));
-    return speechCpp.start({ ownerId, chunks, ...activeSpeechCppOptions() });
+    return speechCpp.start({ ownerId, chunks, wholeSentence, onEngineReady, ...activeSpeechCppOptions() });
   }
   if (characterTts.provider === "irodori-webgpu") return synthesizeIrodoriTts(spokenText, ownerId);
   if (characterTts.provider === "kokoro") return synthesizeKokoroTts(spokenText);
@@ -9292,6 +9891,32 @@ async function startCodexRealtimeVoice(payload, target = "control") {
       return realtimeClient.appendRealtimeText(`CharaDock handled the current music command. Receipt: ${receipt}. Do not execute that command again. Acknowledge success only if ok and accepted are true; otherwise explain it could not be completed.`, "developer");
     },
   });
+  const recordStackchanMotionTranscript = (text, options) => {
+    if (target !== "rlcd42" || !stackchanProfile(rlcd42Profile()) || activeRealtimeClient !== realtimeClient) return;
+    if (String(text || "").trim()) {
+      if (stackchanLiveReplyWait) stackchanLiveReplyWait.recognized = true;
+      if (atomEchoCapture?.mode === "live" && atomEchoCapture.deviceKind === "rlcd42")
+        atomEchoCapture.heardTranscript = true;
+    }
+    stackchanLiveMotionInput.transcript(text, motion => {
+      if (activeRealtimeClient !== realtimeClient) return;
+      const generation = atomEchoTurnGeneration;
+      void executeStackchanVoiceMotion(motion).then(answer => {
+        if (activeRealtimeClient !== realtimeClient || generation !== atomEchoTurnGeneration) return;
+        const turn = stackchanLiveReplyWait;
+        if (turn && rlcd42VoiceStage === "waiting") {
+          turn.motionAnswer = answer;
+          rlcd42VoiceStage = "";
+          rlcd42LastDisplayText = answer;
+          rlcd42LastSceneSignature = "";
+          scheduleRlcd42SceneSync(0, { force: true });
+          scheduleRlcd42CaptionExpiry();
+        }
+        return realtimeClient.appendRealtimeText("StackChan operation result for the current reply: " +
+          JSON.stringify(answer) + ". Use this result in the current reply without starting another reply.", "developer");
+      }).catch(() => {});
+    }, options);
+  };
   let nativeWorkTurn = null;
   const pendingNativeConversationTurns = [];
   const nativeConversationTurnIds = new Set();
@@ -9841,12 +10466,23 @@ async function startCodexRealtimeVoice(payload, target = "control") {
       if (target === "remote" && (method.startsWith("thread/realtime/transcript/") || ["thread/realtime/started", "thread/realtime/closed", "thread/realtime/error"].includes(method))) {
         diagnosticLog?.write("info", "remote-live-event", { method, role: String(params.role || "") });
       }
+      const deviceWait = target === "rlcd42" && activeRealtimeClient === realtimeClient && stackchanLiveReplyWait;
+      const nativeTurnId = String(params.turn?.id || "");
+      if (deviceWait && nativeTurnId) {
+        if (method === "turn/started" && !deviceWait.nativeTurnId) {
+          deviceWait.nativeTurnId = nativeTurnId;
+          scheduleStackchanLiveReplyDeadline(deviceWait, Math.max(0, 90_000 - (Date.now() - deviceWait.endedAt)));
+        } else if (method === "turn/completed" && deviceWait.nativeTurnId === nativeTurnId) {
+          scheduleStackchanLiveReplyDeadline(deviceWait, Math.max(0, Math.min(12_000, 90_000 - (Date.now() - deviceWait.endedAt))));
+        }
+      }
       handleNativeWorkEvent(message);
       handleNativeChatEvent(message);
       if (method === "turn/started") jevMediaGate.bind(String(params.turnId || params.turn?.id || ""));
       if (realtimeClient.threadId && jevEnabled("jevMediaEnabled")) jevLiveGates.set(String(realtimeClient.threadId), jevMediaGate);
       if (method === "thread/realtime/transcript/delta" && params.role === "user") {
         liveInputDecisions.delta(params.delta);
+        recordStackchanMotionTranscript(params.delta);
         if (!userTranscriptStartedAt) userTranscriptStartedAt = Date.now();
         if (workMode && !voiceFollowUpListeningShown && nativeWorkTurn?.run?.status === "running" && nativeWorkTurn?.turnId) {
           voiceFollowUpListeningShown = true;
@@ -9894,12 +10530,13 @@ async function startCodexRealtimeVoice(payload, target = "control") {
           }
         }
         assistantTranscript.text += delta;
-        const expressionCue = jevEnabled("jevExpressionEnabled")
+        const stackchanOutput = target === "rlcd42" && stackchanProfile(rlcd42Profile());
+        const expressionCue = (stackchanOutput || jevEnabled("jevExpressionEnabled"))
           ? require("./lib/jev-transcript-cue.cjs").nextTranscriptCue(assistantTranscript, assistantTranscript.text) : null;
         if (expressionCue) {
           assistantTranscript.cueRequested = true;
           liveInputDecisions.assistantCue();
-          requestJevExpression(expressionCue);
+          requestLiveExpressionCue(expressionCue, target, { later: assistantTranscript.cueCount > 1 });
         }
         remoteBusy = true;
         remoteLastDisplayText = remotePublicText(workMode ? latestWorkDisplayText(assistantTranscript.text) : assistantTranscript.text);
@@ -9943,13 +10580,15 @@ async function startCodexRealtimeVoice(payload, target = "control") {
           // Realtime playback owns the mouth through its measured audio
           // envelope. Keep the semantic reaction, but never let a transcript
           // event pin the mouth open or suppress normal blinking.
-          if (jevEnabled("jevExpressionEnabled")) {
+          const jevExpressionEnabled = jevEnabled("jevExpressionEnabled");
+          if (jevExpressionEnabled || (target === "rlcd42" && stackchanProfile(rlcd42Profile()))) {
             const finalCue = require("./lib/jev-transcript-cue.cjs").nextTranscriptCue(assistantTranscript, assistantTranscript.text, { final: true });
             if (finalCue) {
               liveInputDecisions.assistantCue();
-              requestJevExpression(finalCue);
+              requestLiveExpressionCue(finalCue, target, { later: assistantTranscript.cueCount > 1 });
             }
-          } else {
+          }
+          if (!jevExpressionEnabled) {
             localServer.pushInput({ ...currentCursorInput(), ...speechExpression(assistantTranscript.text, { characterId: activeCharacter().id }) });
           }
           remoteLastDisplayText = remotePublicText(workMode ? latestWorkDisplayText(assistantTranscript.text) : assistantTranscript.text);
@@ -10002,6 +10641,7 @@ async function startCodexRealtimeVoice(payload, target = "control") {
       }
       if (method === "thread/realtime/transcript/done" && params.role === "user") {
         const request = String(params.text || "").trim();
+        recordStackchanMotionTranscript(request, { final: true });
         if (!liveInputDecisions.finish(request)) return;
         if (!assistantTranscript.active) assistantTranscript.text = "";
         if (!jevEnabled("jevExpressionEnabled")) {
@@ -10036,6 +10676,7 @@ async function startCodexRealtimeVoice(payload, target = "control") {
       }
       if (["thread/realtime/error", "thread/realtime/closed"].includes(method)) {
         liveInputDecisions.close();
+        if (target === "rlcd42" && activeRealtimeClient === realtimeClient) stackchanLiveMotionInput.cancel();
         if (jevLiveGates.get(String(realtimeClient.threadId)) === jevMediaGate) jevLiveGates.delete(String(realtimeClient.threadId));
         const terminalTurnPayload = settleStoppedRealtimeTurn(realtimeClient, {
           errorMessage: method.endsWith("error") ? String(forwarded?.params?.message || "") : "",
@@ -10306,6 +10947,22 @@ function deliverBeatriceError(error) {
   else if (owner && !owner.isDestroyed()) owner.send("beatrice:error", message);
 }
 
+function beatriceHostOptions(status, settings) {
+  return {
+    executablePath: beatriceHostPath(),
+    vstPath: status.vstPath,
+    modelPath: status.modelPath,
+    voiceId: status.selectedVoiceId,
+    pitchShift: settings.beatricePitchShift,
+    formantShift: settings.beatriceFormantShift,
+    inputGain: settings.beatriceInputGain,
+    outputGain: settings.beatriceOutputGain,
+    intonation: settings.beatriceIntonation,
+    pitchCorrection: settings.beatricePitchCorrection,
+    pitchCorrectionType: settings.beatricePitchCorrectionType,
+  };
+}
+
 async function startBeatriceHost(owner) {
   stopBeatriceHost();
   const generation = beatriceHostGeneration;
@@ -10319,17 +10976,7 @@ async function startBeatriceHost(owner) {
   beatriceAudioOwner = owner;
   beatriceAudioStats = { inputFrames: 0, outputFrames: 0, inputPeak: 0, outputPeak: 0, flowLogged: false };
   const client = new BeatriceHostClient({
-    executablePath: beatriceHostPath(),
-    vstPath: status.vstPath,
-    modelPath: status.modelPath,
-    voiceId: status.selectedVoiceId,
-    pitchShift: settings.beatricePitchShift,
-    formantShift: settings.beatriceFormantShift,
-    inputGain: settings.beatriceInputGain,
-    outputGain: settings.beatriceOutputGain,
-    intonation: settings.beatriceIntonation,
-    pitchCorrection: settings.beatricePitchCorrection,
-    pitchCorrectionType: settings.beatricePitchCorrectionType,
+    ...beatriceHostOptions(status, settings),
     onAudio: (audio) => {
       if (!beatriceAudioOwner || generation !== beatriceHostGeneration) return;
       const samples = new Float32Array(audio);
@@ -10474,6 +11121,14 @@ async function removeBeatriceModel(modelId) {
   return broadcastAppState();
 }
 
+async function transcribeLocalSpeech(payload = {}) {
+  if (!preferences.data.speechEnhancementEnabled) return embeddedSherpaOnnx.transcribe(payload);
+  const input = payload.samples instanceof Float32Array ? payload.samples : new Float32Array(payload.samples || []);
+  const samples = resampleLinear(input, payload.sampleRate);
+  const enhanced = await speechEnhancement.enhance({ samples, sampleRate: 16000 });
+  return embeddedSherpaOnnx.transcribe(enhanced);
+}
+
 function rendererStreamingSpeechSessionId(event, requestedId) {
   const id = String(requestedId || "").trim().slice(0, 120);
   if (!id) throw new Error("音声認識セッションIDがありません。");
@@ -10536,6 +11191,7 @@ function debugStreamingSpeech(event, detail = {}) {
 async function startStreamingSpeechSession(sessionId, modelId) {
   const startedAt = Date.now();
   try {
+    await speechEnhancement.prepare();
     const result = await streamingSpeechRecognition.start(sessionId, modelId);
     debugStreamingSpeech("ready", { modelId: result.modelId, elapsedMs: Date.now() - startedAt });
     return result;
@@ -10834,7 +11490,7 @@ function registerIpc() {
   });
   ipcMain.handle("mascotInline:transcribeSherpa", async (event, payload) => {
     assertTrustedSender(event, "mascot");
-    return embeddedSherpaOnnx.transcribe(payload);
+    return transcribeLocalSpeech(payload);
   });
   ipcMain.handle("mascotInline:streamingSpeechStart", async (event, payload = {}) => {
     assertTrustedSender(event, "mascot");
@@ -11037,6 +11693,16 @@ function registerIpc() {
     await syncRlcd42Presentation({ includePortrait: true });
     return broadcastAppState();
   });
+  ipcMain.handle("stackchan:cameraPreview", async (event) => {
+    assertTrustedSender(event);
+    const gateway = rlcd42Gateway?.activeGateway();
+    const profile = rlcd42Profile();
+    if (profile.cameraEnabled === false || stackchanPrivacyMuted)
+      throw new Error(mainText("カメラはオフです。", "The camera is off."));
+    if (!stackchanProfile(profile) || !gateway?.status().capabilities?.camera?.localPreview)
+      throw new Error(mainText("カメラプレビュー対応のStackChanを接続してください。", "Connect a StackChan with camera preview support."));
+    await gateway.startCameraPreview();
+  });
   ipcMain.handle("rlcd42:testSpeaker", async (event) => {
     assertTrustedSender(event);
     await playRlcd42Speech(mainText("接続できたよ。これからよろしくね。", "We're connected. Nice to meet you."));
@@ -11095,12 +11761,14 @@ function registerIpc() {
   ipcMain.on("atomEcho:liveOutputStart", (event) => {
     assertTrustedSender(event, "atom-echo-live");
     if (event.sender !== atomEchoLiveWindow?.webContents || !isEsp32VoiceTarget(activeRealtimeTarget)) return;
+    if (activeRealtimeTarget === "rlcd42" && (stackchanPrivacyMuted || rlcd42Profile().speakerEnabled === false)) return;
     atomEchoLiveIdleTimer?.cancel();
     esp32LiveAudioRoute()?.start();
   });
   ipcMain.on("atomEcho:liveOutputChunk", (event, payload = {}) => {
     assertTrustedSender(event, "atom-echo-live");
     if (event.sender !== atomEchoLiveWindow?.webContents || !isEsp32VoiceTarget(activeRealtimeTarget)) return;
+    if (activeRealtimeTarget === "rlcd42" && (stackchanPrivacyMuted || rlcd42Profile().speakerEnabled === false)) return;
     const data = payload.audio instanceof ArrayBuffer
       ? payload.audio
       : ArrayBuffer.isView(payload.audio)
@@ -11111,13 +11779,30 @@ function registerIpc() {
       || sampleRate < 8_000 || sampleRate > 192_000) return;
     const samples = new Float32Array(data);
     for (const sample of samples) if (!Number.isFinite(sample) || Math.abs(sample) > 8) return;
-    esp32LiveAudioRoute()?.push(samples, sampleRate);
+    const route = esp32LiveAudioRoute();
+    const outputAccepted = route?.processor && route.push(samples, sampleRate);
+    if (outputAccepted && activeRealtimeTarget === "rlcd42") {
+      const turn = cancelStackchanLiveReplyWait();
+      if (turn) {
+        diagnosticLog?.write("info", "stackchan-live-first-source-audio", {
+          sinceInputEndMs: Date.now() - turn.endedAt,
+        });
+        if (rlcd42VoiceStage === "waiting") {
+          rlcd42VoiceStage = "";
+          scheduleRlcd42SceneSync(0, { force: true });
+        }
+      }
+    }
   });
   ipcMain.on("atomEcho:liveOutputEnd", (event) => {
     assertTrustedSender(event, "atom-echo-live");
     if (event.sender !== atomEchoLiveWindow?.webContents) return;
     const route = esp32LiveAudioRoute();
-    route?.end().then(() => {
+    const gestureGeneration = stackchanGestures.generation;
+    route?.end().then((result) => {
+      if (result?.interrupted) return;
+      if (activeRealtimeTarget === "rlcd42" && gestureGeneration === stackchanGestures.generation)
+        stackchanGestures.reset();
       if (isEsp32VoiceTarget(activeRealtimeTarget)) atomEchoLiveIdleTimer?.touch();
     }).catch(() => {});
   });
@@ -11303,6 +11988,7 @@ function registerIpc() {
       styleBertVits2Speed: Math.min(2, Math.max(.5, Number(patch?.styleBertVits2Speed) || 1)),
       piperPlusSpeed: Math.min(2, Math.max(.5, Number(patch?.piperPlusSpeed) || 1)),
       ...normalizeSpeechCppSettings({ ...preferences.data, ...patch }),
+      speechEnhancementEnabled: typeof patch?.speechEnhancementEnabled === "boolean" ? patch.speechEnhancementEnabled : preferences.data.speechEnhancementEnabled,
       supertonicVoice,
       supertonicSpeed: Math.min(2, Math.max(.5, Number(patch?.supertonicSpeed) || 1)),
       supertonicSteps: Math.min(20, Math.max(2, Math.round(Number(patch?.supertonicSteps) || 8))),
@@ -11357,6 +12043,10 @@ function registerIpc() {
       });
     }
     if (allowed.speechCppModelVariant !== preferences.data.speechCppModelVariant) speechCpp.stop();
+    if (allowed.speechEnhancementEnabled !== preferences.data.speechEnhancementEnabled) {
+      streamingSpeechRecognition.close();
+      speechEnhancement.stop();
+    }
     if (allowed.codexAuthMode !== previousAuthMode) assertAuthenticationMutable();
     preferences.patch(allowed);
     if (allowed.codexAuthMode !== previousAuthMode) refreshAuthenticatedClients();
@@ -11941,6 +12631,27 @@ function registerIpc() {
     const imported = meshAvatarStore.import(result.filePaths[0], characterId);
     return selectCharacterAppearance(characterId, imported.id);
   });
+  ipcMain.handle("character:importLivliv",async(event)=>{
+    assertTrustedSender(event);const characterId=preferences.data.characterId;
+    const result=await dialog.showOpenDialog(controlWindow,{title:mainText('VRM・LivLivモデルを選択','Choose a VRM or LivLiv model'),properties:['openFile'],filters:[{name:'VRM / LivLiv',extensions:['vrm','livliv','zip','json']}]});
+    if(result.canceled||!result.filePaths[0])return publicAppState();return importLivlivModel(result.filePaths[0],characterId);
+  });
+  ipcMain.handle('character:removeVrm', (event, input) => {
+    assertTrustedSender(event);
+    return removeVrmAppearance(input);
+  });
+  ipcMain.handle('livliv:settings',(event,input)=>{assertTrustedSender(event);return patchLivlivControls(input);});
+  ipcMain.handle('livliv:command',(event,input)=>{assertTrustedSender(event);return sendLivlivCommand(input);});
+  ipcMain.handle('livliv:snapshot',async(event,input)=>{
+    assertTrustedSender(event);const characterId=preferences.data.characterId,descriptor=characterAppearance().livliv;
+    livlivControlStore.assertScope(characterId,descriptor,input);
+    if(!mascotWindow||mascotWindow.isDestroyed())throw Error('アバターを表示してください。');
+    const png=await mascotWindow.webContents.executeJavaScript('window.CharaDockLivlivSnapshot?.()');
+    if(typeof png!=='string'||!png.startsWith('data:image/png;base64,')||png.length>12000000)throw Error('画像を保存できません。');
+    const body=Buffer.from(png.slice(22),'base64');if(!body.subarray(0,8).equals(Buffer.from([137,80,78,71,13,10,26,10])))throw Error('Invalid snapshot');
+    const result=await dialog.showSaveDialog(controlWindow,{defaultPath:'charadock-avatar.png',filters:[{name:'PNG',extensions:['png']}]});
+    if(!result.canceled&&result.filePath)fs.writeFileSync(result.filePath,body);return {saved:!result.canceled};
+  });
   ipcMain.handle("character:setAppearance", (event, selection) => {
     assertTrustedSender(event); return selectCharacterAppearance(preferences.data.characterId, String(selection || ""));
   });
@@ -12127,49 +12838,50 @@ function registerIpc() {
     assertTrustedSender(event);
     const character = characterById(String(payload?.id || ""));
     const profiles = { ...(preferences.data.characterProfiles || {}) };
+    const updatesIdentity = typeof payload?.name === "string" || typeof payload?.personality === "string";
+    if (!payload?.reset && !updatesIdentity && !payload?.ui && !payload?.motion) return publicAppState();
     if (payload?.reset) {
       delete profiles[character.id];
     } else {
-      const number = (value, fallback, min, max) => {
-        const parsed = Number(value);
-        return Math.max(min, Math.min(max, Number.isFinite(parsed) ? parsed : fallback));
-      };
       const previous = profiles[character.id] || {};
-      const language = interfaceLanguage();
-      const localizedProfile = {
-        ...(isBuiltInCharacter(character) ? previous.locales?.[language] || (language === "ja" && previous.director ? { director: previous.director } : {}) : {}),
-        name: String(payload?.name || character.name).trim().slice(0, 40),
-        personality: String(payload?.personality || character.personality).trim().slice(0, 2000),
-      };
-      profiles[character.id] = {
-        ...previous,
-        ...(isBuiltInCharacter(character)
-          ? { locales: { ...(previous.locales || {}), [language]: localizedProfile } }
-          : localizedProfile),
-        ui: {
-          bubbleLeft: number(payload?.ui?.bubbleLeft, character.ui.bubbleLeft, 2, 70),
-          bubbleTop: number(payload?.ui?.bubbleTop, character.ui.bubbleTop, 2, 65),
-          bubbleWidth: number(payload?.ui?.bubbleWidth, character.ui.bubbleWidth, 35, 90),
-        },
-        motion: {
-          avatarSize: number(payload?.motion?.avatarSize, characterMotionDefaults(character).avatarSize, 30, 300),
-          rangeLeft: number(payload?.motion?.rangeLeft, characterMotionDefaults(character).rangeLeft, 0, 300),
-          rangeRight: number(payload?.motion?.rangeRight, characterMotionDefaults(character).rangeRight, 0, 300),
-          rangeUp: number(payload?.motion?.rangeUp, characterMotionDefaults(character).rangeUp, 0, 300),
-          rangeDown: number(payload?.motion?.rangeDown, characterMotionDefaults(character).rangeDown, 0, 300),
-          followSpeed: number(payload?.motion?.followSpeed, characterMotionDefaults(character).followSpeed, 4, 100),
-          breathStrength: number(payload?.motion?.breathStrength, characterMotionDefaults(character).breathStrength, 0, 100),
-          rollStrength: number(payload?.motion?.rollStrength, characterMotionDefaults(character).rollStrength, 0, 100),
-          pyokoStrength: number(payload?.motion?.pyokoStrength, characterMotionDefaults(character).pyokoStrength, 0, 100),
-          hairSpring: number(payload?.motion?.hairSpring, characterMotionDefaults(character).hairSpring, 0, 200),
-          hairWarp: number(payload?.motion?.hairWarp, characterMotionDefaults(character).hairWarp, 0, 100),
-        },
-      };
+      const configured = effectiveCharacter(character);
+      const next = { ...previous };
+      if (updatesIdentity) {
+        const language = interfaceLanguage();
+        const builtIn = isBuiltInCharacter(character);
+        const localizedProfile = {
+          ...(builtIn ? previous.locales?.[language] || (language === "ja" && previous.director ? { director: previous.director } : {}) : {}),
+          name: typeof payload.name === "string" ? (payload.name.trim() || character.name).slice(0, 40) : configured.name,
+          personality: typeof payload.personality === "string" ? (payload.personality.trim() || character.personality).slice(0, 2000) : configured.personality,
+        };
+        if (builtIn) next.locales = { ...previous.locales, [language]: localizedProfile };
+        else Object.assign(next, localizedProfile);
+      }
+      if (payload?.ui) {
+        const number = (key, min, max) => {
+          const parsed = Number(payload.ui[key]);
+          return payload.ui[key] != null && Number.isFinite(parsed) ? Math.max(min, Math.min(max, parsed)) : configured.ui[key];
+        };
+        next.ui = {
+          ...previous.ui,
+          bubbleLeft: number("bubbleLeft", 2, 70),
+          bubbleTop: number("bubbleTop", 2, 65),
+          bubbleWidth: number("bubbleWidth", 35, 90),
+        };
+      }
+      if (payload?.motion) next.motion = sanitizedMotion(payload.motion, configured.motion);
+      profiles[character.id] = next;
     }
     preferences.patch({ characterProfiles: profiles });
-    warmCharacterFillers(effectiveCharacter(character));
-    if (preferences.data.characterId === character.id) await setCharacter(character.id);
-    return publicAppState();
+    const configured = effectiveCharacter(character);
+    if (preferences.data.characterId !== character.id) {
+      warmCharacterFillers(configured);
+      return publicAppState();
+    }
+    if (payload.reset || updatesIdentity) return setCharacter(character.id);
+    localServer.setSnapshot(buildAvatarSnapshot(character.id));
+    mascotWindow?.webContents.send("mascot:character", configured);
+    return broadcastAppState();
   });
   ipcMain.handle("character:configureDirector", async (event, payload) => {
     assertTrustedSender(event);
@@ -12427,7 +13139,7 @@ function registerIpc() {
   });
   ipcMain.handle("audio:transcribeSherpa", async (event, payload) => {
     assertTrustedSender(event);
-    return embeddedSherpaOnnx.transcribe(payload);
+    return transcribeLocalSpeech(payload);
   });
   ipcMain.handle("audio:streamingSpeechStart", async (event, payload = {}) => {
     assertTrustedSender(event);
@@ -12467,6 +13179,55 @@ function registerIpc() {
     const status = embeddedSherpaOnnx.remove(modelId);
     broadcastAppState();
     return status;
+  });
+  ipcMain.handle("haru:download", async (event) => {
+    assertTrustedSender(event);
+    try {
+      await haruServer.download(status => controlWindow?.webContents.send("haru:progress", status));
+      return haruServer.status();
+    } finally {
+      broadcastAppState();
+    }
+  });
+  ipcMain.handle("haru:outputVoice", (event, mode) => {
+    assertTrustedSender(event);
+    return preferences.patch({ haruOutputVoice: mode }).haruOutputVoice;
+  });
+  ipcMain.handle("haru:open", async (event) => {
+    assertTrustedSender(event);
+    if (haruWindowOpening) return haruWindowOpening;
+    const alreadyOpen = Boolean(haruWindow && !haruWindow.isDestroyed());
+    haruWindowOpening = showHaruWindow(preferences.data.haruOutputVoice === "beatrice-v2").catch(error => {
+      if (!alreadyOpen) {
+        haruVoiceProxy?.stop();
+        haruVoiceProxy = null;
+        haruServer.stop();
+      }
+      throw error;
+    }).finally(() => { haruWindowOpening = null; });
+    return haruWindowOpening;
+  });
+  ipcMain.handle("haru:remove", (event) => {
+    assertTrustedSender(event);
+    if (haruWindow || haruWindowOpening) throw new Error(mainText("Haruの会話画面を閉じてから削除してください。", "Close Haru before removing the model."));
+    return haruServer.remove();
+  });
+  ipcMain.handle("speechEnhancement:modelDownload", async (event) => {
+    assertTrustedSender(event);
+    try {
+      await speechEnhancement.download((status) => {
+        if (controlWindow && !controlWindow.isDestroyed()) controlWindow.webContents.send("speechEnhancement:modelProgress", status);
+      });
+    } finally { broadcastAppState(); }
+    return speechEnhancement.status();
+  });
+  ipcMain.handle("speechEnhancement:modelRemove", (event) => {
+    assertTrustedSender(event);
+    streamingSpeechRecognition.close();
+    speechEnhancement.remove();
+    preferences.patch({ speechEnhancementEnabled: false });
+    broadcastAppState();
+    return speechEnhancement.status();
   });
   ipcMain.handle("streamingSpeech:modelDownload", async (event, modelId) => {
     assertTrustedSender(event);
@@ -13346,6 +14107,21 @@ async function resolveRemoteApproval(payload = {}) {
   }
 }
 
+async function executeStackchanVoiceMotion(motion) {
+  if (!stackchanProfile(rlcd42Profile()) || !rlcd42Gateway?.status().connected)
+    return mainText("StackChanがつながっていないよ。", "StackChan isn't connected.");
+  const gateway = rlcd42Gateway.activeGateway();
+  if (!gateway?.supportsVoiceMotion?.(motion.id))
+    return mainText("首の音声操作に対応したファームウェアに更新してね。", "Update the StackChan firmware to use voice motion.");
+  if (rlcd42Profile().motionAllowed === false)
+    return mainText("設定で首の動きをオンにしてね。", "Enable head movement in the settings first.");
+  if (gateway.status().capabilities.motion.enabled !== true)
+    await gateway.setMotionEnabled(true).catch(() => {});
+  const moved = await gateway.sendVoiceMotion?.(motion.id)?.catch(() => false);
+  diagnosticLog?.write("info", "stackchan-voice-motion", { command: motion.id, accepted: moved === true });
+  return moved ? mainText(motion.ja, motion.en) : mainText("今は首を動かせなかったよ。", "I couldn't move my head just now.");
+}
+
 async function handleMascotConversation(message, deliveryOptions = {}) {
   const text = String(message || "").trim().slice(0, 12_000);
   const hasAttachments = Array.isArray(deliveryOptions.localAttachments) && deliveryOptions.localAttachments.length > 0;
@@ -13353,6 +14129,12 @@ async function handleMascotConversation(message, deliveryOptions = {}) {
   // Attachments follow the same direct Codex route as the settings composer.
   // Do not reinterpret their accompanying text as a screen/browser permission command.
   if (hasAttachments) return sendChatMessage(text, deliveryOptions);
+  const motion = !deliveryOptions.forceWork && stackchanVoiceMotion(text, { directed: deliveryOptions.stackchanVoice });
+  if (motion) {
+    const answer = await executeStackchanVoiceMotion(motion);
+    rememberConversationTurn(text, answer);
+    return { text: answer, displayText: answer, provider: "local" };
+  }
   if (process.platform === "win32" && jevEnabled("jevMediaEnabled")
     && !deliveryOptions.localImagePath && !deliveryOptions.selectedMcpServerIds?.length
     && !deliveryOptions.selectedSkillIds?.length && !deliveryOptions.forceWork) {
@@ -13463,6 +14245,8 @@ async function sendChatMessage(message, {
   selectedMcpServerIds = [],
   remoteTtsOutput = false,
   capturedSubmitRoute = "",
+  onReplyText = null,
+  onDeviceFiller = null,
 } = {}) {
   const text = String(message || "").trim().slice(0, 12_000);
   assertConversationRole();
@@ -13609,6 +14393,7 @@ async function sendChatMessage(message, {
   let workAnnouncementsOpen = true;
   const publishWorkAnnouncement = ({ kind, text: announcement }) => {
     if (!workAnnouncementsOpen || !announcement) return;
+    if (kind === "ack") onDeviceFiller?.(announcement);
     sendStream({
       phase: "announcement",
       mode: "work",
@@ -13650,7 +14435,8 @@ async function sendChatMessage(message, {
   let thinkingFiller = null;
   const fillerObservedActions = new Set();
   if (!workMode && !realtimeOutput && preferences.data.thinkingFillerEnabled === true
-    && (streamTtsEnabled || remoteTtsEnabled) && jevEnabled("thinkingFillerEnabled") && Date.now() - lastThinkingFillerAt > 30_000) {
+    && (streamTtsEnabled || remoteTtsEnabled || onDeviceFiller) && jevEnabled("thinkingFillerEnabled")
+    && Date.now() - lastThinkingFillerAt > (onDeviceFiller ? 12_000 : 30_000)) {
     const character = activeCharacter();
     const characterId = character.id;
     const language = interfaceLanguage();
@@ -13660,8 +14446,9 @@ async function sendChatMessage(message, {
       generated: getCharacterFillerLibrary().get(characterFillerProfile(character, language)),
     });
     thinkingFiller = new PendingFiller({
+      ...(onDeviceFiller ? { retryAtMs: [3500, 6500, 9500] } : {}),
       decide: ({ waitingMs, attempt }) => decideFiller(jevClient, requestText, { previousReply, character, language, candidates,
-        waitingMs, attempt, observedActions: [...fillerObservedActions],
+        waitingMs, attempt, audioOnly: Boolean(onDeviceFiller), observedActions: [...fillerObservedActions],
         recentFillers: recentThinkingFillers.get(characterId) || [],
       }),
       observe: detail => diagnosticLog?.write("info", "chat-filler-decision", { turnId, ...detail }),
@@ -13669,6 +14456,8 @@ async function sendChatMessage(message, {
         && interfaceLanguage() === language && preferences.data.thinkingFillerEnabled === true
         && jevEnabled("thinkingFillerEnabled") && !currentRealtimeClient(),
       emit: (text) => {
+        const deviceAccepted = onDeviceFiller?.(text);
+        if (!deviceAccepted && !streamTtsEnabled && !remoteTtsEnabled) return;
         lastThinkingFillerAt = Date.now();
         recentThinkingFillers.set(characterId, [text, ...(recentThinkingFillers.get(characterId) || [])].slice(0, 3));
         sendStream({ phase: "announcement", kind: "filler", mode: "chat", text, displayText: text,
@@ -13678,14 +14467,22 @@ async function sendChatMessage(message, {
   } else if (!workMode && !realtimeOutput) {
     diagnosticLog?.write("info", "chat-filler-skipped", { reason:
       preferences.data.thinkingFillerEnabled !== true ? "disabled"
-        : !(streamTtsEnabled || remoteTtsEnabled) ? "no_audio_route"
+        : !(streamTtsEnabled || remoteTtsEnabled || onDeviceFiller) ? "no_audio_route"
           : !jevEnabled("thinkingFillerEnabled") ? "decision_unavailable" : "cooldown" });
   }
   const stopThinkingFiller = () => thinkingFiller?.stop();
+  const voiceReplyStartedAt = onReplyText ? Date.now() : null;
+  let hasVisibleReply = false;
   const onDelta = (delta, fullText) => {
     if (workMode) return;
+    onReplyText?.(fullText);
     const visibleText = cleanAssistantText(fullText, { streaming: true });
-    if (visibleText.trim()) stopThinkingFiller();
+    if (visibleText.trim() && !hasVisibleReply) {
+      hasVisibleReply = true;
+      stopThinkingFiller();
+      if (voiceReplyStartedAt !== null)
+        diagnosticLog?.write("info", "rlcd42-reply-first-delta", { elapsedMs: Date.now() - voiceReplyStartedAt });
+    }
     const speechSegments = expressiveSpeechSegments(speechSegmenter.push(fullText));
     if (!streamTtsEnabled) {
       for (const segment of speechSegments) pushMascotExpression(segment.expression);
@@ -13887,6 +14684,7 @@ async function sendChatMessage(message, {
         localImagePath,
         localImagePaths: localAttachments.filter((item) => item.image).map((item) => item.path),
         requireMcpReady,
+        waitForOptionalMcp: !onDeviceFiller,
         onEvent: (event) => {
           observeMcpAppEvent(conversationClient, event, { mode: "chat", surface: "conversation" });
           if (String(event.params?.item?.type || "") !== "webSearch") return;
@@ -13899,6 +14697,10 @@ async function sendChatMessage(message, {
       });
     }
     const steeredFollowUps = consumeActiveInteractionFollowUps(activeMessageClient);
+    stopThinkingFiller();
+    if (voiceReplyStartedAt !== null)
+      diagnosticLog?.write("info", "rlcd42-reply-text-completed", { elapsedMs: Date.now() - voiceReplyStartedAt });
+    if (!workMode) onReplyText?.(result.text, { final: true });
     result = { ...result, text: cleanAssistantText(result.text) };
     workAnnouncementsOpen = false;
     workVoiceReporter?.complete();
@@ -14230,26 +15032,202 @@ async function runRlcd42AudioVerification() {
   const status = rlcd42Gateway?.status();
   if (!status?.connected) throw new Error(status?.error || "RLCD 4.2 did not connect.");
   const profile = rlcd42Profile();
+  const stackchan = stackchanProfile(profile);
+  const gateway = rlcd42Gateway.requireGateway();
+  const transport = gateway.inner || gateway;
+  const simulateTransferLoss = process.argv.includes("--verify-stackchan-tts-recovery");
+  const verifyStaging = process.argv.includes("--verify-stackchan-tts-staging");
+  if (simulateTransferLoss && (!stackchan || status.transport !== "wifi"))
+    throw new Error("StackChan recovery verification requires its Wi-Fi transport.");
+  if (verifyStaging && (simulateTransferLoss || !stackchan || !status.capabilities?.audio?.stagedPlaybackSamples))
+    throw new Error("StackChan staging verification requires its staged playback firmware.");
+  let begins = 0;
+  let commits = 0;
+  let staged = 0;
+  let lostAckSequence = null;
+  let resentBlocks = 0;
+  let audibleStarts = 0;
+  const writeFrames = transport.writeFramesWithAck;
+  const handleFrame = transport.handleFrame;
+  if (simulateTransferLoss || verifyStaging) {
+    transport.writeFramesWithAck = async function (frames, options) {
+      const type = frames[0]?.type;
+      if (type === FRAME_TYPES.AUDIO_BEGIN) begins += 1;
+      if (type === FRAME_TYPES.AUDIO_CHUNK && frames[0].sequence === lostAckSequence) resentBlocks += 1;
+      const result = await writeFrames.call(this, frames, options);
+      if (type === FRAME_TYPES.AUDIO_END || type === FRAME_TYPES.AUDIO_STAGE_PLAY) commits += 1;
+      if (type === FRAME_TYPES.AUDIO_STAGE_PLAY) staged += 1;
+      return result;
+    };
+  }
+  if (simulateTransferLoss) {
+    transport.handleFrame = function (frame) {
+      if (frame.type === FRAME_TYPES.AUDIO_PLAYBACK_STARTED) audibleStarts += 1;
+      if (lostAckSequence === null && begins === 2 && frame.type === FRAME_TYPES.ACK && frame.payload[0] === FRAME_TYPES.AUDIO_CHUNK) {
+        // Let the device accept the block while simulating a lost host ACK.
+        lostAckSequence = frame.sequence;
+        return;
+      }
+      return handleFrame.call(this, frame);
+    };
+  }
   let result;
   try {
     await rlcd42Gateway.requireGateway().setCaptureMode(profile.captureMode, profile.vadThreshold, false);
-    result = await playRlcd42Speech(mainText(
+    if (stackchan) {
+      stackchanGestures.beginTurn();
+      stackchanGestures.waitForReply();
+    }
+    result = await playRlcd42Speech(verifyStaging ? mainText(
+      "川沿いをゆっくり歩いてきたよ。少し風が出てきたね。そろそろ家に帰ろうか。",
+      "I went for a walk by the river. The wind is picking up. Let's head home.",
+    ) : stackchan ? mainText(
+      "なるほど。春の花が咲いたら、一緒に見に行こうね。",
+      "I see. When the spring flowers bloom, let's go look at them together.",
+    ) : mainText(
     "最初の文を読んでいます。次の文に表示が変わります。これで字幕の確認は終わりです。",
     "This is the first sentence. The caption now changes to the next sentence. The caption check is complete.",
-    ));
+    ), RLCD42_TTS_OWNER_ID, { stageAudio: !simulateTransferLoss });
   } finally {
+    if (simulateTransferLoss || verifyStaging) transport.writeFramesWithAck = writeFrames;
+    if (simulateTransferLoss) transport.handleFrame = handleFrame;
     await rlcd42Gateway.requireGateway().setCaptureMode(profile.captureMode, profile.vadThreshold, profile.microphoneEnabled);
   }
+  const packetRetry = status.capabilities?.audio?.stagedPlaybackSamples > 0;
+  if (simulateTransferLoss && (lostAckSequence === null || commits !== 2 || audibleStarts !== 2 ||
+      (packetRetry ? begins !== 2 || resentBlocks !== 1 : begins !== 3)))
+    throw new Error(`StackChan recovery expected two audible sentences. Begins=${begins}, commits=${commits}, starts=${audibleStarts}, packet retries=${resentBlocks}.`);
+  if (verifyStaging && (commits !== 3 || staged !== 2))
+    throw new Error(`Expected three clauses with two staged plays, got ${commits} and ${staged}.`);
   if (!result?.spoken || result?.interrupted) throw new Error("RLCD 4.2 audio verification did not complete playback.");
+  const speaker = await readStackchanVerificationSpeaker(status, gateway);
   const verified = {
     port: status.port,
     firmware: status.device?.firmware || "",
+    transport: status.transport,
     provider: characterTtsSettings().provider,
     characterId: activeCharacter().id,
+    ...speaker,
+    ...(simulateTransferLoss ? { recoveredSecondSentence: true, commits, audibleStarts, resentBlocks } : {}),
+    ...(verifyStaging ? { commits, staged } : {}),
   };
   diagnosticLog?.write("info", "rlcd42-audio-verification-completed", verified);
   console.log(`CHARADOCK_RLCD42_AUDIO_VERIFICATION_OK ${JSON.stringify(verified)}`);
   await rlcd42Gateway.disconnect();
+}
+
+async function readStackchanVerificationSpeaker(status, gateway) {
+  if (status.capabilities?.audio?.playbackDiagnostics !== true) return {};
+  const transport = gateway.inner || gateway;
+  const { payload } = await transport.requestFrame(0x65, Buffer.alloc(0), 0x65);
+  if (payload.length !== 3) throw new Error("Invalid StackChan speaker diagnostics.");
+  const [underruns, speakerGaps, maxServiceGapMs] = payload;
+  if (underruns || speakerGaps)
+    throw new Error(`StackChan reported ${underruns} audio underruns and ${speakerGaps} speaker gaps.`);
+  return { underruns, speakerGaps, maxServiceGapMs };
+}
+
+async function runStackchanLiveVerification(wavPath) {
+  if (app.isPackaged || !stackchanProfile(rlcd42Profile()) || !atomEchoUsesRealtime())
+    throw new Error("StackChan Live verification requires the development profile with GPT-Live and StackChan enabled.");
+  const waitFor = async (condition, timeout, message) => {
+    const deadline = Date.now() + timeout;
+    while (!condition()) {
+      if (atomEchoLiveStatus.error) throw new Error(atomEchoLiveStatus.error);
+      if (Date.now() >= deadline) throw new Error(message);
+      await new Promise(resolve => setTimeout(resolve, 30));
+    }
+  };
+  const wav = decodePcmWaveDataUrl("data:audio/wav;base64," + fs.readFileSync(wavPath).toString("base64"));
+  const pcm = resamplePcm16(wav.samples, wav.sampleRate, 16_000);
+  if (pcm.length < 16_000 || pcm.length > 16_000 * 2 * 25)
+    throw new Error("Supply a speech WAV between 0.5 and 25 seconds.");
+  await waitFor(() => rlcd42Gateway.status().connected, 30_000, "StackChan did not connect.");
+  const gateway = rlcd42Gateway.requireGateway();
+  const status = rlcd42Gateway.status();
+  const transport = gateway.inner || gateway;
+  let playbackPortEpoch = null;
+  if (gateway.status().capabilities?.audio?.playbackStatus !== true)
+    throw new Error("StackChan firmware must report speaker drain status.");
+  const writeBatch = gateway.writePcm16PlaybackBatch.bind(gateway);
+  const endPlayback = gateway.endPcm16Playback.bind(gateway);
+  let acknowledgedBytes = 0;
+  let peak = 0;
+  let lastDrainAt = 0;
+  let firstAudioAt = 0;
+  let lastAudioAt = 0;
+  let lastSourceAt = 0;
+  let firstSourceAt = 0;
+  let maxAckGapMs = 0;
+  let maxBatchSize = 0;
+  const route = rlcd42LiveAudioRoute;
+  const push = route.push;
+  route.push = function(...args) {
+    firstSourceAt ||= Date.now();
+    lastSourceAt = Date.now();
+    return push.apply(this, args);
+  };
+  gateway.writePcm16PlaybackBatch = async (chunks, generation) => {
+    const portEpoch = transport.portEpoch;
+    const result = await writeBatch(chunks, generation);
+    if (!result.interrupted) {
+      playbackPortEpoch ??= portEpoch;
+      if (playbackPortEpoch !== portEpoch || portEpoch !== transport.portEpoch)
+        throw new Error("The StackChan link changed during the playback transfer.");
+      const now = Date.now();
+      firstAudioAt ||= now;
+      if (lastAudioAt) maxAckGapMs = Math.max(maxAckGapMs, now - lastAudioAt);
+      lastAudioAt = now;
+      maxBatchSize = Math.max(maxBatchSize, chunks.length);
+      for (const chunk of chunks) {
+        acknowledgedBytes += chunk.length;
+        for (let offset = 0; offset < chunk.length; offset += 2)
+          peak = Math.max(peak, Math.abs(chunk.readInt16LE(offset)));
+      }
+    }
+    return result;
+  };
+  gateway.endPcm16Playback = async generation => {
+    const result = await endPlayback(generation);
+    if (!result.interrupted) lastDrainAt = Date.now();
+    return result;
+  };
+  try {
+    ensureAtomEchoLiveSession("rlcd42");
+    await waitFor(() => atomEchoLiveStatus.state === "live", 25_000, "GPT-Live did not connect.");
+    await esp32InputStart("rlcd42", { manual: true });
+    for (let offset = 0; offset < pcm.length; offset += 640) {
+      await esp32InputGate("rlcd42").chunk(pcm.subarray(offset, offset + 640));
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
+    await esp32InputGate("rlcd42").end();
+    const releasedAt = Date.now();
+    await waitFor(() => lastDrainAt && acknowledgedBytes >= 16_000 &&
+      !rlcd42LiveAudioRoute.active() && Date.now() - lastDrainAt > 900,
+    45_000, "GPT-Live produced no completed StackChan playback.");
+    if (gateway !== rlcd42Gateway.activeGateway() || playbackPortEpoch !== transport.portEpoch)
+      throw new Error("The StackChan link changed before final playback diagnostics were read.");
+    const result = {
+      firmware: status.device?.firmware || "",
+      transport: status.transport,
+      responseMs: Math.max(0, firstAudioAt - releasedAt),
+      playbackMs: Math.round(acknowledgedBytes / 32),
+      sourceSpanMs: lastSourceAt - firstSourceAt,
+      transferSpanMs: lastAudioAt - firstAudioAt,
+      maxAckGapMs,
+      maxBatchSize,
+      peak,
+      ...await readStackchanVerificationSpeaker(status, gateway),
+    };
+    if (peak < 100 || peak >= 32767) throw new Error("Invalid StackChan audio peak: " + peak);
+    diagnosticLog?.write("info", "stackchan-live-verification-completed", result);
+    console.log("CHARADOCK_STACKCHAN_LIVE_OK " + JSON.stringify(result));
+  } finally {
+    route.push = push;
+    gateway.writePcm16PlaybackBatch = writeBatch;
+    gateway.endPcm16Playback = endPlayback;
+    await closeAtomEchoLiveAfterIdle();
+  }
 }
 
 async function boot() {
@@ -14260,6 +15238,8 @@ async function boot() {
   const projectRootIsArchive = projectRoot.toLowerCase().includes(".asar");
   codexWorkingDirectory = app.isPackaged || projectRootIsArchive ? app.getPath("documents") : projectRoot;
   preferences = new Preferences(path.join(app.getPath("userData"), "preferences.json"), safeStorage);
+  livlivAvatarStore = new LivlivAvatarStore(path.join(app.getPath("userData"), "livliv-avatars"));
+  livlivControlStore = new LivlivControlStore(path.join(app.getPath("userData"), "livliv-controls.json"));
   meshAvatarStore = new MeshAvatarStore(path.join(app.getPath("userData"), "mesh-avatars"));
   RLCD42_PROFILE_ID = preferences.data.characterDeviceType === STACKCHAN_BOARD ? "stackchan-default" : "rlcd42-default";
   ensureBuiltInSkillCreator();
@@ -14341,7 +15321,13 @@ async function boot() {
     modelId: preferences.data.sherpaModelId,
   });
   embeddedSherpaVad = new EmbeddedSherpaVad(path.join(app.getPath("userData"), "sherpa-onnx-models"));
+  const { HaruServer } = require("./lib/haru-server.cjs");
+  haruServer = new HaruServer(path.join(app.getPath("userData"), "haru-models"));
+  speechEnhancement = new SpeechEnhancement(path.join(app.getPath("userData"), "speech-enhancement-models"), {
+    getEnabled: () => preferences.data.speechEnhancementEnabled === true,
+  });
   streamingSpeechRecognition = new StreamingSpeechRecognition(path.join(app.getPath("userData"), "streaming-speech-models"), {
+    enhanceFinal: async (samples, signal) => (await speechEnhancement.enhance({ samples, sampleRate: 16000 }, { signal })).samples,
     modelId: preferences.data.streamingSpeechModelId,
     sherpaBaseDirectory: path.join(app.getPath("userData"), "sherpa-onnx-models"),
   });
@@ -14358,6 +15344,12 @@ async function boot() {
     executablePath: preferences.data.piperPlusExecutablePath, modelPath: preferences.data.piperPlusModelPath,
   });
   if (Object.keys(piperUpgrade).length) preferences.patch(piperUpgrade);
+  const speechCppUpgrade = embeddedTtsModels.upgradedSpeechCppPaths({
+    executablePath: preferences.data.speechCppExecutablePath,
+    modelPath: preferences.data.speechCppModelPath,
+    smallModelPath: preferences.data.speechCppSmallModelPath,
+  });
+  if (Object.keys(speechCppUpgrade).length) preferences.patch(speechCppUpgrade);
 
   const installedSpeechCpp = embeddedTtsModels.installedPaths("speech-cpp");
   if (!preferences.data.speechCppExecutablePath && installedSpeechCpp.executablePath) {
@@ -14379,7 +15371,7 @@ async function boot() {
   });
   cleanupStaleTemporaryInputs();
   if (process.argv.includes("--smoke-test")) preferences.patch({ onboardingComplete: false });
-  localServer = new MascotStaticServer(projectRoot, { getMeshAsset: readSelectedMeshAsset, onInput: input => {
+  localServer = new MascotStaticServer(projectRoot, { getMeshAsset: readSelectedMeshAsset, getLivlivAsset: readSelectedLivlivAsset, onInput: input => {
     const expression = remoteExpression(input, activeCharacter().id);
     if (expression) remoteServer?.publish("expression", expression);
   } });
@@ -14427,11 +15419,27 @@ async function boot() {
   rlcd42LiveAudioRoute = new AtomEchoLiveAudioRoute({
     gateway: rlcd42Gateway,
     processorOptions: rlcd42OutputProfile,
+    playbackOptions: () => stackchanProfile(rlcd42Profile()) ? STACKCHAN_LIVE_PLAYBACK_OPTIONS : {},
+    onPlaybackReady: () => { if (stackchanProfile(rlcd42Profile())) stackchanGestures.playbackReady(); },
     onError: (error) => {
       if (activeRealtimeTarget !== "rlcd42" && activeEsp32VoiceDevice !== "rlcd42") return;
-      atomEchoLiveStatus = { ...atomEchoLiveStatus, state: "error", error: String(error?.message || error) };
-      diagnosticLog?.write("warn", "rlcd42-live-output-failed", atomEchoLiveStatus.error);
-      broadcastAppState();
+      const message = String(error?.message || error);
+      diagnosticLog?.write("warn", "rlcd42-live-output-failed", message);
+      if (!stackchanProfile(rlcd42Profile())) {
+        atomEchoLiveStatus = { ...atomEchoLiveStatus, state: "error", error: message };
+        broadcastAppState();
+        return;
+      }
+      cancelStackchanLiveReplyWait();
+      void rlcd42LiveAudioRoute.interrupt().catch(() => {});
+      if (atomEchoCapture) return;
+      stackchanGestures.reset();
+      rlcd42VoiceStage = "playback-error";
+      rlcd42LastSceneSignature = "";
+      const capture = { generation: atomEchoTurnGeneration, replyGeneration: atomEchoReplyGeneration };
+      scheduleRlcd42VoiceRecovery(capture, rlcd42Gateway, rlcd42VoiceStage);
+      scheduleRlcd42SceneSync(0, { force: true });
+      atomEchoLiveIdleTimer?.touch();
     },
   });
   atomEchoLiveIdleTimer = new LiveIdleTimer({
@@ -14479,7 +15487,7 @@ async function boot() {
       port: startupRlcd42Profile.port,
       deviceId: startupRlcd42Profile.deviceId,
       token: preferences.getDevicePairingToken(RLCD42_PROFILE_ID),
-      captureMode: startupRlcd42Profile.captureMode,
+      captureMode: rlcd42CaptureModeForDevice(startupRlcd42Profile),
       vadThreshold: startupRlcd42Profile.vadThreshold,
       microphoneEnabled: startupRlcd42Profile.microphoneEnabled,
     });
@@ -14508,6 +15516,12 @@ async function boot() {
     setImmediate(() => app.quit());
     return;
   }
+  const stackchanLiveWav = process.argv.find(argument => argument.startsWith("--verify-stackchan-live="));
+  if (stackchanLiveWav) {
+    await runStackchanLiveVerification(stackchanLiveWav.slice("--verify-stackchan-live=".length));
+    setImmediate(() => app.quit());
+    return;
+  }
   if (process.argv.includes("--smoke-test")) await runSmokeTest();
   if (process.argv.includes("--mcp-app-test")) await runMcpAppProfileVerification();
 }
@@ -14521,7 +15535,8 @@ else {
   app.whenReady().then(boot).catch((error) => {
     diagnosticLog?.write("error", "startup-failed", error?.stack || error?.message || error);
     console.error("Desktop mascot startup failed:", error);
-    if (process.argv.includes("--smoke-test") || process.argv.includes("--verify-rlcd42-audio")) app.exit(1);
+    if (process.argv.includes("--smoke-test") || process.argv.includes("--verify-rlcd42-audio")
+      || process.argv.some(argument => argument.startsWith("--verify-stackchan-live="))) app.exit(1);
     else app.quit();
   });
 }
@@ -14529,6 +15544,9 @@ else {
 app.on("window-all-closed", () => {});
 app.on("activate", showControlWindow);
 app.on("before-quit", () => {
+  haruVoiceProxy?.stop();
+  haruVoiceProxy = null;
+  haruServer?.stop();
   characterFillerLibrary?.close();
   fillerGenerationClient?.stop();
   codexCompanion.stop(false);
@@ -14561,6 +15579,7 @@ app.on("before-quit", () => {
   destroyIrodoriWindow();
   destroyKokoroWindow();
   streamingSpeechRecognition?.close();
+  speechEnhancement?.stop();
   sbv2Worker?.stop();
   remoteServer?.stop().catch(() => {});
   atomEchoGateway?.disconnect().catch(() => {});

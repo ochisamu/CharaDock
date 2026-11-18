@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
-const SHELL_CACHE = "charadock-link-network-audio-v12";
-const SHELL_ASSETS = ["/", "/remote.css", "/audio-envelope.js", "/pcm-speech-player.js", "/live-capture-worklet.js", "/realtime-turn-detection.js", "/mcp-app-host.js", "/drawn-pose-runtime.js", "/remote-authored-avatar.js", "/remote-speech-caption.js", "/remote.js", "/mesh-avatar.js", "/mesh-avatar-runtime.js", "/remote-mesh-avatar.js", "/manifest.webmanifest", "/app-icon.png"];
+const SHELL_CACHE = "charadock-link-livliv-v19";
+const SHELL_ASSETS = ["/", "/remote.css", "/audio-envelope.js", "/pcm-speech-player.js", "/live-capture-worklet.js", "/realtime-turn-detection.js", "/mcp-app-host.js", "/drawn-pose-runtime.js", "/remote-authored-avatar.js", "/remote-speech-caption.js", "/remote.js", "/livliv.js", "/livliv-avatar-runtime.js", "/livliv-controls.js", "/livliv-controls-ui.js", "/livliv-controls.css", "/mesh-avatar.js", "/mesh-avatar-runtime.js", "/remote-mesh-avatar.js", "/manifest.webmanifest", "/app-icon.png"];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(caches.open(SHELL_CACHE).then((cache) => cache.addAll(SHELL_ASSETS)).then(() => self.skipWaiting()));

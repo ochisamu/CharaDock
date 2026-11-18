@@ -1,0 +1,97 @@
+{
+  "converter": 5,
+  "expressionCorrections": {
+    "thinking": {
+      "brow_L": [
+        0,
+        -2,
+        -7
+      ],
+      "brow_R": [
+        0,
+        -3,
+        -7
+      ],
+      "mouth": [
+        0,
+        -3,
+        -6
+      ]
+    },
+    "worried": {
+      "brow_L": [
+        0,
+        -3,
+        -8
+      ],
+      "brow_R": [
+        0,
+        -4,
+        -9
+      ],
+      "mouth": [
+        0,
+        -4,
+        -8
+      ]
+    },
+    "angry": {
+      "brow_L": [
+        0,
+        -4,
+        -10
+      ],
+      "brow_R": [
+        0,
+        -4,
+        -9
+      ],
+      "mouth": [
+        0,
+        -3,
+        -8
+      ]
+    },
+    "surprised": {
+      "brow_L": [
+        0,
+        -2,
+        -6
+      ],
+      "brow_R": [
+        0,
+        -3,
+        -7
+      ],
+      "mouth": [
+        0,
+        -2,
+        -5
+      ]
+    }
+  },
+  "identitySource": "79181944514dd0116936e01318afdba6d5a3ddccd046b2a3ae05f077f11a6603",
+  "files": {
+    "model.json": "62f4eacd063b1dc9b1a21df98424b9138f92a393949a9e1b926535d0c6d7c595",
+    "textures/expression_angry.png": "e44567f0235718d24a035ec0a986034e1371111814bcd4d0b214cf8a7d020e5e",
+    "textures/expression_surprised.png": "a53ef0ce248fa38110bb7ef4e5073e0ed6802261a20e27be83f220cde58b3d96",
+    "textures/expression_talk_angry.png": "4ad604e1fb0626054ebe90e8e42f12aa48db734f70f5c204befdc5578180675a",
+    "textures/expression_talk_surprised.png": "fdb1b6dc0d1347602e047677d2e4f5a157b0d1864f1855b86d2f7ff7f000203d",
+    "textures/expression_talk_thinking.png": "561b4750ee10e3a3462b5a50b7070fb24c8004671cae80495d0fccb516e603c2",
+    "textures/expression_talk_worried.png": "e44318d7a9d2a0f219ce82f2a0127317aa52bdbbefda0bd59942d9e9bced4081",
+    "textures/expression_thinking.png": "cb9318f355898492d5b6ba3d6b6127277bac97b4cb2ec816d899d1d70f1d0727",
+    "textures/expression_worried.png": "c4d85030e8e97bf8e7f0afd8de913b1e7de83ec5d1da8498a944f69cc84b37ac",
+    "textures/eye_L.png": "0f03330e8769c3c1751cfc00b67f84b0e7e63cb9d44262d8e55c8dc28feb94cb",
+    "textures/eye_R.png": "4b28db9bc03bec3d7476d132f9e4249e7eabf5308c892db5d4f1a38018f304cc",
+    "textures/face.png": "66cb12549e34361a38bef42e25d1b5905e5755cdeac20994a69ebee704005352",
+    "textures/lid_L.png": "14e8b1891c3f52070b443d1ca71aad7fd05c031aeb25247dbf3c872aa7f6cadc",
+    "textures/lid_R.png": "ba932961acff1dbebc838d62a9294898d7948ea192bfe522a12ea66ac656210f",
+    "textures/mouth_closed.png": "080b028a6f03cd5c4109dc5db2ac1d0e0a5b6e8edb192c3528d9370d9941b69b",
+    "textures/mouth_half.png": "9827fd012d0d27fe90beb03b2ce138b9a6c011124e02f72db4b7707fb9218f2c",
+    "textures/mouth_open.png": "3521c236ae2580dd49fa54d378263dff7f4a4d33c19ef799c9270a60de6f0d73",
+    "textures/mouth_round.png": "63721ae933eb1e5ccd3f789e844cae1406699ba30bdeba395da7ad859f064524",
+    "textures/mouth_wide.png": "bc2ff6ed1264c323420a2e8a15119091c46459f29155a111424396da5f0bcbe4",
+    "textures/smile_L.png": "42ca997759cdbc53778df8faf2effd551d2af6172a398f58cf4dab9e66f11ad6",
+    "textures/smile_R.png": "caee1a4b5b097600a5cd5bd60599752bf6663676d928f5df870180f1961fd4d9"
+  }
+}

@@ -3,6 +3,11 @@ const { contextBridge, ipcRenderer, webUtils } = require("electron");
 
 contextBridge.exposeInMainWorld("mascotDesktop", {
   getState: () => ipcRenderer.invoke("app:getState"),
+  downloadHaru: () => ipcRenderer.invoke("haru:download"),
+  setHaruOutputVoice: (mode) => ipcRenderer.invoke("haru:outputVoice", mode),
+  openHaru: () => ipcRenderer.invoke("haru:open"),
+  removeHaru: () => ipcRenderer.invoke("haru:remove"),
+  onHaruProgress: (callback) => ipcRenderer.on("haru:progress", (_event, status) => callback(status)),
   listCodexCompanionThreads: () => ipcRenderer.invoke("companion:list"),
   chooseCodexCompanionRoot: () => ipcRenderer.invoke("companion:chooseRoot"),
   startCodexCompanion: (key) => ipcRenderer.invoke("companion:start", key),
@@ -26,6 +31,7 @@ contextBridge.exposeInMainWorld("mascotDesktop", {
   setRlcd42Config: (settings) => ipcRenderer.invoke("rlcd42:setConfig", settings),
   provisionRlcd42Wifi: (settings) => ipcRenderer.invoke("rlcd42:provisionWifi", settings),
   syncRlcd42Display: () => ipcRenderer.invoke("rlcd42:syncDisplay"),
+  startStackchanCameraPreview: () => ipcRenderer.invoke("stackchan:cameraPreview"),
   testRlcd42Speaker: () => ipcRenderer.invoke("rlcd42:testSpeaker"),
   stopRlcd42Speaker: () => ipcRenderer.invoke("rlcd42:stopSpeaker"),
   regenerateRemotePairing: () => ipcRenderer.invoke("remote:regeneratePairing"),
@@ -44,6 +50,11 @@ contextBridge.exposeInMainWorld("mascotDesktop", {
   removeMcpServer: (serverId) => ipcRenderer.invoke("mcp:remove", serverId),
   testMcpServer: (serverId) => ipcRenderer.invoke("mcp:test", serverId),
   setCharacter: (id) => ipcRenderer.invoke("character:set", id),
+  importLivlivAvatar: () => ipcRenderer.invoke('character:importLivliv'),
+  removeVrmAvatar: input => ipcRenderer.invoke('character:removeVrm', input),
+  setLivlivControls: input => ipcRenderer.invoke('livliv:settings',input),
+  livlivCommand: input => ipcRenderer.invoke('livliv:command',input),
+  saveLivlivSnapshot: input => ipcRenderer.invoke('livliv:snapshot',input),
   importMeshAvatar: () => ipcRenderer.invoke("character:importMesh"),
   setCharacterAppearance: (id) => ipcRenderer.invoke("character:setAppearance", id),
   removeCharacter: (id) => ipcRenderer.invoke("character:remove", id),
@@ -105,6 +116,13 @@ contextBridge.exposeInMainWorld("mascotDesktop", {
   transcribeStreamingSpeech: (payload) => ipcRenderer.invoke("audio:transcribeStreamingSpeech", payload),
   downloadSherpaModel: (modelId) => ipcRenderer.invoke("sherpa:modelDownload", modelId),
   removeSherpaModel: (modelId) => ipcRenderer.invoke("sherpa:modelRemove", modelId),
+  downloadSpeechEnhancement: () => ipcRenderer.invoke("speechEnhancement:modelDownload"),
+  removeSpeechEnhancement: () => ipcRenderer.invoke("speechEnhancement:modelRemove"),
+  onSpeechEnhancementProgress: (callback) => {
+    const listener = (_event, payload) => callback(payload);
+    ipcRenderer.on("speechEnhancement:modelProgress", listener);
+    return () => ipcRenderer.removeListener("speechEnhancement:modelProgress", listener);
+  },
   downloadStreamingSpeechModel: (modelId) => ipcRenderer.invoke("streamingSpeech:modelDownload", modelId),
   removeStreamingSpeechModel: (modelId) => ipcRenderer.invoke("streamingSpeech:modelRemove", modelId),
   synthesizeTts: (text) => ipcRenderer.invoke("tts:synthesize", text),

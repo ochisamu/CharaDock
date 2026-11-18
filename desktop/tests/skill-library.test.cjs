@@ -159,7 +159,7 @@ test("skill settings expose a searchable one-click official catalog", () => {
   assert.match(html, /id="trustedSkillCatalog"/);
   assert.doesNotMatch(html, /id="trustedSkillSelect"/);
   assert.match(control, /async function installCatalogSkill/);
-  assert.match(control, /if \(page === "skills"\) queueMicrotask\(\(\) => loadTrustedSkills\(\)\)/);
+  assert.match(control, /if \(name === "skills" && !trustedSkillCatalogLoaded\) void loadTrustedSkills\(\)/);
 });
 
 test("installs once and assigns globally or per character", async () => {

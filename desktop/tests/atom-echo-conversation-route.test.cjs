@@ -80,7 +80,7 @@ test("ESP32 device Live uses one hidden WebRTC owner while keeping PC captions i
   assert.match(main, /isEsp32VoiceTarget\(target\)[\s\S]{0,500}contents\.send\("chat:stream", message\)/);
   assert.match(main, /atomEchoLiveWindow\.webContents\.send\("atomEcho:realtimeEvent", forwarded\)/);
   assert.match(main, /handleMascotConversation\([\s\S]{0,120}atomEchoStandardDeliveryOptions\(capture\.submitRoute\)/);
-  assert.match(main, /if \(result\?\.followUp\)[\s\S]{0,300}setDeviceState\("thinking"\)/);
+  assert.match(main, /if \(result\?\.followUp\)[\s\S]{0,300}setEsp32VoiceState\(deviceKind, gateway, "thinking"\)/);
   assert.match(main, /resetAtomEchoLiveBridgeForInteractionModeChange\(previousMode, nextMode\)/);
   assert.match(main, /atom-echo-interaction-mode-reset/);
   assert.match(main, /if \(capture\.generation !== atomEchoTurnGeneration\) return;/);

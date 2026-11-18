@@ -76,7 +76,7 @@ class SpeechCppClient {
             if (!m || typeof m.type !== "string") throw new Error("音声エンジンの応答形式が正しくありません。");
             if (m.type === "fatal") throw new Error(`音声エンジンを起動できません: ${m.error?.message || "モデルを確認してください。"}`);
             if (m.type === "ready") {
-              if (settled || m.protocol !== 3 || m.version !== "0.8.3" || m.model?.sample_rate !== 48000) throw new Error("音声エンジンのバージョンまたはモデルが対応していません。");
+              if (settled || !((m.protocol === 3 && m.version === "0.8.3") || (m.protocol === 4 && ["0.10.1", "0.11.0"].includes(m.version))) || m.model?.sample_rate !== 48000) throw new Error("音声エンジンのバージョンまたはモデルが対応していません。");
               clearTimeout(timer); settled = true; this.sampleRate = m.model.sample_rate; resolve(m); continue;
             }
             if (!settled) throw new Error("音声エンジンが起動前に応答しました。");
@@ -130,16 +130,18 @@ class SpeechCppClient {
     req.notify?.();
   }
   write(message) { this.worker?.stdin.write(`${JSON.stringify(message)}\n`); }
-  async start({ ownerId, chunks, ...options }) {
+  async start({ ownerId, chunks, wholeSentence = false, onEngineReady, ...options }) {
     // Warmup is shared, but cancelling this owner settles immediately.
+    const startedAt = Date.now();
     const warming = Promise.all([this.ensureWorker(options), loadTailHelpers()]);
     const id = `speech-cpp-stream-${randomUUID()}`;
-    const stream = { id, ownerId, options, chunks, index: 0, req: null, cancelled: false, timer: null, reading: false };
+    const stream = { id, ownerId, options, chunks, wholeSentence, index: 0, req: null, cancelled: false, timer: null, reading: false };
     this.streams.set(id, stream);
     const cancelled = new Promise(resolve => { stream.wakeCancel = () => resolve(false); });
     try {
       const ready = await Promise.race([warming, cancelled]);
       if (!ready || stream.cancelled) return { audioDataUrls: [], done: true };
+      onEngineReady?.({ warmupMs: Date.now() - startedAt });
       stream.tailHelpers = ready[1];
       const first = await this.next(id, ownerId);
       return { ...first, audioDataUrls: first.audioDataUrl ? [first.audioDataUrl] : [], audioTexts: [first.audioText || ""], streamId: first.done ? "" : id };
@@ -182,10 +184,21 @@ class SpeechCppClient {
         }
         const req = stream.req;
         if (req.error) throw req.error;
-        if (req.queue.length) {
-          const pcmChunk = req.queue.shift(); req.buffered -= Buffer.byteLength(pcmChunk,"base64");
-          stream.timer = setTimeout(() => this.cancel(id, ownerId), this.idleTimeoutMs);
-          return { pcmChunk, sampleRate: this.sampleRate, audioDataUrl: waveDataUrl(pcmChunk,this.sampleRate), audioText: req.text, playbackRate: 1, done: false };
+        if (req.queue.length && (!stream.wholeSentence || req.ended)) {
+          let pcmChunk;
+          let done = false;
+          if (stream.wholeSentence) {
+            pcmChunk = Buffer.concat(req.queue.map(pcm => Buffer.from(pcm, "base64")), req.buffered).toString("base64");
+            stream.req = null;
+            stream.chunk = null;
+            done = stream.index >= stream.chunks.length;
+          } else {
+            pcmChunk = req.queue.shift();
+            req.buffered -= Buffer.byteLength(pcmChunk, "base64");
+          }
+          if (done) this.cancel(id, ownerId);
+          else stream.timer = setTimeout(() => this.cancel(id, ownerId), this.idleTimeoutMs);
+          return { pcmChunk, sampleRate: this.sampleRate, audioDataUrl: waveDataUrl(pcmChunk, this.sampleRate), audioText: req.text, playbackRate: 1, done };
         }
         if (req.ended) {
           if (req.durationProbe) {

@@ -2,6 +2,8 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const { Rlcd42Hub } = require("../lib/rlcd42-hub.cjs");
+const { handleCaptureFrame } = require("../lib/device-capture-queue.cjs");
+const { FRAME_TYPES } = require("../lib/device-protocol-v2.cjs");
 
 function deferred() {
   let resolve;
@@ -52,6 +54,88 @@ test("auto prefers USB, falls back to Wi-Fi, and explicit Wi-Fi disables USB", a
   assert.equal(hub.shouldEnableSerial(), true);
   hub.enabled = false;
   assert.equal(hub.shouldEnableSerial(), false);
+});
+
+test("Live PCM batches retain gateway ownership across transport changes", async () => {
+  const { hub, connectWifi } = fixture();
+  connectWifi();
+  const gateway = hub.wifi.inner;
+  const chunks = [Buffer.alloc(2), Buffer.alloc(4)];
+  gateway.beginPcm16Playback = async () => 42;
+  let calls = 0;
+  gateway.writePcm16PlaybackBatch = async (value, generation) => {
+    calls += 1;
+    assert.equal(value, chunks);
+    assert.equal(generation, 42);
+    return { interrupted: false };
+  };
+  const session = await hub.beginPcm16Playback(16000);
+  assert.deepEqual(await hub.writePcm16PlaybackBatch(chunks, session), { interrupted: false });
+  hub.transportPreference = "auto";
+  assert.deepEqual(await hub.writePcm16PlaybackBatch(chunks, session), { interrupted: true });
+  assert.equal(calls, 1);
+});
+
+test("explicit Wi-Fi releases an open USB lease before closing the port", async () => {
+  const { hub } = fixture();
+  const operations = [];
+  hub.serial.releaseUsbToWifi = async () => operations.push("release");
+  hub.serial.configure = async ({ enabled }) => {
+    assert.equal(enabled, false);
+    hub.serial.enabled = false;
+    hub.serial.connectionState = "off";
+    operations.push("close");
+  };
+  hub.wifi.configure = async () => {};
+  await hub.configure({ enabled: true, transport: "wifi", deviceId: "stackchan", token: "paired" });
+  assert.deepEqual(operations, ["release", "close"]);
+});
+
+test("display updates during a link transition return a rejected promise", async () => {
+  const { hub } = fixture();
+  hub.serial.connectionState = "off";
+  await assert.rejects(hub.setDeviceState("idle"), /接続/);
+});
+
+test("standby Wi-Fi becomes the ready owner without another handshake", async () => {
+  const routes = [];
+  const { hub, usb, wifi, connectWifi } = fixture({ onReady: status => routes.push(status) });
+  usb.onStatus();
+  await Promise.resolve();
+  connectWifi();
+  hub.transportPreference = "auto";
+  wifi.onStatus();
+  assert.deepEqual(routes.map(status => status.source), ["usb"]);
+  hub.serial.connectionState = "off";
+  usb.onStatus();
+  wifi.onStatus();
+  await Promise.resolve();
+  assert.deepEqual(routes.map(status => status.source), ["usb", "wifi"]);
+  assert.equal(routes[0].isCurrent(), false);
+  assert.equal(routes[1].isCurrent(), true);
+});
+
+test("a capture declined without PTT_END releases both the transport and the hub", async () => {
+  const events = [];
+  let accepted = false;
+  const { hub } = fixture({
+    onPttStart: () => accepted,
+    onPcmChunk: () => events.push("pcm"),
+    onPttEnd: () => events.push("end"),
+  });
+  const frame = (type, payload) => handleCaptureFrame(hub.serial, { type, payload }, FRAME_TYPES);
+  frame(FRAME_TYPES.PTT_START);
+  frame(FRAME_TYPES.PCM_CHUNK, Buffer.alloc(2));
+  await hub.serial.captureQueue;
+  assert.equal(hub.inputCapture, null);
+  assert.deepEqual(events, []);
+  accepted = true;
+  frame(FRAME_TYPES.PTT_START);
+  frame(FRAME_TYPES.PCM_CHUNK, Buffer.alloc(2));
+  frame(FRAME_TYPES.PTT_END);
+  await hub.serial.captureQueue;
+  assert.deepEqual(events, ["pcm", "end"]);
+  assert.equal(hub.inputCapture, null);
 });
 
 test("failed PCM admission releases the RLCD capture for an immediate retry", async () => {

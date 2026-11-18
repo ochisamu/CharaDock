@@ -2,18 +2,18 @@
   "id": "speech-cpp-small",
   "label": "Irodori v4.1 Small · speech.cpp",
   "description": "日本語の参照音声を使う、音声を小分けに返すローカル音声エンジン。",
-  "directoryName": "speech-cpp-irodori-v4.1-small",
-  "downloadBytes": 1936460492,
+  "directoryName": "speech-cpp-irodori-small-v0.11.0",
+  "downloadBytes": 1935641462,
   "platforms": [
     "win32"
   ],
   "sourceUrl": "https://github.com/nyosegawa/speech.cpp",
-  "licenseUrl": "https://github.com/nyosegawa/speech.cpp/blob/v0.8.3/LICENSE",
+  "licenseUrl": "https://github.com/nyosegawa/speech.cpp/blob/v0.11.0/LICENSE",
   "runtime": {
-    "archiveName": "speech-0.8.3-windows-x64-vulkan.zip",
-    "url": "https://github.com/nyosegawa/speech.cpp/releases/download/v0.8.3/speech-0.8.3-windows-x64-vulkan.zip",
-    "bytes": 30537244,
-    "sha256": "8c5f199aecf972cb214b5df9d91400108b07cdd7428ae985891a944ca077b976"
+    "archiveName": "speech-0.11.0-windows-x64-vulkan.zip",
+    "url": "https://github.com/nyosegawa/speech.cpp/releases/download/v0.11.0/speech-0.11.0-windows-x64-vulkan.zip",
+    "bytes": 29718214,
+    "sha256": "b64f498179fc46d08149317eaea9fe6f24e6fa0cd194557b374c97e76ccc9c67"
   },
   "files": [
     {
@@ -45,5 +45,10 @@
       "sha256": "345c4920f136013446190beae8730cbc21d7a4e382ea9b1ce6b754da2a07e534"
     }
   ],
-  "engine": "speech-cpp"
+  "engine": "speech-cpp",
+  "reuseDirectoryNames": [
+    "speech-cpp-irodori-small-v0.10.1",
+    "speech-cpp-irodori-v4.1-small"
+  ],
+  "incrementalDownloadBytes": 29718214
 }

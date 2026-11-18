@@ -1,0 +1,347 @@
+{
+  "format": "livliv-model",
+  "version": 4,
+  "name": "コハク · LivLiv",
+  "requires": [],
+  "meta": {
+    "generator": {
+      "name": "CharaDock original-pixel Kohaku rig; localized expression edits",
+      "build": "5"
+    },
+    "author": {
+      "name": "CharaDock"
+    },
+    "license": {
+      "id": "LicenseRef-CharaDock-Character",
+      "url": "https://github.com/ochisamu/CharaDock/blob/main/DISTRIBUTION_ASSET_LICENSE.md",
+      "text": "Original CharaDock Kohaku artwork and registered eye/mouth variants. See DISTRIBUTION_ASSET_LICENSE.md."
+    },
+    "watermark": {
+      "kind": "none"
+    }
+  },
+  "canvas": [
+    1254,
+    1254
+  ],
+  "profile": {
+    "id": "anime_half",
+    "facing": "three_quarter",
+    "glasses": false
+  },
+  "anchors": {
+    "head": {
+      "cx": 650,
+      "cy": 470,
+      "rx": 580,
+      "ry": 440
+    },
+    "face": [
+      435,
+      440,
+      900,
+      816
+    ],
+    "neck_y": 835,
+    "top_y": 30,
+    "bottom_y": 1254,
+    "hair_root_y": 180,
+    "collar_y": 845,
+    "eyes": [
+      [
+        446,
+        556,
+        606,
+        697
+      ],
+      [
+        683,
+        490,
+        865,
+        649
+      ]
+    ],
+    "brows": [
+      [
+        410,
+        505,
+        530,
+        550
+      ],
+      [
+        610,
+        440,
+        795,
+        494
+      ]
+    ],
+    "jaw": {
+      "top": 750,
+      "chin": 806,
+      "half": 0,
+      "open": 0,
+      "round": 0,
+      "wide": 0
+    },
+    "chest": {
+      "cx": 665,
+      "cy": 1130,
+      "rx": 265,
+      "ry": 210
+    }
+  },
+  "rig": {
+    "yaw": 0.34,
+    "pitch": 0.28,
+    "roll": 0.72,
+    "bulge": 0.2,
+    "bulge_extent": [
+      1.2,
+      1.1,
+      1
+    ],
+    "drift": [
+      0.09,
+      0.06
+    ],
+    "wind": 0,
+    "hair_limit": 0,
+    "hair_drive": [
+      0.65,
+      0.55,
+      0.4
+    ],
+    "breath": 0.9,
+    "sway": 1,
+    "brow": 0,
+    "jaw": 0,
+    "neck": {
+      "twist": 0.18,
+      "reach": 0.3
+    },
+    "body": {
+      "yaw": 0.32,
+      "roll": 0.38,
+      "breath": 0.9,
+      "bust": 0
+    },
+    "chains": []
+  },
+  "tuning": {
+    "turn": 1,
+    "nod": 0.95,
+    "hair": 0,
+    "hair_front": 0,
+    "hair_back": 0,
+    "blink": 1,
+    "expr": 1,
+    "mouth": 1,
+    "breath": 1
+  },
+  "expressions": [
+    {
+      "id": "smile",
+      "label": {
+        "ja": "笑顔",
+        "en": "Smile"
+      }
+    },
+    {
+      "id": "thinking",
+      "label": {
+        "ja": "考える",
+        "en": "Thinking"
+      }
+    },
+    {
+      "id": "worried",
+      "label": {
+        "ja": "困る",
+        "en": "Worried"
+      }
+    },
+    {
+      "id": "angry",
+      "label": {
+        "ja": "怒る",
+        "en": "Angry"
+      }
+    },
+    {
+      "id": "surprised",
+      "label": {
+        "ja": "驚く",
+        "en": "Surprised"
+      }
+    }
+  ],
+  "layers": [
+    {
+      "id": "face",
+      "texture": "textures/face.png",
+      "x": 50,
+      "y": 30,
+      "w": 1102,
+      "h": 1224,
+      "group": "hair_back",
+      "depth": 0
+    },
+    {
+      "id": "lid_L",
+      "texture": "textures/lid_L.png",
+      "x": 438,
+      "y": 548,
+      "w": 176,
+      "h": 157,
+      "group": "head",
+      "depth": 0,
+      "role": "lid_L"
+    },
+    {
+      "id": "eye_L",
+      "texture": "textures/eye_L.png",
+      "x": 438,
+      "y": 548,
+      "w": 176,
+      "h": 157,
+      "group": "head",
+      "depth": 0,
+      "role": "eye_L",
+      "pivot": [
+        536,
+        637
+      ]
+    },
+    {
+      "id": "smile_L",
+      "texture": "textures/smile_L.png",
+      "x": 438,
+      "y": 548,
+      "w": 176,
+      "h": 157,
+      "group": "head",
+      "depth": 0,
+      "role": "expr",
+      "expression": "smile"
+    },
+    {
+      "id": "lid_R",
+      "texture": "textures/lid_R.png",
+      "x": 675,
+      "y": 482,
+      "w": 198,
+      "h": 175,
+      "group": "head",
+      "depth": 0,
+      "role": "lid_R"
+    },
+    {
+      "id": "eye_R",
+      "texture": "textures/eye_R.png",
+      "x": 675,
+      "y": 482,
+      "w": 198,
+      "h": 175,
+      "group": "head",
+      "depth": 0,
+      "role": "eye_R",
+      "pivot": [
+        756,
+        585
+      ]
+    },
+    {
+      "id": "smile_R",
+      "texture": "textures/smile_R.png",
+      "x": 675,
+      "y": 482,
+      "w": 198,
+      "h": 175,
+      "group": "head",
+      "depth": 0,
+      "role": "expr",
+      "expression": "smile"
+    },
+    {
+      "id": "mouth",
+      "texture": "textures/mouth_closed.png",
+      "frames": [
+        "textures/mouth_closed.png",
+        "textures/mouth_half.png",
+        "textures/mouth_open.png",
+        "textures/mouth_round.png",
+        "textures/mouth_wide.png"
+      ],
+      "visemes": [
+        "closed",
+        "half",
+        "open",
+        "round",
+        "wide"
+      ],
+      "x": 593,
+      "y": 679,
+      "w": 147,
+      "h": 105,
+      "group": "head",
+      "depth": 0,
+      "role": "mouth",
+      "pivot": [
+        665.5,
+        720.5
+      ]
+    },
+    {
+      "id": "expression_thinking",
+      "texture": "textures/expression_thinking.png",
+      "talk": "textures/expression_talk_thinking.png",
+      "x": 450,
+      "y": 404,
+      "w": 411,
+      "h": 380,
+      "group": "head",
+      "depth": 0,
+      "role": "expr",
+      "expression": "thinking"
+    },
+    {
+      "id": "expression_worried",
+      "texture": "textures/expression_worried.png",
+      "talk": "textures/expression_talk_worried.png",
+      "x": 450,
+      "y": 404,
+      "w": 411,
+      "h": 380,
+      "group": "head",
+      "depth": 0,
+      "role": "expr",
+      "expression": "worried"
+    },
+    {
+      "id": "expression_angry",
+      "texture": "textures/expression_angry.png",
+      "talk": "textures/expression_talk_angry.png",
+      "x": 450,
+      "y": 404,
+      "w": 411,
+      "h": 380,
+      "group": "head",
+      "depth": 0,
+      "role": "expr",
+      "expression": "angry"
+    },
+    {
+      "id": "expression_surprised",
+      "texture": "textures/expression_surprised.png",
+      "talk": "textures/expression_talk_surprised.png",
+      "x": 450,
+      "y": 404,
+      "w": 411,
+      "h": 380,
+      "group": "head",
+      "depth": 0,
+      "role": "expr",
+      "expression": "surprised"
+    }
+  ]
+}

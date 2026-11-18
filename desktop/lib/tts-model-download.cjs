@@ -318,7 +318,7 @@ async function sha256File(filePath, { expectedBytes, onChunk } = {}) {
 }
 
 function managedSourceDirectories(baseDirectory, model) {
-  const names = [model?.directoryName, ...(model?.obsoleteDirectoryNames || [])];
+  const names = [model?.directoryName, ...(model?.reuseDirectoryNames || []), ...(model?.obsoleteDirectoryNames || [])];
   const seen = new Set();
   return names.flatMap((directoryName) => {
     if (!directoryName || path.basename(directoryName) !== directoryName || seen.has(directoryName)) return [];
@@ -464,6 +464,21 @@ class EmbeddedTtsModels {
       modelPath: path.join(directory, "models", "tsukuyomi-chan-6lang-fp16.onnx"),
     };
     return { modelDirectory: directory };
+  }
+
+  upgradedSpeechCppPaths({ executablePath = "", modelPath = "", smallModelPath = "" } = {}) {
+    const patch = {};
+    const normalize = value => this.platform === "win32" ? path.resolve(value).toLowerCase() : path.resolve(value);
+    for (const [id, value, key] of [["speech-cpp", modelPath, "speechCppModelPath"], ["speech-cpp-small", smallModelPath, "speechCppSmallModelPath"]]) {
+      if (!this.isInstalled(id)) continue;
+      const model = this.modelForId(id), current = this.installedPaths(id);
+      const relativeModel = model.files.find(file => file.name.endsWith(".gguf")).relativePath;
+      for (const directory of managedSourceDirectories(this.baseDirectory, model)) {
+        if (value && normalize(value) === normalize(path.join(directory, relativeModel))) patch[key] = current.modelPath;
+        if (executablePath && normalize(executablePath) === normalize(path.join(directory, "runtime", "speech.exe"))) patch.speechCppExecutablePath = current.executablePath;
+      }
+    }
+    return patch;
   }
 
   upgradedPiperPlusPaths({ executablePath = "", modelPath = "" } = {}) {

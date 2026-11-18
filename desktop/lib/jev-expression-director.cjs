@@ -36,11 +36,16 @@ class JevExpressionDirector {
     this.prepareTail = job.catch(() => null);
     try { return await job; } finally { this.prepareCount--; }
   }
+  takePrepared(id) {
+    const job = this.prepared.get(id); this.prepared.delete(id);
+    if (!job || !this.enabled() || job.context !== this.context() || this.now() - job.at > 60000) return null;
+    return job;
+  }
   activate(id) {
     // Playback, not speculative preparation, supersedes the previous reaction.
     this.sequence++; this.pending = null; this.last = null;
-    const job = this.prepared.get(id); this.prepared.delete(id);
-    if (!job || !this.enabled() || job.context !== this.context() || this.now() - job.at > 60000) return false;
+    const job = this.takePrepared(id);
+    if (!job) return false;
     const expression = job.expression;
     if (!expression) return false;
     if (expression.emotion === null && !['nod','ponder','celebrate','recoil','reassure','explain'].includes(expression.nikePerformance)) {
@@ -66,7 +71,7 @@ class JevExpressionDirector {
     }
     this.last = { text: value, source, context, at: this.now() };
     if (this.pending) this.observe("expression-skipped", { reason: "superseded" });
-    this.pending = { text: value, source, context, sequence: ++this.sequence };
+    this.pending = { text: value, source, context, onApplied: options.onApplied, sequence: ++this.sequence };
     if (!this.running) void this.drain();
   }
   async drain() {
@@ -84,6 +89,7 @@ class JevExpressionDirector {
             if (expression?.emotion === null) {
               if (["nod", "ponder", "celebrate", "recoil", "reassure", "explain"].includes(expression.nikePerformance)) {
                 this.apply({ nikePerformance: expression.nikePerformance, forceMouth: null, forceEyesClosed: null });
+                job.onApplied?.(expression);
                 this.observe("expression-applied", detail);
                 continue;
               }
@@ -91,6 +97,7 @@ class JevExpressionDirector {
               continue;
             }
             this.apply({ ...expression, forceMouth: null, forceEyesClosed: null });
+            job.onApplied?.(expression);
             this.observe("expression-applied", detail);
           } else this.observe("expression-skipped", { ...detail, reason: "stale" });
         } catch (error) {

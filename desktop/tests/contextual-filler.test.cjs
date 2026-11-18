@@ -69,3 +69,44 @@ test('shared Chat runtime supplies effective character and does not gate filler 
   assert.match(block, /recentFillers: recentThinkingFillers/);
   assert.match(block, /interfaceLanguage\(\) === language/);
 });
+
+test("a long silence on a dedicated speaker can use a model-selected filler without overriding silence", async () => {
+  const candidates = ["少し考えてみるね。"];
+  const state = { candidates, waitingMs: 6000, audioOnly: true };
+  const client = { ask: async (input) => {
+    assert.equal(input.runtime.audioOnly, true);
+    return answer("phrase_0", .58);
+  } };
+  assert.equal((await decideFiller(client, "相談", state)).text, candidates[0]);
+  assert.equal((await decideFiller(client, "相談", { ...state, waitingMs: 2000 })).text, "");
+  assert.equal((await decideFiller({ ask: async () => answer("none", .85) }, "相談", state)).text, "");
+});
+
+test('slow speaker turns can acknowledge hearing a question when no contextual sentence fits', async () => {
+  const options = { candidates: ['それはうれしいね。'], waitingMs: 3500, audioOnly: true, recentFillers: ['ええと！'] };
+  const client = { ask: async (_state, questions) => {
+    assert.deepEqual(Object.values(questions.thinkingSound.criteria).slice(1), ['うーん。']);
+    return { ...answer('none', .7), thinkingSound: answer('sound_0').filler };
+  } };
+  assert.deepEqual(await decideFiller(client, '週末の天気は？', options),
+    { text: 'うーん。', neededScore: .7, reason: 'thinking_sound' });
+  assert.equal((await decideFiller(client, '週末の天気は？', { ...options, candidates: [] })).text, 'うーん。');
+});
+
+test('thinking sounds respect silence, model validity, phrase priority, elapsed time and the audio route', async () => {
+  const options = { language: 'en', candidates: ['I see.'], waitingMs: 6500, audioOnly: true };
+  for (const [phrase, sound, score, expected] of [
+    ['none', 'silent', .9, ''], ['none', 'unknown', .9, ''], ['unknown', 'sound_0', .9, ''],
+    ['none', 'sound_0', .3, ''], ['phrase_0', 'sound_0', .9, 'I see.'], ['none', 'sound_0', .9, 'Hmm.'],
+  ]) {
+    const client = { ask: async () => ({ ...answer(phrase, score), thinkingSound: answer(sound).filler }) };
+    assert.equal((await decideFiller(client, 'Any ideas?', options)).text, expected);
+  }
+  const noSound = { ask: async (_state, questions) => {
+    assert.equal(questions.thinkingSound, undefined);
+    return { ...answer('none'), thinkingSound: answer('sound_0').filler };
+  } };
+  for (const change of [{ waitingMs: 3499 }, { audioOnly: false }, { recentFillers: ['Hmm.', 'Well…'] }]) {
+    assert.equal((await decideFiller(noSound, 'Any ideas?', { ...options, ...change })).text, '');
+  }
+});

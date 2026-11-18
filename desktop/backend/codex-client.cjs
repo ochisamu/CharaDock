@@ -529,7 +529,10 @@ class CodexAppServerClient {
           // The completed final item is authoritative. Delta text is useful
           // for live display, but app-server also streams commentary items in
           // the same turn and those must not be replayed as the final answer.
+          const previous = itemCollector.finalText || "";
           itemCollector.finalText = String(item.text);
+          if (itemCollector.finalText.startsWith(previous) && itemCollector.finalText.length > previous.length)
+            observe(itemCollector.onDelta, itemCollector.finalText.slice(previous.length), itemCollector.finalText);
         }
         itemCollector.activeAgentMessagePhase = "";
       }
@@ -1048,7 +1051,7 @@ class CodexAppServerClient {
     return true;
   }
 
-  sendMessage(message, { onDelta, onEvent, localImagePath = "", localImagePaths = [], localAudioPath = "", skillItems = null, outputSchema = null, timeoutMs = 180_000, requireMcpReady = false, reasoningEffort = undefined } = {}) {
+  sendMessage(message, { onDelta, onEvent, localImagePath = "", localImagePaths = [], localAudioPath = "", skillItems = null, outputSchema = null, timeoutMs = 180_000, requireMcpReady = false, waitForOptionalMcp = true, reasoningEffort = undefined } = {}) {
     const signal = this.conversationController.signal;
     const run = async () => {
       signal.throwIfAborted();
@@ -1062,11 +1065,13 @@ class CodexAppServerClient {
       this.earlyTurnError = null;
       try {
         await withSignal(this.ensureStarted(), signal);
-        try {
-          await withSignal(this.ensureMcpServersReady(), signal);
-        } catch (error) {
-          signal.throwIfAborted();
-          if (requireMcpReady) throw error;
+        if (requireMcpReady || waitForOptionalMcp) {
+          try {
+            await withSignal(this.ensureMcpServersReady(), signal);
+          } catch (error) {
+            signal.throwIfAborted();
+            if (requireMcpReady) throw error;
+          }
         }
         const threadId = await withSignal(this.ensureThread(), signal);
         operation.threadId = threadId;

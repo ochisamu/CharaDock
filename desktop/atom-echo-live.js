@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 (() => {
   const api = window.atomEchoLive;
-  const { LiveOutputGate } = window.CharaDockAtomEchoLiveAudio;
+  const { DEFAULT_END_HOLD_MS, LiveOutputGate } = window.CharaDockAtomEchoLiveAudio;
   let peer = null;
   let dataChannel = null;
   let inputContext = null;
@@ -30,6 +30,7 @@
 
   const report = (state, error = "") => api.reportStatus({ state, error: String(error || "").slice(0, 500), beatrice: beatriceEnabled });
 
+  let interrupted = false;
   const outputGate = new LiveOutputGate({
     onStart: () => api.outputStart(),
     onChunk: (samples, sampleRate) => api.outputChunk(samples.buffer.slice(samples.byteOffset, samples.byteOffset + samples.byteLength), sampleRate),
@@ -151,6 +152,7 @@
   }
 
   async function closeSession({ stopServer = false } = {}) {
+    interrupted = false;
     outputGate.reset(true);
     await stopCapture();
     if (beatriceEnabled) await api.stopBeatrice().catch(() => {});
@@ -197,7 +199,10 @@
     const source = inputContext.createBufferSource();
     source.buffer = audioBuffer;
     source.connect(inputDestination);
-    nextInputTime = Math.max(nextInputTime, inputContext.currentTime + .03);
+    // Keep successive PCM blocks contiguous. Reapplying the startup margin
+    // to every block inserts silence whenever delivery is a little late.
+    if (nextInputTime <= inputContext.currentTime)
+      nextInputTime = inputContext.currentTime + .08;
     source.start(nextInputTime);
     nextInputTime += channel.length / 16_000;
   }
@@ -212,6 +217,8 @@
 
   async function startSession(settings = {}) {
     if (peer || sessionStarting) return;
+    outputGate.endHoldMs = settings.stackchan === true ? 1_600 : DEFAULT_END_HOLD_MS;
+    outputGate.threshold = settings.stackchan === true ? .0015 : .004;
     sessionStarting = true;
     report("connecting");
     try {
@@ -253,11 +260,13 @@
   api.onCommand((command = {}) => {
     if (command.type === "start") startSession(command);
     if (command.type === "input-start") {
+      interrupted = false;
       outputGate.setSuppressed(true);
       nextInputTime = 0;
     }
     if (command.type === "input") queueInput(command.audio);
     if (command.type === "interrupt") {
+      interrupted = true;
       inputFrames = [];
       inputBytes = 0;
       outputGate.setSuppressed(true);
@@ -280,9 +289,9 @@
       return;
     }
     if (method.startsWith("thread/realtime/transcript/") && params.role === "assistant") {
-      outputGate.setSuppressed(params.suppressed === true);
+      outputGate.setSuppressed(interrupted || params.suppressed === true);
     }
-    if (method.startsWith("thread/realtime/transcript/") && params.role === "user") outputGate.setSuppressed(false);
+    if (!interrupted && method.startsWith("thread/realtime/transcript/") && params.role === "user") outputGate.setSuppressed(false);
     if (["thread/realtime/error", "thread/realtime/closed"].includes(method)) {
       const detail = method.endsWith("error") ? String(params.message || "Realtimeを開始できませんでした。") : "";
       await closeSession();

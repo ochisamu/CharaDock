@@ -39,7 +39,7 @@ On Windows, the app also detects the Microsoft Store Codex installation. Its
 protected CLI binary is copied into this app's user-data cache before launch so
 that Windows permits app-server child-process execution.
 
-未ログインの場合はAI接続画面の **ChatGPTでログイン** を押します。app-serverの
+未ログインの場合は設定の **会話と作業 → ログインとChat** で **ChatGPTでログイン** を押します。app-serverの
 managed ChatGPT OAuthを開始し、既定ブラウザでログインした後、画面が
 `ChatGPTログイン済み` へ自動更新されます。認証トークンの保存・更新はCodex側が
 担当し、このアプリはトークンを受け取りません。
@@ -65,7 +65,7 @@ CharaDock Linkの音声は、通常TTSの次の音声を再生中に先読みし
 
 ## Decision assist
 
-AI接続画面の **判断アシスト → 判断サービス** で **JEV · TypeSafe** と
+設定の **会話と作業 → 判断アシスト → 判断サービス** で **JEV · TypeSafe** と
 **OpenAI Decisions** を切り替えられます。有効化と各機能の設定は共通です。
 Decisionsは **判断アシスト** 内の専用入力欄からOpenAI APIキーを管理します。保存済みのキーは引き継ぎ、会話と文字起こしには使用しません。キーを変更しても会話・Workはリセットしません。
 JEVは専用のアプリAPIキーを使います。既存プロフィールの既定はJEVです。
@@ -179,3 +179,9 @@ the publicly tested CAM++ encoder emits 192 dimensions, so that pair cannot
 synthesize reference-conditioned speech. A matching zero-shot model and encoder
 must be obtained separately. Reference-conditioned end-to-end synthesis has
 not been validated; the settings UI alone does not establish voice cloning.
+
+### Haru 4Bのローカル音声会話（Windows）
+
+設定 → 音声 → Haru 4BからQ8_0モデル（約6.7 GB）を導入し、「Haruの会話画面を開く」からTalkを開始します。speech.cpp v0.11.0のWindows Vulkan版を使い、モデル・マイク入力・応答音声はPC内で処理します。ヘッドホンを使うとスピーカー音の回り込みを防げます。
+
+選択中のキャラクターの名前と性格を会話の初期設定に使います。「Haruの応答音声」でBeatrice 2を選ぶと、同じキャラクターのBeatriceモデル・声質設定で返答音声を変換します。切り替えるときは会話画面を開き直します。録音から声を作る場合はTalk画面で利用権のある音声を選べます。Haruの会話は専用ウィンドウ内で行い、ウィンドウを閉じるとエンジンを終了します。Chat／Workの履歴、Codex Live、CharaDock Link、キャラクターの口パクとの連携は今後の範囲です。

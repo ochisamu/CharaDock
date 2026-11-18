@@ -52,7 +52,8 @@ function sanitizeSpeechText(value) {
 }
 
 class StreamingTextSegmenter {
-  constructor({ maxLength = 90 } = {}) {
+  constructor({ maxLength = 90, openingClause = false } = {}) {
+    this.openingClause = openingClause;
     this.maxLength = Math.max(24, Math.min(160, Number(maxLength) || 90));
     this.maxOverflow = Math.min(6, Math.max(2, Math.ceil(this.maxLength * .1)));
     this.minimumTail = Math.max(6, Math.floor(this.maxLength * .25));
@@ -106,6 +107,10 @@ class StreamingTextSegmenter {
           : this.maxLength;
         length = findNaturalSpeechBoundary(remaining, boundaryLimit, { minimumRatio: .4 });
       }
+      if (!length && !flush && this.openingClause && this.consumed === 0) {
+        const opening = remaining.match(/^[^\n。！？!?、，]{16,42}[、，](?=[^\n]{8})/u)?.[0];
+        if (opening) length = opening.length;
+      }
       if (!length && remaining.length >= this.maxLength + this.minimumTail) {
         const boundaryLimit = remaining.length - this.maxLength < this.minimumTail
           ? Math.max(Math.floor(this.maxLength * .55), remaining.length - this.minimumTail)
@@ -139,4 +144,92 @@ class StreamingTextSegmenter {
   }
 }
 
-module.exports = { StreamingTextSegmenter, sanitizeSpeechText, stripSpeechUrls };
+function replySpeechSource(value) {
+  // Drop fenced code before splitting, including blocks still open in a
+  // partial response.
+  return String(value || "").slice(0, 4000)
+    .replace(/```[\s\S]*?(?:```|$)/g, " ");
+}
+
+class StreamingReplyPhrases {
+  constructor({ openingClause = false } = {}) {
+    this.segmenter = new StreamingTextSegmenter({ maxLength: 64, openingClause });
+    this.phrases = [];
+    this.hasAnswer = false;
+    this.filler = "";
+    this.fillerOffered = false;
+    this.closed = false;
+    this.wake = null;
+  }
+
+  offerFiller(value) {
+    if (this.closed || this.hasAnswer || this.fillerOffered) return false;
+    const text = sanitizeSpeechText(value);
+    if (!text) return false;
+    this.filler = text;
+    this.fillerOffered = true;
+    this.wake?.();
+    return true;
+  }
+
+  queueAnswer(phrases) {
+    if (!phrases.length) return false;
+    this.hasAnswer = true;
+    this.filler = "";
+    this.phrases.push(...phrases);
+    this.wake?.();
+    return true;
+  }
+
+  push(value) {
+    if (this.closed) return false;
+    const text = replySpeechSource(value);
+    if (!text.startsWith(this.segmenter.fullText)) {
+      const committed = this.segmenter.fullText.slice(0, this.segmenter.consumed);
+      if (!text.startsWith(committed)) return false;
+      this.segmenter.fullText = committed;
+    }
+    return this.queueAnswer(this.segmenter.push(text));
+  }
+
+  finish(value) {
+    if (this.closed) return;
+    const { fullText, consumed } = this.segmenter;
+    const committed = fullText.slice(0, consumed);
+    const finalText = replySpeechSource(value);
+    // A completed message can revise the unsent suffix. Preserve the cursor
+    // and never speak the already queued prefix again.
+    const text = finalText.startsWith(committed) ? finalText : fullText;
+    this.segmenter.fullText = committed;
+    const queued = this.queueAnswer(this.segmenter.push(text, { flush: true }));
+    this.filler = "";
+    this.closed = true;
+    this.wake?.();
+    return queued;
+  }
+
+  cancel() {
+    this.filler = "";
+    this.phrases = [];
+    this.closed = true;
+    this.wake?.();
+  }
+
+  async next() {
+    if (!this.phrases.length && !this.filler && !this.closed) {
+      await new Promise(resolve => { this.wake = resolve; });
+      this.wake = null;
+    }
+    if (this.filler) {
+      const value = this.filler;
+      this.filler = "";
+      return { value: { value, filler: true }, done: false };
+    }
+    const value = this.phrases.shift();
+    return { value, done: value === undefined };
+  }
+
+  [Symbol.asyncIterator]() { return this; }
+}
+
+module.exports = { StreamingTextSegmenter, StreamingReplyPhrases, sanitizeSpeechText, stripSpeechUrls };

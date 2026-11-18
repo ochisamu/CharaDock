@@ -98,7 +98,7 @@ test("MCP connection UI explains scope, authentication, and secret handling in E
   ]);
   for (const [japanese, english] of labels) assert.equal(translateText(japanese, "en"), english, japanese);
   const control = fs.readFileSync(path.join(desktopRoot, "control.html"), "utf8");
-  assert.match(control, /data-page="skills"[\s\S]{0,300}data-page="mcp"/);
+  assert.match(control, /data-settings-group="skills"[^>]*>[\s\S]*?<nav class="settings-subnav"[^>]*>[\s\S]*?data-page="skills"[\s\S]*?data-page="mcp"/);
   assert.match(control, /data-page-panel="mcp"[\s\S]*id="mcpServersCard"/);
   const connectionPage = control.match(/data-page-panel="connection"[\s\S]*?(?=<section class="page" data-page-panel="desktop")/)?.[0] || "";
   assert.doesNotMatch(connectionPage, /id="mcpServersCard"/);

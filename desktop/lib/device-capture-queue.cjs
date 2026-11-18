@@ -23,9 +23,13 @@ function handleCaptureFrame(gateway, frame, types) {
     gateway.reportCallbackError(error);
   };
   const payload = type === types.PCM_CHUNK ? Buffer.from(frame.payload) : null;
+  const manual = type === types.PTT_START && frame.payload?.length === 1 && frame.payload[0] === 1;
   gateway.captureQueue = gateway.captureQueue.then(async () => {
     if (!current()) return;
-    if (type === types.PTT_START) await gateway.callbacks.onPttStart();
+    if (type === types.PTT_START) {
+      // A host-declined capture may be stopped without a device PTT_END.
+      if (await gateway.callbacks.onPttStart({ manual }) === false) session.valid = false;
+    }
     else if (type === types.PCM_CHUNK) await gateway.callbacks.onPcmChunk(payload);
     else {
       // End claims the capture synchronously; its returned promise also owns

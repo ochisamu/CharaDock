@@ -43,6 +43,7 @@ CharaDockは、[rotejin/PuruPuruPNGTuber](https://github.com/rotejin/PuruPuruPNG
 
 ### デスクトップに馴染む動き
 
+- VRMをバストアップで表示し、口パク・表情・まばたきに対応。標準の見た目と切替でき、Linkでも使えます。[VRMの読込](docs/vrm-avatar.md)
 - 透明・最前面のフレームレス表示
 - 呼吸、まばたき、髪揺れ、静かな待機視線、実音声波形による3段階リップシンク
 - キャラクター上にカーソルがある間だけ有効なマウス追従

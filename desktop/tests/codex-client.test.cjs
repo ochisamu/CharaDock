@@ -1108,3 +1108,26 @@ test("an unavailable Codex installation shows install guidance", async () => {
     /Codex DesktopまたはCodex CLIをインストール.*npm install -g @openai\/codex/s,
   );
 });
+
+test("a completed final message delivers any missing speech delta before turn completion", () => {
+  const client = new CodexAppServerClient();
+  const deltas = [];
+  client.turnCollectors.set("turn", { text: "", onDelta: (...args) => deltas.push(args) });
+  const send = (method, params) => client.handleLine(JSON.stringify({ method, params: { turnId: "turn", ...params } }));
+  send("item/completed", { item: { type: "agentMessage", phase: "commentary", id: "commentary", text: "考え中。" } });
+  send("item/agentMessage/delta", { itemId: "answer", delta: "最初。" });
+  send("item/completed", { item: { type: "agentMessage", phase: "final_answer", id: "answer", text: "最初。続き。" } });
+  send("item/completed", { item: { type: "agentMessage", phase: "final_answer", id: "answer", text: "最初。続き。" } });
+  assert.deepEqual(deltas, [["最初。", "最初。"], ["続き。", "最初。続き。"]]);
+});
+
+test("spoken Chat can start without waiting for optional MCP readiness", async () => {
+  const client = new CodexAppServerClient();
+  client.ensureStarted = async () => {};
+  client.ensureMcpServersReady = () => assert.fail("optional MCP readiness blocked the voice turn");
+  client.ensureThread = () => { throw new Error("thread startup reached"); };
+  await assert.rejects(client.sendMessage("hello", { waitForOptionalMcp: false }), /thread startup reached/);
+  client.ensureMcpServersReady = async () => { throw new Error("required MCP unavailable"); };
+  await assert.rejects(client.sendMessage("use MCP", { waitForOptionalMcp: false, requireMcpReady: true }),
+    /required MCP unavailable/);
+});

@@ -66,6 +66,30 @@ test("ACK deadline also bounds a stalled transport write callback", async () => 
   } finally { clearTimeout(keepAlive); }
 });
 
+test("an opted-in packet retry uses identical wire bytes after a missing ACK", async () => {
+  const gateway = new Rlcd42SerialGateway();
+  gateway.connectionState = "ready";
+  const decoder = new DeviceProtocolV2Decoder();
+  const writes = [];
+  gateway.writeBytes = async (bytes) => {
+    writes.push(bytes);
+    const [frame] = decoder.push(bytes);
+    if (writes.length === 2) {
+      gateway.handleFrame({ type: FRAME_TYPES.ACK, sequence: frame.sequence,
+        payload: Buffer.from([frame.type, 0, 0, 0]) });
+    }
+  };
+  const keepAlive = setTimeout(() => {}, 1000);
+  try {
+    await gateway.writeWithAck(FRAME_TYPES.AUDIO_CHUNK, Buffer.from([7, 8]), { retryTimeouts: [12, 100] });
+    assert.equal(writes.length, 2);
+    assert.deepEqual(writes[0], writes[1]);
+    assert.equal(gateway.pending.size, 0);
+  } finally {
+    clearTimeout(keepAlive);
+  }
+});
+
 test("failed old playback never stops a replacement playback", async () => {
   const gateway = new Rlcd42SerialGateway();
   gateway.connectionState = "ready";

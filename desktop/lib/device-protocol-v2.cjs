@@ -21,6 +21,11 @@ const FRAME_TYPES = Object.freeze({
   AUDIO_END: 0x23,
   AUDIO_STOP: 0x24,
   AUDIO_STATUS: 0x25,
+  AUDIO_STAGE_BEGIN: 0x26,
+  AUDIO_STAGE_CHUNK: 0x27,
+  AUDIO_STAGE_END: 0x28,
+  AUDIO_STAGE_PLAY: 0x29,
+  AUDIO_PLAYBACK_STARTED: 0x2a,
   WIFI_CONFIG: 0x30,
   WIFI_STATUS: 0x31,
   CAPTURE_CONFIG: 0x32,
@@ -31,6 +36,7 @@ const FRAME_TYPES = Object.freeze({
   EXPRESSION: 0x42,
   MOUTH_LEVEL: 0x43,
   MOTION: 0x44,
+  GESTURE: 0x45,
   ASSET_META: 0x50,
   ASSET_CHUNK: 0x51,
   ASSET_END: 0x52,
@@ -184,7 +190,7 @@ function normalizeVadThreshold(value) {
 }
 
 function captureConfigPayload(mode = "push-to-talk", vadThreshold = 120, { enabled = true } = {}) {
-  const modes = { "push-to-talk": 0, "hands-free": 1, disabled: 2 };
+  const modes = { "push-to-talk": 0, "hands-free": 1, disabled: 2, "camera-hands-free": 3 };
   const resolvedMode = enabled === false ? 2 : modes[mode] ?? 0;
   const payload = Buffer.alloc(3);
   payload[0] = resolvedMode;

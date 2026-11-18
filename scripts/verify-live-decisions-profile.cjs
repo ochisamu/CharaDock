@@ -99,7 +99,7 @@ const guard = setTimeout(() => { result.error = 'Verification timeout'; save(); 
   assert.equal(connected.ok, true, connected.error);
   result.connection = connected;
   if (activate) {
-    await js("document.querySelector('[data-page=\"connection\"]').click()"); await sleep(300);
+    await js("document.querySelector('[data-page=\"assist\"]').click()"); await sleep(300);
     control.showInactive();
     fs.writeFileSync(path.join(output, 'connection.png'), (await control.capturePage()).toPNG());
     result.stage = 'passed'; result.passed = true; save(); clearTimeout(guard); return;

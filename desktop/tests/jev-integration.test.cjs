@@ -7,6 +7,7 @@ const source = fs.readFileSync(path.join(__dirname, "../main.cjs"), "utf8");
 function conversation({ enabled = true, action = "next", ok = true } = {}) {
   const calls = [];
   const context = {
+    stackchanVoiceMotion: require("../lib/stackchan-voice-motion.cjs").stackchanVoiceMotion,
     process: { platform: "win32" }, preferences: { data: { backend: "openai" } },
     jevEnabled: () => enabled, classifyJevMedia: async text => { calls.push(["classify", text]); return action; },
     mediaController: { call: async args => { calls.push(["execute", args.action]); return { ok, accepted: ok }; } },

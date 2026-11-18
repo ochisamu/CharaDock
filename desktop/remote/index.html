@@ -11,6 +11,7 @@
   <link rel="manifest" href="/manifest.webmanifest" />
   <link rel="apple-touch-icon" href="/app-icon.png" />
   <link rel="stylesheet" href="/remote.css" />
+  <link rel="stylesheet" href="/livliv-controls.css" />
 </head>
 <body>
   <main class="remote-shell">
@@ -48,6 +49,7 @@
               <img id="avatarBackHair" class="avatar-layer back-hair" alt="" draggable="false" />
               <img id="avatarFace" class="avatar-layer face" alt="キャラクター" draggable="false" />
               <img id="avatarFrontHair" class="avatar-layer front-hair" alt="" draggable="false" />
+              <canvas id="avatarLivliv" class="avatar-layer authored-avatar" width="640" height="640" hidden aria-hidden="true"></canvas>
               <canvas id="avatarMesh" class="avatar-layer authored-avatar" width="640" height="640" hidden aria-hidden="true"></canvas>
             <canvas id="avatarAuthored" class="avatar-layer authored-avatar" width="640" height="640" hidden aria-hidden="true"></canvas>
             </span>
@@ -114,6 +116,9 @@
     <header><div><p class="eyebrow">REMOTE</p><h2>リモート設定</h2></div><button id="closeSettingsButton" type="button" aria-label="閉じる">×</button></header>
     <div class="remote-settings-form">
       <label class="settings-field"><span>キャラクター</span><select id="characterSelect"></select></label>
+      <label class="settings-field"><span>見た目</span><select id="appearanceSelect"></select></label>
+      <label class="settings-field"><span>VRM・LivLivを読み込む</span><input id="livlivImport" type="file" accept=".vrm,.livliv,.zip" /></label>
+      <div id="livlivControls" hidden></div>
       <label class="settings-field"><span>応答音声</span><select id="responseModeSelect"><option value="tts">通常TTS</option><option value="live">GPT-Live</option></select></label>
       <label id="ttsProviderField" class="settings-field"><span id="ttsProviderLabel">TTS方式</span><select id="ttsProviderSelect"></select></label>
       <section id="ttsModelSettings" class="remote-model-settings" aria-labelledby="ttsModelSettingsTitle" hidden>
@@ -152,6 +157,10 @@
   <script src="/mesh-avatar.js"></script>
   <script src="/mesh-avatar-runtime.js"></script>
   <script src="/remote-mesh-avatar.js"></script>
+  <script src="/livliv.js"></script>
+  <script src="/livliv-controls.js"></script>
+  <script src="/livliv-avatar-runtime.js"></script>
+  <script src="/livliv-controls-ui.js"></script>
   <script src="/remote.js"></script>
 </body>
 </html>

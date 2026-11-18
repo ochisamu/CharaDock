@@ -31,6 +31,28 @@
     canvas: $('#avatarMesh'), shell: $('#avatarMotion'), runtime: window.CharaDockMeshAvatar, engine: window.MeshAvatarStudio,
     onError: () => console.warn('Link Mesh avatar unavailable; using standard appearance'),
   });
+  const livlivAvatar = window.CharaDockRemoteMeshAvatar.create({
+    canvas: $('#avatarLivliv'), shell: $('#avatarMotion'), runtime: window.CharaDockLivlivAvatar, engine: window.LivLivPlayer,
+    descriptorKey: 'livlivAvatar', className: 'is-livliv',
+    onError: () => console.warn('Link LivLiv avatar unavailable; using standard appearance'),
+  });
+  if (new URLSearchParams(location.search).has('livliv-avatar-preview')) window.CharaDockLivlivPreview = livlivAvatar;
+  const livlivControls=window.CharaDockLivlivControlsUI.create({container:$('#livlivControls'),
+    onPatch:input=>request('/api/livliv/settings',{method:'POST',body:JSON.stringify(input)}),
+    onCommand:input=>request('/api/livliv/command',{method:'POST',body:JSON.stringify(input)}),
+    onRemove: async input => {
+      try {
+        const result = await request('/api/livliv/remove', { method: 'POST', body: JSON.stringify(input) });
+        applyState(result.state);
+        setSettingsStatus(text('VRMを削除し、標準の見た目に戻しました。', 'VRM removed. The original appearance is now selected.'));
+      } catch (error) {
+        setSettingsStatus(error.message, 'error');
+      }
+    },
+    onSnapshot:()=>{const data=livlivAvatar.snapshot();if(!data)throw Error(text('アバターを表示してください。','Show the avatar first.'));const anchor=document.createElement('a');anchor.href=data;anchor.download='charadock-avatar.png';anchor.click();}});
+  $('#appearanceSelect').addEventListener('change',async event=>{try{const result=await request('/api/appearance',{method:'POST',body:JSON.stringify({characterId:appState.character.id,selection:event.target.value})});applyState(result.state);}catch(error){setSettingsStatus(error.message,'error');}});
+  $('#livlivImport').addEventListener('change',async event=>{const file=event.target.files[0];if(!file)return;const id=appState?.character?.id;event.target.disabled=true;
+    try{if(file.size>(/\.vrm$/i.test(file.name)?128:80)*1024*1024)throw Error('VRMは128MB、LivLivは80MB以下にしてください。');const result=await request('/api/livliv/import?characterId='+encodeURIComponent(id),{method:'POST',headers:{'Content-Type':'application/octet-stream'},body:file});applyState(result.state);}catch(error){setSettingsStatus(error.message,'error');}finally{event.target.disabled=false;event.target.value='';}});
   let petRequestInFlight = false;
   let mobileSpeechToken = 0;
   let mobileSpeechPending = false;
@@ -416,6 +438,7 @@
   function showFace(key) {
     authoredAvatar.blink(key.startsWith('eyesClosed'));
     meshAvatar.blink(key.startsWith('eyesClosed'));
+    livlivAvatar.blink(key.startsWith('eyesClosed'));
     if (!appState?.character?.assetKeys?.includes(key)) key = "eyesOpenMouthClosed";
     const source = avatarAssets.get(key);
     const face = $("#avatarFace");
@@ -453,6 +476,7 @@
     setAvatarSpeaking(next.speaking);
     authoredAvatar.audio(currentMouth, rawRms);
     meshAvatar.audio(currentMouth, rawRms);
+    livlivAvatar.audio(currentMouth, rawRms);
     return next;
   }
 
@@ -461,6 +485,7 @@
     currentMouth = "closed";
     authoredAvatar.audio('closed', 0);
     meshAvatar.audio('closed', 0);
+    livlivAvatar.audio('closed', 0);
     showFace(faceKey(true));
     if (!keepSpeaking) setAvatarSpeaking(false, 0);
   }
@@ -513,9 +538,10 @@
     const shell = $("#avatarReactionShell");
     for (const name of ["happy", "soft", "surprised"]) shell.classList.remove(`is-reacting-${name}`);
     void shell.offsetWidth;
-    if (!authoredAvatar.status().ready && !meshAvatar.status().ready) shell.classList.add(`is-reacting-${emotion}`);
+    if (!authoredAvatar.status().ready && !meshAvatar.status().ready && !livlivAvatar.status().ready) shell.classList.add(`is-reacting-${emotion}`);
     authoredAvatar.expression({ ...payload, emotion, characterId: appState?.character?.id });
     meshAvatar.expression({ ...payload, emotion, characterId: appState?.character?.id });
+    livlivAvatar.expression({ ...payload, emotion, characterId: appState?.character?.id });
     currentEmotion = emotion;
     showFace(faceKey(true));
     reactionTimer = setTimeout(() => {
@@ -531,6 +557,7 @@
     const generation = ++avatarSyncGeneration;
     authoredAvatar.sync(character);
     meshAvatar.sync(character);
+    livlivAvatar.sync(character);
     clearTimeout(reactionTimer);
     currentEmotion = "";
     for (const name of ["happy", "soft", "surprised"]) $("#avatarReactionShell").classList.remove(`is-reacting-${name}`);
@@ -1422,6 +1449,11 @@
     appState = nextState;
     authoredAvatar.sync(appState.character);
     meshAvatar.sync(appState.character);
+    livlivAvatar.sync(appState.character);
+    livlivControls.sync(appState.character?.livlivAvatar,appState.character?.id,appState.language);
+    const appearanceSelect=$('#appearanceSelect');appearanceSelect.replaceChildren();
+    for(const option of appState.character?.avatarAppearance?.options||[])appearanceSelect.append(new Option(option.label,option.id));
+    appearanceSelect.value=appState.character?.avatarAppearance?.selected||'standard';
     if (!modeInitialized || appState?.voice?.liveConnected) {
       currentMode = appState.interactionMode === "work" && appState.workAllowed ? "work" : "chat";
       modeInitialized = true;
@@ -1477,7 +1509,8 @@
     eventSource?.close();
     eventSource = new EventSource("/api/events");
     eventSource.addEventListener("state", (event) => applyState(JSON.parse(event.data)));
-    eventSource.addEventListener('expression', event => { const input=JSON.parse(event.data); authoredAvatar.expression(input); meshAvatar.expression(input); });
+    eventSource.addEventListener('livliv-command',event=>livlivAvatar.command(JSON.parse(event.data)));
+    eventSource.addEventListener('expression', event => { const input=JSON.parse(event.data); authoredAvatar.expression(input); meshAvatar.expression(input); livlivAvatar.expression(input); });
     eventSource.addEventListener("stream", (event) => handleStream(JSON.parse(event.data)));
     eventSource.addEventListener("history", (event) => {
       if (!appState) return;
@@ -1541,6 +1574,7 @@
     avatarSyncGeneration++;
     authoredAvatar.dispose();
     meshAvatar.dispose();
+    livlivAvatar.dispose();
     eventSource?.close();
     closeRemoteLivePeer();
     $("#companionView").hidden = true;
@@ -2106,7 +2140,7 @@
     const activate = (caption) => {
       if (!activated) {
         activated = true;
-        if (result?.expression) { authoredAvatar.expression(result.expression); meshAvatar.expression(result.expression); }
+        if (result?.expression) { authoredAvatar.expression(result.expression); meshAvatar.expression(result.expression); livlivAvatar.expression(result.expression); }
       }
       onStart?.(caption);
     };
@@ -2520,6 +2554,7 @@
   document.addEventListener("visibilitychange", () => {
     authoredAvatar.visibility();
     meshAvatar.visibility();
+    livlivAvatar.visibility();
     syncWakeLock();
     if (document.visibilityState !== "visible") stopDictation();
   });
@@ -2539,6 +2574,7 @@
   window.addEventListener("pagehide", () => {
     authoredAvatar.dispose();
     meshAvatar.dispose();
+    livlivAvatar.dispose();
     clearInterval(approvalCountdownTimer);
     clearInterval(workElapsedTimer);
     if (streamingSpeechContext || streamingSpeechStream) stopStreamingDictation();

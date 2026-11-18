@@ -10,6 +10,7 @@ test("main routes both devices through independent gates and cancels pending mod
   const main = fs.readFileSync(path.join(__dirname, "../main.cjs"), "utf8");
   const events = [];
   let detectors = 0;
+  const profile = { captureMode: "hands-free" };
   const ctx = vm.createContext({ DeviceSpeechGate,
     codexCompanion: { state: { enabled: false } },
     embeddedSherpaVad: { ensureModel: async () => {}, baseDirectory: "." },
@@ -20,11 +21,14 @@ test("main routes both devices through independent gates and cancels pending mod
       stop() {}
     },
     preferences: { data: { atomEchoCaptureMode: "hands-free" } },
-    rlcd42Profile: () => ({ captureMode: "hands-free" }),
+    rlcd42Profile: () => profile,
+    stackchanProfile: () => false,
+    stackchanPrivacyMuted: false,
     atomEchoUsesRealtime: () => false, diagnosticLog: null,
     esp32PttStart: async (device) => events.push(device), esp32PcmChunk: async () => {},
     esp32PttEnd: async () => {},
   });
+  vm.runInContext(main.slice(main.indexOf("function rlcd42CaptureModeForDevice("), main.indexOf("function publicRlcd42State(")), ctx);
   vm.runInContext(main.slice(main.indexOf("function esp32SpeechOutput("), main.indexOf("function pcm16Samples(")), ctx);
   for (const device of ["atom-echo", "rlcd42"]) {
     await ctx.esp32InputStart(device);
@@ -33,6 +37,17 @@ test("main routes both devices through independent gates and cancels pending mod
   }
   assert.deepEqual(events, ["atom-echo", "rlcd42"]);
   assert.equal(detectors, 2);
+  profile.microphoneEnabled = false;
+  assert.equal(await ctx.esp32InputStart("rlcd42"), false);
+  profile.microphoneEnabled = true;
+  ctx.stackchanPrivacyMuted = true;
+  assert.equal(await ctx.esp32InputStart("rlcd42"), false);
+  ctx.stackchanPrivacyMuted = false;
+  profile.cameraEnabled = false;
+  profile.captureMode = "camera-hands-free";
+  assert.equal(ctx.rlcd42CaptureModeForDevice(profile), "push-to-talk");
+  profile.cameraEnabled = true;
+  profile.captureMode = "hands-free";
   ctx.esp32SpeechOutput(true);
   await ctx.esp32InputStart("rlcd42");
   await ctx.esp32InputGate("rlcd42").chunk(Buffer.alloc(1024));
@@ -94,6 +109,66 @@ test("playback starting during a pending candidate suppresses it", async () => {
   await gate.begin({ handsfree: true }); await gate.chunk(Buffer.alloc(1024));
   playing = true; await gate.chunk(Buffer.alloc(1024)); await gate.end();
   assert.deepEqual(events, ["suppressed"]);
+});
+
+test("StackChan closes steady noise before opening a Live turn", async () => {
+  let started = 0, requested = 0;
+  const gate = new DeviceSpeechGate({
+    createVad: async () => ({ accept: () => ({ detected: false }), stop() {} }),
+    onStart: () => { started += 1; }, onChunk: () => {},
+    onEnd: () => assert.fail("Noise must not start a Live turn"),
+    requestEnd: () => { requested += 1; },
+  });
+  await gate.begin({ handsfree: true, localEndpoint: true });
+  for (let block = 0; block < 85; block += 1) await gate.chunk(Buffer.alloc(640, 1));
+  assert.equal(started, 0);
+  assert.equal(requested, 1);
+  await gate.end();
+});
+
+test("StackChan releases captures suppressed before and during VAD admission", async () => {
+  let playing = true;
+  let stops = 0;
+  const events = [];
+  const gate = new DeviceSpeechGate({
+    suppress: () => playing,
+    createVad: async () => ({ accept: () => ({ detected: false }), stop() {} }),
+    onStart: () => assert.fail("Suppressed audio must never start a turn"),
+    onChunk: () => assert.fail("Suppressed audio must never be forwarded"),
+    requestEnd: () => { stops += 1; },
+    onReject: reason => events.push(reason),
+  });
+  for (const suppressedAtStart of [true, false]) {
+    playing = suppressedAtStart;
+    await gate.begin({ handsfree: true, localEndpoint: true });
+    await gate.chunk(Buffer.alloc(640));
+    playing = true;
+    await gate.chunk(Buffer.alloc(640));
+    await gate.chunk(Buffer.alloc(640));
+    await gate.end();
+  }
+  assert.equal(stops, 2);
+  assert.deepEqual(events, ["suppressed", "suppressed"]);
+});
+
+test("StackChan keeps Silero through the end of speech and sends each block once", async () => {
+  const chunks = [];
+  let blocks = 0, requested = 0, ended = 0;
+  const gate = new DeviceSpeechGate({
+    createVad: async () => ({ accept() {
+      blocks += 1;
+      return { detected: blocks === 2, segmentComplete: blocks === 4 };
+    }, stop() {} }),
+    onStart() {}, onChunk: chunk => chunks.push(chunk),
+    onEnd: () => { ended += 1; }, requestEnd: () => { requested += 1; },
+  });
+  await gate.begin({ handsfree: true, localEndpoint: true });
+  for (let i = 1; i <= 5; i += 1) await gate.chunk(Buffer.alloc(640, i));
+  await gate.end();
+  assert.deepEqual(chunks, [Buffer.concat([Buffer.alloc(640, 1), Buffer.alloc(640, 2)]),
+    Buffer.alloc(640, 3), Buffer.alloc(640, 4)]);
+  assert.equal(requested, 1);
+  assert.equal(ended, 1);
 });
 
 test("Live bypass never initializes Silero and forwards unchanged audio", async () => {

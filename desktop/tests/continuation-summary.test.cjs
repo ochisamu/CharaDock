@@ -300,7 +300,8 @@ test("a goal-only summary can produce only an optional grounded suggestion", () 
   }), summary), "");
 });
 
-test("startup has a grounded local fallback when generation is unavailable", () => {
+test("startup has a grounded local fallback when generation is unavailable", (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: NOW });
   const goalOnly = saveContinuationSummary({}, {
     characterId: "amber-avatar",
     summary: { goal: "名古屋の主要ニュース" },

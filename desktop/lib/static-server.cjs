@@ -31,8 +31,9 @@ function jsonResponse(response, status, value) {
 }
 
 class MascotStaticServer {
-  constructor(rootDir, { onInput, getMeshAsset } = {}) {
+  constructor(rootDir, { onInput, getMeshAsset, getLivlivAsset } = {}) {
     this.getMeshAsset = getMeshAsset;
+    this.getLivlivAsset = getLivlivAsset;
     this.rootDir = path.resolve(rootDir);
     this.onInput = onInput;
     this.server = null;
@@ -111,6 +112,13 @@ class MascotStaticServer {
   async handle(request, response) {
     try {
       const url = new URL(request.url || "/", this.origin());
+      if(request.method==='GET'&&url.pathname==='/vrm.js')return this.serveStatic('/vendor/livliv-player/vrm.js',request,response);
+      if (request.method === "GET" && url.pathname.startsWith("/api/livliv/")) {
+        const match = url.pathname.match(/^\/api\/livliv\/(kohaku|[a-f0-9-]{36})\/([a-zA-Z0-9_][a-zA-Z0-9_./-]*\.(?:json|png|webp|vrm))$/);
+        const asset = match ? await this.getLivlivAsset?.(match[1], match[2]) : null;
+        if (!asset?.body) return jsonResponse(response,404,{error:"Avatar asset not found"});
+        response.writeHead(200,{"Content-Type":asset.contentType,"Cache-Control":"no-store","X-Content-Type-Options":"nosniff"});response.end(asset.body);return;
+      }
       if (request.method === "GET" && url.pathname.startsWith("/api/mesh/")) {
         const parts = decodeURIComponent(url.pathname).match(/^\/api\/mesh\/([a-f0-9-]{36})\/(rig\.json|built\/[a-zA-Z0-9_/-]+\.(?:json|png))$/);
         const asset = parts && !parts[2].includes("..") ? await this.getMeshAsset?.(parts[1], parts[2]) : null;

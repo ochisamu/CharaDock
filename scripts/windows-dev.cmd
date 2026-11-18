@@ -5,16 +5,26 @@ setlocal
 set "CHARADOCK_DEV_ROOT=%~dp0.."
 pushd "%CHARADOCK_DEV_ROOT%" || exit /b 1
 
-set "CHARADOCK_NODE=C:\Program Files\nodejs\node.exe"
+set /p "CHARADOCK_DEV_NODE_VERSION=" < .node-version
+set "CHARADOCK_DEV_NODE=%LOCALAPPDATA%\CharaDockDev\toolchains\node-v%CHARADOCK_DEV_NODE_VERSION%-win-x64\node.exe"
+if not defined CHARADOCK_NODE if exist "%CHARADOCK_DEV_NODE%" set "CHARADOCK_NODE=%CHARADOCK_DEV_NODE%"
+if not defined CHARADOCK_NODE set "CHARADOCK_NODE=C:\Program Files\nodejs\node.exe"
 if not exist "%CHARADOCK_NODE%" (
   set "CHARADOCK_NODE="
   for /f "delims=" %%N in ('where node 2^>nul') do if not defined CHARADOCK_NODE set "CHARADOCK_NODE=%%N"
 )
 if not defined CHARADOCK_NODE (
-  echo Windows node.exe was not found. Install Node.js 24 or later. 1>&2
+  echo Windows node.exe was not found. Install a supported Node.js version. 1>&2
   popd
   exit /b 1
 )
+"%CHARADOCK_NODE%" scripts\check-runtime-security.cjs
+if errorlevel 1 (
+  echo Install a supported Windows Node.js version or set CHARADOCK_NODE to its node.exe. 1>&2
+  popd
+  exit /b 1
+)
+for %%N in ("%CHARADOCK_NODE%") do set "PATH=%%~dpN;%PATH%"
 
 if /i "%~1"=="--prepare" goto prepare
 if not exist "node_modules\electron\cli.js" (
@@ -53,17 +63,13 @@ popd
 exit /b %CHARADOCK_DEV_EXIT%
 
 :prepare
-set "CHARADOCK_NPM=C:\Program Files\nodejs\npm.cmd"
+for %%N in ("%CHARADOCK_NODE%") do set "CHARADOCK_NPM=%%~dpNnode_modules\npm\bin\npm-cli.js"
 if not exist "%CHARADOCK_NPM%" (
-  set "CHARADOCK_NPM="
-  for /f "delims=" %%N in ('where npm.cmd 2^>nul') do if not defined CHARADOCK_NPM set "CHARADOCK_NPM=%%N"
-)
-if not defined CHARADOCK_NPM (
-  echo Windows npm.cmd was not found. Install Node.js 24 or later. 1>&2
+  echo npm was not found next to the selected Windows node.exe. Install the full Node.js distribution. 1>&2
   popd
   exit /b 1
 )
-call "%CHARADOCK_NPM%" ci --no-audit --no-fund
+"%CHARADOCK_NODE%" "%CHARADOCK_NPM%" ci --no-audit --no-fund
 set "CHARADOCK_DEV_EXIT=%ERRORLEVEL%"
 if not "%CHARADOCK_DEV_EXIT%"=="0" (
   popd

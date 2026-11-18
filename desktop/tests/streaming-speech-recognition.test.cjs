@@ -165,3 +165,37 @@ test("desktop, settings chat, and remote input all route the streaming provider"
   assert.match(remote, /voice\?\.commitSilenceMs/);
   assert.match(remote, /streamingSpeechFinalizing/);
 });
+
+test("only final recognition hears enhanced samples; partials keep the original audio", async () => {
+  const heard = [], enhanced = [];
+  const session = new SimulatedStreamingSession(async samples => { heard.push([...samples]); return '認識結果'; }, task => task(), {
+    initialSamples: 2, intervalSamples: 2,
+    enhanceFinal: async (samples, signal) => { signal.throwIfAborted(); enhanced.push([...samples]); return samples.map(x => x * .5); },
+  });
+  await session.append(new Float32Array([.2, .4])); await session.finish();
+  assert.equal(enhanced.length, 1); assert.ok(Math.abs(heard[0][0] - .2) < .0001); assert.ok(Math.abs(heard[1][0] - .1) < .0001);
+});
+test("cancel during final enhancement rejects promptly and prevents recognition of late audio", async () => {
+  let finishEnhancement, finalDecodes = 0;
+  const session = new SimulatedStreamingSession(async () => { finalDecodes++; return 'old'; }, task => task(), {
+    initialSamples: 100,
+    enhanceFinal: () => new Promise(resolve => { finishEnhancement = resolve; }),
+  });
+  await session.append(new Float32Array([.1, .2])); const pending = session.finish();
+  while (!finishEnhancement) await new Promise(r => setImmediate(r));
+  session.cancel(); await assert.rejects(pending, /中止/);
+  finishEnhancement(new Float32Array([.3, .4])); await new Promise(r => setImmediate(r));
+  assert.equal(finalDecodes, 0);
+});
+test("closing a recognition session does not overlap a still-running native inference", async () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'serialized-stt-'));
+  try {
+    const manager = new StreamingSpeechRecognition(base);
+    let release, nextStarted = false;
+    const first = manager.queueInference(() => new Promise(resolve => { release = resolve; }));
+    await new Promise(r => setImmediate(r)); manager.close();
+    const second = manager.queueInference(() => { nextStarted = true; });
+    await new Promise(r => setImmediate(r)); assert.equal(nextStarted, false);
+    release(); await first; await second; assert.equal(nextStarted, true);
+  } finally { fs.rmSync(base, { recursive: true, force: true }); }
+});
