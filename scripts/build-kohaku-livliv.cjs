@@ -57,7 +57,7 @@ for(const name of ['base','body','bow','brows','collar_front','earring','hair_ba
 const hashes={};for(const file of [...buildFiles].sort())hashes[file]=crypto.createHash('sha256').update(fs.readFileSync(path.join(out,file))).digest('hex');
 fs.writeFileSync(path.join(out,'BUILD.json'),JSON.stringify({converter:5,expressionCorrections,identitySource:crypto.createHash('sha256').update(fs.readFileSync(path.join(originalDir,'source.png'))).digest('hex'),files:hashes},null,2)+'\n');
 // Flat assembly is QA only: the shipped model is drawn by the real WebGL player.
-const flat=new PNG({width:size,height:size});function over(dst,src,x,y){for(let j=0;j<src.height;j++)for(let i=0;i<src.width;i++){const a=(j*src.width+i)*4,b=((j+y)*dst.width+i+x)*4,sa=src.data[a+3]/255,da=dst.data[b+3]/255,oa=sa+da*(1-sa);if(!oa)continue;for(let c=0;c<3;c++)dst.data[b+c]=Math.round((src.data[a+c]*sa+dst.data[b+c]*da*(1-sa))/oa);dst.data[b+3]=Math.round(oa*255);}}
-for(const layer of layers){if(layer.role?.startsWith('lid_')||layer.role==='expr')continue;over(flat,PNG.sync.read(fs.readFileSync(path.join(out,layer.texture))),layer.x,layer.y);}
+const { assembleNeutralKohaku } = require('./kohaku-flat-assembly.cjs');
+const flat = assembleNeutralKohaku(model, file => fs.readFileSync(path.join(out, file)));
 const evidence=path.resolve(__dirname,'../work/evidence/kohaku-livliv-v2');fs.mkdirSync(evidence,{recursive:true});fs.writeFileSync(path.join(evidence,'flat-assembly.png'),PNG.sync.write(flat));
 console.log('Kohaku original-face rig:',layers.length,'layers,',model.rig.chains.length,'hair chains;',buildFiles.size,'files');

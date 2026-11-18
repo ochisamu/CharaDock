@@ -63,7 +63,8 @@ test('production rig preserves original registered facial pixels and dimension-m
    if(texture.data[a+3])assert.deepEqual(texture.data.subarray(a,a+4),original.data.subarray(b,b+4),'original eye pixels: '+side);
   }
  }
- const flat=PNG.sync.read(fs.readFileSync(path.join(root,'work/evidence/kohaku-livliv-v2/flat-assembly.png')));
+ const { assembleNeutralKohaku } = require('../../scripts/kohaku-flat-assembly.cjs');
+ const flat = assembleNeutralKohaku(model, file => pack.read(file).body);
  for(let y=450;y<795;y++)for(let x=450;x<880;x++){
   const k=(y*original.width+x)*4;
   if(original.data[k+3]===255)assert.deepEqual(flat.data.subarray(k,k+4),original.data.subarray(k,k+4),'neutral face identity at '+x+','+y);
